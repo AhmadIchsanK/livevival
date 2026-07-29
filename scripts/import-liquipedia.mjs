@@ -14,7 +14,7 @@ const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
 // TODO: put a real contact email here before running this for real —
 // Liquipedia blocks generic/anonymous user agents.
 const USER_AGENT =
-  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: YOUR_EMAIL_HERE)";
+  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,

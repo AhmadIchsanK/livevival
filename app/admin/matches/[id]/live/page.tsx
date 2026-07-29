@@ -187,7 +187,7 @@ export default function LiveConsolePage() {
 
   // ── Net worth snapshot ──────────────────────────────────────────────
   async function logNetWorthSnapshot() {
-    if (!game || !match.team_a || !match.team_b) return;
+    if (!game || !match || !match.team_a || !match.team_b) return;
     const teamAGold = stats
       .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id)
       .reduce((sum, s) => sum + (s.gold ?? 0), 0);

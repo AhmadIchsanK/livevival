@@ -1,8 +1,17 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { createWorker } from "tesseract.js";
+
+const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
+  { pattern: /SAVAGE/i, type: "savage" },
+  { pattern: /MANIAC/i, type: "maniac" },
+  { pattern: /LORD\s*STEAL/i, type: "lord_steal" },
+  { pattern: /TURTLE\s*STEAL/i, type: "turtle_steal" },
+  { pattern: /\bACE\b/i, type: "ace" },
+];
 
 type Match = {
   id: string;
@@ -201,6 +210,116 @@ export default function LiveConsolePage() {
       team_a_gold: teamAGold,
       team_b_gold: teamBGold,
     });
+  }
+
+  // ── OCR assist (experimental) ────────────────────────────────────────
+  const previewRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const workerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dragStart = useRef<{ x: number; y: number } | null>(null);
+
+  const [ocrActive, setOcrActive] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
+  const [crop, setCrop] = useState({ xPct: 30, yPct: 35, wPct: 40, hPct: 20 });
+  const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
+
+  async function captureAndRecognize() {
+    const video = previewRef.current;
+    const worker = workerRef.current;
+    if (!video || !worker || video.videoWidth === 0) return;
+
+    const fullCanvas = document.createElement("canvas");
+    fullCanvas.width = video.videoWidth;
+    fullCanvas.height = video.videoHeight;
+    const ctx = fullCanvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+
+    const cx = (crop.xPct / 100) * video.videoWidth;
+    const cy = (crop.yPct / 100) * video.videoHeight;
+    const cw = (crop.wPct / 100) * video.videoWidth;
+    const ch = (crop.hPct / 100) * video.videoHeight;
+    if (cw < 5 || ch < 5) return;
+
+    const cropCanvas = document.createElement("canvas");
+    cropCanvas.width = cw;
+    cropCanvas.height = ch;
+    const cropCtx = cropCanvas.getContext("2d");
+    if (!cropCtx) return;
+    cropCtx.drawImage(fullCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
+
+    try {
+      const { data: { text } } = await worker.recognize(cropCanvas);
+      const found = OCR_KEYWORDS.find((k) => k.pattern.test(text));
+      if (found) setSuggestion({ type: found.type, raw: text.trim() });
+    } catch (err) {
+      console.error("OCR error", err);
+    }
+  }
+
+  async function startOcrAssist() {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      streamRef.current = stream;
+      if (previewRef.current) {
+        previewRef.current.srcObject = stream;
+        await previewRef.current.play();
+      }
+      workerRef.current = await createWorker("eng");
+      setOcrActive(true);
+      intervalRef.current = setInterval(captureAndRecognize, 5000);
+    } catch (err) {
+      console.error("Could not start screen share for OCR assist", err);
+    }
+  }
+
+  function stopOcrAssist() {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    workerRef.current?.terminate();
+    setOcrActive(false);
+    setSuggestion(null);
+  }
+
+  useEffect(() => {
+    return () => stopOcrAssist();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function handleCropMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    if (!calibrating) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    dragStart.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+  function handleCropMouseUp(e: React.MouseEvent<HTMLDivElement>) {
+    if (!calibrating || !dragStart.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const endX = e.clientX - rect.left;
+    const endY = e.clientY - rect.top;
+    const x = Math.min(dragStart.current.x, endX);
+    const y = Math.min(dragStart.current.y, endY);
+    const w = Math.abs(endX - dragStart.current.x);
+    const h = Math.abs(endY - dragStart.current.y);
+    setCrop({
+      xPct: (x / rect.width) * 100,
+      yPct: (y / rect.height) * 100,
+      wPct: (w / rect.width) * 100,
+      hPct: (h / rect.height) * 100,
+    });
+    dragStart.current = null;
+    setCalibrating(false);
+  }
+
+  async function confirmSuggestion() {
+    if (!suggestion || !game) return;
+    await supabase.from("key_moments").insert({
+      game_id: game.id,
+      type: suggestion.type,
+      minute_mark: minute,
+    });
+    setSuggestion(null);
+    loadAll();
   }
 
   if (error) return <p className="text-red-400 text-sm">{error}</p>;
@@ -412,6 +531,71 @@ export default function LiveConsolePage() {
             </span>
           ))}
         </div>
+      </section>
+
+      {/* OCR assist (experimental) */}
+      <section className="space-y-3 border-t border-white/10 pt-6">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">OCR assist (experimental)</h2>
+          <button
+            onClick={ocrActive ? stopOcrAssist : startOcrAssist}
+            className={`text-xs rounded px-3 py-1.5 ${
+              ocrActive ? "bg-red-500/20 text-red-300" : "border border-white/10 hover:bg-white/10"
+            }`}
+          >
+            {ocrActive ? "Stop OCR assist" : "Start OCR assist"}
+          </button>
+        </div>
+        <p className="text-[10px] text-white/40">
+          Reads kill-banner text (SAVAGE / MANIAC / etc.) from a screen-shared tab showing the stream.
+          Your browser will ask you to pick which tab to share — nothing is captured without that prompt.
+          Never logs anything automatically; it only ever suggests, and you confirm.
+        </p>
+
+        {ocrActive && (
+          <div className="space-y-2">
+            <div
+              className="relative w-full max-w-md border border-white/10 rounded overflow-hidden"
+              onMouseDown={handleCropMouseDown}
+              onMouseUp={handleCropMouseUp}
+            >
+              <video ref={previewRef} muted className="w-full block" />
+              <div
+                className="absolute border-2 border-signal pointer-events-none"
+                style={{
+                  left: `${crop.xPct}%`,
+                  top: `${crop.yPct}%`,
+                  width: `${crop.wPct}%`,
+                  height: `${crop.hPct}%`,
+                }}
+              />
+            </div>
+            <button
+              onClick={() => setCalibrating(true)}
+              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+            >
+              {calibrating ? "Drag over the kill-banner area now..." : "Recalibrate crop region"}
+            </button>
+          </div>
+        )}
+
+        {suggestion && (
+          <div className="flex flex-wrap items-center gap-3 bg-yellow-500/10 border border-yellow-500/30 rounded px-4 py-3">
+            <span className="text-sm">
+              Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
+              <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>
+            </span>
+            <button onClick={confirmSuggestion} className="text-xs bg-signal rounded px-3 py-1.5">
+              Log this
+            </button>
+            <button
+              onClick={() => setSuggestion(null)}
+              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       </section>
     </div>
   );

@@ -222,6 +222,12 @@ export default function MatchesPage() {
                 >
                   Set finished
                 </button>
+                <a
+                  href={`/admin/matches/${m.id}/live`}
+                  className="text-xs bg-signal rounded px-3 py-1.5 hover:opacity-90"
+                >
+                  Open live console
+                </a>
               </div>
             </div>
           ))}

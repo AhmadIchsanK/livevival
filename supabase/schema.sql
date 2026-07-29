@@ -1,18 +1,15 @@
--- Livevival — consolidated schema
--- Safe to run repeatedly: existing tables/columns are left untouched,
--- new ones are added with IF NOT EXISTS.
---
--- This file documents the tables the app already relies on (inferred from
--- the queries in app/**) plus the additions needed for match automation:
---   - streams              (one livestream URL -> many matches)
---   - matches.state        (the MATCH_NOT_STARTED..STREAM_ENDED lifecycle)
---   - games.state          (per-game DRAFT_STARTED..GAME_FINISHED lifecycle)
---   - key_moments additions (screenshot_url, source, confidence, dedup)
---   - vision_detections    (raw log of what the worker saw, for debugging)
+-- Livevival — consolidated schema (fixed for pre-existing tables)
+-- Safe to run repeatedly, and safe against tables that ALREADY exist from
+-- earlier phases (teams, tournaments, admins, matches, players, games,
+-- hero_picks_bans, player_stats, objectives, net_worth_snapshots,
+-- key_moments). New columns on those are added via explicit
+-- ALTER TABLE ... ADD COLUMN IF NOT EXISTS — CREATE TABLE IF NOT EXISTS
+-- alone does NOT add columns to a table that already exists, which is
+-- what caused the "column source does not exist" error.
 
 create extension if not exists pgcrypto;
 
--- ── Existing core tables (created if missing, so this file is a full bootstrap) ──
+-- ── Base tables (only created if this is a genuinely fresh project) ──
 
 create table if not exists teams (
   id uuid primary key default gen_random_uuid(),
@@ -27,9 +24,9 @@ create table if not exists tournaments (
   tier text not null default 'S',
   liquipedia_slug text unique,
   date_display text,
-  overlay_template text not null default 'default',
   created_at timestamptz not null default now()
 );
+alter table tournaments add column if not exists overlay_template text not null default 'default';
 
 create table if not exists admins (
   user_id uuid primary key references auth.users(id) on delete cascade,
@@ -37,11 +34,34 @@ create table if not exists admins (
   role text not null default 'moderator' check (role in ('super_admin', 'moderator'))
 );
 
--- ── Streams: a single broadcast URL that can cover multiple matches ──
+-- ── New enums ──
 
 do $$ begin
   create type stream_platform as enum ('youtube', 'facebook', 'other');
 exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type match_state as enum (
+    'MATCH_NOT_STARTED',
+    'DRAFT_STARTED',
+    'DRAFT_COMPLETE',
+    'GAME_STARTED',
+    'GAME_FINISHED',
+    'SERIES_FINISHED',
+    'STREAM_ENDED'
+  );
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type game_state as enum (
+    'DRAFT_STARTED',
+    'DRAFT_COMPLETE',
+    'GAME_STARTED',
+    'GAME_FINISHED'
+  );
+exception when duplicate_object then null; end $$;
+
+-- ── Streams (brand new table — one livestream URL, many matches) ──
 
 create table if not exists streams (
   id uuid primary key default gen_random_uuid(),
@@ -56,43 +76,35 @@ create table if not exists streams (
   created_at timestamptz not null default now()
 );
 
--- ── Matches ──
-
-do $$ begin
-  create type match_state as enum (
-    'MATCH_NOT_STARTED',
-    'DRAFT_STARTED',
-    'DRAFT_COMPLETE',
-    'GAME_STARTED',
-    'GAME_FINISHED',
-    'SERIES_FINISHED',
-    'STREAM_ENDED'
-  );
-exception when duplicate_object then null; end $$;
+-- ── Matches (likely already exists — add columns individually) ──
 
 create table if not exists matches (
   id uuid primary key default gen_random_uuid(),
   tournament_id uuid references tournaments(id),
   team_a_id uuid references teams(id),
   team_b_id uuid references teams(id),
-  format text not null default 'BO3',       -- BO1 / BO3 / BO5
+  format text not null default 'BO3',
   scheduled_at timestamptz,
-  status text not null default 'scheduled', -- scheduled / live / finished (existing simple status)
-  youtube_url text,                          -- kept for backwards compatibility
+  status text not null default 'scheduled',
+  youtube_url text,
   current_game_number int not null default 1,
-  created_at timestamptz not null default now(),
-
-  -- new: automation
-  state match_state not null default 'MATCH_NOT_STARTED',
-  stream_id uuid references streams(id),
-  series_winner_team_id uuid references teams(id),
-  auto_managed boolean not null default true, -- false = admin has taken manual control
-  liquipedia_match_key text                    -- e.g. "TeamA vs TeamB|2026-08-01" for schedule matching
+  created_at timestamptz not null default now()
 );
 
-alter table streams
-  add constraint streams_current_match_fk
-  foreign key (current_match_id) references matches(id) deferrable initially deferred;
+alter table matches add column if not exists state match_state not null default 'MATCH_NOT_STARTED';
+alter table matches add column if not exists stream_id uuid references streams(id);
+alter table matches add column if not exists series_winner_team_id uuid references teams(id);
+alter table matches add column if not exists auto_managed boolean not null default true;
+alter table matches add column if not exists liquipedia_match_key text;
+
+-- FK from streams.current_match_id -> matches.id, added now that matches
+-- definitely exists. Guarded so re-running this file doesn't error on a
+-- duplicate constraint.
+do $$ begin
+  alter table streams
+    add constraint streams_current_match_fk
+    foreign key (current_match_id) references matches(id) deferrable initially deferred;
+exception when duplicate_object then null; end $$;
 
 create table if not exists players (
   id uuid primary key default gen_random_uuid(),
@@ -101,31 +113,24 @@ create table if not exists players (
   role text
 );
 
--- ── Games (one row per game within a Bo1/Bo3/Bo5 series) ──
-
-do $$ begin
-  create type game_state as enum (
-    'DRAFT_STARTED',
-    'DRAFT_COMPLETE',
-    'GAME_STARTED',
-    'GAME_FINISHED'
-  );
-exception when duplicate_object then null; end $$;
+-- ── Games (likely already exists — add columns individually) ──
 
 create table if not exists games (
   id uuid primary key default gen_random_uuid(),
   match_id uuid references matches(id) on delete cascade,
   game_number int not null default 1,
-  status text not null default 'live', -- existing simple status
-  created_at timestamptz not null default now(),
-
-  -- new: automation
-  state game_state not null default 'DRAFT_STARTED',
-  winner_team_id uuid references teams(id),
-  started_at timestamptz,
-  finished_at timestamptz,
-  unique (match_id, game_number)
+  status text not null default 'live',
+  created_at timestamptz not null default now()
 );
+
+alter table games add column if not exists state game_state not null default 'DRAFT_STARTED';
+alter table games add column if not exists winner_team_id uuid references teams(id);
+alter table games add column if not exists started_at timestamptz;
+alter table games add column if not exists finished_at timestamptz;
+
+do $$ begin
+  alter table games add constraint games_match_id_game_number_key unique (match_id, game_number);
+exception when duplicate_object then null; end $$;
 
 create table if not exists hero_picks_bans (
   id uuid primary key default gen_random_uuid(),
@@ -144,15 +149,18 @@ create table if not exists player_stats (
   kills int not null default 0,
   deaths int not null default 0,
   assists int not null default 0,
-  gold int not null default 0,
-  unique (game_id, player_id)
+  gold int not null default 0
 );
+
+do $$ begin
+  alter table player_stats add constraint player_stats_game_id_player_id_key unique (game_id, player_id);
+exception when duplicate_object then null; end $$;
 
 create table if not exists objectives (
   id uuid primary key default gen_random_uuid(),
   game_id uuid references games(id) on delete cascade,
   team_id uuid references teams(id),
-  type text not null, -- tower / lord / turtle / base
+  type text not null,
   minute_mark int
 );
 
@@ -164,39 +172,47 @@ create table if not exists net_worth_snapshots (
   team_b_gold int not null default 0
 );
 
--- ── Key moments (savage / maniac / lord steal / ace / etc.) ──
+-- ── Key moments (likely already exists — add columns individually) ──
 
 create table if not exists key_moments (
   id uuid primary key default gen_random_uuid(),
   game_id uuid references games(id) on delete cascade,
-  match_id uuid references matches(id), -- denormalized for cheap "all moments for this match" queries
-  type text not null,                    -- savage / maniac / lord_steal / turtle_steal / ace
+  type text not null,
   player_id uuid references players(id),
   minute_mark int,
-  created_at timestamptz not null default now(),
-
-  -- new: automation
-  source text not null default 'manual' check (source in ('manual', 'auto')),
-  confidence numeric,                    -- 0-1, Groq vision's self-reported confidence when source='auto'
-  screenshot_url text,                   -- Supabase Storage public URL of the frame that triggered detection
-  stream_timestamp_seconds int           -- offset into the stream when detected, for the "watch this moment" link
+  created_at timestamptz not null default now()
 );
 
--- Prevent the worker from logging the same moment twice from consecutive frames.
+alter table key_moments add column if not exists match_id uuid references matches(id);
+alter table key_moments add column if not exists source text not null default 'manual';
+do $$ begin
+  alter table key_moments add constraint key_moments_source_check check (source in ('manual', 'auto'));
+exception when duplicate_object then null; end $$;
+alter table key_moments add column if not exists confidence numeric;
+alter table key_moments add column if not exists screenshot_url text;
+alter table key_moments add column if not exists stream_timestamp_seconds int;
+
+-- Backfill match_id on any pre-existing rows so the dedup index and the
+-- public match page's match_id-based queries work for older data too.
+update key_moments km
+set match_id = g.match_id
+from games g
+where km.game_id = g.id and km.match_id is null;
+
 create unique index if not exists key_moments_dedup
   on key_moments (game_id, type, minute_mark)
   where source = 'auto';
 
--- ── Vision detection log (debugging / tuning the Groq prompt over time) ──
+-- ── Vision detection log (brand new table) ──
 
 create table if not exists vision_detections (
   id uuid primary key default gen_random_uuid(),
   stream_id uuid references streams(id) on delete cascade,
   match_id uuid references matches(id),
   captured_at timestamptz not null default now(),
-  detected_phase text,          -- raw phase string Groq returned, before mapping to match_state/game_state
-  detected_payload jsonb,       -- full parsed JSON response for later inspection
-  frame_url text                -- optional: uploaded frame, only kept for a rolling window
+  detected_phase text,
+  detected_payload jsonb,
+  frame_url text
 );
 
 create index if not exists vision_detections_stream_idx on vision_detections (stream_id, captured_at desc);

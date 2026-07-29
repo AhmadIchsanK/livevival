@@ -18,6 +18,8 @@ type Match = {
   youtube_url: string | null;
   format: string | null;
   current_game_number: number;
+  state: string;
+  auto_managed: boolean;
   tournament: { name: string } | null;
   team_a: { id: string; name: string } | null;
   team_b: { id: string; name: string } | null;
@@ -53,7 +55,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number,
+        `id, youtube_url, format, current_game_number, state, auto_managed,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(id, name),
          team_b:teams!matches_team_b_id_fkey(id, name)`
@@ -322,6 +324,12 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  async function toggleAutoManaged() {
+    if (!match) return;
+    await supabase.from("matches").update({ auto_managed: !match.auto_managed }).eq("id", match.id);
+    loadAll();
+  }
+
   if (error) return <p className="text-red-400 text-sm">{error}</p>;
   if (!match || !game) return <p className="text-white/50 text-sm">Loading match...</p>;
 
@@ -335,7 +343,22 @@ export default function LiveConsolePage() {
         <h1 className="text-lg font-bold">
           {match.team_a?.name} vs {match.team_b?.name}
         </h1>
-        <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
+        <div className="flex items-center gap-3 mt-1">
+          <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
+          <span className="text-[10px] px-2 py-0.5 rounded bg-white/10 uppercase tracking-wide">
+            {match.state.replace(/_/g, " ")}
+          </span>
+          <button
+            onClick={toggleAutoManaged}
+            className={`text-[10px] px-2 py-0.5 rounded border ${
+              match.auto_managed
+                ? "border-emerald-500/40 text-emerald-400"
+                : "border-yellow-500/40 text-yellow-400"
+            }`}
+          >
+            {match.auto_managed ? "🤖 Auto-detection ON — click to take manual control" : "✋ Manual control — click to re-enable auto-detection"}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-6">

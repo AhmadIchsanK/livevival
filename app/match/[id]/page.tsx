@@ -27,7 +27,14 @@ type PlayerStat = {
   player: { ign: string; team_id: string } | null;
 };
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null };
-type KeyMoment = { id: string; type: string; minute_mark: number | null; player: { ign: string } | null };
+type KeyMoment = {
+  id: string;
+  type: string;
+  minute_mark: number | null;
+  player: { ign: string } | null;
+  screenshot_url: string | null;
+  source: string;
+};
 type NetWorthPoint = { minute_mark: number; team_a_gold: number; team_b_gold: number };
 
 function youtubeEmbedUrl(url: string | null) {
@@ -77,7 +84,7 @@ export default function PublicMatchPage() {
       supabase.from("hero_picks_bans").select("id, team_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
       supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id)").eq("game_id", gid),
       supabase.from("objectives").select("id, team_id, type, minute_mark").eq("game_id", gid).order("minute_mark"),
-      supabase.from("key_moments").select("id, type, minute_mark, player:players(ign)").eq("game_id", gid).order("minute_mark"),
+      supabase.from("key_moments").select("id, type, minute_mark, player:players(ign), screenshot_url, source").eq("game_id", gid).order("minute_mark"),
       supabase.from("net_worth_snapshots").select("minute_mark, team_a_gold, team_b_gold").eq("game_id", gid).order("minute_mark"),
     ]);
     setPickBans((pb as PickBan[]) ?? []);
@@ -227,13 +234,19 @@ export default function PublicMatchPage() {
 
       <section>
         <h2 className="font-bold mb-2">Key moments</h2>
-        <div className="flex flex-wrap gap-2 text-xs">
+        <div className="flex flex-wrap gap-3">
           {keyMoments.map((km) => (
-            <span key={km.id} className="px-2 py-1 rounded bg-signal/20 capitalize">
-              {km.minute_mark}&apos; {km.type.replace("_", " ")}{km.player?.ign ? ` — ${km.player.ign}` : ""}
-            </span>
+            <div key={km.id} className="w-40 space-y-1">
+              {km.screenshot_url && (
+                <img src={km.screenshot_url} alt={km.type} className="w-full rounded border border-white/10" />
+              )}
+              <span className="text-xs px-2 py-1 rounded bg-signal/20 capitalize inline-block">
+                {km.minute_mark}&apos; {km.type.replace("_", " ")}{km.player?.ign ? ` — ${km.player.ign}` : ""}
+                {km.source === "auto" && <span className="text-white/40"> · auto</span>}
+              </span>
+            </div>
           ))}
-          {keyMoments.length === 0 && <span className="text-white/30">No key moments yet.</span>}
+          {keyMoments.length === 0 && <span className="text-white/30 text-xs">No key moments yet.</span>}
         </div>
       </section>
     </main>

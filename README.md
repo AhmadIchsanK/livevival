@@ -38,3 +38,17 @@ two environment variable values against your Supabase dashboard, then redeploy
 
 Once that green dot shows up, Phase 1 is complete — tell me and we'll move to
 Phase 2 (setting up the real database tables).
+
+## Match automation (Groq vision worker)
+
+`supabase/schema.sql` adds the tables/columns for automated match tracking:
+`streams` (one broadcast URL → many matches), `matches.state` /
+`games.state` (the MATCH_NOT_STARTED → STREAM_ENDED lifecycle), and
+`key_moments` additions for auto-detected savage/maniac/lord-steal moments
+with screenshots. Run it against your Supabase project's SQL editor.
+
+`worker/` is a separate always-on Node process (deploy on Railway, not
+Vercel) that watches each active stream, classifies frames with Groq vision,
+and drives all of the above automatically — see `worker/README.md` for setup.
+Admins can flip `matches.auto_managed` off per match to fall back to the
+existing manual live console at any time.

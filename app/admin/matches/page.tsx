@@ -10,6 +10,7 @@ type Match = {
   format: string | null;
   status: string;
   youtube_url: string | null;
+  state: string;
   tournament: { name: string } | null;
   team_a: { name: string } | null;
   team_b: { name: string } | null;
@@ -91,7 +92,7 @@ export default function MatchesPage() {
     const { data, error } = await supabase
       .from("matches")
       .select(
-        `id, scheduled_at, format, status, youtube_url,
+        `id, scheduled_at, format, status, youtube_url, state,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(name),
          team_b:teams!matches_team_b_id_fkey(name)`
@@ -298,6 +299,7 @@ export default function MatchesPage() {
                   {m.status}
                 </span>
               </div>
+              <p className="text-[10px] text-white/30 uppercase tracking-wide">{m.state?.replace(/_/g, " ")}</p>
 
               <div className="flex gap-2 items-center">
                 <input

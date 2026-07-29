@@ -122,6 +122,11 @@ export default function PublicMatchPage() {
     diff: n.team_a_gold - n.team_b_gold,
   }));
 
+  const mvp =
+    match.status === "finished" && stats.length > 0
+      ? [...stats].sort((a, b) => (b.kills + b.assists - b.deaths) - (a.kills + a.assists - a.deaths))[0]
+      : null;
+
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-5xl mx-auto space-y-8">
       <header className="space-y-1">
@@ -136,6 +141,11 @@ export default function PublicMatchPage() {
             {match.status}
           </span>
         </div>
+        {mvp && (
+          <p className="text-sm text-signal font-semibold">
+            🏆 MVP: {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills}/{mvp.deaths}/{mvp.assists}
+          </p>
+        )}
       </header>
 
       {embedUrl && (

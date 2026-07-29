@@ -228,6 +228,13 @@ export default function MatchesPage() {
                 >
                   Open live console
                 </a>
+                <a
+                  href={`/match/${m.id}`}
+                  target="_blank"
+                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                >
+                  View public page ↗
+                </a>
               </div>
             </div>
           ))}

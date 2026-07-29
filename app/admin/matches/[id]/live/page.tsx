@@ -185,6 +185,24 @@ export default function LiveConsolePage() {
     });
   }
 
+  // ── Net worth snapshot ──────────────────────────────────────────────
+  async function logNetWorthSnapshot() {
+    if (!game || !match.team_a || !match.team_b) return;
+    const teamAGold = stats
+      .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id)
+      .reduce((sum, s) => sum + (s.gold ?? 0), 0);
+    const teamBGold = stats
+      .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b?.id)
+      .reduce((sum, s) => sum + (s.gold ?? 0), 0);
+
+    await supabase.from("net_worth_snapshots").insert({
+      game_id: game.id,
+      minute_mark: minute,
+      team_a_gold: teamAGold,
+      team_b_gold: teamBGold,
+    });
+  }
+
   if (error) return <p className="text-red-400 text-sm">{error}</p>;
   if (!match || !game) return <p className="text-white/50 text-sm">Loading match...</p>;
 
@@ -213,12 +231,23 @@ export default function LiveConsolePage() {
 
         <div className="space-y-2">
           <label className="text-xs text-white/50">Game clock (minutes) — update this as you watch</label>
-          <input
-            type="number"
-            value={minute}
-            onChange={(e) => setMinute(Number(e.target.value))}
-            className="w-32 bg-black/30 border border-white/10 rounded px-3 py-2 text-lg font-bold"
-          />
+          <div className="flex gap-2 items-center">
+            <input
+              type="number"
+              value={minute}
+              onChange={(e) => setMinute(Number(e.target.value))}
+              className="w-32 bg-black/30 border border-white/10 rounded px-3 py-2 text-lg font-bold"
+            />
+            <button
+              onClick={logNetWorthSnapshot}
+              className="text-xs border border-white/10 rounded px-3 py-2 hover:bg-white/10"
+            >
+              📸 Snapshot net worth
+            </button>
+          </div>
+          <p className="text-[10px] text-white/40">
+            Tap this every minute or two — it's what powers the live gold-difference graph on the public page.
+          </p>
         </div>
       </div>
 

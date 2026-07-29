@@ -1,13 +1,21 @@
-// Livevival — Phase 4 stopgap: import tournament shells from Liquipedia's
-// public MediaWiki API (no API key required). Pulls name, tier, and dates
-// only — full match schedules are NOT scraped here, see README note below.
+// Livevival — Phase 4 stopgap: import S/A-Tier MLBB tournaments from
+// Liquipedia's free public MediaWiki API (no API key required).
+//
+// How it works: the "S-Tier_Tournaments" / "A-Tier_Tournaments" wiki pages
+// don't contain plain tournament names in their wikitext — they contain a
+// template call that Liquipedia's own server fills in with a real table
+// when the page is rendered. So instead of reading raw wikitext, we ask
+// the API to hand us the *rendered* HTML (still the official API endpoint,
+// still fully compliant with Liquipedia's terms) and parse the resulting
+// table with cheerio.
 //
 // Respects Liquipedia's API Terms of Use:
 //   - custom User-Agent identifying the project + contact email
-//   - 1 request every 2 seconds
-//   - reads wikitext via the official API, never scrapes rendered HTML pages
+//   - 1 request every 2 seconds between the two page fetches
+//   - only ever calls api.php, never scrapes a rendered page directly
 
 import { createClient } from "@supabase/supabase-js";
+import * as cheerio from "cheerio";
 
 const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
 
@@ -25,85 +33,71 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function wikiRequest(params) {
+async function fetchRenderedPage(pageTitle) {
   const url = new URL(WIKI_API);
+  url.searchParams.set("action", "parse");
+  url.searchParams.set("page", pageTitle);
+  url.searchParams.set("prop", "text");
   url.searchParams.set("format", "json");
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, value);
-  }
 
   const res = await fetch(url, {
     headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
   });
   if (!res.ok) {
-    throw new Error(`Liquipedia API returned ${res.status} for ${url}`);
+    throw new Error(`Liquipedia API returned ${res.status} for ${pageTitle}`);
   }
-  return res.json();
+  const data = await res.json();
+  return data.parse?.text?.["*"] ?? "";
 }
 
-async function getCategoryMembers(categoryTitle) {
-  const data = await wikiRequest({
-    action: "query",
-    list: "categorymembers",
-    cmtitle: `Category:${categoryTitle}`,
-    cmlimit: "100",
+function extractTournaments(html) {
+  const $ = cheerio.load(html);
+  const tournaments = [];
+
+  $("tr.table2__row--body").each((_, row) => {
+    const $row = $(row);
+    const link = $row.find("td.column__tournament a").first();
+    const name = link.text().trim();
+    const href = link.attr("href");
+    if (!name || !href) return;
+
+    const slug = href.replace(/^\/mobilelegends\//, "");
+    const dateDisplay = $row.find("td.column__tournament").next().text().trim();
+
+    tournaments.push({ name, slug, dateDisplay });
   });
-  return (data.query?.categorymembers ?? []).map((m) => m.title);
+
+  return tournaments;
 }
 
-// Crude but dependency-free extraction of a few Infobox league fields
-// directly from wikitext. Liquipedia infobox parameter names are fairly
-// consistent across wikis, but if this comes back empty for a page,
-// open that page's "Edit source" view on Liquipedia to check the actual
-// parameter names and adjust the regexes below.
-function extractInfoboxField(wikitext, fieldName) {
-  const match = wikitext.match(new RegExp(`\\|\\s*${fieldName}\\s*=\\s*([^\\n|]+)`, "i"));
-  return match ? match[1].trim() : null;
-}
+async function importTier(pageTitle, tierLabel) {
+  console.log(`Fetching ${pageTitle}...`);
+  const html = await fetchRenderedPage(pageTitle);
+  const tournaments = extractTournaments(html);
+  console.log(`Found ${tournaments.length} tournaments on ${pageTitle}`);
 
-async function importTier(categoryTitle, tierLabel) {
-  console.log(`Fetching ${categoryTitle}...`);
-  const titles = await getCategoryMembers(categoryTitle);
-  console.log(`Found ${titles.length} pages in ${categoryTitle}`);
-
-  for (const title of titles) {
-    await sleep(2000); // stay within the 1 request / 2 seconds limit
-
-    const data = await wikiRequest({
-      action: "query",
-      prop: "revisions",
-      rvprop: "content",
-      titles: title,
-    });
-
-    const pages = data.query?.pages ?? {};
-    const page = Object.values(pages)[0];
-    const wikitext = page?.revisions?.[0]?.["*"] ?? "";
-
-    const startDate = extractInfoboxField(wikitext, "sdate") ?? extractInfoboxField(wikitext, "date");
-    const endDate = extractInfoboxField(wikitext, "edate");
-
+  for (const t of tournaments) {
     const { error } = await supabase.from("tournaments").upsert(
       {
-        name: title,
+        name: t.name,
         tier: tierLabel,
-        liquipedia_slug: title.replace(/ /g, "_"),
-        start_date: startDate,
-        end_date: endDate,
+        liquipedia_slug: t.slug,
+        date_display: t.dateDisplay,
       },
       { onConflict: "liquipedia_slug" }
     );
 
     if (error) {
-      console.error(`Failed to upsert "${title}": ${error.message}`);
+      console.error(`Failed to upsert "${t.name}": ${error.message}`);
     } else {
-      console.log(`Upserted: ${title} (${tierLabel}-Tier, start ${startDate ?? "unknown"})`);
+      console.log(`Upserted: ${t.name} (${tierLabel}-Tier, ${t.dateDisplay})`);
     }
   }
 }
 
 async function main() {
   await importTier("S-Tier_Tournaments", "S");
+  await sleep(2000); // stay within the 1 request / 2 seconds limit
   await importTier("A-Tier_Tournaments", "A");
 }
 

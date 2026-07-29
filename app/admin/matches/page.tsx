@@ -28,6 +28,56 @@ export default function MatchesPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // ── Stream title detection ───────────────────────────────────────────
+  const [detectUrl, setDetectUrl] = useState("");
+  const [detectedTitle, setDetectedTitle] = useState<string | null>(null);
+  const [detectError, setDetectError] = useState<string | null>(null);
+  const [detectLoading, setDetectLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState<{ match: Match; score: number }[]>([]);
+
+  function scoreMatch(title: string, m: Match) {
+    const t = title.toLowerCase();
+    let score = 0;
+    if (m.team_a?.name && t.includes(m.team_a.name.toLowerCase())) score += 3;
+    if (m.team_b?.name && t.includes(m.team_b.name.toLowerCase())) score += 3;
+    if (m.tournament?.name) {
+      const words = m.tournament.name.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+      score += words.filter((w) => t.includes(w)).length;
+    }
+    return score;
+  }
+
+  async function detectStream() {
+    setDetectLoading(true);
+    setDetectError(null);
+    setDetectedTitle(null);
+    setSuggestions([]);
+
+    const res = await fetch(`/api/youtube-title?url=${encodeURIComponent(detectUrl)}`);
+    const data = await res.json();
+    setDetectLoading(false);
+
+    if (!res.ok) {
+      setDetectError(data.error ?? "Could not detect video title");
+      return;
+    }
+
+    setDetectedTitle(data.title);
+    const ranked = matches
+      .map((m) => ({ match: m, score: scoreMatch(data.title, m) }))
+      .filter((s) => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+    setSuggestions(ranked);
+  }
+
+  async function assignStreamToMatch(matchId: string) {
+    await updateMatch(matchId, { youtube_url: detectUrl });
+    setDetectUrl("");
+    setDetectedTitle(null);
+    setSuggestions([]);
+  }
+
   async function loadOptions() {
     const [{ data: t }, { data: tm }] = await Promise.all([
       supabase.from("tournaments").select("id, name").order("name"),
@@ -94,6 +144,52 @@ export default function MatchesPage() {
 
   return (
     <div className="text-white space-y-8 max-w-4xl">
+      <div>
+        <h1 className="text-lg font-bold mb-4">Detect match from stream URL</h1>
+        <div className="flex gap-2 items-end max-w-xl">
+          <input
+            value={detectUrl}
+            onChange={(e) => setDetectUrl(e.target.value)}
+            placeholder="Paste a YouTube video URL"
+            className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+          />
+          <button
+            onClick={detectStream}
+            disabled={detectLoading || !detectUrl}
+            className="bg-signal rounded px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            {detectLoading ? "Checking..." : "Detect"}
+          </button>
+        </div>
+        {detectError && <p className="text-sm text-red-400 mt-2">{detectError}</p>}
+        {detectedTitle && (
+          <div className="mt-3 space-y-2">
+            <p className="text-xs text-white/50">
+              Video title: <span className="text-white/80">&quot;{detectedTitle}&quot;</span>
+            </p>
+            {suggestions.length === 0 && (
+              <p className="text-xs text-white/40">
+                No matching scheduled matches found — the title may not mention team/tournament names, or the match hasn&apos;t been created yet.
+              </p>
+            )}
+            {suggestions.map(({ match, score }) => (
+              <div key={match.id} className="flex items-center justify-between border border-white/10 rounded px-3 py-2 text-sm">
+                <span>
+                  {match.team_a?.name} vs {match.team_b?.name}{" "}
+                  <span className="text-white/40 text-xs">({match.tournament?.name} · match score {score})</span>
+                </span>
+                <button
+                  onClick={() => assignStreamToMatch(match.id)}
+                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                >
+                  Assign this stream
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div>
         <h1 className="text-lg font-bold mb-4">Create a match</h1>
         <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4 max-w-xl">

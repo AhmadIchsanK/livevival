@@ -69,9 +69,15 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   return (
     <div className="min-h-screen font-mono">
       <header className="flex items-center justify-between px-6 py-4 border-b border-white/10">
-        <span className="text-white text-sm">
-          Signed in as <span className="text-white/60">{admin.email}</span> ({admin.role})
-        </span>
+        <div className="flex items-center gap-6">
+          <span className="text-white text-sm">
+            Signed in as <span className="text-white/60">{admin.email}</span> ({admin.role})
+          </span>
+          <nav className="flex gap-4 text-xs">
+            <a href="/admin/teams" className="text-white/50 hover:text-white">Teams</a>
+            <a href="/admin/matches" className="text-white/50 hover:text-white">Matches</a>
+          </nav>
+        </div>
         <button
           onClick={handleLogout}
           className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5"

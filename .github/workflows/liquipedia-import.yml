@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install @supabase/supabase-js
+      - run: npm install @supabase/supabase-js cheerio
       - run: node scripts/import-liquipedia.mjs
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

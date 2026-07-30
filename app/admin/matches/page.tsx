@@ -11,6 +11,8 @@ type Match = {
   status: string;
   youtube_url: string | null;
   state: string;
+  stream_id: string | null;
+  auto_managed: boolean;
   tournament: { name: string } | null;
   team_a: { name: string } | null;
   team_b: { name: string } | null;
@@ -20,6 +22,7 @@ export default function MatchesPage() {
   const [tournaments, setTournaments] = useState<Option[]>([]);
   const [teams, setTeams] = useState<Option[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
+  const [streams, setStreams] = useState<{ id: string; url: string }[]>([]);
 
   const [tournamentId, setTournamentId] = useState("");
   const [teamAId, setTeamAId] = useState("");
@@ -80,19 +83,21 @@ export default function MatchesPage() {
   }
 
   async function loadOptions() {
-    const [{ data: t }, { data: tm }] = await Promise.all([
+    const [{ data: t }, { data: tm }, { data: st }] = await Promise.all([
       supabase.from("tournaments").select("id, name").order("name"),
       supabase.from("teams").select("id, name").order("name"),
+      supabase.from("streams").select("id, url").order("created_at", { ascending: false }),
     ]);
     setTournaments((t ?? []).map((r) => ({ id: r.id, label: r.name })));
     setTeams((tm ?? []).map((r) => ({ id: r.id, label: r.name })));
+    setStreams(st ?? []);
   }
 
   async function loadMatches() {
     const { data, error } = await supabase
       .from("matches")
       .select(
-        `id, scheduled_at, format, status, youtube_url, state,
+        `id, scheduled_at, format, status, youtube_url, state, stream_id, auto_managed,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(name),
          team_b:teams!matches_team_b_id_fkey(name)`
@@ -137,7 +142,10 @@ export default function MatchesPage() {
     loadMatches();
   }
 
-  async function updateMatch(id: string, fields: Partial<{ status: string; youtube_url: string }>) {
+  async function updateMatch(
+    id: string,
+    fields: Partial<{ status: string; youtube_url: string; stream_id: string | null; auto_managed: boolean }>
+  ) {
     const { error } = await supabase.from("matches").update(fields).eq("id", id);
     if (error) setError(error.message);
     else loadMatches();
@@ -301,10 +309,33 @@ export default function MatchesPage() {
               </div>
               <p className="text-[10px] text-white/30 uppercase tracking-wide">{m.state?.replace(/_/g, " ")}</p>
 
+              <div className="flex gap-2 items-center flex-wrap">
+                <select
+                  value={m.stream_id ?? ""}
+                  onChange={(e) => updateMatch(m.id, { stream_id: e.target.value || null })}
+                  className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs max-w-[180px]"
+                >
+                  <option value="">No stream linked</option>
+                  {streams.map((s) => (
+                    <option key={s.id} value={s.id} title={s.url}>
+                      {s.url.length > 28 ? s.url.slice(0, 28) + "…" : s.url}
+                    </option>
+                  ))}
+                </select>
+                <label className="flex items-center gap-1.5 text-xs text-white/60">
+                  <input
+                    type="checkbox"
+                    checked={m.auto_managed}
+                    onChange={(e) => updateMatch(m.id, { auto_managed: e.target.checked })}
+                  />
+                  Auto-managed
+                </label>
+              </div>
+
               <div className="flex gap-2 items-center">
                 <input
                   defaultValue={m.youtube_url ?? ""}
-                  placeholder="YouTube livestream URL"
+                  placeholder="YouTube livestream URL (manual console only)"
                   onBlur={(e) => updateMatch(m.id, { youtube_url: e.target.value })}
                   className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
                 />

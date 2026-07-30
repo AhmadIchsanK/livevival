@@ -76,6 +76,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <nav className="flex gap-4 text-xs">
             <a href="/admin/teams" className="text-white/50 hover:text-white">Teams</a>
             <a href="/admin/matches" className="text-white/50 hover:text-white">Matches</a>
+            <a href="/admin/streams" className="text-white/50 hover:text-white">Streams</a>
           </nav>
         </div>
         <button

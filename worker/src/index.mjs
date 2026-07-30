@@ -94,6 +94,7 @@ function scheduleStream(stream) {
 
 async function reconcileStreams() {
   const active = await loadActiveStreams();
+  console.log(`reconcileStreams: found ${active.length} active stream(s)`);
   const activeIds = new Set(active.map((s) => s.id));
 
   // Stop watching streams that ended or were removed.

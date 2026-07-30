@@ -109,7 +109,9 @@ async function reconcileStreams() {
 }
 
 console.log("Livevival worker starting...");
-reconcileStreams();
+reconcileStreams().catch((err) => console.error("Initial reconcileStreams failed:", err));
 // Re-check the list of active streams periodically in case an admin adds
 // a new one or marks one "ended" — no restart needed.
-setInterval(reconcileStreams, 60_000);
+setInterval(() => {
+  reconcileStreams().catch((err) => console.error("reconcileStreams failed:", err));
+}, 60_000);

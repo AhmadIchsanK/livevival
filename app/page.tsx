@@ -40,9 +40,14 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">
-      <header>
-        <h1 className="text-3xl font-bold tracking-tight">Livevival</h1>
-        <p className="text-sm text-white/50">RevivalTV Esports Live Score — MLBB S-Tier & A-Tier</p>
+      <header className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Livevival</h1>
+          <p className="text-sm text-white/50">RevivalTV Esports Live Score — MLBB S-Tier & A-Tier</p>
+        </div>
+        <a href="/tournaments" className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5">
+          Tournaments
+        </a>
       </header>
 
       {loading && <p className="text-white/40 text-sm">Loading matches...</p>}

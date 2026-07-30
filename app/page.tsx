@@ -13,6 +13,8 @@ type MatchRow = {
   team_b: { name: string } | null;
 };
 
+const PAGE_SIZE = 30;
+
 export default function Home() {
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,11 +55,17 @@ export default function Home() {
       {loading && <p className="text-white/40 text-sm">Loading matches...</p>}
 
       {!loading && live.length > 0 && (
-        <Section title="🔴 Live now" matches={live} />
+        <>
+          <Section title="🔴 Live now" matches={live} />
+          <hr className="border-white/10" />
+        </>
       )}
 
       {!loading && (
-        <Section title="Upcoming" matches={upcoming} empty="No upcoming matches scheduled yet." />
+        <>
+          <Section title="Upcoming" matches={upcoming} empty="No upcoming matches scheduled yet." />
+          <hr className="border-white/10" />
+        </>
       )}
 
       {!loading && (
@@ -68,12 +76,16 @@ export default function Home() {
 }
 
 function Section({ title, matches, empty }: { title: string; matches: MatchRow[]; empty?: string }) {
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const visible = matches.slice(0, visibleCount);
+  const hasMore = matches.length > visibleCount;
+
   return (
     <section className="space-y-3">
       <h2 className="text-lg font-bold">{title}</h2>
       {matches.length === 0 && empty && <p className="text-white/30 text-sm">{empty}</p>}
       <div className="space-y-2">
-        {matches.map((m) => (
+        {visible.map((m) => (
           <a
             key={m.id}
             href={`/match/${m.id}`}
@@ -113,6 +125,14 @@ function Section({ title, matches, empty }: { title: string; matches: MatchRow[]
           </a>
         ))}
       </div>
+      {hasMore && (
+        <button
+          onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+          className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5"
+        >
+          See more ({matches.length - visibleCount} more)
+        </button>
+      )}
     </section>
   );
 }

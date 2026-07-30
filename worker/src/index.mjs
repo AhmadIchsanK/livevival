@@ -5,6 +5,7 @@ import { classifyFrame } from "./groqVision.mjs";
 import { applyDetection } from "./stateMachine.mjs";
 import { resolveCurrentMatch } from "./streamAssignment.mjs";
 import { maybeLogKeyMoment } from "./keyMoments.mjs";
+import { maybeLogDraftActions, maybeLogRoster } from "./draftTracking.mjs";
 
 const streamTimers = new Map(); // streamId -> interval handle
 
@@ -68,6 +69,8 @@ async function tick(stream) {
     }
 
     await applyDetection({ match: matchRow, game, detection });
+    await maybeLogDraftActions({ game, teamA: matchRow.team_a, teamB: matchRow.team_b, detection });
+    await maybeLogRoster({ game, teamA: matchRow.team_a, teamB: matchRow.team_b, detection });
 
     const minuteMark = game.started_at
       ? Math.floor((Date.now() - new Date(game.started_at).getTime()) / 60000)

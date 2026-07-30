@@ -176,16 +176,28 @@ export default function PublicMatchPage() {
       )}
 
       <section>
-        <h2 className="font-bold mb-2">Draft</h2>
+        <h2 className="font-bold mb-2">Draft recap</h2>
         <div className="grid grid-cols-2 gap-6 text-sm">
           {[
-            { name: match.team_a?.name, bans: teamABans, picks: teamAPicks },
-            { name: match.team_b?.name, bans: teamBBans, picks: teamBPicks },
+            { name: match.team_a?.name, bans: teamABans, picks: teamAPicks, teamId: teamAId },
+            { name: match.team_b?.name, bans: teamBBans, picks: teamBPicks, teamId: teamBId },
           ].map((t, i) => (
             <div key={i} className="space-y-2">
               <p className="text-white/70 font-semibold">{t.name}</p>
               <p className="text-xs text-white/40">Bans: {t.bans.map((b) => b.hero_name).join(", ") || "—"}</p>
-              <p className="text-xs text-white/40">Picks: {t.picks.map((p) => p.hero_name).join(", ") || "—"}</p>
+              <div className="text-xs text-white/40 space-y-0.5">
+                <p>Picks:</p>
+                {t.picks.length === 0 && <p className="pl-2">—</p>}
+                {t.picks.map((p) => {
+                  const player = stats.find((s) => s.player?.team_id === t.teamId && s.hero_name === p.hero_name);
+                  return (
+                    <p key={p.id} className="pl-2">
+                      {p.hero_name}
+                      {player?.player?.ign ? <span className="text-white/60"> — {player.player.ign}</span> : ""}
+                    </p>
+                  );
+                })}
+              </div>
             </div>
           ))}
         </div>

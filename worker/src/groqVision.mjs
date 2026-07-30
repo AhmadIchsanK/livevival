@@ -20,8 +20,19 @@ JSON object (no markdown, no prose) matching this shape:
   "winning_team_name": "string|null",   // only if phase is VICTORY_DEFEAT_SCREEN or POST_GAME_STATS and a winner is legible
   "key_moment_banner": "SAVAGE | MANIAC | LORD_STEAL | TURTLE_STEAL | ACE | NONE",
   "key_moment_player_name": "string|null",
+  "draft_actions": [ { "type": "pick|ban", "team_name": "string", "hero_name": "string" }, ... ],
+  "roster": [ { "team_name": "string", "player_name": "string", "hero_name": "string" }, ... ],
   "confidence": number                    // 0.0-1.0, your own confidence in this whole reading
 }
+
+For "draft_actions": only fill this in when phase is DRAFT_PICK_BAN. List EVERY pick and \
+ban currently visible on the draft board this frame — including ones locked in earlier \
+that are still displayed — not just anything new. Leave it as an empty array if the draft \
+board isn't on screen.
+
+For "roster": only fill this in if you can see a lineup/loading screen showing each \
+player's nickname next to the hero they're playing. Leave it as an empty array otherwise —
+never guess a player name from a hero alone.
 
 Only report a phase, winner, or banner if you can actually read it in the image —
 use "UNKNOWN" / null / "NONE" rather than guessing.${overlayHint ? `\n\nContext for this tournament's overlay: ${overlayHint}` : ""}`;

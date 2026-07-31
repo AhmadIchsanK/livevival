@@ -24,6 +24,7 @@ export async function maybeLogDraftActions({ game, teamA, teamB, detection }) {
 
     const { error } = await supabase.from("hero_picks_bans").insert({
       game_id: game.id,
+      match_id: game.match_id,
       team_id: teamId,
       hero_name: action.hero_name,
       type: action.type === "ban" ? "ban" : "pick",
@@ -74,7 +75,7 @@ export async function maybeLogRoster({ game, teamA, teamB, detection }) {
     const { error } = await supabase
       .from("player_stats")
       .upsert(
-        { game_id: game.id, player_id: playerId, hero_name: entry.hero_name },
+        { game_id: game.id, match_id: game.match_id, player_id: playerId, hero_name: entry.hero_name },
         { onConflict: "game_id,player_id" }
       );
     if (error) console.error(`Failed to upsert player_stats for ${entry.player_name}:`, error.message);

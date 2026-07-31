@@ -78,6 +78,31 @@ function isCurrentYear(dateDisplay) {
   return typeof dateDisplay === "string" && dateDisplay.includes(CURRENT_YEAR);
 }
 
+// Liquipedia's date ranges look like "Jul 01 – Aug 01, 2026" (left side
+// missing a year, borrows the right side's) or "Oct 27, 2018 – Jan 13, 2019"
+// (both sides have their own year, when a tournament spans New Year's).
+// Parses into real Date objects so the public site can correctly classify
+// upcoming/ongoing/completed instead of guessing from matches alone.
+function parseDateRange(dateDisplay) {
+  if (!dateDisplay) return { startDate: null, endDate: null };
+
+  const parts = dateDisplay.split(/[–—]/).map((s) => s.trim());
+  if (parts.length !== 2) return { startDate: null, endDate: null };
+
+  const [left, right] = parts;
+  const endDate = new Date(right);
+  if (isNaN(endDate.getTime())) return { startDate: null, endDate: null };
+
+  const leftHasYear = /\d{4}/.test(left);
+  const startDate = leftHasYear ? new Date(left) : new Date(`${left}, ${endDate.getFullYear()}`);
+  if (isNaN(startDate.getTime())) return { startDate: null, endDate: endDate.toISOString().slice(0, 10) };
+
+  return {
+    startDate: startDate.toISOString().slice(0, 10),
+    endDate: endDate.toISOString().slice(0, 10),
+  };
+}
+
 async function importTier(pageTitle, tierLabel) {
   console.log(`Fetching ${pageTitle}...`);
   const html = await fetchRenderedPage(pageTitle);
@@ -85,12 +110,16 @@ async function importTier(pageTitle, tierLabel) {
   console.log(`Found ${tournaments.length} ${CURRENT_YEAR} tournaments on ${pageTitle} (others skipped as out of scope)`);
 
   for (const t of tournaments) {
+    const { startDate, endDate } = parseDateRange(t.dateDisplay);
+
     const { error } = await supabase.from("tournaments").upsert(
       {
         name: t.name,
         tier: tierLabel,
         liquipedia_slug: t.slug,
         date_display: t.dateDisplay,
+        start_date: startDate,
+        end_date: endDate,
       },
       { onConflict: "liquipedia_slug" }
     );
@@ -98,7 +127,7 @@ async function importTier(pageTitle, tierLabel) {
     if (error) {
       console.error(`Failed to upsert "${t.name}": ${error.message}`);
     } else {
-      console.log(`Upserted: ${t.name} (${tierLabel}-Tier, ${t.dateDisplay})`);
+      console.log(`Upserted: ${t.name} (${tierLabel}-Tier, ${startDate ?? "?"} to ${endDate ?? "?"})`);
     }
   }
 }

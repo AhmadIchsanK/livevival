@@ -100,7 +100,7 @@ async function findTeamId(name) {
   return data?.id ?? null;
 }
 
-async function importTournamentResults(pageTitle) {
+export async function importTournamentResults(pageTitle) {
   const { data: tournament } = await supabase
     .from("tournaments")
     .select("id, name")
@@ -150,7 +150,9 @@ async function main() {
   await importTournamentResults(pageTitle);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

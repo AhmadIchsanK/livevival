@@ -28,6 +28,7 @@ export default function MatchesPage() {
   const [streams, setStreams] = useState<{ id: string; url: string }[]>([]);
   const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "live" | "finished">("all");
   const [searchFilter, setSearchFilter] = useState("");
+  const [sortBy, setSortBy] = useState<"newest" | "oldest" | "status">("newest");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [tournamentId, setTournamentId] = useState("");
@@ -177,13 +178,23 @@ export default function MatchesPage() {
 
   const filteredMatches = useMemo(() => {
     const q = searchFilter.trim().toLowerCase();
-    return matches.filter((m) => {
+    const filtered = matches.filter((m) => {
       if (statusFilter !== "all" && m.status !== statusFilter) return false;
       if (!q) return true;
       const haystack = [m.team_a?.name, m.team_b?.name, m.tournament?.name].join(" ").toLowerCase();
       return haystack.includes(q);
     });
-  }, [matches, statusFilter, searchFilter]);
+
+    const statusOrder: Record<string, number> = { live: 0, scheduled: 1, finished: 2 };
+    return [...filtered].sort((a, b) => {
+      if (sortBy === "status") {
+        return (statusOrder[a.status] ?? 3) - (statusOrder[b.status] ?? 3);
+      }
+      const aTime = a.scheduled_at ? new Date(a.scheduled_at).getTime() : 0;
+      const bTime = b.scheduled_at ? new Date(b.scheduled_at).getTime() : 0;
+      return sortBy === "newest" ? bTime - aTime : aTime - bTime;
+    });
+  }, [matches, statusFilter, searchFilter, sortBy]);
 
   function toggleSelected(id: string) {
     setSelected((prev) => {
@@ -390,6 +401,15 @@ export default function MatchesPage() {
                 </button>
               ))}
             </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as "newest" | "oldest" | "status")}
+              className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="status">Sort by status</option>
+            </select>
             {selected.size > 0 && (
               <button
                 onClick={bulkDeleteMatches}

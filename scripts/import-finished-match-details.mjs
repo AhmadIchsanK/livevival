@@ -258,7 +258,7 @@ async function importMatchDetail(tournamentId, m) {
   console.log(`Imported ${m.leftName} vs ${m.rightName}: ${m.games.length} game(s), picks + bans + winners recorded`);
 }
 
-async function importTournament(pageTitle) {
+export async function importTournament(pageTitle) {
   const { data: tournament } = await supabase
     .from("tournaments")
     .select("id")
@@ -294,7 +294,9 @@ async function main() {
   await importTournament(pageTitle);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

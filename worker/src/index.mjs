@@ -6,6 +6,7 @@ import { applyDetection } from "./stateMachine.mjs";
 import { resolveCurrentMatch } from "./streamAssignment.mjs";
 import { maybeLogKeyMoment } from "./keyMoments.mjs";
 import { maybeLogDraftActions, maybeLogRoster } from "./draftTracking.mjs";
+import { maybeLogPlayerStats, maybeLogNetWorth } from "./statTracking.mjs";
 
 const streamTimers = new Map(); // streamId -> interval handle
 
@@ -76,6 +77,8 @@ async function tick(stream) {
       ? Math.floor((Date.now() - new Date(game.started_at).getTime()) / 60000)
       : null;
     await maybeLogKeyMoment({ game, match: matchRow, detection, frameJpeg: frame, minuteMark });
+    await maybeLogPlayerStats({ game, teamA: matchRow.team_a, teamB: matchRow.team_b, detection });
+    await maybeLogNetWorth({ game, detection, minuteMark });
   } catch (err) {
     console.error(`[stream ${stream.id}] tick failed:`, err.message);
   }

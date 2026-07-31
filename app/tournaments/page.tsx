@@ -3,7 +3,15 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-type Tournament = { id: string; name: string; tier: string; liquipedia_slug: string | null; date_display: string | null };
+type Tournament = {
+  id: string;
+  name: string;
+  tier: string;
+  liquipedia_slug: string | null;
+  date_display: string | null;
+  start_date: string | null;
+  end_date: string | null;
+};
 type MatchStatus = { tournament_id: string; status: string };
 
 export default function TournamentsIndexPage() {
@@ -14,7 +22,10 @@ export default function TournamentsIndexPage() {
   useEffect(() => {
     async function load() {
       const [{ data: t }, { data: m }] = await Promise.all([
-        supabase.from("tournaments").select("id, name, tier, liquipedia_slug, date_display").order("name"),
+        supabase
+          .from("tournaments")
+          .select("id, name, tier, liquipedia_slug, date_display, start_date, end_date")
+          .order("name"),
         supabase.from("matches").select("tournament_id, status"),
       ]);
       setTournaments((t as Tournament[]) ?? []);
@@ -24,10 +35,19 @@ export default function TournamentsIndexPage() {
     load();
   }, []);
 
-  // Derived from actual match status rather than Liquipedia's free-text date
-  // range, which isn't reliably machine-parseable across different formats.
-  function categorize(tournamentId: string): "ongoing" | "completed" | "upcoming" {
-    const statuses = matchStatuses.filter((m) => m.tournament_id === tournamentId).map((m) => m.status);
+  // Primary source of truth: the tournament's own start/end dates, now that
+  // the importer parses them from Liquipedia's date range text. Falls back
+  // to match-status heuristics only for older rows imported before that
+  // parsing existed (where start_date/end_date are still null).
+  function categorize(t: Tournament): "ongoing" | "completed" | "upcoming" {
+    if (t.start_date && t.end_date) {
+      const today = new Date().toISOString().slice(0, 10);
+      if (today < t.start_date) return "upcoming";
+      if (today > t.end_date) return "completed";
+      return "ongoing";
+    }
+
+    const statuses = matchStatuses.filter((m) => m.tournament_id === t.id).map((m) => m.status);
     if (statuses.length === 0) return "upcoming";
     if (statuses.some((s) => s === "live")) return "ongoing";
     if (statuses.every((s) => s === "finished")) return "completed";
@@ -35,9 +55,9 @@ export default function TournamentsIndexPage() {
     return "upcoming";
   }
 
-  const ongoing = tournaments.filter((t) => categorize(t.id) === "ongoing");
-  const upcoming = tournaments.filter((t) => categorize(t.id) === "upcoming");
-  const completed = tournaments.filter((t) => categorize(t.id) === "completed");
+  const ongoing = tournaments.filter((t) => categorize(t) === "ongoing");
+  const upcoming = tournaments.filter((t) => categorize(t) === "upcoming");
+  const completed = tournaments.filter((t) => categorize(t) === "completed");
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">

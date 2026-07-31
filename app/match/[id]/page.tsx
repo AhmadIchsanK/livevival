@@ -10,14 +10,24 @@ type Match = {
   status: string;
   format: string | null;
   youtube_url: string | null;
+  series_winner_team_id: string | null;
   tournament: { name: string; tier: string } | null;
   team_a: { id: string; name: string } | null;
   team_b: { id: string; name: string } | null;
+  stream: { url: string } | null;
 };
-type Game = { id: string; game_number: number; status: string };
-type PickBan = { id: string; team_id: string; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
+type Game = {
+  id: string;
+  game_number: number;
+  status: string;
+  state: string;
+  winner_team_id: string | null;
+  vod_url: string | null;
+};
+type PickBan = { id: string; game_id: string; team_id: string; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
 type PlayerStat = {
   id: string;
+  game_id: string;
   player_id: string;
   hero_name: string | null;
   kills: number;
@@ -26,16 +36,17 @@ type PlayerStat = {
   gold: number;
   player: { ign: string; team_id: string } | null;
 };
-type Objective = { id: string; team_id: string; type: string; minute_mark: number | null };
+type Objective = { id: string; game_id: string; team_id: string; type: string; minute_mark: number | null };
 type KeyMoment = {
   id: string;
+  game_id: string;
   type: string;
   minute_mark: number | null;
   player: { ign: string } | null;
   screenshot_url: string | null;
   source: string;
 };
-type NetWorthPoint = { minute_mark: number; team_a_gold: number; team_b_gold: number };
+type NetWorthPoint = { game_id: string; minute_mark: number; team_a_gold: number; team_b_gold: number };
 
 function youtubeEmbedUrl(url: string | null) {
   if (!url) return null;
@@ -48,44 +59,51 @@ export default function PublicMatchPage() {
   const matchId = params.id as string;
 
   const [match, setMatch] = useState<Match | null>(null);
-  const [game, setGame] = useState<Game | null>(null);
+  const [games, setGames] = useState<Game[]>([]);
   const [pickBans, setPickBans] = useState<PickBan[]>([]);
   const [stats, setStats] = useState<PlayerStat[]>([]);
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
   const [netWorth, setNetWorth] = useState<NetWorthPoint[]>([]);
+  const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
     const { data: matchData } = await supabase
       .from("matches")
       .select(
-        `id, status, format, youtube_url,
+        `id, status, format, youtube_url, series_winner_team_id,
          tournament:tournaments(name, tier),
          team_a:teams!matches_team_a_id_fkey(id, name),
-         team_b:teams!matches_team_b_id_fkey(id, name)`
+         team_b:teams!matches_team_b_id_fkey(id, name),
+         stream:streams(url)`
       )
       .eq("id", matchId)
       .single();
     if (!matchData) return;
     setMatch(matchData as unknown as Match);
 
-    const { data: gameRow } = await supabase
+    const { data: gameRows } = await supabase
       .from("games")
-      .select("id, game_number, status")
+      .select("id, game_number, status, state, winner_team_id, vod_url")
       .eq("match_id", matchId)
-      .order("game_number", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (!gameRow) return;
-    setGame(gameRow as Game);
+      .order("game_number", { ascending: true });
+    const gameList = (gameRows as Game[]) ?? [];
+    setGames(gameList);
 
-    const gid = (gameRow as Game).id;
+    if (gameList.length > 0) {
+      setSelectedGameId((prev) => {
+        if (prev && gameList.some((g) => g.id === prev)) return prev;
+        const live = gameList.find((g) => g.status === "live");
+        return live?.id ?? gameList[gameList.length - 1].id;
+      });
+    }
+
     const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }] = await Promise.all([
-      supabase.from("hero_picks_bans").select("id, team_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
-      supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id)").eq("game_id", gid),
-      supabase.from("objectives").select("id, team_id, type, minute_mark").eq("game_id", gid).order("minute_mark"),
-      supabase.from("key_moments").select("id, type, minute_mark, player:players(ign), screenshot_url, source").eq("game_id", gid).order("minute_mark"),
-      supabase.from("net_worth_snapshots").select("minute_mark, team_a_gold, team_b_gold").eq("game_id", gid).order("minute_mark"),
+      supabase.from("hero_picks_bans").select("id, game_id, team_id, hero_name, type, pick_order").eq("match_id", matchId).order("pick_order"),
+      supabase.from("player_stats").select("id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id)").eq("match_id", matchId),
+      supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
+      supabase.from("key_moments").select("id, game_id, type, minute_mark, player:players(ign), screenshot_url, source").eq("match_id", matchId).order("minute_mark"),
+      supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
     ]);
     setPickBans((pb as PickBan[]) ?? []);
     setStats((ps as unknown as PlayerStat[]) ?? []);
@@ -99,12 +117,13 @@ export default function PublicMatchPage() {
 
     const channel = supabase
       .channel(`match-${matchId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "hero_picks_bans" }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "player_stats" }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "objectives" }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "key_moments" }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "net_worth_snapshots" }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "matches" }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches", filter: `id=eq.${matchId}` }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "games", filter: `match_id=eq.${matchId}` }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "hero_picks_bans", filter: `match_id=eq.${matchId}` }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "player_stats", filter: `match_id=eq.${matchId}` }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "objectives", filter: `match_id=eq.${matchId}` }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "key_moments", filter: `match_id=eq.${matchId}` }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "net_worth_snapshots", filter: `match_id=eq.${matchId}` }, loadAll)
       .subscribe();
 
     return () => {
@@ -114,24 +133,47 @@ export default function PublicMatchPage() {
 
   if (!match) return <main className="min-h-screen flex items-center justify-center text-white/50 text-sm">Loading...</main>;
 
-  const embedUrl = youtubeEmbedUrl(match.youtube_url);
   const teamAId = match.team_a?.id;
   const teamBId = match.team_b?.id;
-  const teamAStats = stats.filter((s) => s.player?.team_id === teamAId);
-  const teamBStats = stats.filter((s) => s.player?.team_id === teamBId);
-  const teamABans = pickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
-  const teamAPicks = pickBans.filter((p) => p.team_id === teamAId && p.type === "pick");
-  const teamBBans = pickBans.filter((p) => p.team_id === teamBId && p.type === "ban");
-  const teamBPicks = pickBans.filter((p) => p.team_id === teamBId && p.type === "pick");
 
-  const chartData = netWorth.map((n) => ({
+  const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
+  const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
+  const embedUrl = youtubeEmbedUrl(videoUrl);
+
+  const gamePickBans = pickBans.filter((p) => p.game_id === selectedGameId);
+  const gameStats = stats.filter((s) => s.game_id === selectedGameId);
+  const gameObjectives = objectives.filter((o) => o.game_id === selectedGameId);
+  const gameKeyMoments = keyMoments.filter((k) => k.game_id === selectedGameId);
+  const gameNetWorth = netWorth.filter((n) => n.game_id === selectedGameId);
+
+  const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId);
+  const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId);
+  const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
+  const teamAPicks = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "pick");
+  const teamBBans = gamePickBans.filter((p) => p.team_id === teamBId && p.type === "ban");
+  const teamBPicks = gamePickBans.filter((p) => p.team_id === teamBId && p.type === "pick");
+
+  const chartData = gameNetWorth.map((n) => ({
     minute: n.minute_mark,
     diff: n.team_a_gold - n.team_b_gold,
   }));
 
   const mvp =
-    match.status === "finished" && stats.length > 0
-      ? [...stats].sort((a, b) => (b.kills + b.assists - b.deaths) - (a.kills + a.assists - a.deaths))[0]
+    match.status === "finished" && gameStats.length > 0
+      ? [...gameStats].sort((a, b) => (b.kills + b.assists - b.deaths) - (a.kills + a.assists - a.deaths))[0]
+      : null;
+
+  const gamesWonByA = games.filter((g) => g.winner_team_id === teamAId).length;
+  const gamesWonByB = games.filter((g) => g.winner_team_id === teamBId).length;
+  const seriesWinnerName =
+    match.series_winner_team_id === teamAId
+      ? match.team_a?.name
+      : match.series_winner_team_id === teamBId
+      ? match.team_b?.name
+      : gamesWonByA > gamesWonByB
+      ? match.team_a?.name
+      : gamesWonByB > gamesWonByA
+      ? match.team_b?.name
       : null;
 
   return (
@@ -148,15 +190,48 @@ export default function PublicMatchPage() {
             {match.status}
           </span>
         </div>
+
+        {match.status === "finished" && seriesWinnerName && (
+          <p className="text-sm font-semibold text-signal">
+            🏆 {seriesWinnerName} wins {Math.max(gamesWonByA, gamesWonByB)}–{Math.min(gamesWonByA, gamesWonByB)}
+          </p>
+        )}
         {mvp && (
-          <p className="text-sm text-signal font-semibold">
-            🏆 MVP: {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills}/{mvp.deaths}/{mvp.assists}
+          <p className="text-sm text-white/70">
+            Game {selectedGame?.game_number} MVP: {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills}/{mvp.deaths}/{mvp.assists}
           </p>
         )}
       </header>
 
-      {embedUrl && (
+      {games.length > 1 && (
+        <div className="flex gap-2">
+          {games.map((g) => (
+            <button
+              key={g.id}
+              onClick={() => setSelectedGameId(g.id)}
+              className={`text-xs px-3 py-1.5 rounded border ${
+                selectedGameId === g.id ? "bg-signal border-signal" : "border-white/10 hover:bg-white/10"
+              }`}
+            >
+              Game {g.game_number}
+              {g.winner_team_id && (
+                <span className="ml-1 text-white/60">
+                  ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} won)
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {embedUrl ? (
         <iframe src={embedUrl} className="w-full aspect-video rounded" allow="autoplay; encrypted-media" allowFullScreen />
+      ) : (
+        videoUrl && (
+          <a href={videoUrl} target="_blank" className="block text-sm text-white/60 underline">
+            Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
+          </a>
+        )
       )}
 
       {chartData.length > 1 && (
@@ -176,7 +251,7 @@ export default function PublicMatchPage() {
       )}
 
       <section>
-        <h2 className="font-bold mb-2">Draft recap</h2>
+        <h2 className="font-bold mb-2">Draft recap {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="grid grid-cols-2 gap-6 text-sm">
           {[
             { name: match.team_a?.name, bans: teamABans, picks: teamAPicks, teamId: teamAId },
@@ -189,7 +264,7 @@ export default function PublicMatchPage() {
                 <p>Picks:</p>
                 {t.picks.length === 0 && <p className="pl-2">—</p>}
                 {t.picks.map((p) => {
-                  const player = stats.find((s) => s.player?.team_id === t.teamId && s.hero_name === p.hero_name);
+                  const player = gameStats.find((s) => s.player?.team_id === t.teamId && s.hero_name === p.hero_name);
                   return (
                     <p key={p.id} className="pl-2">
                       {p.hero_name}
@@ -204,7 +279,7 @@ export default function PublicMatchPage() {
       </section>
 
       <section>
-        <h2 className="font-bold mb-2">Scoreboard</h2>
+        <h2 className="font-bold mb-2">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="grid grid-cols-2 gap-6">
           {[
             { name: match.team_a?.name, list: teamAStats },
@@ -225,6 +300,9 @@ export default function PublicMatchPage() {
                       <td>{s.gold?.toLocaleString()}</td>
                     </tr>
                   ))}
+                  {t.list.length === 0 && (
+                    <tr><td colSpan={4} className="py-2 text-white/30">No stats yet.</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -233,21 +311,21 @@ export default function PublicMatchPage() {
       </section>
 
       <section>
-        <h2 className="font-bold mb-2">Objectives</h2>
+        <h2 className="font-bold mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="flex flex-wrap gap-2 text-xs">
-          {objectives.map((o) => (
+          {gameObjectives.map((o) => (
             <span key={o.id} className="px-2 py-1 rounded bg-white/10 capitalize">
               {o.minute_mark}&apos; {o.type} — {o.team_id === teamAId ? match.team_a?.name : match.team_b?.name}
             </span>
           ))}
-          {objectives.length === 0 && <span className="text-white/30">No objectives logged yet.</span>}
+          {gameObjectives.length === 0 && <span className="text-white/30">No objectives logged yet.</span>}
         </div>
       </section>
 
       <section>
-        <h2 className="font-bold mb-2">Key moments</h2>
+        <h2 className="font-bold mb-2">Key moments {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="flex flex-wrap gap-3">
-          {keyMoments.map((km) => (
+          {gameKeyMoments.map((km) => (
             <div key={km.id} className="w-40 space-y-1">
               {km.screenshot_url && (
                 <img src={km.screenshot_url} alt={km.type} className="w-full rounded border border-white/10" />
@@ -258,7 +336,7 @@ export default function PublicMatchPage() {
               </span>
             </div>
           ))}
-          {keyMoments.length === 0 && <span className="text-white/30 text-xs">No key moments yet.</span>}
+          {gameKeyMoments.length === 0 && <span className="text-white/30 text-xs">No key moments yet.</span>}
         </div>
       </section>
     </main>

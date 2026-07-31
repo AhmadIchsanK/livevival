@@ -83,9 +83,17 @@ function extractMatches(html) {
       .not(".match-info-header-opponent-left")
       .first();
 
-    const teamAName = leftOpponent.find("a[title]").first().attr("title");
-    const teamBName = rightOpponent.find("a[title]").first().attr("title");
+    const teamALink = leftOpponent.find("a[title]").first();
+    const teamBLink = rightOpponent.find("a[title]").first();
+    const teamAName = teamALink.attr("title");
+    const teamBName = teamBLink.attr("title");
     if (!teamAName || !teamBName) return;
+
+    // The anchor's title attribute is the full team name; its visible text
+    // is usually the short/abbreviated form Liquipedia's team template
+    // displays (e.g. title="RRQ Hoshi", text="RRQ") — capture both.
+    const teamAShort = teamALink.text().trim() || null;
+    const teamBShort = teamBLink.text().trim() || null;
 
     const format = parseFormat($el.find(".match-info-header-scoreholder-lower").text());
     const vodHrefs = $el.find(".vodlink a[href]").map((_, a) => $(a).attr("href")).get();
@@ -93,6 +101,8 @@ function extractMatches(html) {
     matches.push({
       teamAName,
       teamBName,
+      teamAShort,
+      teamBShort,
       timestamp: Number(timestamp),
       finished,
       format,
@@ -104,7 +114,7 @@ function extractMatches(html) {
 }
 
 const teamIdCache = new Map();
-async function getOrCreateTeamId(name) {
+async function getOrCreateTeamId(name, shortName = null) {
   const key = name.trim().toLowerCase();
   if (teamIdCache.has(key)) return teamIdCache.get(key);
 
@@ -119,9 +129,17 @@ async function getOrCreateTeamId(name) {
     return existing.id;
   }
 
+  // Only set short_name if it's actually different from the full name and
+  // reasonably short — otherwise the anchor text was just the full name
+  // repeated (some team templates don't have a distinct abbreviation).
+  const resolvedShortName =
+    shortName && shortName.toLowerCase() !== name.trim().toLowerCase() && shortName.length <= 10
+      ? shortName
+      : null;
+
   const { data: created, error } = await supabase
     .from("teams")
-    .insert({ name: name.trim() })
+    .insert({ name: name.trim(), short_name: resolvedShortName })
     .select("id")
     .single();
 
@@ -165,8 +183,8 @@ async function importMatchesForTournament(tournament) {
   console.log(`Found ${found.length} matches for ${tournament.name}`);
 
   for (const m of found) {
-    const teamAId = await getOrCreateTeamId(m.teamAName);
-    const teamBId = await getOrCreateTeamId(m.teamBName);
+    const teamAId = await getOrCreateTeamId(m.teamAName, m.teamAShort);
+    const teamBId = await getOrCreateTeamId(m.teamBName, m.teamBShort);
     if (!teamAId || !teamBId) continue;
 
     const key = `${tournament.liquipedia_slug}__${teamAId}__${teamBId}__${m.timestamp}`;

@@ -211,7 +211,11 @@ async function importMatchesForTournament(tournament) {
   }
 }
 
-async function main() {
+// One pass: refresh every tournament that has a match starting soon or
+// recently started, then report back whether any match that SHOULD be live
+// by now (per its recorded schedule time) still has no stream attached —
+// i.e. Liquipedia hasn't published the VOD/livestream link yet.
+async function runOnce() {
   const now = new Date();
   const windowStart = new Date(now.getTime() - 3 * 60 * 60 * 1000).toISOString(); // 3h in the past
   const windowEnd = new Date(now.getTime() + 2 * 60 * 60 * 1000).toISOString(); // 2h ahead
@@ -241,6 +245,50 @@ async function main() {
       console.error(`Failed refreshing ${t.name}:`, err.message);
     }
     await sleep(3000);
+  }
+
+  // A match "should be live" once its scheduled_at has passed, with a
+  // little grace on both sides: Liquipedia's posted time can be a few
+  // minutes off from when a stream actually starts, and cast delays are
+  // common. If it's in that window and still has no stream_id, Liquipedia
+  // likely hasn't published the VOD/livestream link yet.
+  const dueSince = new Date(now.getTime() - 15 * 60 * 1000).toISOString(); // up to 15 min overdue
+  const dueBy = new Date(now.getTime() + 2 * 60 * 1000).toISOString(); // or starting within 2 min
+  const { data: stillMissing } = await supabase
+    .from("matches")
+    .select("id")
+    .neq("status", "finished")
+    .is("stream_id", null)
+    .gte("scheduled_at", dueSince)
+    .lte("scheduled_at", dueBy);
+
+  return (stillMissing ?? []).length > 0;
+}
+
+// GitHub Actions cron can't reliably go tighter than ~5 minutes, so instead
+// of relying on cron granularity, one invocation of this script (triggered
+// every 10 minutes as normal) manages its own tighter retry loop internally
+// whenever a match is due to be live and still has no stream: recheck every
+// 2 minutes, capped so this run finishes before the *next* scheduled cron
+// run would start anyway.
+const TIGHT_RETRY_INTERVAL_MS = 2 * 60 * 1000;
+const TIGHT_RETRY_MAX_ATTEMPTS = 4; // ~8 extra minutes, safely under the 10-minute cron gap
+
+async function main() {
+  let stillMissing = await runOnce();
+
+  let attempt = 0;
+  while (stillMissing && attempt < TIGHT_RETRY_MAX_ATTEMPTS) {
+    attempt += 1;
+    console.log(
+      `A match is due to be live with no stream yet — rechecking in 2 minutes (attempt ${attempt}/${TIGHT_RETRY_MAX_ATTEMPTS})...`
+    );
+    await sleep(TIGHT_RETRY_INTERVAL_MS);
+    stillMissing = await runOnce();
+  }
+
+  if (stillMissing) {
+    console.log("Still no stream found after tight retries — the normal 10-minute cron will pick it up next.");
   }
 }
 

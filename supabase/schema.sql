@@ -216,3 +216,17 @@ create table if not exists vision_detections (
 );
 
 create index if not exists vision_detections_stream_idx on vision_detections (stream_id, captured_at desc);
+
+-- ── Additions for Liquipedia finished-match import (VOD + results + picks) ──
+
+-- Per-game VOD link, since a Bo3/Bo5 series can have a different YouTube
+-- link (or a timestamp offset into the same link) per game.
+alter table games add column if not exists vod_url text;
+
+-- draftTracking.mjs and the new finished-match importer both rely on
+-- inserting the same pick repeatedly being a harmless no-op — this was
+-- referenced in code comments but never actually added until now.
+do $$ begin
+  alter table hero_picks_bans
+    add constraint hero_picks_bans_dedup unique (game_id, team_id, hero_name, type);
+exception when duplicate_object then null; end $$;

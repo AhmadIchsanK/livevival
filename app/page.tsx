@@ -142,7 +142,18 @@ function UpcomingDaySlider({ matches }: { matches: MatchRow[] }) {
                       {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
                     </p>
                     <p className="text-[11px] text-white/40 truncate">
-                      {m.tournament?.name} · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      {m.tournament?.liquipedia_slug ? (
+                        <a
+                          href={`/tournaments/${m.tournament.liquipedia_slug}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="hover:text-white/70 underline"
+                        >
+                          {m.tournament?.name}
+                        </a>
+                      ) : (
+                        m.tournament?.name
+                      )}{" "}
+                      · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </a>
                 ))}

@@ -1,0 +1,33 @@
+name: Refresh imminent match streams
+
+# Lightweight, frequent job — only re-checks tournaments with a match
+# starting soon or in progress, so it's safe to run often without
+# hammering Liquipedia's API the way the full import would.
+#
+# Base cadence is every 10 minutes, but the script itself tightens to a
+# 2-minute retry loop internally whenever a match is due to be live and no
+# stream has been found yet (see refresh-imminent-matches.mjs) — capped at
+# ~8 extra minutes so a run always finishes before the next cron trigger.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: refresh-imminent-matches
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/refresh-imminent-matches.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

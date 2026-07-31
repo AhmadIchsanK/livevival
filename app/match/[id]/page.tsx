@@ -76,7 +76,7 @@ export default function PublicMatchPage() {
          tournament:tournaments(name, tier),
          team_a:teams!matches_team_a_id_fkey(id, name),
          team_b:teams!matches_team_b_id_fkey(id, name),
-         stream:streams(url)`
+         stream:streams!matches_stream_id_fkey(url)`
       )
       .eq("id", matchId)
       .single();

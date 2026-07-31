@@ -1,29 +1,38 @@
 // Livevival — imports finished-match detail (per-game VOD links, winners,
-// and champion picks) from a tournament's Liquipedia bracket page.
+// champion picks, AND bans) from a tournament's Liquipedia bracket page.
 //
 // Structure this relies on (confirmed against a real api.php response for
-// MSC/2026 — see /mnt/user-data/uploads/api-result__1_.json used to build
-// this):
+// MSC/2026):
 //
 //   .brkts-popup-container.brkts-match-info-popup   one block per match
 //     .timer-object[data-timestamp][data-finished]  schedule + completion
-//     .match-info-header-opponent(-left)             the two team names,
-//       ...-winner / ...-loser classes tell us who won the SERIES
+//     .match-info-header-opponent(-left)             the two team names;
+//       "-left" marks the LEFT side. Side (left/right) is the reliable way
+//       to attribute picks/bans to a physical team — do NOT assume the
+//       left side always won or always picks first.
 //     .match-info-header-scoreholder-lower            "(BoX)" format tag
-//     .brkts-popup-body-grid-row                      ONE PER TEAM PER GAME
-//       .brkts-champion-icon a[href]                  heroes that team
-//                                                      picked in that game
-//       (rows come in win/loss pairs, in game order — row pair 1 = game 1,
-//       pair 2 = game 2, etc. There is no ban data in this view; Liquipedia
-//       only exposes bans on a separate per-tournament "Picks and Bans"
-//       subpage, which isn't covered here.)
+//
+//     Picks — one row PER TEAM PER GAME (two rows per game):
+//     .brkts-popup-body-grid-row
+//       .generic-label[data-label-type="result-win"|"result-loss"]  who
+//         won THAT SPECIFIC GAME (not necessarily the series winner)
+//       .brkts-champion-icon                          5 heroes that row's
+//         team picked; if this div also has the class
+//         "brkts-popup-body-element-thumbs-right" the row belongs to the
+//         RIGHT-side team, otherwise the LEFT-side team.
+//
+//     Bans — one row PER GAME (both teams together), inside a collapsed
+//     panel that's still present in the static HTML:
+//     .brkts-popup-veto-wrapper .brkts-popup-veto-row
+//       first  .brkts-champion-icon (no "-right" class) = LEFT team's bans
+//       second .brkts-champion-icon.brkts-popup-body-element-thumbs-right
+//              = RIGHT team's bans
+//       rows appear in game order (row 1 = game 1, row 2 = game 2, ...)
+//
 //     .brkts-popup-footer .plainlinks.vodlink a[href][title="Watch Game N"]
-//                                                      per-game VOD link.
-//       NOTE: multiple games can share the same base video with a
-//       "?&=<seconds>" offset appended (a timestamp into one long VOD)
-//       rather than each having its own distinct URL — both cases are
-//       handled the same way here, since we store the exact href as-is
-//       and the site can just link straight to it either way.
+//       per-game VOD link. Multiple games can share one base video with a
+//       "?&=<seconds>" offset instead of separate URLs — both are stored
+//       as-is, either way the site can link straight to the right moment.
 //
 // Respects Liquipedia's API Terms of Use: custom User-Agent + contact
 // email, 2s between requests, only ever calls api.php.
@@ -69,6 +78,17 @@ async function fetchRenderedPage(pageTitle, attempt = 1) {
   return data.parse?.text?.["*"] ?? "";
 }
 
+function isRightSide($, championIconEl) {
+  return $(championIconEl).hasClass("brkts-popup-body-element-thumbs-right");
+}
+
+function heroesIn($, containerEl) {
+  return $(containerEl)
+    .find("a[title]")
+    .map((_, a) => $(a).attr("title"))
+    .get();
+}
+
 /**
  * Parses every finished match popup out of a rendered bracket page.
  * @returns {Array<object>} one entry per finished match
@@ -88,40 +108,51 @@ function extractFinishedMatches($) {
     if (!leftName || !rightName) return;
 
     const leftWon = teamLeft.hasClass("match-info-header-winner");
-    const format = $popup.find(".match-info-header-scoreholder-lower").text().trim(); // e.g. "(Bo3)"
+    const format = $popup.find(".match-info-header-scoreholder-lower").text().trim().replace(/[()]/g, "");
 
-    // Champion picks, grouped into (win row, loss row) pairs = one pair per game.
-    const rows = $popup.find(".brkts-popup-body-grid-row");
-    const games = [];
-    for (let i = 0; i + 1 < rows.length; i += 2) {
-      const rowA = $(rows[i]);
-      const rowB = $(rows[i + 1]);
-      const aIsWin = rowA.find(".generic-label").attr("data-label-type") === "result-win";
-      const winnerRow = aIsWin ? rowA : rowB;
-      const loserRow = aIsWin ? rowB : rowA;
+    // ── Picks: two rows per game (one per side), side determined by the
+    // "-right" class rather than by win/loss, since a team can lose game 1
+    // and still win the series — win/loss alone can't tell us WHICH side
+    // a row belongs to.
+    const pickRows = $popup.find(".brkts-popup-body-grid-row");
+    const gamesByNumber = new Map();
+    for (let i = 0; i < pickRows.length; i++) {
+      const $row = $(pickRows[i]);
+      const gameNumber = Math.floor(i / 2) + 1;
+      const championIcon = $row.find(".brkts-champion-icon").first();
+      if (championIcon.length === 0) continue;
 
-      const picksFor = (row) =>
-        row
-          .find(".brkts-champion-icon a[title]")
-          .map((_, a) => $(a).attr("title"))
-          .get();
+      const side = isRightSide($, championIcon) ? "right" : "left";
+      const label = $row.find(".generic-label").attr("data-label-type"); // result-win / result-loss
+      const heroes = heroesIn($, championIcon);
 
-      games.push({
-        gameNumber: games.length + 1,
-        winnerTeamName: null, // filled in below once we know which side won
-        winnerPicks: picksFor(winnerRow),
-        loserPicks: picksFor(loserRow),
-        winnerIsLeft: null, // filled in below
-      });
+      const game = gamesByNumber.get(gameNumber) ?? { gameNumber, left: null, right: null };
+      const entry = { picks: heroes, won: label === "result-win" };
+      if (side === "right") game.right = entry;
+      else game.left = entry;
+      gamesByNumber.set(gameNumber, game);
     }
 
-    // VOD links, in "Watch Game N" order.
+    // ── Bans: one row per game, both sides together.
+    $popup.find(".brkts-popup-veto-wrapper .brkts-popup-veto-row").each((rowIndex, row) => {
+      const $row = $(row);
+      const gameNumber = rowIndex + 1;
+      const rightIcon = $row.find(".brkts-champion-icon.brkts-popup-body-element-thumbs-right").first();
+      const leftIcon = $row.find(".brkts-champion-icon").not(".brkts-popup-body-element-thumbs-right").first();
+
+      const game = gamesByNumber.get(gameNumber) ?? { gameNumber, left: null, right: null };
+      game.leftBans = heroesIn($, leftIcon);
+      game.rightBans = heroesIn($, rightIcon);
+      gamesByNumber.set(gameNumber, game);
+    });
+
+    // ── VOD links, in "Watch Game N" order.
     const vods = {};
-    $popup.find(".brkts-popup-footer .plainlinks.vodlink a[href]").each((_, a) => {
-      const $a = $(a);
-      const title = $a.closest(".plainlinks.vodlink").attr("title") ?? "";
+    $popup.find(".brkts-popup-footer .plainlinks.vodlink").each((_, span) => {
+      const $span = $(span);
+      const title = $span.attr("title") ?? "";
       const m = title.match(/Watch Game (\d+)/i);
-      const href = $a.attr("href");
+      const href = $span.find("a[href]").attr("href");
       if (m && href) vods[Number(m[1])] = href;
     });
 
@@ -129,9 +160,9 @@ function extractFinishedMatches($) {
       leftName,
       rightName,
       leftWon,
-      format: format.replace(/[()]/g, ""), // "Bo3"
+      format,
       timestamp: Number(timer.attr("data-timestamp")) || null,
-      games,
+      games: Array.from(gamesByNumber.values()).sort((a, b) => a.gameNumber - b.gameNumber),
       vods,
     });
   });
@@ -159,7 +190,25 @@ async function findMatch(tournamentId, leftName, rightName) {
     .maybeSingle();
 
   if (!data) return null;
-  return { ...data, leftIsTeamA: data.team_a_id === leftId, leftId, rightId };
+  return { ...data, leftId, rightId };
+}
+
+async function insertPicksAndBans(gameId, side, teamId) {
+  const insertAll = async (heroes, type) => {
+    for (const heroName of heroes ?? []) {
+      const { error } = await supabase.from("hero_picks_bans").insert({
+        game_id: gameId,
+        team_id: teamId,
+        hero_name: heroName,
+        type,
+      });
+      if (error && !error.message.includes("duplicate key")) {
+        console.error(`Failed to log ${type} ${heroName}:`, error.message);
+      }
+    }
+  };
+  if (side.picks) await insertAll(side.picks, "pick");
+  if (side.bans) await insertAll(side.bans, "ban");
 }
 
 async function importMatchDetail(tournamentId, m) {
@@ -169,16 +218,19 @@ async function importMatchDetail(tournamentId, m) {
     return;
   }
 
-  const winnerTeamId = m.leftWon ? match.leftId : match.rightId;
-  const loserTeamId = m.leftWon ? match.rightId : match.leftId;
+  const seriesWinnerTeamId = m.leftWon ? match.leftId : match.rightId;
 
   await supabase.from("matches").update({
     state: "SERIES_FINISHED",
     status: "finished",
-    series_winner_team_id: winnerTeamId,
+    series_winner_team_id: seriesWinnerTeamId,
   }).eq("id", match.id);
 
   for (const g of m.games) {
+    // Per-game winner comes from that game's own result-win label, NOT
+    // assumed from the series winner — correctly handles reverse sweeps.
+    const gameWinnerTeamId = g.left?.won ? match.leftId : g.right?.won ? match.rightId : null;
+
     const { data: gameRow, error } = await supabase
       .from("games")
       .upsert(
@@ -186,6 +238,7 @@ async function importMatchDetail(tournamentId, m) {
           match_id: match.id,
           game_number: g.gameNumber,
           state: "GAME_FINISHED",
+          winner_team_id: gameWinnerTeamId,
           vod_url: m.vods[g.gameNumber] ?? null,
         },
         { onConflict: "match_id,game_number" }
@@ -198,31 +251,11 @@ async function importMatchDetail(tournamentId, m) {
       continue;
     }
 
-    // Log picks for both sides. We know which team is the OVERALL series
-    // winner/loser but not definitively which physical team's row is which
-    // within a single game's pick pair without deeper cross-referencing —
-    // so both pick lists are logged under their respective series-level
-    // winner/loser team for now. If a team loses game 1 but wins the
-    // series, this will attribute that game's picks to the wrong side;
-    // flagged here rather than silently guessing further.
-    const insertPicks = async (heroes, teamId) => {
-      for (const heroName of heroes) {
-        const { error: pickErr } = await supabase.from("hero_picks_bans").insert({
-          game_id: gameRow.id,
-          team_id: teamId,
-          hero_name: heroName,
-          type: "pick",
-        });
-        if (pickErr && !pickErr.message.includes("duplicate key")) {
-          console.error(`Failed to log pick ${heroName}:`, pickErr.message);
-        }
-      }
-    };
-    await insertPicks(g.winnerPicks, winnerTeamId);
-    await insertPicks(g.loserPicks, loserTeamId);
+    if (g.left) await insertPicksAndBans(gameRow.id, { picks: g.left.picks, bans: g.leftBans }, match.leftId);
+    if (g.right) await insertPicksAndBans(gameRow.id, { picks: g.right.picks, bans: g.rightBans }, match.rightId);
   }
 
-  console.log(`Imported ${m.leftName} vs ${m.rightName}: ${m.games.length} game(s), winner recorded`);
+  console.log(`Imported ${m.leftName} vs ${m.rightName}: ${m.games.length} game(s), picks + bans + winners recorded`);
 }
 
 async function importTournament(pageTitle) {
@@ -252,7 +285,10 @@ async function main() {
   const pageTitle = process.argv[2];
   if (!pageTitle) {
     console.error("Usage: node scripts/import-finished-match-details.mjs <Liquipedia_Page_Title>");
-    console.error('Example: node scripts/import-finished-match-details.mjs "MSC/2026"');
+    console.error('Example: node scripts/import-finished-match-details.mjs "MSC/2026/Knockout_Stage"');
+    console.error("Note: bans/picks/VODs typically live on a tournament's STAGE subpages");
+    console.error('(e.g. "MSC/2026/Group_Stage", "MSC/2026/Knockout_Stage"), not always the');
+    console.error("top-level tournament page — run once per stage for full coverage.");
     process.exit(1);
   }
   await importTournament(pageTitle);

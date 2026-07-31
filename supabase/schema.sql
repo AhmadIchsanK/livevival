@@ -230,3 +230,21 @@ do $$ begin
   alter table hero_picks_bans
     add constraint hero_picks_bans_dedup unique (game_id, team_id, hero_name, type);
 exception when duplicate_object then null; end $$;
+
+-- ── Tournament final standings (place, prize money, and any extra points
+-- columns a tournament's prizepool table includes) ──
+
+create table if not exists tournament_results (
+  id uuid primary key default gen_random_uuid(),
+  tournament_id uuid references tournaments(id) on delete cascade,
+  placement text not null,            -- "1", "2", or a tied range like "5-8"
+  placement_sort int,                 -- numeric sort key (the range's lower bound)
+  team_id uuid references teams(id),  -- null if Liquipedia still shows "TBD"
+  team_name_raw text not null,
+  prize_usd numeric,
+  extra jsonb,                        -- any other columns (e.g. club championship points)
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists tournament_results_dedup
+  on tournament_results (tournament_id, placement, team_name_raw);

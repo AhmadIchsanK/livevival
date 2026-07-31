@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type MatchRow = {
@@ -14,6 +14,7 @@ type MatchRow = {
 };
 
 const PAGE_SIZE = 30;
+const UPCOMING_DAYS_RANGE = 30;
 
 export default function Home() {
   const [matches, setMatches] = useState<MatchRow[]>([]);
@@ -63,7 +64,7 @@ export default function Home() {
 
       {!loading && (
         <>
-          <Section title="Upcoming" matches={upcoming} empty="No upcoming matches scheduled yet." />
+          <UpcomingDaySlider matches={upcoming} />
           <hr className="border-white/10" />
         </>
       )}
@@ -72,6 +73,85 @@ export default function Home() {
         <Section title="Recent results" matches={finished} empty="No finished matches yet." />
       )}
     </main>
+  );
+}
+
+function dateKey(iso: string) {
+  return new Date(iso).toISOString().slice(0, 10);
+}
+
+function UpcomingDaySlider({ matches }: { matches: MatchRow[] }) {
+  const scrollerRef = useRef<HTMLDivElement>(null);
+
+  // Group into calendar-day buckets for the next 30 days. Days with no
+  // matches are skipped entirely, so the slider only shows days worth
+  // scrolling to rather than 30 mostly-empty cards.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const rangeEnd = new Date(today);
+  rangeEnd.setDate(rangeEnd.getDate() + UPCOMING_DAYS_RANGE);
+
+  const byDay = new Map<string, MatchRow[]>();
+  for (const m of matches) {
+    if (!m.scheduled_at) continue;
+    const d = new Date(m.scheduled_at);
+    if (d < today || d > rangeEnd) continue;
+    const key = dateKey(m.scheduled_at);
+    if (!byDay.has(key)) byDay.set(key, []);
+    byDay.get(key)!.push(m);
+  }
+  const days = Array.from(byDay.keys()).sort();
+
+  function scrollBy(amount: number) {
+    scrollerRef.current?.scrollBy({ left: amount, behavior: "smooth" });
+  }
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold">Upcoming — next {UPCOMING_DAYS_RANGE} days</h2>
+        {days.length > 0 && (
+          <div className="flex gap-1">
+            <button onClick={() => scrollBy(-320)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">←</button>
+            <button onClick={() => scrollBy(320)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">→</button>
+          </div>
+        )}
+      </div>
+
+      {days.length === 0 && <p className="text-white/30 text-sm">No upcoming matches scheduled in the next {UPCOMING_DAYS_RANGE} days.</p>}
+
+      {days.length > 0 && (
+        <div ref={scrollerRef} className="flex gap-4 overflow-x-auto pb-2 snap-x snap-mandatory">
+          {days.map((day) => (
+            <div key={day} className="shrink-0 w-72 snap-start space-y-2">
+              <p className="text-xs font-semibold text-white/60 sticky top-0">
+                {new Date(day + "T00:00:00").toLocaleDateString(undefined, {
+                  weekday: "short",
+                  month: "short",
+                  day: "numeric",
+                })}
+              </p>
+              <div className="space-y-2">
+                {byDay.get(day)!.map((m) => (
+                  <a
+                    key={m.id}
+                    href={`/match/${m.id}`}
+                    className="block border border-white/10 rounded-lg px-3 py-2 hover:border-white/30 transition"
+                  >
+                    <p className="font-semibold text-xs">
+                      {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
+                    </p>
+                    <p className="text-[11px] text-white/40 truncate">
+                      {m.tournament?.name} · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </p>
+                  </a>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

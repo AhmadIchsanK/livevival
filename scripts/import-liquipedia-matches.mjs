@@ -120,22 +120,29 @@ async function getOrCreateTeamId(name, shortName = null) {
 
   const { data: existing } = await supabase
     .from("teams")
-    .select("id")
+    .select("id, short_name")
     .ilike("name", name.trim())
     .maybeSingle();
 
-  if (existing) {
-    teamIdCache.set(key, existing.id);
-    return existing.id;
-  }
-
-  // Only set short_name if it's actually different from the full name and
-  // reasonably short — otherwise the anchor text was just the full name
-  // repeated (some team templates don't have a distinct abbreviation).
   const resolvedShortName =
     shortName && shortName.toLowerCase() !== name.trim().toLowerCase() && shortName.length <= 10
       ? shortName
       : null;
+
+  if (existing) {
+    teamIdCache.set(key, existing.id);
+    // Backfill short_name for teams created before this field was captured,
+    // or before the short-name fix existed — never overwrite a value that's
+    // already set (could be a manual admin edit).
+    if (!existing.short_name && resolvedShortName) {
+      const { error: updateError } = await supabase
+        .from("teams")
+        .update({ short_name: resolvedShortName })
+        .eq("id", existing.id);
+      if (updateError) console.error(`Failed to backfill short_name for "${name}":`, updateError.message);
+    }
+    return existing.id;
+  }
 
   const { data: created, error } = await supabase
     .from("teams")

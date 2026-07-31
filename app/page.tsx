@@ -15,31 +15,54 @@ type MatchRow = {
 
 const PAGE_SIZE = 30;
 const UPCOMING_DAYS_RANGE = 30;
+const FINISHED_FETCH_CAP = 300; // generous, but bounded — see note below
+
+const MATCH_SELECT = `id, status, scheduled_at, format,
+  tournament:tournaments(name, tier, liquipedia_slug),
+  team_a:teams!matches_team_a_id_fkey(name),
+  team_b:teams!matches_team_b_id_fkey(name)`;
 
 export default function Home() {
-  const [matches, setMatches] = useState<MatchRow[]>([]);
+  const [live, setLive] = useState<MatchRow[]>([]);
+  const [upcoming, setUpcoming] = useState<MatchRow[]>([]);
+  const [finished, setFinished] = useState<MatchRow[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
-      const { data } = await supabase
-        .from("matches")
-        .select(
-          `id, status, scheduled_at, format,
-           tournament:tournaments(name, tier, liquipedia_slug),
-           team_a:teams!matches_team_a_id_fkey(name),
-           team_b:teams!matches_team_b_id_fkey(name)`
-        )
-        .order("scheduled_at", { ascending: true });
-      setMatches((data as unknown as MatchRow[]) ?? []);
+      const now = new Date();
+      const monthAhead = new Date(now.getTime() + UPCOMING_DAYS_RANGE * 24 * 60 * 60 * 1000);
+
+      // Three targeted queries instead of one unbounded fetch-everything —
+      // that was the actual bug behind "upcoming doesn't show 30 days":
+      // Supabase caps unbounded queries at 1000 rows by default, and with
+      // matches ordered ascending, any table with 1000+ total rows (easily
+      // reached once finished-match backfill runs across many tournaments)
+      // would silently cut off future matches, which sort last.
+      const [{ data: liveData }, { data: upcomingData }, { data: finishedData }] = await Promise.all([
+        supabase.from("matches").select(MATCH_SELECT).eq("status", "live").order("scheduled_at", { ascending: true }),
+        supabase
+          .from("matches")
+          .select(MATCH_SELECT)
+          .eq("status", "scheduled")
+          .gte("scheduled_at", now.toISOString())
+          .lte("scheduled_at", monthAhead.toISOString())
+          .order("scheduled_at", { ascending: true }),
+        supabase
+          .from("matches")
+          .select(MATCH_SELECT)
+          .eq("status", "finished")
+          .order("scheduled_at", { ascending: false })
+          .limit(FINISHED_FETCH_CAP),
+      ]);
+
+      setLive((liveData as unknown as MatchRow[]) ?? []);
+      setUpcoming((upcomingData as unknown as MatchRow[]) ?? []);
+      setFinished((finishedData as unknown as MatchRow[]) ?? []);
       setLoading(false);
     }
     load();
   }, []);
-
-  const live = matches.filter((m) => m.status === "live");
-  const upcoming = matches.filter((m) => m.status === "scheduled");
-  const finished = [...matches.filter((m) => m.status === "finished")].reverse();
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">
@@ -83,19 +106,9 @@ function dateKey(iso: string) {
 function UpcomingDaySlider({ matches }: { matches: MatchRow[] }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
 
-  // Group into calendar-day buckets for the next 30 days. Days with no
-  // matches are skipped entirely, so the slider only shows days worth
-  // scrolling to rather than 30 mostly-empty cards.
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const rangeEnd = new Date(today);
-  rangeEnd.setDate(rangeEnd.getDate() + UPCOMING_DAYS_RANGE);
-
   const byDay = new Map<string, MatchRow[]>();
   for (const m of matches) {
     if (!m.scheduled_at) continue;
-    const d = new Date(m.scheduled_at);
-    if (d < today || d > rangeEnd) continue;
     const key = dateKey(m.scheduled_at);
     if (!byDay.has(key)) byDay.set(key, []);
     byDay.get(key)!.push(m);
@@ -142,18 +155,7 @@ function UpcomingDaySlider({ matches }: { matches: MatchRow[] }) {
                       {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
                     </p>
                     <p className="text-[11px] text-white/40 truncate">
-                      {m.tournament?.liquipedia_slug ? (
-                        <a
-                          href={`/tournaments/${m.tournament.liquipedia_slug}`}
-                          onClick={(e) => e.stopPropagation()}
-                          className="hover:text-white/70 underline"
-                        >
-                          {m.tournament?.name}
-                        </a>
-                      ) : (
-                        m.tournament?.name
-                      )}{" "}
-                      · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      {m.tournament?.name} · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
                   </a>
                 ))}

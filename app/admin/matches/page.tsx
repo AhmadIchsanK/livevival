@@ -26,7 +26,8 @@ export default function MatchesPage() {
   const [teams, setTeams] = useState<Option[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
   const [streams, setStreams] = useState<{ id: string; url: string }[]>([]);
-  const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "live" | "finished">("all");
+  const [activeTab, setActiveTab] = useState<"scheduled" | "live" | "finished">("live");
+  const [hasMoreFinished, setHasMoreFinished] = useState(false);
   const [searchFilter, setSearchFilter] = useState("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "status">("newest");
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -100,8 +101,10 @@ export default function MatchesPage() {
     setStreams(st ?? []);
   }
 
-  async function loadMatches() {
-    const { data, error } = await supabase
+  const MATCHES_PAGE_SIZE = 30;
+
+  async function loadMatches(tab: "scheduled" | "live" | "finished", offset = 0) {
+    let query = supabase
       .from("matches")
       .select(
         `id, scheduled_at, format, status, youtube_url, state, stream_id, auto_managed,
@@ -110,19 +113,34 @@ export default function MatchesPage() {
          team_a:teams!matches_team_a_id_fkey(name),
          team_b:teams!matches_team_b_id_fkey(name)`
       )
-      .order("scheduled_at", { ascending: true });
+      .eq("status", tab);
 
+    if (tab === "finished") {
+      query = query.order("scheduled_at", { ascending: false }).range(offset, offset + MATCHES_PAGE_SIZE - 1);
+    } else {
+      query = query.order("scheduled_at", { ascending: true });
+    }
+
+    const { data, error } = await query;
     if (error) {
       setError(error.message);
       return;
     }
-    setMatches((data as unknown as Match[]) ?? []);
+    if (tab === "finished" && offset > 0) {
+      setMatches((prev) => [...prev, ...((data as unknown as Match[]) ?? [])]);
+    } else {
+      setMatches((data as unknown as Match[]) ?? []);
+    }
+    setHasMoreFinished((data?.length ?? 0) === MATCHES_PAGE_SIZE);
   }
 
   useEffect(() => {
     loadOptions();
-    loadMatches();
   }, []);
+
+  useEffect(() => {
+    loadMatches(activeTab);
+  }, [activeTab]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -147,7 +165,7 @@ export default function MatchesPage() {
     setTeamAId("");
     setTeamBId("");
     setScheduledAt("");
-    loadMatches();
+    loadMatches(activeTab);
   }
 
   async function updateMatch(
@@ -166,20 +184,19 @@ export default function MatchesPage() {
   ) {
     const { error } = await supabase.from("matches").update(fields).eq("id", id);
     if (error) setError(error.message);
-    else loadMatches();
+    else loadMatches(activeTab);
   }
 
   async function deleteMatch(id: string) {
     if (!confirm("Delete this match? This also deletes all its games, stats, picks/bans, objectives, and key moments.")) return;
     const { error } = await supabase.from("matches").delete().eq("id", id);
     if (error) setError(error.message);
-    else loadMatches();
+    else loadMatches(activeTab);
   }
 
   const filteredMatches = useMemo(() => {
     const q = searchFilter.trim().toLowerCase();
     const filtered = matches.filter((m) => {
-      if (statusFilter !== "all" && m.status !== statusFilter) return false;
       if (!q) return true;
       const haystack = [m.team_a?.name, m.team_b?.name, m.tournament?.name].join(" ").toLowerCase();
       return haystack.includes(q);
@@ -194,7 +211,7 @@ export default function MatchesPage() {
       const bTime = b.scheduled_at ? new Date(b.scheduled_at).getTime() : 0;
       return sortBy === "newest" ? bTime - aTime : aTime - bTime;
     });
-  }, [matches, statusFilter, searchFilter, sortBy]);
+  }, [matches, searchFilter, sortBy]);
 
   function toggleSelected(id: string) {
     setSelected((prev) => {
@@ -218,7 +235,7 @@ export default function MatchesPage() {
     const { error } = await supabase.from("matches").delete().in("id", Array.from(selected));
     if (error) setError(error.message);
     setSelected(new Set());
-    loadMatches();
+    loadMatches(activeTab);
   }
 
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -379,8 +396,31 @@ export default function MatchesPage() {
       </div>
 
       <div>
+        <div className="flex gap-1 mb-4">
+          {([
+            { key: "live", label: "🔴 Ongoing" },
+            { key: "scheduled", label: "Upcoming" },
+            { key: "finished", label: "Finished" },
+          ] as const).map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => {
+                setActiveTab(tab.key);
+                setSelected(new Set());
+              }}
+              className={`text-sm px-4 py-2 rounded-t ${
+                activeTab === tab.key ? "bg-white/10 text-white font-semibold" : "text-white/40 hover:text-white/70"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-          <h2 className="text-lg font-bold">All matches</h2>
+          <h2 className="text-lg font-bold">
+            {activeTab === "live" ? "Ongoing matches" : activeTab === "scheduled" ? "Upcoming matches" : "Finished matches"}
+          </h2>
           <div className="flex items-center gap-2 flex-wrap">
             <input
               value={searchFilter}
@@ -388,19 +428,6 @@ export default function MatchesPage() {
               placeholder="Search team or tournament..."
               className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs w-56"
             />
-            <div className="flex gap-1 text-xs">
-              {(["all", "scheduled", "live", "finished"] as const).map((s) => (
-                <button
-                  key={s}
-                  onClick={() => setStatusFilter(s)}
-                  className={`px-2 py-1 rounded uppercase ${
-                    statusFilter === s ? "bg-signal" : "border border-white/10 hover:bg-white/10"
-                  }`}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as "newest" | "oldest" | "status")}
@@ -599,6 +626,14 @@ export default function MatchesPage() {
           ))}
           {filteredMatches.length === 0 && <p className="text-white/30 text-sm">No matches match.</p>}
         </div>
+        {activeTab === "finished" && hasMoreFinished && (
+          <button
+            onClick={() => loadMatches("finished", matches.length)}
+            className="mt-3 text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5"
+          >
+            Load more finished matches
+          </button>
+        )}
       </div>
     </div>
   );

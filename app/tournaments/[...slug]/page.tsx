@@ -5,6 +5,14 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 type Tournament = { id: string; name: string; tier: string; date_display: string | null };
+type TournamentResult = {
+  id: string;
+  placement: string;
+  placement_sort: number | null;
+  team_name_raw: string;
+  prize_usd: number | null;
+  team: { name: string } | null;
+};
 type MatchRow = {
   id: string;
   status: string;
@@ -46,6 +54,7 @@ export default function TournamentPage() {
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
   const [matches, setMatches] = useState<MatchRow[]>([]);
+  const [results, setResults] = useState<TournamentResult[]>([]);
   const [notFound, setNotFound] = useState(false);
   const [historyVisibleCount, setHistoryVisibleCount] = useState(20);
 
@@ -64,16 +73,24 @@ export default function TournamentPage() {
       }
       setTournament(t as Tournament);
 
-      const { data: m } = await supabase
-        .from("matches")
-        .select(
-          `id, status, scheduled_at, format,
-           team_a:teams!matches_team_a_id_fkey(name),
-           team_b:teams!matches_team_b_id_fkey(name)`
-        )
-        .eq("tournament_id", (t as Tournament).id)
-        .order("scheduled_at", { ascending: true });
+      const [{ data: m }, { data: r }] = await Promise.all([
+        supabase
+          .from("matches")
+          .select(
+            `id, status, scheduled_at, format,
+             team_a:teams!matches_team_a_id_fkey(name),
+             team_b:teams!matches_team_b_id_fkey(name)`
+          )
+          .eq("tournament_id", (t as Tournament).id)
+          .order("scheduled_at", { ascending: true }),
+        supabase
+          .from("tournament_results")
+          .select("id, placement, placement_sort, team_name_raw, prize_usd, team:teams(name)")
+          .eq("tournament_id", (t as Tournament).id)
+          .order("placement_sort", { ascending: true }),
+      ]);
       setMatches((m as unknown as MatchRow[]) ?? []);
+      setResults((r as unknown as TournamentResult[]) ?? []);
     }
     load();
   }, [slug]);
@@ -103,6 +120,31 @@ export default function TournamentPage() {
         <h1 className="text-2xl font-bold">{tournament.name}</h1>
         {tournament.date_display && <p className="text-sm text-white/40">{tournament.date_display}</p>}
       </header>
+
+      {results.length > 0 && (
+        <>
+          <section className="space-y-3">
+            <h2 className="text-lg font-bold">Final standings</h2>
+            <div className="space-y-1.5">
+              {results.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center justify-between border border-white/10 rounded-lg px-4 py-2.5"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs font-mono text-white/40 w-10 shrink-0">{r.placement}</span>
+                    <span className="text-sm font-semibold">{r.team?.name ?? r.team_name_raw}</span>
+                  </div>
+                  {r.prize_usd != null && (
+                    <span className="text-xs text-white/50">${r.prize_usd.toLocaleString()}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+          <hr className="border-white/10" />
+        </>
+      )}
 
       <section className="space-y-3">
         <h2 className="text-lg font-bold">Upcoming &amp; live</h2>

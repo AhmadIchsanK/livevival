@@ -34,7 +34,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchRenderedPage(pageTitle) {
+async function fetchRenderedPage(pageTitle, attempt = 1) {
   const url = new URL(WIKI_API);
   url.searchParams.set("action", "parse");
   url.searchParams.set("page", pageTitle);
@@ -44,6 +44,13 @@ async function fetchRenderedPage(pageTitle) {
   const res = await fetch(url, {
     headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
   });
+
+  if (res.status === 429 && attempt <= 3) {
+    const waitMs = 15000 * attempt; // back off harder each retry
+    console.warn(`Rate limited on ${pageTitle}, waiting ${waitMs / 1000}s before retry ${attempt}/3...`);
+    await sleep(waitMs);
+    return fetchRenderedPage(pageTitle, attempt + 1);
+  }
   if (!res.ok) {
     throw new Error(`Liquipedia API returned ${res.status} for ${pageTitle}`);
   }
@@ -53,7 +60,9 @@ async function fetchRenderedPage(pageTitle) {
 
 function parseFormat(text) {
   const m = text.match(/Bo(\d)/i);
-  return m ? `BO${m[1]}` : null;
+  if (!m) return null;
+  const n = m[1];
+  return ["1", "2", "3", "5", "7"].includes(n) ? `BO${n}` : null;
 }
 
 function extractMatches(html) {
@@ -203,19 +212,26 @@ async function importMatchesForTournament(tournament) {
 }
 
 async function main() {
+  const currentYear = new Date().getFullYear().toString();
   const { data: tournaments, error } = await supabase
     .from("tournaments")
-    .select("id, name, liquipedia_slug");
+    .select("id, name, liquipedia_slug, date_display");
   if (error) throw error;
 
-  for (const t of tournaments ?? []) {
-    if (!t.liquipedia_slug) continue;
+  // Scope to this year only — keeps runtime well under Liquipedia's rate
+  // limiter, and keeps the site's data focused on what's actually current.
+  const relevant = (tournaments ?? []).filter(
+    (t) => t.liquipedia_slug && typeof t.date_display === "string" && t.date_display.includes(currentYear)
+  );
+  console.log(`Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (${currentYear} only)`);
+
+  for (const t of relevant) {
     try {
       await importMatchesForTournament(t);
     } catch (err) {
       console.error(`Failed importing matches for ${t.name}:`, err.message);
     }
-    await sleep(2000); // stay within the 1 request / 2 seconds limit
+    await sleep(3000); // a bit more headroom than the documented 1 req/2s
   }
 }
 

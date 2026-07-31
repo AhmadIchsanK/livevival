@@ -70,11 +70,19 @@ function extractTournaments(html) {
   return tournaments;
 }
 
+// Keeps the tournament list (and everything downstream — matches, streams)
+// scoped to what's actually relevant for a live-score site, and keeps the
+// match importer's runtime short enough to avoid Liquipedia's rate limiter.
+const CURRENT_YEAR = new Date().getFullYear().toString();
+function isCurrentYear(dateDisplay) {
+  return typeof dateDisplay === "string" && dateDisplay.includes(CURRENT_YEAR);
+}
+
 async function importTier(pageTitle, tierLabel) {
   console.log(`Fetching ${pageTitle}...`);
   const html = await fetchRenderedPage(pageTitle);
-  const tournaments = extractTournaments(html);
-  console.log(`Found ${tournaments.length} tournaments on ${pageTitle}`);
+  const tournaments = extractTournaments(html).filter((t) => isCurrentYear(t.dateDisplay));
+  console.log(`Found ${tournaments.length} ${CURRENT_YEAR} tournaments on ${pageTitle} (others skipped as out of scope)`);
 
   for (const t of tournaments) {
     const { error } = await supabase.from("tournaments").upsert(

@@ -24,6 +24,8 @@ export default function StreamsPage() {
   const [tournaments, setTournaments] = useState<Option[]>([]);
   const [streams, setStreams] = useState<Stream[]>([]);
   const [recentDetections, setRecentDetections] = useState<Record<string, Detection>>({});
+  const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "live" | "ended">("all");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [url, setUrl] = useState("");
   const [tournamentId, setTournamentId] = useState("");
@@ -98,6 +100,78 @@ export default function StreamsPage() {
     loadStreams();
   }
 
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editUrl, setEditUrl] = useState("");
+  const [editTournamentId, setEditTournamentId] = useState("");
+  const [editOverlay, setEditOverlay] = useState("");
+
+  function startEdit(s: Stream) {
+    setEditingId(s.id);
+    setEditUrl(s.url);
+    setEditTournamentId(tournaments.find((t) => t.label === s.tournament?.name)?.id ?? "");
+    setEditOverlay(s.overlay_template);
+  }
+
+  async function saveEdit(id: string) {
+    const { error } = await supabase
+      .from("streams")
+      .update({ url: editUrl, tournament_id: editTournamentId || null, overlay_template: editOverlay || "default" })
+      .eq("id", id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setEditingId(null);
+    loadStreams();
+  }
+
+  async function deleteStream(id: string) {
+    if (!confirm("Delete this stream? Any matches linked to it will need a new stream assigned.")) return;
+    const { error } = await supabase.from("streams").delete().eq("id", id);
+    if (error) {
+      if (error.message.includes("violates foreign key")) {
+        setError("Can't delete — one or more matches are still linked to this stream. Unlink them first on the Matches page.");
+      } else {
+        setError(error.message);
+      }
+      return;
+    }
+    loadStreams();
+  }
+
+  async function bulkDelete() {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} selected stream(s)? Any linked matches will need a new stream assigned.`)) return;
+
+    const { error } = await supabase.from("streams").delete().in("id", Array.from(selected));
+    if (error) {
+      setError(
+        error.message.includes("violates foreign key")
+          ? "Some selected streams are still linked to matches and couldn't be deleted. Unlink them first."
+          : error.message
+      );
+    }
+    setSelected(new Set());
+    loadStreams();
+  }
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const filteredStreams = streams.filter((s) => statusFilter === "all" || s.status === statusFilter);
+
+  function toggleSelectAll() {
+    setSelected((prev) =>
+      prev.size === filteredStreams.length ? new Set() : new Set(filteredStreams.map((s) => s.id))
+    );
+  }
+
   return (
     <div className="text-white space-y-8 max-w-4xl">
       <div>
@@ -151,41 +225,132 @@ export default function StreamsPage() {
       </div>
 
       <div>
-        <h2 className="text-lg font-bold mb-4">Streams</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-bold">Streams</h2>
+          <div className="flex items-center gap-2">
+            <div className="flex gap-1 text-xs">
+              {(["all", "scheduled", "live", "ended"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(s)}
+                  className={`px-2 py-1 rounded uppercase ${
+                    statusFilter === s ? "bg-signal" : "border border-white/10 hover:bg-white/10"
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            {selected.size > 0 && (
+              <button
+                onClick={bulkDelete}
+                className="text-xs border border-red-500/30 text-red-300 rounded px-3 py-1.5 hover:bg-red-500/10 whitespace-nowrap"
+              >
+                Delete {selected.size} selected
+              </button>
+            )}
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-white/40 mb-2">
+          <input
+            type="checkbox"
+            checked={filteredStreams.length > 0 && selected.size === filteredStreams.length}
+            onChange={toggleSelectAll}
+          />
+          Select all
+        </label>
         <div className="space-y-3">
-          {streams.map((s) => {
+          {filteredStreams.map((s) => {
             const det = recentDetections[s.id];
+            const isEditing = editingId === s.id;
             return (
               <div key={s.id} className="border border-white/10 rounded p-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-semibold truncate max-w-md">{s.url}</p>
-                    <p className="text-xs text-white/40">
-                      {s.tournament?.name ?? "No tournament linked"} · overlay: {s.overlay_template}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span
-                      className={`text-xs px-2 py-1 rounded uppercase ${
-                        s.status === "live"
-                          ? "bg-emerald-500/20 text-emerald-400"
-                          : s.status === "ended"
-                          ? "bg-white/10 text-white/40"
-                          : "bg-yellow-500/20 text-yellow-400"
-                      }`}
-                    >
-                      {s.status}
-                    </span>
-                    {s.status !== "ended" && (
+                {isEditing ? (
+                  <div className="space-y-2">
+                    <input
+                      value={editUrl}
+                      onChange={(e) => setEditUrl(e.target.value)}
+                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+                    />
+                    <div className="flex gap-2">
+                      <select
+                        value={editTournamentId}
+                        onChange={(e) => setEditTournamentId(e.target.value)}
+                        className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      >
+                        <option value="">No tournament</option>
+                        {tournaments.map((t) => (
+                          <option key={t.id} value={t.id}>{t.label}</option>
+                        ))}
+                      </select>
+                      <input
+                        value={editOverlay}
+                        onChange={(e) => setEditOverlay(e.target.value)}
+                        className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      />
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => saveEdit(s.id)} className="text-xs bg-signal rounded px-3 py-1.5">
+                        Save
+                      </button>
                       <button
-                        onClick={() => endStream(s.id)}
+                        onClick={() => setEditingId(null)}
+                        className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(s.id)}
+                        onChange={() => toggleSelected(s.id)}
+                      />
+                      <div>
+                        <p className="text-sm font-semibold truncate max-w-md">{s.url}</p>
+                        <p className="text-xs text-white/40">
+                          {s.tournament?.name ?? "No tournament linked"} · overlay: {s.overlay_template}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`text-xs px-2 py-1 rounded uppercase ${
+                          s.status === "live"
+                            ? "bg-emerald-500/20 text-emerald-400"
+                            : s.status === "ended"
+                            ? "bg-white/10 text-white/40"
+                            : "bg-yellow-500/20 text-yellow-400"
+                        }`}
+                      >
+                        {s.status}
+                      </span>
+                      {s.status !== "ended" && (
+                        <button
+                          onClick={() => endStream(s.id)}
+                          className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                        >
+                          End stream
+                        </button>
+                      )}
+                      <button
+                        onClick={() => startEdit(s)}
                         className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
                       >
-                        End stream
+                        Edit
                       </button>
-                    )}
+                      <button
+                        onClick={() => deleteStream(s.id)}
+                        className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
-                </div>
+                )}
                 {det ? (
                   <p className="text-[11px] text-white/50">
                     Last read {new Date(det.captured_at).toLocaleTimeString()}: phase{" "}
@@ -203,7 +368,7 @@ export default function StreamsPage() {
               </div>
             );
           })}
-          {streams.length === 0 && <p className="text-white/30 text-sm">No streams added yet.</p>}
+          {filteredStreams.length === 0 && <p className="text-white/30 text-sm">No streams match.</p>}
         </div>
       </div>
     </div>

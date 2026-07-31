@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Option = { id: string; label: string };
@@ -13,6 +13,9 @@ type Match = {
   state: string;
   stream_id: string | null;
   auto_managed: boolean;
+  tournament_id: string | null;
+  team_a_id: string | null;
+  team_b_id: string | null;
   tournament: { name: string } | null;
   team_a: { name: string } | null;
   team_b: { name: string } | null;
@@ -23,6 +26,9 @@ export default function MatchesPage() {
   const [teams, setTeams] = useState<Option[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
   const [streams, setStreams] = useState<{ id: string; url: string }[]>([]);
+  const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "live" | "finished">("all");
+  const [searchFilter, setSearchFilter] = useState("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [tournamentId, setTournamentId] = useState("");
   const [teamAId, setTeamAId] = useState("");
@@ -98,6 +104,7 @@ export default function MatchesPage() {
       .from("matches")
       .select(
         `id, scheduled_at, format, status, youtube_url, state, stream_id, auto_managed,
+         tournament_id, team_a_id, team_b_id,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(name),
          team_b:teams!matches_team_b_id_fkey(name)`
@@ -144,11 +151,90 @@ export default function MatchesPage() {
 
   async function updateMatch(
     id: string,
-    fields: Partial<{ status: string; youtube_url: string; stream_id: string | null; auto_managed: boolean }>
+    fields: Partial<{
+      status: string;
+      youtube_url: string;
+      stream_id: string | null;
+      auto_managed: boolean;
+      tournament_id: string;
+      team_a_id: string;
+      team_b_id: string;
+      format: string;
+      scheduled_at: string | null;
+    }>
   ) {
     const { error } = await supabase.from("matches").update(fields).eq("id", id);
     if (error) setError(error.message);
     else loadMatches();
+  }
+
+  async function deleteMatch(id: string) {
+    if (!confirm("Delete this match? This also deletes all its games, stats, picks/bans, objectives, and key moments.")) return;
+    const { error } = await supabase.from("matches").delete().eq("id", id);
+    if (error) setError(error.message);
+    else loadMatches();
+  }
+
+  const filteredMatches = useMemo(() => {
+    const q = searchFilter.trim().toLowerCase();
+    return matches.filter((m) => {
+      if (statusFilter !== "all" && m.status !== statusFilter) return false;
+      if (!q) return true;
+      const haystack = [m.team_a?.name, m.team_b?.name, m.tournament?.name].join(" ").toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [matches, statusFilter, searchFilter]);
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelected((prev) =>
+      prev.size === filteredMatches.length ? new Set() : new Set(filteredMatches.map((m) => m.id))
+    );
+  }
+
+  async function bulkDeleteMatches() {
+    if (selected.size === 0) return;
+    if (!confirm(`Delete ${selected.size} selected match(es)? This also deletes their games, stats, picks/bans, objectives, and key moments.`)) return;
+
+    const { error } = await supabase.from("matches").delete().in("id", Array.from(selected));
+    if (error) setError(error.message);
+    setSelected(new Set());
+    loadMatches();
+  }
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTournamentId, setEditTournamentId] = useState("");
+  const [editTeamAId, setEditTeamAId] = useState("");
+  const [editTeamBId, setEditTeamBId] = useState("");
+  const [editFormat, setEditFormat] = useState("BO3");
+  const [editScheduledAt, setEditScheduledAt] = useState("");
+
+  function startEditMatch(m: Match) {
+    setEditingId(m.id);
+    setEditTournamentId(m.tournament_id ?? "");
+    setEditTeamAId(m.team_a_id ?? "");
+    setEditTeamBId(m.team_b_id ?? "");
+    setEditFormat(m.format ?? "BO3");
+    setEditScheduledAt(m.scheduled_at ? new Date(m.scheduled_at).toISOString().slice(0, 16) : "");
+  }
+
+  async function saveEditMatch(id: string) {
+    await updateMatch(id, {
+      tournament_id: editTournamentId,
+      team_a_id: editTeamAId,
+      team_b_id: editTeamBId,
+      format: editFormat,
+      scheduled_at: editScheduledAt ? new Date(editScheduledAt).toISOString() : null,
+    });
+    setEditingId(null);
   }
 
   return (
@@ -282,31 +368,155 @@ export default function MatchesPage() {
       </div>
 
       <div>
-        <h2 className="text-lg font-bold mb-4">All matches</h2>
-        <div className="space-y-3">
-          {matches.map((m) => (
-            <div key={m.id} className="border border-white/10 rounded p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-semibold">
-                    {m.team_a?.name ?? "TBD"} vs {m.team_b?.name ?? "TBD"}
-                  </p>
-                  <p className="text-xs text-white/50">
-                    {m.tournament?.name} · {m.format} · {m.scheduled_at ? new Date(m.scheduled_at).toLocaleString() : "no time set"}
-                  </p>
-                </div>
-                <span
-                  className={`text-xs px-2 py-1 rounded ${
-                    m.status === "live"
-                      ? "bg-emerald-500/20 text-emerald-400"
-                      : m.status === "finished"
-                      ? "bg-white/10 text-white/50"
-                      : "bg-yellow-500/20 text-yellow-400"
+        <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+          <h2 className="text-lg font-bold">All matches</h2>
+          <div className="flex items-center gap-2 flex-wrap">
+            <input
+              value={searchFilter}
+              onChange={(e) => setSearchFilter(e.target.value)}
+              placeholder="Search team or tournament..."
+              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs w-56"
+            />
+            <div className="flex gap-1 text-xs">
+              {(["all", "scheduled", "live", "finished"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setStatusFilter(s)}
+                  className={`px-2 py-1 rounded uppercase ${
+                    statusFilter === s ? "bg-signal" : "border border-white/10 hover:bg-white/10"
                   }`}
                 >
-                  {m.status}
-                </span>
-              </div>
+                  {s}
+                </button>
+              ))}
+            </div>
+            {selected.size > 0 && (
+              <button
+                onClick={bulkDeleteMatches}
+                className="text-xs border border-red-500/30 text-red-300 rounded px-3 py-1.5 hover:bg-red-500/10 whitespace-nowrap"
+              >
+                Delete {selected.size} selected
+              </button>
+            )}
+          </div>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-white/40 mb-2">
+          <input
+            type="checkbox"
+            checked={filteredMatches.length > 0 && selected.size === filteredMatches.length}
+            onChange={toggleSelectAll}
+          />
+          Select all ({filteredMatches.length})
+        </label>
+        <div className="space-y-3">
+          {filteredMatches.map((m) => (
+            <div key={m.id} className="border border-white/10 rounded p-4 space-y-3">
+              {editingId !== m.id && (
+                <input
+                  type="checkbox"
+                  checked={selected.has(m.id)}
+                  onChange={() => toggleSelected(m.id)}
+                  className="mb-1"
+                />
+              )}
+              {editingId === m.id ? (
+                <div className="space-y-2 max-w-xl">
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      value={editTournamentId}
+                      onChange={(e) => setEditTournamentId(e.target.value)}
+                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                    >
+                      <option value="">Tournament</option>
+                      {tournaments.map((t) => (
+                        <option key={t.id} value={t.id}>{t.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={editFormat}
+                      onChange={(e) => setEditFormat(e.target.value)}
+                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                    >
+                      <option value="BO1">BO1</option>
+                      <option value="BO3">BO3</option>
+                      <option value="BO5">BO5</option>
+                    </select>
+                    <select
+                      value={editTeamAId}
+                      onChange={(e) => setEditTeamAId(e.target.value)}
+                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                    >
+                      <option value="">Team A</option>
+                      {teams.map((t) => (
+                        <option key={t.id} value={t.id}>{t.label}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={editTeamBId}
+                      onChange={(e) => setEditTeamBId(e.target.value)}
+                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                    >
+                      <option value="">Team B</option>
+                      {teams.map((t) => (
+                        <option key={t.id} value={t.id}>{t.label}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="datetime-local"
+                      value={editScheduledAt}
+                      onChange={(e) => setEditScheduledAt(e.target.value)}
+                      className="col-span-2 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => saveEditMatch(m.id)} className="text-xs bg-signal rounded px-3 py-1.5">
+                      Save
+                    </button>
+                    <button
+                      onClick={() => setEditingId(null)}
+                      className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold">
+                      {m.team_a?.name ?? "TBD"} vs {m.team_b?.name ?? "TBD"}
+                    </p>
+                    <p className="text-xs text-white/50">
+                      {m.tournament?.name} · {m.format} · {m.scheduled_at ? new Date(m.scheduled_at).toLocaleString() : "no time set"}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`text-xs px-2 py-1 rounded ${
+                        m.status === "live"
+                          ? "bg-emerald-500/20 text-emerald-400"
+                          : m.status === "finished"
+                          ? "bg-white/10 text-white/50"
+                          : "bg-yellow-500/20 text-yellow-400"
+                      }`}
+                    >
+                      {m.status}
+                    </span>
+                    <button
+                      onClick={() => startEditMatch(m)}
+                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => deleteMatch(m.id)}
+                      className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              )}
               <p className="text-[10px] text-white/30 uppercase tracking-wide">{m.state?.replace(/_/g, " ")}</p>
 
               <div className="flex gap-2 items-center flex-wrap">
@@ -367,6 +577,7 @@ export default function MatchesPage() {
               </div>
             </div>
           ))}
+          {filteredMatches.length === 0 && <p className="text-white/30 text-sm">No matches match.</p>}
         </div>
       </div>
     </div>

@@ -66,9 +66,10 @@ export default function PublicMatchPage() {
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
   const [netWorth, setNetWorth] = useState<NetWorthPoint[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
-    const { data: matchData } = await supabase
+    const { data: matchData, error: matchError } = await supabase
       .from("matches")
       .select(
         `id, status, format, youtube_url, series_winner_team_id,
@@ -79,7 +80,14 @@ export default function PublicMatchPage() {
       )
       .eq("id", matchId)
       .single();
-    if (!matchData) return;
+    if (matchError) {
+      setLoadError(matchError.message);
+      return;
+    }
+    if (!matchData) {
+      setLoadError("No match found with this ID.");
+      return;
+    }
     setMatch(matchData as unknown as Match);
 
     const { data: gameRows } = await supabase
@@ -131,6 +139,14 @@ export default function PublicMatchPage() {
     };
   }, [matchId, loadAll]);
 
+  if (loadError) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center text-sm gap-2 px-6 text-center">
+        <p className="text-red-400">Couldn&apos;t load this match: {loadError}</p>
+        <a href="/" className="text-white/50 underline">Back to homepage</a>
+      </main>
+    );
+  }
   if (!match) return <main className="min-h-screen flex items-center justify-center text-white/50 text-sm">Loading...</main>;
 
   const teamAId = match.team_a?.id;

@@ -124,7 +124,7 @@ export default function Home() {
       {!loading && (
         <section className="space-y-3">
           <h2 className="lv-heading flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-lv-pulse-glow" />
+            <span className="w-2 h-2 rounded-full bg-signal-light animate-lv-pulse-glow" />
             Live now
           </h2>
           {live.length === 0 && (
@@ -166,7 +166,7 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
   return (
     <a
       href={`/match/${m.id}`}
-      className="lv-card lv-clip-corner block border-emerald-500/30 bg-emerald-500/[0.04] hover:border-emerald-500/60 px-5 py-4"
+      className="lv-card lv-clip-corner block border-signal/30 bg-signal/[0.04] hover:border-signal/60 px-5 py-4"
     >
       <p className="lv-badge-live mb-3">Live</p>
       <div className="flex items-center justify-between gap-3">

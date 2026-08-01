@@ -81,7 +81,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       <header className="flex items-center justify-between px-6 py-3.5 border-b border-white/10 bg-ink/80 backdrop-blur sticky top-0 z-20">
         <div className="flex items-center gap-8">
           <a href="/admin" className="flex items-center gap-2 shrink-0">
-            <BrandMark className="h-6 w-6 text-signal" />
+            <BrandMark className="h-6 w-6" />
             <span className="font-display font-light text-sm tracking-tight text-paper hidden sm:inline">
               LIVE<span className="text-signal">VIVAL</span>{" "}
               <span className="text-white/30 text-[10px] uppercase tracking-widest align-middle ml-1">Admin</span>

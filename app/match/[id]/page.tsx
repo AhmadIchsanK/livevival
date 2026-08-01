@@ -259,8 +259,8 @@ export default function PublicMatchPage() {
               <CartesianGrid strokeDasharray="3 3" stroke="#ffffff15" />
               <XAxis dataKey="minute" stroke="#ffffff60" tick={{ fontSize: 12 }} label={{ value: "minute", position: "insideBottom", fill: "#ffffff60", fontSize: 11, dy: 10 }} />
               <YAxis stroke="#ffffff60" tick={{ fontSize: 12 }} />
-              <Tooltip contentStyle={{ background: "#12141A", border: "1px solid #ffffff20" }} />
-              <Line type="monotone" dataKey="diff" stroke="#E8483A" strokeWidth={2} dot={false} />
+              <Tooltip contentStyle={{ background: "#0A0A0A", border: "1px solid #ffffff20" }} />
+              <Line type="monotone" dataKey="diff" stroke="#E31E2A" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </section>

@@ -35,7 +35,7 @@ export default function AdminLoginPage() {
         className="lv-card-flush max-w-sm w-full p-8 space-y-5"
       >
         <div className="space-y-3">
-          <BrandLockup className="justify-center" />
+          <BrandLockup className="justify-center" imgClassName="h-12 w-auto" />
           <p className="text-sm text-white/50 text-center uppercase tracking-widest text-[11px]">Admin sign in</p>
         </div>
 

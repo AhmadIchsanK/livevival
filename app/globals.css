@@ -4,14 +4,14 @@
 
 @layer base {
   * {
-    scrollbar-color: #e8483a4d transparent;
+    scrollbar-color: #e31e2a4d transparent;
   }
   ::-webkit-scrollbar {
     height: 8px;
     width: 8px;
   }
   ::-webkit-scrollbar-thumb {
-    background: #e8483a4d;
+    background: #e31e2a4d;
     border-radius: 999px;
   }
   ::-webkit-scrollbar-track {
@@ -19,8 +19,8 @@
   }
 
   ::selection {
-    background: #e8483a;
-    color: #f5f4f0;
+    background: #e31e2a;
+    color: #f5f5f5;
   }
 
   html {
@@ -30,8 +30,8 @@
   body {
     @apply bg-ink text-paper font-sans antialiased;
     background-image:
-      radial-gradient(60rem 30rem at 15% -10%, #e8483a1a, transparent 60%),
-      radial-gradient(50rem 25rem at 110% 10%, #e8483a12, transparent 60%);
+      radial-gradient(60rem 30rem at 15% -10%, #e31e2a1a, transparent 60%),
+      radial-gradient(50rem 25rem at 110% 10%, #e31e2a12, transparent 60%);
     background-attachment: fixed;
   }
 
@@ -41,14 +41,16 @@
   }
 
   :focus-visible {
-    outline: 2px solid #e8483a;
+    outline: 2px solid #e31e2a;
     outline-offset: 2px;
   }
 
+  /* Rajdhani display type, per the brand guide's "display-lg/md" tokens:
+     uppercase with +0.04em tracking for page titles and section headers. */
   h1,
   h2,
   h3 {
-    @apply font-display tracking-tight;
+    @apply font-display font-semibold uppercase tracking-brand;
   }
 
   /* Applies everywhere without touching every input/select/textarea's own
@@ -87,8 +89,8 @@
       px-3.5 py-2 transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none;
   }
   .lv-btn-primary {
-    @apply lv-btn bg-signal text-paper shadow-[0_0_0_0_rgba(232,72,58,0)]
-      hover:shadow-[0_0_20px_2px_rgba(232,72,58,0.45)] hover:brightness-110 active:brightness-95;
+    @apply lv-btn bg-signal text-paper shadow-[0_0_0_0_rgba(227,30,42,0)]
+      hover:shadow-[0_0_20px_2px_rgba(227,30,42,0.45)] hover:brightness-110 active:brightness-95;
   }
   .lv-btn-ghost {
     @apply lv-btn border border-white/15 text-white/70 hover:border-signal/50 hover:text-white hover:bg-signal/10;
@@ -103,11 +105,11 @@
       uppercase tracking-wider;
   }
   .lv-badge-live {
-    @apply lv-badge bg-emerald-500/15 text-emerald-400;
+    @apply lv-badge bg-signal/15 text-signal-light;
   }
   .lv-badge-live::before {
     content: "";
-    @apply w-1.5 h-1.5 rounded-full bg-emerald-400 animate-lv-pulse-glow;
+    @apply w-1.5 h-1.5 rounded-full bg-signal-light animate-lv-pulse-glow;
   }
   .lv-badge-scheduled {
     @apply lv-badge bg-yellow-500/15 text-yellow-400;
@@ -121,9 +123,9 @@
     @apply text-xs uppercase tracking-wider text-white/50 hover:text-signal transition-colors duration-200;
   }
 
-  /* Section heading treatment */
+  /* Section heading treatment — display-md token: Rajdhani 600, uppercase */
   .lv-heading {
-    @apply font-display font-light text-lg tracking-tight text-paper;
+    @apply font-display font-semibold uppercase text-lg tracking-brand text-paper;
   }
 
   /* Angular corner clip — echoes the brand mark's wing angularity. Use sparingly. */
@@ -131,9 +133,10 @@
     clip-path: polygon(0 0, 100% 0, 100% 100%, 12px 100%, 0 calc(100% - 12px));
   }
 
-  /* Score display */
+  /* Score display — mono-score token: JetBrains Mono, for figures that
+     must align in fixed-width columns (live scores, timers). */
   .lv-score {
-    @apply font-display font-extralight tabular-nums;
+    @apply font-mono font-semibold tabular-nums;
   }
 }
 

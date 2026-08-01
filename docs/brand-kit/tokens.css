@@ -1,0 +1,55 @@
+/* ==========================================================================
+   LIVEVIVAL — Brand Design Tokens
+   Esports Live Score by RevivalTV
+   ========================================================================== */
+
+:root {
+  /* Brand colors */
+  --lv-red: #E31E2A;          /* primary brand red (bird / accent) */
+  --lv-red-dark: #B3131D;     /* hover / pressed state */
+  --lv-red-light: #FF4757;    /* highlights, live badges */
+  --lv-black: #0A0A0A;        /* primary background */
+  --lv-black-soft: #141414;   /* card / panel background */
+  --lv-gray-900: #1F1F1F;     /* borders on black */
+  --lv-gray-500: #8A8A8A;     /* secondary text on black */
+  --lv-white: #FFFFFF;        /* primary text on black */
+  --lv-off-white: #F5F5F5;    /* text on colored surfaces */
+
+  /* Semantic aliases */
+  --lv-bg: var(--lv-black);
+  --lv-surface: var(--lv-black-soft);
+  --lv-text-primary: var(--lv-white);
+  --lv-text-secondary: var(--lv-gray-500);
+  --lv-accent: var(--lv-red);
+  --lv-live-dot: var(--lv-red-light);
+  --lv-win: #2ECC71;
+  --lv-loss: var(--lv-red);
+  --lv-draw: var(--lv-gray-500);
+
+  /* Typography */
+  --lv-font-display: "Rajdhani", "Barlow Condensed", "Archivo", sans-serif; /* headings, scoreboard */
+  --lv-font-body: "Inter", "Barlow", system-ui, sans-serif;                 /* body copy, UI labels */
+  --lv-font-mono: "JetBrains Mono", "Roboto Mono", monospace;               /* timers, exact scores */
+
+  --lv-tracking-wide: 0.04em; /* used on all-caps headings, matches wordmark */
+
+  /* Spacing scale (4px base) */
+  --lv-space-1: 4px;
+  --lv-space-2: 8px;
+  --lv-space-3: 12px;
+  --lv-space-4: 16px;
+  --lv-space-6: 24px;
+  --lv-space-8: 32px;
+  --lv-space-12: 48px;
+  --lv-space-16: 64px;
+
+  /* Radius */
+  --lv-radius-sm: 6px;
+  --lv-radius-md: 12px;
+  --lv-radius-lg: 20px;
+  --lv-radius-pill: 999px;
+
+  /* Shadows / glow (red glow for live states) */
+  --lv-shadow-card: 0 4px 16px rgba(0, 0, 0, 0.4);
+  --lv-glow-live: 0 0 12px rgba(227, 30, 42, 0.55);
+}

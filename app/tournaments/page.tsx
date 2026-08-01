@@ -94,7 +94,7 @@ function TournamentSection({
   return (
     <section className="space-y-3">
       <h2 className="lv-heading flex items-center gap-2">
-        {live && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-lv-pulse-glow" />}
+        {live && <span className="w-2 h-2 rounded-full bg-signal-light animate-lv-pulse-glow" />}
         {title}
       </h2>
       {tournaments.length === 0 && empty && <p className="text-white/30 text-sm">{empty}</p>}

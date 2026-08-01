@@ -9,14 +9,25 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#12141A",
-        paper: "#F5F4F0",
-        signal: "#E8483A",
-        "signal-dim": "#E8483A33",
+        // Livevival brand palette — see Livevival_Brand_Guide.pdf ("Color Palette").
+        ink: "#0A0A0A", // Signal Black — page background, header/footer
+        paper: "#FFFFFF", // Pure White — primary text on black, wordmark
+        signal: "#E31E2A", // Brand Red — logo, live badges, CTAs, links
+        "signal-dim": "#E31E2A33",
+        "signal-dark": "#B3131D", // hover / pressed states
+        "signal-light": "#FF4757", // live-dot pulse, highlights
+        surface: "#141414", // cards, panels, table rows
+        muted: "#8A8A8A", // secondary text, timestamps / draw-neutral status
+        win: "#2ECC71",
+        loss: "#E31E2A",
       },
       fontFamily: {
-        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
-        display: ["var(--font-display)", "var(--font-sans)", "system-ui", "sans-serif"],
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"], // Inter — body/UI
+        display: ["var(--font-display)", "var(--font-sans)", "system-ui", "sans-serif"], // Rajdhani — headings, scoreboard
+        mono: ["var(--font-mono)", "monospace"], // JetBrains Mono — timers, exact figures
+      },
+      letterSpacing: {
+        brand: "0.04em", // matches the wordmark's tracking on all-caps headings
       },
       keyframes: {
         "lv-fade-up": {

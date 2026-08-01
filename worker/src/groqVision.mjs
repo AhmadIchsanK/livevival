@@ -67,7 +67,7 @@ async function callGroq(frameJpeg, overlayHint, attempt = 1) {
     return await groq.chat.completions.create({
       model: config.groqVisionModel,
       temperature: 0,
-      max_tokens: 700,
+      max_tokens: 1800,
       messages: [
         {
           role: "user",
@@ -99,11 +99,24 @@ export async function classifyFrame(frameJpeg, overlayHint = null) {
   const response = await callGroq(frameJpeg, overlayHint);
 
   const raw = response.choices[0]?.message?.content ?? "{}";
+  // Some Groq models emit a <think>...</think> reasoning preamble before
+  // the actual answer — strip it (and any markdown code fence) before
+  // parsing, rather than choking on the '<' as if it were malformed JSON.
+  const withoutThinking = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   try {
-    return JSON.parse(raw);
+    return JSON.parse(withoutThinking);
   } catch {
-    // Model occasionally wraps JSON in a code fence despite instructions — strip and retry once.
-    const cleaned = raw.replace(/```json|```/g, "").trim();
-    return JSON.parse(cleaned);
+    const cleaned = withoutThinking.replace(/```json|```/g, "").trim();
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      // Last resort — an unterminated <think> block (cut off before its
+      // closing tag) would still leave junk before the real JSON. Just
+      // grab from the first '{' to the last '}' and try that.
+      const start = cleaned.indexOf("{");
+      const end = cleaned.lastIndexOf("}");
+      if (start === -1 || end === -1 || end <= start) throw new Error("No JSON object found in model response");
+      return JSON.parse(cleaned.slice(start, end + 1));
+    }
   }
 }

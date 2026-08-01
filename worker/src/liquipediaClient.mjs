@@ -8,7 +8,11 @@
 const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
 const USER_AGENT =
   "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
-const MIN_GAP_MS = 2000;
+// Production logs from the GitHub Actions importers show Liquipedia enforces
+// a broader short-term throttle after a burst of requests, not just the
+// documented "1 request / 2s" — 4s here plus a longer/harder retry backoff
+// below gives this always-on process more headroom to avoid tripping it.
+const MIN_GAP_MS = 4000;
 
 let lastRequestAt = 0;
 
@@ -35,9 +39,9 @@ export async function fetchRenderedPage(pageTitle, attempt = 1) {
     headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
   });
 
-  if (res.status === 429 && attempt <= 3) {
-    const waitMs = 15000 * attempt;
-    console.warn(`Rate limited on ${pageTitle}, waiting ${waitMs / 1000}s before retry ${attempt}/3...`);
+  if (res.status === 429 && attempt <= 4) {
+    const waitMs = 20000 * attempt;
+    console.warn(`Rate limited on ${pageTitle}, waiting ${waitMs / 1000}s before retry ${attempt}/4...`);
     await sleep(waitMs);
     return fetchRenderedPage(pageTitle, attempt + 1);
   }

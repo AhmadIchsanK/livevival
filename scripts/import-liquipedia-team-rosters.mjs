@@ -12,30 +12,12 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-
-const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
-const USER_AGENT =
-  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
+import { fetchRenderedPage } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-async function fetchRenderedPage(pageTitle) {
-  const url = new URL(WIKI_API);
-  url.searchParams.set("action", "parse");
-  url.searchParams.set("page", pageTitle);
-  url.searchParams.set("prop", "text");
-  url.searchParams.set("format", "json");
-
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
-  });
-  if (!res.ok) throw new Error(`Liquipedia API returned ${res.status} for ${pageTitle}`);
-  const data = await res.json();
-  return data.parse?.text?.["*"] ?? "";
-}
 
 function extractRosters(html) {
   const $ = cheerio.load(html);

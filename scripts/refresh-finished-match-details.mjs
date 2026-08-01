@@ -13,34 +13,12 @@ import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
 import { importTournament } from "./import-finished-match-details.mjs";
 import { importTournamentResults } from "./import-tournament-results.mjs";
-
-const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
-const USER_AGENT =
-  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
+import { fetchRenderedPage, sleep } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchRenderedPage(pageTitle) {
-  const url = new URL(WIKI_API);
-  url.searchParams.set("action", "parse");
-  url.searchParams.set("page", pageTitle);
-  url.searchParams.set("prop", "text");
-  url.searchParams.set("format", "json");
-
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
-  });
-  if (!res.ok) throw new Error(`Liquipedia API returned ${res.status} for ${pageTitle}`);
-  const data = await res.json();
-  return data.parse?.text?.["*"] ?? "";
-}
 
 async function discoverStagePages(tournamentSlug) {
   const html = await fetchRenderedPage(tournamentSlug);
@@ -92,7 +70,7 @@ async function main() {
 
       // Final standings live on the top-level page.
       await importTournamentResults(t.liquipedia_slug);
-      await sleep(2000);
+      await sleep(4000); // extra headroom beyond the documented 1 req/2s — see _liquipedia.mjs
 
       // Picks/bans/VODs can be on the top-level page OR on stage subpages —
       // try both so tournaments using either layout are covered.
@@ -101,7 +79,7 @@ async function main() {
 
       for (const page of pagesToCheck) {
         await importTournament(page);
-        await sleep(3000);
+        await sleep(5000);
       }
     } catch (err) {
       console.error(`Failed processing ${t.name}:`, err.message);

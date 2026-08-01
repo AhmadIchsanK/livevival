@@ -21,10 +21,8 @@
 // email, only ever calls api.php, paced requests.
 
 import { createClient } from "@supabase/supabase-js";
+import { apiQuery, sleep } from "./_liquipedia.mjs";
 
-const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
-const USER_AGENT =
-  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
 const CATEGORY = process.env.LIQUIPEDIA_HERO_CATEGORY || "Category:Heroes";
 const BATCH_SIZE = 50; // MediaWiki's per-request title limit for non-bot accounts
 
@@ -33,27 +31,11 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function apiGet(params) {
-  const url = new URL(WIKI_API);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  url.searchParams.set("format", "json");
-
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
-  });
-  if (!res.ok) throw new Error(`Liquipedia API returned ${res.status} for ${JSON.stringify(params)}`);
-  return res.json();
-}
-
 async function fetchAllHeroTitles() {
   const titles = [];
   let cmcontinue;
   do {
-    const data = await apiGet({
+    const data = await apiQuery({
       action: "query",
       list: "categorymembers",
       cmtitle: CATEGORY,
@@ -64,7 +46,7 @@ async function fetchAllHeroTitles() {
     const members = data.query?.categorymembers ?? [];
     for (const m of members) titles.push(m.title);
     cmcontinue = data.continue?.cmcontinue;
-    if (cmcontinue) await sleep(2000);
+    if (cmcontinue) await sleep(4000);
   } while (cmcontinue);
   return titles;
 }
@@ -74,7 +56,7 @@ async function fetchThumbnails(titles) {
   const result = {};
   for (let i = 0; i < titles.length; i += BATCH_SIZE) {
     const batch = titles.slice(i, i + BATCH_SIZE);
-    const data = await apiGet({
+    const data = await apiQuery({
       action: "query",
       titles: batch.join("|"),
       prop: "pageimages",
@@ -85,7 +67,7 @@ async function fetchThumbnails(titles) {
     for (const page of Object.values(pages)) {
       if (page.title) result[page.title] = page.thumbnail?.source ?? null;
     }
-    if (i + BATCH_SIZE < titles.length) await sleep(2000);
+    if (i + BATCH_SIZE < titles.length) await sleep(4000);
   }
   return result;
 }
@@ -127,12 +109,20 @@ async function main() {
   if (titles.length === 0) {
     console.error(
       `No pages found in "${CATEGORY}" — the category name may differ on this wiki. ` +
-        `Set LIQUIPEDIA_HERO_CATEGORY to override, e.g. "Category:MLBB Heroes".`
+        `Set LIQUIPEDIA_HERO_CATEGORY to override.`
     );
+    console.error("Looking up real category names containing 'hero' to help pick the right one...");
+    try {
+      const discovery = await apiQuery({ action: "query", list: "allcategories", acprefix: "Hero", aclimit: "50" });
+      const candidates = (discovery.query?.allcategories ?? []).map((c) => c["*"] ?? c.category);
+      console.error(candidates.length > 0 ? `Candidates: ${candidates.join(", ")}` : "No categories starting with 'Hero' found either.");
+    } catch (err) {
+      console.error("Category discovery failed:", err.message);
+    }
     process.exit(1);
   }
 
-  await sleep(2000);
+  await sleep(4000);
   const thumbnails = await fetchThumbnails(titles);
 
   for (const title of titles) {

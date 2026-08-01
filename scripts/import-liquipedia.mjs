@@ -16,39 +16,12 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-
-const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
-
-// TODO: put a real contact email here before running this for real —
-// Liquipedia blocks generic/anonymous user agents.
-const USER_AGENT =
-  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
+import { fetchRenderedPage, sleep } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchRenderedPage(pageTitle) {
-  const url = new URL(WIKI_API);
-  url.searchParams.set("action", "parse");
-  url.searchParams.set("page", pageTitle);
-  url.searchParams.set("prop", "text");
-  url.searchParams.set("format", "json");
-
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
-  });
-  if (!res.ok) {
-    throw new Error(`Liquipedia API returned ${res.status} for ${pageTitle}`);
-  }
-  const data = await res.json();
-  return data.parse?.text?.["*"] ?? "";
-}
 
 function extractTournaments(html) {
   const $ = cheerio.load(html);
@@ -151,7 +124,7 @@ async function importTier(pageTitle, tierLabel) {
 
 async function main() {
   await importTier("S-Tier_Tournaments", "S");
-  await sleep(2000); // stay within the 1 request / 2 seconds limit
+  await sleep(4000); // extra headroom beyond the documented 1 req/2s — see _liquipedia.mjs
   await importTier("A-Tier_Tournaments", "A");
 }
 

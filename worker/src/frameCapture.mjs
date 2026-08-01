@@ -11,13 +11,28 @@ async function resolveDirectUrl(sourceUrl) {
   const cached = resolvedUrlCache.get(sourceUrl);
   if (cached && cached.expiresAt > Date.now()) return cached.directUrl;
 
-  const info = await youtubedl(sourceUrl, {
-    format: "best[height<=720]",
-    getUrl: true,
-    noWarnings: true,
-    noCheckCertificates: true,
-  });
+  let info;
+  try {
+    info = await youtubedl(sourceUrl, {
+      format: "best[height<=720]",
+      getUrl: true,
+      noWarnings: true,
+      noCheckCertificates: true,
+    });
+  } catch (err) {
+    // Surface the real failure instead of letting a cryptic downstream
+    // "not valid JSON" error be the only thing that shows up in logs —
+    // common causes: YouTube serving a bot-check page to a datacenter IP
+    // (Railway's included), an expired/removed video, or a private stream.
+    const detail = err?.stderr || err?.message || String(err);
+    throw new Error(`yt-dlp failed to resolve stream URL: ${detail.slice(0, 500)}`);
+  }
   const directUrl = String(info).trim().split("\n")[0];
+  if (!directUrl || directUrl.startsWith("<") || directUrl.includes("<!DOCTYPE")) {
+    throw new Error(
+      `yt-dlp returned something that isn't a video URL (looks like an HTML page, not a stream link): "${directUrl.slice(0, 200)}"`
+    );
+  }
 
   resolvedUrlCache.set(sourceUrl, {
     directUrl,

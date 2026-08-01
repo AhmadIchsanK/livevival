@@ -22,10 +22,29 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const REQUEST_TIMEOUT_MS = 20000;
+
 async function requestJson(url, label, attempt) {
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    // A stalled connection (no response at all) would otherwise hang this
+    // await forever — a single bad request blocking the whole script for
+    // the rest of its run, as opposed to a clean 429 which at least gets a
+    // response to retry on. Treat a timeout/network error the same as a
+    // retryable rate limit so one flaky request doesn't sink the run.
+    if (attempt <= MAX_RETRIES) {
+      const waitMs = RETRY_BASE_MS * attempt;
+      console.warn(`Request stalled/failed on ${label} (${err.message}), waiting ${waitMs / 1000}s before retry ${attempt}/${MAX_RETRIES}...`);
+      await sleep(waitMs);
+      return null; // caller retries
+    }
+    throw new Error(`Liquipedia request failed for ${label}: ${err.message}`);
+  }
 
   if (res.status === 429 && attempt <= MAX_RETRIES) {
     const waitMs = RETRY_BASE_MS * attempt;

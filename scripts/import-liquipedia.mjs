@@ -73,9 +73,23 @@ function extractTournaments(html) {
 // Keeps the tournament list (and everything downstream — matches, streams)
 // scoped to what's actually relevant for a live-score site, and keeps the
 // match importer's runtime short enough to avoid Liquipedia's rate limiter.
-const CURRENT_YEAR = new Date().getFullYear().toString();
-function isCurrentYear(dateDisplay) {
-  return typeof dateDisplay === "string" && dateDisplay.includes(CURRENT_YEAR);
+//
+// Rolling 1-year window, NOT calendar year: a string match on "includes
+// current year" used to be used here, which silently drops any tournament
+// that started in a prior calendar year but is still well within the past
+// 12 months (e.g. a tournament from Nov 2025 while today is Aug 2026) —
+// and the drop compounds every Jan 1 when the "current year" shifts and a
+// whole year of still-in-window tournaments stops being refreshed. Uses
+// the parsed dates so upcoming/ongoing tournaments (end date in the
+// future, or unknown) are always kept regardless of window.
+const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+function isWithinPastYear(startDate, endDate) {
+  if (!startDate && !endDate) return false; // can't classify — skip, same as before
+  const cutoff = Date.now() - ONE_YEAR_MS;
+  const end = endDate ? new Date(endDate).getTime() : null;
+  // No end date (e.g. ongoing/ TBD finish) — keep it, it can't be stale.
+  if (end === null) return true;
+  return end >= cutoff;
 }
 
 // Liquipedia's date ranges look like "Jul 01 – Aug 01, 2026" (left side
@@ -106,11 +120,14 @@ function parseDateRange(dateDisplay) {
 async function importTier(pageTitle, tierLabel) {
   console.log(`Fetching ${pageTitle}...`);
   const html = await fetchRenderedPage(pageTitle);
-  const tournaments = extractTournaments(html).filter((t) => isCurrentYear(t.dateDisplay));
-  console.log(`Found ${tournaments.length} ${CURRENT_YEAR} tournaments on ${pageTitle} (others skipped as out of scope)`);
+  const parsed = extractTournaments(html).map((t) => ({ ...t, ...parseDateRange(t.dateDisplay) }));
+  const tournaments = parsed.filter((t) => isWithinPastYear(t.startDate, t.endDate));
+  console.log(
+    `Found ${tournaments.length} of ${parsed.length} tournaments on ${pageTitle} within the past year (others skipped as out of scope)`
+  );
 
   for (const t of tournaments) {
-    const { startDate, endDate } = parseDateRange(t.dateDisplay);
+    const { startDate, endDate } = t;
 
     const { error } = await supabase.from("tournaments").upsert(
       {

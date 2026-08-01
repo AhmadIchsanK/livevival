@@ -28,6 +28,15 @@ create table if not exists tournaments (
 );
 alter table tournaments add column if not exists overlay_template text not null default 'default';
 
+-- Parsed start/end dates (from Liquipedia's date_display range) so the
+-- importers can filter on a real rolling "past 1 year" window instead of
+-- string-matching the current calendar year, which drops anything that
+-- started in a prior year within the window (e.g. Nov 2025 while today is
+-- Aug 2026). Nullable: a handful of Liquipedia date_display strings don't
+-- parse cleanly (TBD ranges, non-standard formats).
+alter table tournaments add column if not exists start_date date;
+alter table tournaments add column if not exists end_date date;
+
 create table if not exists admins (
   user_id uuid primary key references auth.users(id) on delete cascade,
   email text not null,

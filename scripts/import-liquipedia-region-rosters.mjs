@@ -10,7 +10,7 @@ import * as cheerio from "cheerio";
 
 const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
 const USER_AGENT =
-  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: YOUR_EMAIL_HERE)";
+  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,

@@ -23,7 +23,7 @@ const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
 
 // TODO: same as the tournament importer — put a real contact email here.
 const USER_AGENT =
-  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: YOUR_EMAIL_HERE)";
+  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -236,19 +236,29 @@ async function importMatchesForTournament(tournament) {
   }
 }
 
+// Rolling 1-year window (not calendar year) — see import-liquipedia.mjs for
+// why a string match on the current year silently drops tournaments that
+// started in a prior calendar year but are still within the past 12 months.
+const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+function isWithinPastYear(startDate, endDate) {
+  if (!startDate && !endDate) return false;
+  if (!endDate) return true; // ongoing/TBD finish — can't be stale
+  return new Date(endDate).getTime() >= Date.now() - ONE_YEAR_MS;
+}
+
 async function main() {
-  const currentYear = new Date().getFullYear().toString();
   const { data: tournaments, error } = await supabase
     .from("tournaments")
-    .select("id, name, liquipedia_slug, date_display");
+    .select("id, name, liquipedia_slug, date_display, start_date, end_date");
   if (error) throw error;
 
-  // Scope to this year only — keeps runtime well under Liquipedia's rate
-  // limiter, and keeps the site's data focused on what's actually current.
+  // Scope to the past year (or still-upcoming/ongoing) — keeps runtime well
+  // under Liquipedia's rate limiter, and keeps the site's data focused on
+  // what's actually current.
   const relevant = (tournaments ?? []).filter(
-    (t) => t.liquipedia_slug && typeof t.date_display === "string" && t.date_display.includes(currentYear)
+    (t) => t.liquipedia_slug && isWithinPastYear(t.start_date, t.end_date)
   );
-  console.log(`Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (${currentYear} only)`);
+  console.log(`Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (past year, or upcoming/ongoing)`);
 
   for (const t of relevant) {
     try {

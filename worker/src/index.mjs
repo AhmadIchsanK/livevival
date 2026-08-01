@@ -35,26 +35,59 @@ async function loadActiveTournaments() {
   return Array.from(byId.values());
 }
 
+// Cooldown after a rate-limited tournament, keyed by tournament id. Without
+// this, a single 429 gets retried inside the same tick (up to ~200s of
+// backoff in liquipediaClient.mjs) and then the very next tick — which
+// fires on its own timer regardless of how long the last one took — retries
+// it again immediately, so the same page gets hammered continuously and
+// Liquipedia's throttle window never gets a chance to actually reset.
+const COOLDOWN_MS = 5 * 60 * 1000;
+const rateLimitedUntil = new Map(); // tournamentId -> timestamp
+
 async function tick() {
   const tournaments = await loadActiveTournaments();
   if (tournaments.length === 0) {
     console.log("No live/imminent matches this tick.");
     return;
   }
-  console.log(`Polling ${tournaments.length} active tournament(s): ${tournaments.map((t) => t.name).join(", ")}`);
 
-  for (const tournament of tournaments) {
+  const now = Date.now();
+  const due = tournaments.filter((t) => (rateLimitedUntil.get(t.id) ?? 0) <= now);
+  const skipped = tournaments.length - due.length;
+  console.log(
+    `Polling ${due.length} active tournament(s): ${due.map((t) => t.name).join(", ")}` +
+      (skipped > 0 ? ` (${skipped} still cooling down after a rate limit)` : "")
+  );
+
+  for (const tournament of due) {
     try {
       await syncTournamentSchedule(tournament);
       await syncTournamentFinishedMatches(tournament);
     } catch (err) {
       console.error(`Failed polling ${tournament.name}:`, err.message);
+      if (err.message.includes("429")) {
+        rateLimitedUntil.set(tournament.id, Date.now() + COOLDOWN_MS);
+        console.warn(`Cooling down ${tournament.name} for ${COOLDOWN_MS / 1000}s after a rate limit.`);
+      }
     }
   }
 }
 
+// Self-scheduling loop instead of setInterval: a tick only gets queued
+// after the previous one fully resolves, so a slow/retrying tick (which can
+// take minutes once Liquipedia rate-limits it) can never overlap with the
+// next one hammering the same page concurrently.
+let stopped = false;
+async function loop() {
+  while (!stopped) {
+    try {
+      await tick();
+    } catch (err) {
+      console.error("Tick failed:", err);
+    }
+    await new Promise((resolve) => setTimeout(resolve, config.pollIntervalSeconds * 1000));
+  }
+}
+
 console.log(`Livevival Liquipedia poller starting (every ${config.pollIntervalSeconds}s)...`);
-tick().catch((err) => console.error("Initial tick failed:", err));
-setInterval(() => {
-  tick().catch((err) => console.error("Tick failed:", err));
-}, config.pollIntervalSeconds * 1000);
+loop();

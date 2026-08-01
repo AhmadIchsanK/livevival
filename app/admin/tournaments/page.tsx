@@ -14,10 +14,29 @@ type Tournament = {
   logo_url: string | null;
 };
 
+type Status = "ongoing" | "upcoming" | "completed";
+type SortKey = "start_desc" | "start_asc" | "name";
+
+// Same date-range logic as the public tournaments index — a tournament with
+// both dates parsed is classified by today's date against that range;
+// without dates (not yet parsed, or Liquipedia gave a TBD range) it's
+// treated as upcoming since it can't be confirmed ongoing/finished yet.
+function categorize(t: Tournament): Status {
+  if (t.start_date && t.end_date) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (today < t.start_date) return "upcoming";
+    if (today > t.end_date) return "completed";
+    return "ongoing";
+  }
+  return "upcoming";
+}
+
 export default function TournamentsAdminPage() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [filter, setFilter] = useState("");
   const [tierFilter, setTierFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState<Status | "">("");
+  const [sortKey, setSortKey] = useState<SortKey>("start_desc");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -51,12 +70,30 @@ export default function TournamentsAdminPage() {
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return tournaments.filter((t) => {
+    const base = tournaments.filter((t) => {
       if (tierFilter && t.tier !== tierFilter) return false;
+      if (statusFilter && categorize(t) !== statusFilter) return false;
       if (!q) return true;
       return t.name.toLowerCase().includes(q) || (t.liquipedia_slug ?? "").toLowerCase().includes(q);
     });
-  }, [tournaments, filter, tierFilter]);
+    return [...base].sort((a, b) => {
+      if (sortKey === "name") return a.name.localeCompare(b.name);
+      const aDate = a.start_date ?? "";
+      const bDate = b.start_date ?? "";
+      return sortKey === "start_asc" ? aDate.localeCompare(bDate) : bDate.localeCompare(aDate);
+    });
+  }, [tournaments, filter, tierFilter, statusFilter, sortKey]);
+
+  const sections: { key: Status; title: string }[] = [
+    { key: "ongoing", title: "Ongoing" },
+    { key: "upcoming", title: "Upcoming" },
+    { key: "completed", title: "Completed" },
+  ];
+  const grouped = useMemo(() => {
+    const byStatus: Record<Status, Tournament[]> = { ongoing: [], upcoming: [], completed: [] };
+    for (const t of filtered) byStatus[categorize(t)].push(t);
+    return byStatus;
+  }, [filtered]);
 
   function toggleSelected(id: string) {
     setSelected((prev) => {
@@ -237,12 +274,12 @@ export default function TournamentsAdminPage() {
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex gap-2 flex-1">
+        <div className="flex gap-2 flex-1 flex-wrap">
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter by name or slug..."
-            className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="flex-1 min-w-[160px] bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
             value={tierFilter}
@@ -252,6 +289,25 @@ export default function TournamentsAdminPage() {
             <option value="">All tiers</option>
             <option value="S">S-Tier</option>
             <option value="A">A-Tier</option>
+          </select>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as Status | "")}
+            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="">All statuses</option>
+            <option value="ongoing">Ongoing</option>
+            <option value="upcoming">Upcoming</option>
+            <option value="completed">Completed</option>
+          </select>
+          <select
+            value={sortKey}
+            onChange={(e) => setSortKey(e.target.value as SortKey)}
+            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="start_desc">Newest first</option>
+            <option value="start_asc">Oldest first</option>
+            <option value="name">Name A→Z</option>
           </select>
         </div>
         {selected.size > 0 && (
@@ -264,117 +320,137 @@ export default function TournamentsAdminPage() {
         )}
       </div>
 
-      <table className="w-full text-sm">
-        <thead className="text-white/40 text-left">
-          <tr>
-            <th className="font-normal pb-2 w-8">
-              <input
-                type="checkbox"
-                checked={filtered.length > 0 && selected.size === filtered.length}
-                onChange={toggleSelectAll}
-              />
-            </th>
-            <th className="font-normal pb-2">Name</th>
-            <th className="font-normal pb-2">Tier</th>
-            <th className="font-normal pb-2">Dates</th>
-            <th className="font-normal pb-2">Slug</th>
-            <th className="font-normal pb-2 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((t) => (
-            <tr key={t.id} className="border-t border-white/10">
-              {editingId === t.id ? (
-                <>
-                  <td className="py-2" />
-                  <td className="py-2 pr-2">
-                    <input
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 pr-2">
-                    <select
-                      value={editTier}
-                      onChange={(e) => setEditTier(e.target.value)}
-                      className="bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
-                    >
-                      <option value="S">S</option>
-                      <option value="A">A</option>
-                    </select>
-                  </td>
-                  <td className="py-2 pr-2 space-y-1">
-                    <input
-                      type="date"
-                      value={editStartDate}
-                      onChange={(e) => setEditStartDate(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
-                    />
-                    <input
-                      type="date"
-                      value={editEndDate}
-                      onChange={(e) => setEditEndDate(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
-                    />
-                  </td>
-                  <td className="py-2 pr-2">
-                    <input
-                      value={editSlug}
-                      onChange={(e) => setEditSlug(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 text-right space-x-2">
-                    <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
-                      Save
-                    </button>
-                    <button
-                      onClick={() => setEditingId(null)}
-                      className="lv-btn-ghost !px-2 !py-1"
-                    >
-                      Cancel
-                    </button>
-                  </td>
-                </>
-              ) : (
-                <>
-                  <td className="py-2">
-                    <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelected(t.id)} />
-                  </td>
-                  <td className="py-2">{t.name}</td>
-                  <td className="py-2 text-white/60">{t.tier}-Tier</td>
-                  <td className="py-2 text-white/60 text-xs">
-                    {t.start_date ?? "?"} → {t.end_date ?? "?"}
-                  </td>
-                  <td className="py-2 text-white/40 text-xs">{t.liquipedia_slug ?? "—"}</td>
-                  <td className="py-2 text-right space-x-2">
-                    <button
-                      onClick={() => startEdit(t)}
-                      className="lv-btn-ghost !px-2 !py-1"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => deleteTournament(t.id, t.name)}
-                      className="lv-btn-danger !px-2 !py-1"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </>
-              )}
-            </tr>
-          ))}
-          {filtered.length === 0 && (
-            <tr>
-              <td colSpan={6} className="py-4 text-white/30 text-center">
-                No tournaments match.
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+      {filtered.length > 0 && (
+        <label className="flex items-center gap-2 text-xs text-white/40">
+          <input
+            type="checkbox"
+            checked={selected.size === filtered.length}
+            onChange={toggleSelectAll}
+          />
+          Select all ({filtered.length})
+        </label>
+      )}
+
+      {sections.map(({ key, title }) => {
+        const items = grouped[key];
+        if (statusFilter && statusFilter !== key) return null;
+        if (items.length === 0 && statusFilter !== key) return null;
+        return (
+          <section key={key} className="space-y-2">
+            <h2 className="lv-heading text-sm flex items-center gap-2">
+              {key === "ongoing" && <span className="w-2 h-2 rounded-full bg-emerald-400" />}
+              {title} ({items.length})
+            </h2>
+            <table className="w-full text-sm">
+              <thead className="text-white/40 text-left">
+                <tr>
+                  <th className="font-normal pb-2 w-8" />
+                  <th className="font-normal pb-2">Name</th>
+                  <th className="font-normal pb-2">Tier</th>
+                  <th className="font-normal pb-2">Dates</th>
+                  <th className="font-normal pb-2">Slug</th>
+                  <th className="font-normal pb-2 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((t) => (
+                  <tr key={t.id} className="border-t border-white/10">
+                    {editingId === t.id ? (
+                      <>
+                        <td className="py-2" />
+                        <td className="py-2 pr-2">
+                          <input
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                          />
+                        </td>
+                        <td className="py-2 pr-2">
+                          <select
+                            value={editTier}
+                            onChange={(e) => setEditTier(e.target.value)}
+                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                          >
+                            <option value="S">S</option>
+                            <option value="A">A</option>
+                          </select>
+                        </td>
+                        <td className="py-2 pr-2 space-y-1">
+                          <input
+                            type="date"
+                            value={editStartDate}
+                            onChange={(e) => setEditStartDate(e.target.value)}
+                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                          />
+                          <input
+                            type="date"
+                            value={editEndDate}
+                            onChange={(e) => setEditEndDate(e.target.value)}
+                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                          />
+                        </td>
+                        <td className="py-2 pr-2">
+                          <input
+                            value={editSlug}
+                            onChange={(e) => setEditSlug(e.target.value)}
+                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                          />
+                        </td>
+                        <td className="py-2 text-right space-x-2">
+                          <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
+                            Save
+                          </button>
+                          <button
+                            onClick={() => setEditingId(null)}
+                            className="lv-btn-ghost !px-2 !py-1"
+                          >
+                            Cancel
+                          </button>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="py-2">
+                          <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelected(t.id)} />
+                        </td>
+                        <td className="py-2">{t.name}</td>
+                        <td className="py-2 text-white/60">{t.tier}-Tier</td>
+                        <td className="py-2 text-white/60 text-xs">
+                          {t.start_date ?? "?"} → {t.end_date ?? "?"}
+                        </td>
+                        <td className="py-2 text-white/40 text-xs">{t.liquipedia_slug ?? "—"}</td>
+                        <td className="py-2 text-right space-x-2">
+                          <button
+                            onClick={() => startEdit(t)}
+                            className="lv-btn-ghost !px-2 !py-1"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            onClick={() => deleteTournament(t.id, t.name)}
+                            className="lv-btn-danger !px-2 !py-1"
+                          >
+                            Delete
+                          </button>
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                ))}
+                {items.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="py-4 text-white/30 text-center">
+                      None.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </section>
+        );
+      })}
+
+      {filtered.length === 0 && <p className="text-white/30 text-sm">No tournaments match.</p>}
     </div>
   );
 }

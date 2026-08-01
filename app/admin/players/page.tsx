@@ -5,12 +5,19 @@ import { supabase } from "@/lib/supabaseClient";
 
 type Option = { id: string; label: string };
 type Player = { id: string; ign: string; role: string | null; team_id: string | null; team: { name: string } | null };
+type SortKey = "ign" | "team" | "role";
+
+// Standard MLBB competitive roles, ordered left-to-right as they're read on
+// a draft screen (exp lane, jungle, mid, gold lane, roam).
+const ROLES = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
 
 export default function PlayersPage() {
   const [players, setPlayers] = useState<Player[]>([]);
   const [teams, setTeams] = useState<Option[]>([]);
   const [filter, setFilter] = useState("");
   const [teamFilter, setTeamFilter] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("ign");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -29,14 +36,22 @@ export default function PlayersPage() {
   const [bulkLoading, setBulkLoading] = useState(false);
 
   async function loadPlayers() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("players")
       .select("id, ign, role, team_id, team:teams(name)")
       .order("ign", { ascending: true });
+    if (error) {
+      setError(error.message);
+      return;
+    }
     setPlayers((data as unknown as Player[]) ?? []);
   }
   async function loadTeams() {
-    const { data } = await supabase.from("teams").select("id, name").order("name");
+    const { data, error } = await supabase.from("teams").select("id, name").order("name");
+    if (error) {
+      setError(error.message);
+      return;
+    }
     setTeams((data ?? []).map((t) => ({ id: t.id, label: t.name })));
   }
 
@@ -47,12 +62,18 @@ export default function PlayersPage() {
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return players.filter((p) => {
+    const base = players.filter((p) => {
       if (teamFilter && p.team_id !== teamFilter) return false;
+      if (roleFilter && p.role !== roleFilter) return false;
       if (!q) return true;
       return p.ign.toLowerCase().includes(q) || (p.team?.name ?? "").toLowerCase().includes(q);
     });
-  }, [players, filter, teamFilter]);
+    return [...base].sort((a, b) => {
+      if (sortKey === "team") return (a.team?.name ?? "").localeCompare(b.team?.name ?? "") || a.ign.localeCompare(b.ign);
+      if (sortKey === "role") return (a.role ?? "").localeCompare(b.role ?? "") || a.ign.localeCompare(b.ign);
+      return a.ign.localeCompare(b.ign);
+    });
+  }, [players, filter, teamFilter, roleFilter, sortKey]);
 
   function toggleSelected(id: string) {
     setSelected((prev) => {
@@ -154,19 +175,33 @@ export default function PlayersPage() {
     setBulkLoading(true);
     setError(null);
 
+    let failures = 0;
     for (const line of lines) {
-      const [name, role] = line.split(",").map((s) => s.trim());
+      const [name, roleText] = line.split(",").map((s) => s.trim());
       if (!name) continue;
-      const { data: existing } = await supabase
+      // Match the pasted role text against the standard role list
+      // case-insensitively; anything that doesn't match a known role is
+      // left unset rather than saved as a stray free-text value.
+      const matchedRole = ROLES.find((r) => r.toLowerCase() === (roleText ?? "").toLowerCase()) ?? null;
+      const { data: existing, error: lookupError } = await supabase
         .from("players")
         .select("id")
         .eq("team_id", bulkTeamId)
         .ilike("ign", name)
         .maybeSingle();
+      if (lookupError) {
+        failures += 1;
+        console.error(`Failed to check for existing "${name}":`, lookupError.message);
+        continue;
+      }
       if (existing) continue;
-      const { error } = await supabase.from("players").insert({ ign: name, role: role || null, team_id: bulkTeamId });
-      if (error) console.error(`Failed to import "${name}":`, error.message);
+      const { error } = await supabase.from("players").insert({ ign: name, role: matchedRole, team_id: bulkTeamId });
+      if (error) {
+        failures += 1;
+        console.error(`Failed to import "${name}":`, error.message);
+      }
     }
+    if (failures > 0) setError(`${failures} row(s) failed to import — check console for details.`);
 
     setBulkLoading(false);
     setBulkText("");
@@ -189,12 +224,16 @@ export default function PlayersPage() {
         </div>
         <div className="space-y-1">
           <label className="text-xs text-white/50">Role</label>
-          <input
+          <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            placeholder="Jungler/Gold/..."
             className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
-          />
+          >
+            <option value="">Unknown</option>
+            {ROLES.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
         </div>
         <div className="space-y-1">
           <label className="text-xs text-white/50">Team</label>
@@ -231,7 +270,9 @@ export default function PlayersPage() {
               <option key={t.id} value={t.id}>{t.label}</option>
             ))}
           </select>
-          <p className="text-[10px] text-white/40">Format: `IGN, Role` — Role is optional.</p>
+          <p className="text-[10px] text-white/40">
+            Format: `IGN, Role` — Role is optional and must match one of: {ROLES.join(", ")}.
+          </p>
           <textarea
             value={bulkText}
             onChange={(e) => setBulkText(e.target.value)}
@@ -252,12 +293,12 @@ export default function PlayersPage() {
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex gap-2 flex-1">
+        <div className="flex gap-2 flex-1 flex-wrap">
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter by IGN or team..."
-            className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="flex-1 min-w-[160px] bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
             value={teamFilter}
@@ -268,6 +309,25 @@ export default function PlayersPage() {
             {teams.map((t) => (
               <option key={t.id} value={t.id}>{t.label}</option>
             ))}
+          </select>
+          <select
+            value={roleFilter}
+            onChange={(e) => setRoleFilter(e.target.value)}
+            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="">All roles</option>
+            {ROLES.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+          <select
+            value={sortKey}
+            onChange={(e) => setSortKey(e.target.value as SortKey)}
+            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="ign">Sort: IGN</option>
+            <option value="team">Sort: Team</option>
+            <option value="role">Sort: Role</option>
           </select>
         </div>
         {selected.size > 0 && (
@@ -329,11 +389,16 @@ export default function PlayersPage() {
                     />
                   </td>
                   <td className="py-2 pr-2">
-                    <input
+                    <select
                       value={editRole}
                       onChange={(e) => setEditRole(e.target.value)}
                       className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
+                    >
+                      <option value="">Unknown</option>
+                      {ROLES.map((r) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="py-2 pr-2">
                     <select

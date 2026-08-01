@@ -11,17 +11,36 @@ type Stream = {
   status: string;
   overlay_template: string;
   current_match_id: string | null;
+  tournament_id: string | null;
+  created_at: string;
   tournament: { name: string } | null;
 };
+type SortKey = "newest" | "oldest";
+
+// Deterministic YouTube thumbnail URL — no API call/quota needed, works for
+// any public video the moment it's uploaded (even before a livestream goes
+// live, YouTube serves a placeholder here).
+function youtubeVideoId(url: string): string | null {
+  const m = url.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+function youtubeThumbnailUrl(url: string): string | null {
+  const id = youtubeVideoId(url);
+  return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : null;
+}
+
 export default function StreamsPage() {
   const [tournaments, setTournaments] = useState<Option[]>([]);
   const [streams, setStreams] = useState<Stream[]>([]);
   const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "live" | "ended">("all");
+  const [tournamentFilter, setTournamentFilter] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("newest");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [url, setUrl] = useState("");
   const [tournamentId, setTournamentId] = useState("");
   const [overlayTemplate, setOverlayTemplate] = useState("default");
+  const [titleFetching, setTitleFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -31,14 +50,34 @@ export default function StreamsPage() {
   }
 
   async function loadStreams() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("streams")
       .select(
-        `id, url, platform, status, overlay_template, current_match_id,
+        `id, url, platform, status, overlay_template, current_match_id, tournament_id, created_at,
          tournament:tournaments(name)`
       )
       .order("created_at", { ascending: false });
+    if (error) {
+      setError(error.message);
+      return;
+    }
     setStreams((data as unknown as Stream[]) ?? []);
+  }
+
+  // Pre-fills the overlay hint with the video's real YouTube title so the
+  // admin doesn't have to type it by hand — still freely editable after.
+  async function fetchTitleInto(videoUrl: string, apply: (title: string) => void) {
+    if (!youtubeVideoId(videoUrl)) return;
+    setTitleFetching(true);
+    try {
+      const res = await fetch(`/api/youtube-title?url=${encodeURIComponent(videoUrl)}`);
+      const data = await res.json();
+      if (data.title) apply(data.title);
+    } catch {
+      // Best-effort — leave whatever the admin already typed.
+    } finally {
+      setTitleFetching(false);
+    }
   }
 
   useEffect(() => {
@@ -71,7 +110,11 @@ export default function StreamsPage() {
   }
 
   async function endStream(id: string) {
-    await supabase.from("streams").update({ status: "ended" }).eq("id", id);
+    const { error } = await supabase.from("streams").update({ status: "ended" }).eq("id", id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
     loadStreams();
   }
 
@@ -83,7 +126,7 @@ export default function StreamsPage() {
   function startEdit(s: Stream) {
     setEditingId(s.id);
     setEditUrl(s.url);
-    setEditTournamentId(tournaments.find((t) => t.label === s.tournament?.name)?.id ?? "");
+    setEditTournamentId(s.tournament_id ?? "");
     setEditOverlay(s.overlay_template);
   }
 
@@ -139,7 +182,12 @@ export default function StreamsPage() {
     });
   }
 
-  const filteredStreams = streams.filter((s) => statusFilter === "all" || s.status === statusFilter);
+  const filteredStreams = streams
+    .filter((s) => statusFilter === "all" || s.status === statusFilter)
+    .filter((s) => !tournamentFilter || s.tournament_id === tournamentFilter)
+    .sort((a, b) =>
+      sortKey === "newest" ? b.created_at.localeCompare(a.created_at) : a.created_at.localeCompare(b.created_at)
+    );
 
   function toggleSelectAll() {
     setSelected((prev) =>
@@ -160,13 +208,29 @@ export default function StreamsPage() {
         <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4 max-w-xl">
           <div className="col-span-2 space-y-1">
             <label className="text-xs text-white/50">YouTube livestream URL</label>
-            <input
-              required
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://www.youtube.com/watch?v=..."
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
-            />
+            <div className="flex gap-2 items-start">
+              <input
+                required
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                onBlur={() => {
+                  if (overlayTemplate === "default" || !overlayTemplate) {
+                    fetchTitleInto(url, setOverlayTemplate);
+                  }
+                }}
+                placeholder="https://www.youtube.com/watch?v=..."
+                className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+              />
+              {youtubeThumbnailUrl(url) && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={youtubeThumbnailUrl(url)!}
+                  alt=""
+                  className="w-20 h-11 rounded object-cover border border-white/10 shrink-0"
+                />
+              )}
+            </div>
+            {titleFetching && <p className="text-[10px] text-white/40">Fetching title from YouTube...</p>}
           </div>
           <div className="space-y-1">
             <label className="text-xs text-white/50">Tournament</label>
@@ -182,7 +246,7 @@ export default function StreamsPage() {
             </select>
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-white/50">Overlay hint (optional)</label>
+            <label className="text-xs text-white/50">Overlay hint (auto-filled from YouTube title, editable)</label>
             <input
               value={overlayTemplate}
               onChange={(e) => setOverlayTemplate(e.target.value)}
@@ -204,7 +268,7 @@ export default function StreamsPage() {
       <div>
         <div className="flex items-center justify-between mb-4">
           <h2 className="lv-heading text-lg">Streams</h2>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <div className="flex gap-1 text-xs">
               {(["all", "scheduled", "live", "ended"] as const).map((s) => (
                 <button
@@ -218,6 +282,24 @@ export default function StreamsPage() {
                 </button>
               ))}
             </div>
+            <select
+              value={tournamentFilter}
+              onChange={(e) => setTournamentFilter(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+            >
+              <option value="">All tournaments</option>
+              {tournaments.map((t) => (
+                <option key={t.id} value={t.id}>{t.label}</option>
+              ))}
+            </select>
+            <select
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value as SortKey)}
+              className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+            </select>
             {selected.size > 0 && (
               <button
                 onClick={bulkDelete}
@@ -246,6 +328,9 @@ export default function StreamsPage() {
                     <input
                       value={editUrl}
                       onChange={(e) => setEditUrl(e.target.value)}
+                      onBlur={() => {
+                        if (editUrl !== s.url) fetchTitleInto(editUrl, setEditOverlay);
+                      }}
                       className="w-full bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
                     />
                     <div className="flex gap-2">
@@ -285,6 +370,14 @@ export default function StreamsPage() {
                         checked={selected.has(s.id)}
                         onChange={() => toggleSelected(s.id)}
                       />
+                      {youtubeThumbnailUrl(s.url) && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={youtubeThumbnailUrl(s.url)!}
+                          alt=""
+                          className="w-20 h-11 rounded object-cover border border-white/10 shrink-0"
+                        />
+                      )}
                       <div>
                         <p className="text-sm font-semibold truncate max-w-md">{s.url}</p>
                         <p className="text-xs text-white/40">

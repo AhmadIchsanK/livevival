@@ -3,26 +3,38 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-type Team = { id: string; name: string; short_name: string | null };
+type Team = { id: string; name: string; short_name: string | null; logo_url: string | null };
+type SortKey = "name" | "name_desc";
 
 export default function TeamsPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [name, setName] = useState("");
   const [shortName, setShortName] = useState("");
+  const [logoUrl, setLogoUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [filter, setFilter] = useState("");
+  const [sortKey, setSortKey] = useState<SortKey>("name");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editShortName, setEditShortName] = useState("");
+  const [editLogoUrl, setEditLogoUrl] = useState("");
+
+  const [mergeTargetId, setMergeTargetId] = useState("");
+  const [merging, setMerging] = useState(false);
 
   async function loadTeams() {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("teams")
-      .select("id, name, short_name")
+      .select("id, name, short_name, logo_url")
       .order("name", { ascending: true });
+    if (error) {
+      setError(error.message);
+      return;
+    }
     setTeams((data as Team[]) ?? []);
   }
 
@@ -32,11 +44,14 @@ export default function TeamsPage() {
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return teams;
-    return teams.filter(
-      (t) => t.name.toLowerCase().includes(q) || (t.short_name ?? "").toLowerCase().includes(q)
-    );
-  }, [teams, filter]);
+    const base = !q
+      ? teams
+      : teams.filter(
+          (t) => t.name.toLowerCase().includes(q) || (t.short_name ?? "").toLowerCase().includes(q)
+        );
+    const sorted = [...base].sort((a, b) => a.name.localeCompare(b.name));
+    return sortKey === "name_desc" ? sorted.reverse() : sorted;
+  }, [teams, filter, sortKey]);
 
   function toggleSelected(id: string) {
     setSelected((prev) => {
@@ -60,7 +75,7 @@ export default function TeamsPage() {
 
     const { error } = await supabase
       .from("teams")
-      .insert({ name, short_name: shortName || null });
+      .insert({ name, short_name: shortName || null, logo_url: logoUrl || null });
 
     setLoading(false);
     if (error) {
@@ -69,6 +84,7 @@ export default function TeamsPage() {
     }
     setName("");
     setShortName("");
+    setLogoUrl("");
     loadTeams();
   }
 
@@ -76,12 +92,13 @@ export default function TeamsPage() {
     setEditingId(t.id);
     setEditName(t.name);
     setEditShortName(t.short_name ?? "");
+    setEditLogoUrl(t.logo_url ?? "");
   }
 
   async function saveEdit(id: string) {
     const { error } = await supabase
       .from("teams")
-      .update({ name: editName, short_name: editShortName || null })
+      .update({ name: editName, short_name: editShortName || null, logo_url: editLogoUrl || null })
       .eq("id", id);
     if (error) {
       setError(error.message);
@@ -124,12 +141,56 @@ export default function TeamsPage() {
     loadTeams();
   }
 
+  // Reassigns every match/player/result FK from each selected team onto
+  // mergeTargetId, then deletes the selected teams — for consolidating
+  // duplicate imports (e.g. "ONIC" vs "ONIC Esports" from different
+  // Liquipedia team-template titles) without losing history.
+  async function mergeSelected() {
+    if (selected.size === 0 || !mergeTargetId) return;
+    if (selected.has(mergeTargetId)) {
+      setError("Merge target can't be one of the selected teams — deselect it first.");
+      return;
+    }
+    const sourceIds = Array.from(selected);
+    const sourceNames = teams.filter((t) => sourceIds.includes(t.id)).map((t) => t.name).join(", ");
+    const targetName = teams.find((t) => t.id === mergeTargetId)?.name ?? "target";
+    if (
+      !confirm(
+        `Merge ${sourceIds.length} team(s) (${sourceNames}) into "${targetName}"? ` +
+          `All their matches, players, and results move to "${targetName}", then the merged teams are deleted. This can't be undone.`
+      )
+    ) {
+      return;
+    }
+
+    setMerging(true);
+    setError(null);
+    setNotice(null);
+    let failures = 0;
+    for (const sourceId of sourceIds) {
+      const { error } = await supabase.rpc("merge_teams", { source_id: sourceId, target_id: mergeTargetId });
+      if (error) {
+        failures += 1;
+        console.error(`Failed to merge team ${sourceId} into ${mergeTargetId}:`, error.message);
+      }
+    }
+    setMerging(false);
+    setSelected(new Set());
+    setMergeTargetId("");
+    if (failures > 0) {
+      setError(`${failures} of ${sourceIds.length} merge(s) failed — check console for details.`);
+    } else {
+      setNotice(`Merged ${sourceIds.length} team(s) into "${targetName}".`);
+    }
+    loadTeams();
+  }
+
   return (
     <div className="text-white space-y-6 max-w-2xl">
       <h1 className="lv-heading text-lg">Teams</h1>
 
-      <form onSubmit={handleAdd} className="flex gap-3 items-end">
-        <div className="flex-1 space-y-1">
+      <form onSubmit={handleAdd} className="flex gap-3 items-end flex-wrap">
+        <div className="flex-1 min-w-[160px] space-y-1">
           <label className="text-xs text-white/50">Team name</label>
           <input
             required
@@ -148,6 +209,15 @@ export default function TeamsPage() {
             className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
           />
         </div>
+        <div className="flex-1 min-w-[200px] space-y-1">
+          <label className="text-xs text-white/50">Logo URL</label>
+          <input
+            value={logoUrl}
+            onChange={(e) => setLogoUrl(e.target.value)}
+            placeholder="https://..."
+            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+          />
+        </div>
         <button
           type="submit"
           disabled={loading}
@@ -158,21 +228,53 @@ export default function TeamsPage() {
       </form>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
+      {notice && <p className="text-sm text-emerald-400">{notice}</p>}
 
-      <div className="flex items-center justify-between gap-3">
-        <input
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter by name..."
-          className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
-        />
-        {selected.size > 0 && (
-          <button
-            onClick={bulkDelete}
-            className="lv-btn-danger whitespace-nowrap"
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex gap-2 flex-1 min-w-[200px]">
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by name..."
+            className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+          />
+          <select
+            value={sortKey}
+            onChange={(e) => setSortKey(e.target.value as SortKey)}
+            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
-            Delete {selected.size} selected
-          </button>
+            <option value="name">Name A→Z</option>
+            <option value="name_desc">Name Z→A</option>
+          </select>
+        </div>
+        {selected.size > 0 && (
+          <div className="flex gap-2 items-center flex-wrap">
+            <select
+              value={mergeTargetId}
+              onChange={(e) => setMergeTargetId(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+            >
+              <option value="">Merge into...</option>
+              {teams
+                .filter((t) => !selected.has(t.id))
+                .map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+            </select>
+            <button
+              onClick={mergeSelected}
+              disabled={!mergeTargetId || merging}
+              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-50 whitespace-nowrap"
+            >
+              {merging ? "Merging..." : `Merge ${selected.size} into target`}
+            </button>
+            <button
+              onClick={bulkDelete}
+              className="lv-btn-danger whitespace-nowrap"
+            >
+              Delete {selected.size} selected
+            </button>
+          </div>
         )}
       </div>
 
@@ -186,6 +288,7 @@ export default function TeamsPage() {
                 onChange={toggleSelectAll}
               />
             </th>
+            <th className="font-normal pb-2 w-10">Logo</th>
             <th className="font-normal pb-2">Name</th>
             <th className="font-normal pb-2">Short</th>
             <th className="font-normal pb-2 text-right">Actions</th>
@@ -198,17 +301,32 @@ export default function TeamsPage() {
                 <>
                   <td className="py-2" />
                   <td className="py-2 pr-2">
+                    {editLogoUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={editLogoUrl} alt="" className="w-6 h-6 rounded object-cover" />
+                    ) : (
+                      <span className="text-white/20">—</span>
+                    )}
+                  </td>
+                  <td className="py-2 pr-2">
                     <input
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
                       className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
-                  <td className="py-2 pr-2">
+                  <td className="py-2 pr-2 space-y-1">
                     <input
                       value={editShortName}
                       onChange={(e) => setEditShortName(e.target.value)}
+                      placeholder="Short name"
                       className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                    />
+                    <input
+                      value={editLogoUrl}
+                      onChange={(e) => setEditLogoUrl(e.target.value)}
+                      placeholder="Logo URL"
+                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
                     />
                   </td>
                   <td className="py-2 text-right space-x-2">
@@ -232,8 +350,16 @@ export default function TeamsPage() {
                       onChange={() => toggleSelected(t.id)}
                     />
                   </td>
+                  <td className="py-2">
+                    {t.logo_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={t.logo_url} alt="" className="w-6 h-6 rounded object-cover" />
+                    ) : (
+                      <span className="text-white/20">—</span>
+                    )}
+                  </td>
                   <td className="py-2">{t.name}</td>
-                  <td className="py-2 text-white/60">{t.short_name}</td>
+                  <td className="py-2 text-white/60">{t.short_name ?? "—"}</td>
                   <td className="py-2 text-right space-x-2">
                     <button
                       onClick={() => startEdit(t)}
@@ -253,7 +379,7 @@ export default function TeamsPage() {
             </tr>
           ))}
           {filtered.length === 0 && (
-            <tr><td colSpan={4} className="py-4 text-white/30 text-center">No teams match.</td></tr>
+            <tr><td colSpan={5} className="py-4 text-white/30 text-center">No teams match.</td></tr>
           )}
         </tbody>
       </table>

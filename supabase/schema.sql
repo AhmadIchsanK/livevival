@@ -297,3 +297,31 @@ create table if not exists capture_regions (
 create unique index if not exists capture_regions_match_field_key on capture_regions(match_id, field);
 
 alter table players add column if not exists liquipedia_slug text unique;
+
+-- ── RLS: heroes/tournament_results/capture_regions were created above
+-- without it, leaving them fully open to anon/authenticated via the REST
+-- API (flagged by Supabase's advisors). Public site reads heroes and
+-- tournament_results directly with the anon key; capture_regions is
+-- admin-only OCR calibration data with no public read path at all. ──
+
+alter table heroes enable row level security;
+alter table tournament_results enable row level security;
+alter table capture_regions enable row level security;
+
+do $$ begin
+  create policy "heroes_public_read" on heroes for select to anon, authenticated using (true);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create policy "heroes_admin_write" on heroes for all to authenticated using (is_admin()) with check (is_admin());
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "tournament_results_public_read" on tournament_results for select to anon, authenticated using (true);
+exception when duplicate_object then null; end $$;
+do $$ begin
+  create policy "tournament_results_admin_write" on tournament_results for all to authenticated using (is_admin()) with check (is_admin());
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "capture_regions_admin_only" on capture_regions for all to authenticated using (is_admin()) with check (is_admin());
+exception when duplicate_object then null; end $$;

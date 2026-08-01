@@ -12,6 +12,14 @@ on:
     - cron: "0 3,9,15,21 * * *"
   workflow_dispatch: {}
 
+# A manual dispatch overlapping a scheduled run (or two schedules overlapping
+# a slow run) means two jobs hammer the same Liquipedia pages at once, which
+# doubles the 429 rate and can make both jobs retry-loop far longer than
+# either would alone. Queue instead of running concurrently.
+concurrency:
+  group: liquipedia-import-details
+  cancel-in-progress: false
+
 jobs:
   import-details:
     runs-on: ubuntu-latest

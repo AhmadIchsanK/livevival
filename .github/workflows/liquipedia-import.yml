@@ -12,6 +12,13 @@ on:
     - cron: "0 */6 * * *"
   workflow_dispatch: {}
 
+# Same reasoning as liquipedia-import-details.yml: prevent an overlapping
+# dispatch/schedule pair from hitting Liquipedia concurrently and doubling
+# the 429 rate for both.
+concurrency:
+  group: liquipedia-import
+  cancel-in-progress: false
+
 jobs:
   import:
     runs-on: ubuntu-latest

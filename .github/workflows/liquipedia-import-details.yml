@@ -1,0 +1,38 @@
+name: Import Liquipedia rosters and finished-match details
+
+# Split out from liquipedia-import.yml and offset by 3 hours so it gets its
+# own fresh rate-limit window instead of running back-to-back with the
+# matches import — a full matches pass alone can consume ~30 minutes of
+# request budget and leave Liquipedia's short-term throttle still active
+# for whatever runs next in the same job. continue-on-error on each step
+# means one rate-limited tournament doesn't block the rest of the run;
+# whatever doesn't complete this cycle picks up on the next one.
+on:
+  schedule:
+    - cron: "0 3,9,15,21 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  import-details:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/import-liquipedia-team-rosters.mjs
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      - run: node scripts/import-liquipedia-region-rosters.mjs
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      - run: node scripts/refresh-finished-match-details.mjs
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

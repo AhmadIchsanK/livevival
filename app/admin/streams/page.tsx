@@ -13,17 +13,9 @@ type Stream = {
   current_match_id: string | null;
   tournament: { name: string } | null;
 };
-type Detection = {
-  id: string;
-  captured_at: string;
-  detected_phase: string | null;
-  detected_payload: { confidence?: number; team_names_visible?: string[] } | null;
-};
-
 export default function StreamsPage() {
   const [tournaments, setTournaments] = useState<Option[]>([]);
   const [streams, setStreams] = useState<Stream[]>([]);
-  const [recentDetections, setRecentDetections] = useState<Record<string, Detection>>({});
   const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "live" | "ended">("all");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -47,23 +39,6 @@ export default function StreamsPage() {
       )
       .order("created_at", { ascending: false });
     setStreams((data as unknown as Stream[]) ?? []);
-
-    // Grab the most recent vision_detections row per stream, so the admin can see
-    // what the worker is actually reading without digging into Supabase directly.
-    if (data && data.length > 0) {
-      const results: Record<string, Detection> = {};
-      for (const s of data) {
-        const { data: det } = await supabase
-          .from("vision_detections")
-          .select("id, captured_at, detected_phase, detected_payload")
-          .eq("stream_id", s.id)
-          .order("captured_at", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (det) results[s.id] = det as Detection;
-      }
-      setRecentDetections(results);
-    }
   }
 
   useEffect(() => {
@@ -175,10 +150,12 @@ export default function StreamsPage() {
   return (
     <div className="text-white space-y-8 max-w-4xl">
       <div>
-        <h1 className="lv-heading text-lg mb-2">Add a stream for the worker to watch</h1>
+        <h1 className="lv-heading text-lg mb-2">Add a livestream / VOD link</h1>
         <p className="text-xs text-white/40 mb-4">
-          This is what the Groq vision worker actually polls — creating a match alone
-          does not start automated tracking. Link matches to this stream below once it's created.
+          Streams are just the embeddable YouTube link(s) shown on a match's public page —
+          they don't drive automation. Live match state/score comes from the always-on Liquipedia
+          poller (per tournament) or, for a match switched to local OCR, from the admin's live
+          console. Link a stream to a match on the Matches page once it's created here.
         </p>
         <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4 max-w-xl">
           <div className="col-span-2 space-y-1">
@@ -261,7 +238,6 @@ export default function StreamsPage() {
         </label>
         <div className="space-y-3">
           {filteredStreams.map((s) => {
-            const det = recentDetections[s.id];
             const isEditing = editingId === s.id;
             return (
               <div key={s.id} className="border border-white/10 rounded p-4 space-y-2">
@@ -295,7 +271,7 @@ export default function StreamsPage() {
                       </button>
                       <button
                         onClick={() => setEditingId(null)}
-                        className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                        className="lv-btn-ghost"
                       >
                         Cancel
                       </button>
@@ -342,20 +318,6 @@ export default function StreamsPage() {
                       </button>
                     </div>
                   </div>
-                )}
-                {det ? (
-                  <p className="text-[11px] text-white/50">
-                    Last read {new Date(det.captured_at).toLocaleTimeString()}: phase{" "}
-                    <span className="text-white/80">{det.detected_phase}</span>
-                    {det.detected_payload?.team_names_visible?.length
-                      ? ` · sees: ${det.detected_payload.team_names_visible.join(", ")}`
-                      : ""}
-                    {typeof det.detected_payload?.confidence === "number"
-                      ? ` · confidence ${det.detected_payload.confidence.toFixed(2)}`
-                      : ""}
-                  </p>
-                ) : (
-                  <p className="text-[11px] text-white/30">No detections logged yet — worker may not have picked this up.</p>
                 )}
               </div>
             );

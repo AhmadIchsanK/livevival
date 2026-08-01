@@ -175,7 +175,7 @@ export default function StreamsPage() {
   return (
     <div className="text-white space-y-8 max-w-4xl">
       <div>
-        <h1 className="text-lg font-bold mb-2">Add a stream for the worker to watch</h1>
+        <h1 className="lv-heading text-lg mb-2">Add a stream for the worker to watch</h1>
         <p className="text-xs text-white/40 mb-4">
           This is what the Groq vision worker actually polls — creating a match alone
           does not start automated tracking. Link matches to this stream below once it's created.
@@ -216,7 +216,7 @@ export default function StreamsPage() {
           <button
             type="submit"
             disabled={loading}
-            className="col-span-2 bg-signal rounded px-4 py-2 text-sm font-semibold disabled:opacity-50"
+            className="col-span-2 lv-btn-primary !py-2"
           >
             Add stream
           </button>
@@ -226,7 +226,7 @@ export default function StreamsPage() {
 
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold">Streams</h2>
+          <h2 className="lv-heading text-lg">Streams</h2>
           <div className="flex items-center gap-2">
             <div className="flex gap-1 text-xs">
               {(["all", "scheduled", "live", "ended"] as const).map((s) => (
@@ -244,7 +244,7 @@ export default function StreamsPage() {
             {selected.size > 0 && (
               <button
                 onClick={bulkDelete}
-                className="text-xs border border-red-500/30 text-red-300 rounded px-3 py-1.5 hover:bg-red-500/10 whitespace-nowrap"
+                className="lv-btn-danger whitespace-nowrap"
               >
                 Delete {selected.size} selected
               </button>
@@ -290,7 +290,7 @@ export default function StreamsPage() {
                       />
                     </div>
                     <div className="flex gap-2">
-                      <button onClick={() => saveEdit(s.id)} className="text-xs bg-signal rounded px-3 py-1.5">
+                      <button onClick={() => saveEdit(s.id)} className="lv-btn-primary">
                         Save
                       </button>
                       <button
@@ -317,34 +317,26 @@ export default function StreamsPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span
-                        className={`text-xs px-2 py-1 rounded uppercase ${
-                          s.status === "live"
-                            ? "bg-emerald-500/20 text-emerald-400"
-                            : s.status === "ended"
-                            ? "bg-white/10 text-white/40"
-                            : "bg-yellow-500/20 text-yellow-400"
-                        }`}
-                      >
+                      <span className={s.status === "live" ? "lv-badge-live" : s.status === "ended" ? "lv-badge-finished" : "lv-badge-scheduled"}>
                         {s.status}
                       </span>
                       {s.status !== "ended" && (
                         <button
                           onClick={() => endStream(s.id)}
-                          className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                          className="lv-btn-ghost !px-2 !py-1"
                         >
                           End stream
                         </button>
                       )}
                       <button
                         onClick={() => startEdit(s)}
-                        className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                        className="lv-btn-ghost !px-2 !py-1"
                       >
                         Edit
                       </button>
                       <button
                         onClick={() => deleteStream(s.id)}
-                        className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10"
+                        className="lv-btn-danger !px-2 !py-1"
                       >
                         Delete
                       </button>

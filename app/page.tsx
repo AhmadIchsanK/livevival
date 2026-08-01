@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { BrandLockup } from "@/components/Brand";
 
 type MatchRow = {
   id: string;
@@ -111,11 +112,8 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">
       <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Livevival</h1>
-          <p className="text-sm text-white/50">RevivalTV Esports Live Score — MLBB S-Tier & A-Tier</p>
-        </div>
-        <a href="/tournaments" className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5">
+        <BrandLockup />
+        <a href="/tournaments" className="lv-btn-ghost">
           Tournaments
         </a>
       </header>
@@ -125,8 +123,8 @@ export default function Home() {
       {/* ── Live scores: the main focus, always first ── */}
       {!loading && (
         <section className="space-y-3">
-          <h2 className="text-lg font-bold flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <h2 className="lv-heading flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-lv-pulse-glow" />
             Live now
           </h2>
           {live.length === 0 && (
@@ -168,14 +166,12 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
   return (
     <a
       href={`/match/${m.id}`}
-      className="block border border-emerald-500/30 bg-emerald-500/5 rounded-xl px-5 py-4 hover:border-emerald-500/60 transition"
+      className="lv-card lv-clip-corner block border-emerald-500/30 bg-emerald-500/[0.04] hover:border-emerald-500/60 px-5 py-4"
     >
-      <p className="text-[11px] text-emerald-400 uppercase tracking-wide font-semibold mb-2 flex items-center gap-1.5">
-        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Live
-      </p>
+      <p className="lv-badge-live mb-3">Live</p>
       <div className="flex items-center justify-between gap-3">
         <p className="font-semibold text-base truncate">{m.team_a?.name ?? "TBD"}</p>
-        <p className="text-2xl font-bold tabular-nums shrink-0">{seriesScoreLabel(score) ?? "vs"}</p>
+        <p className="lv-score text-3xl shrink-0">{seriesScoreLabel(score) ?? "vs"}</p>
         <p className="font-semibold text-base truncate text-right">{m.team_b?.name ?? "TBD"}</p>
       </div>
       <p className="text-xs text-white/40 mt-2 truncate">
@@ -210,15 +206,15 @@ function MonthCalendar({
   }
 
   return (
-    <div className="border border-white/10 rounded-lg p-3 w-full max-w-[260px]">
+    <div className="lv-card-flush p-3 w-full max-w-[260px]">
       <div className="flex items-center justify-between mb-2">
-        <button onClick={() => setMonthOffset((v) => v - 1)} className="text-xs text-white/40 hover:text-white px-2">
+        <button onClick={() => setMonthOffset((v) => v - 1)} className="text-xs text-white/40 hover:text-signal px-2 transition-colors">
           ←
         </button>
-        <p className="text-xs font-semibold">
+        <p className="text-xs font-semibold uppercase tracking-wide">
           {viewMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
         </p>
-        <button onClick={() => setMonthOffset((v) => v + 1)} className="text-xs text-white/40 hover:text-white px-2">
+        <button onClick={() => setMonthOffset((v) => v + 1)} className="text-xs text-white/40 hover:text-signal px-2 transition-colors">
           →
         </button>
       </div>
@@ -272,11 +268,11 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
   return (
     <section className="space-y-3 min-w-0">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold">Upcoming — next {UPCOMING_DAYS_RANGE} days</h2>
+        <h2 className="lv-heading">Upcoming — next {UPCOMING_DAYS_RANGE} days</h2>
         {days.length > 0 && (
           <div className="flex gap-1">
-            <button onClick={() => scrollBy(-320)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">←</button>
-            <button onClick={() => scrollBy(320)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">→</button>
+            <button onClick={() => scrollBy(-320)} className="lv-btn-ghost !px-2 !py-1">←</button>
+            <button onClick={() => scrollBy(320)} className="lv-btn-ghost !px-2 !py-1">→</button>
           </div>
         )}
       </div>
@@ -293,7 +289,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                 day === selectedDate ? "ring-2 ring-signal/60 p-2 -m-2" : ""
               }`}
             >
-              <p className="text-xs font-semibold text-white/60 sticky top-0">
+              <p className="text-xs font-semibold text-white/60 uppercase tracking-wide sticky top-0">
                 {new Date(day + "T00:00:00").toLocaleDateString(undefined, {
                   weekday: "short",
                   month: "short",
@@ -305,7 +301,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                   <a
                     key={m.id}
                     href={`/match/${m.id}`}
-                    className="block border border-white/10 rounded-lg px-3 py-2 hover:border-white/30 transition"
+                    className="lv-card block px-3 py-2"
                   >
                     <p className="font-semibold text-xs">
                       {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
@@ -331,7 +327,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
 
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-bold">Recent results</h2>
+      <h2 className="lv-heading">Recent results</h2>
       {matches.length === 0 && <p className="text-white/30 text-sm">No finished matches yet.</p>}
       <div className="space-y-2">
         {visible.map((m) => {
@@ -340,7 +336,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
             <a
               key={m.id}
               href={`/match/${m.id}`}
-              className="flex items-center justify-between border border-white/10 rounded-lg px-4 py-3 hover:border-white/30 transition"
+              className="lv-card flex items-center justify-between px-4 py-3"
             >
               <div>
                 <p className="font-semibold text-sm">
@@ -362,7 +358,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
                 </p>
               </div>
-              <span className="text-lg font-bold tabular-nums shrink-0 bg-white/10 rounded px-3 py-1">
+              <span className="lv-score text-xl shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1.5">
                 {seriesScoreLabel(score) ?? "—"}
               </span>
             </a>
@@ -372,7 +368,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
       {hasMore && (
         <button
           onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
-          className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5"
+          className="lv-btn-ghost"
         >
           See more ({matches.length - visibleCount} more)
         </button>

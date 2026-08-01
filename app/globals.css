@@ -2,7 +2,142 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  background-color: #12141A;
-  color: #F5F4F0;
+@layer base {
+  * {
+    scrollbar-color: #e8483a4d transparent;
+  }
+  ::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #e8483a4d;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::selection {
+    background: #e8483a;
+    color: #f5f4f0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-ink text-paper font-sans antialiased;
+    background-image:
+      radial-gradient(60rem 30rem at 15% -10%, #e8483a1a, transparent 60%),
+      radial-gradient(50rem 25rem at 110% 10%, #e8483a12, transparent 60%);
+    background-attachment: fixed;
+  }
+
+  a,
+  button {
+    @apply transition-colors duration-200;
+  }
+
+  :focus-visible {
+    outline: 2px solid #e8483a;
+    outline-offset: 2px;
+  }
+
+  h1,
+  h2,
+  h3 {
+    @apply font-display tracking-tight;
+  }
+
+  /* Applies everywhere without touching every input/select/textarea's own
+     className — inline utility classes (bg-black/30, border-white/10, etc.)
+     still win on properties they set; this only adds the shared focus/hover
+     feel and rounding on top. */
+  input,
+  select,
+  textarea {
+    @apply rounded-md transition-colors duration-200;
+  }
+  input:focus,
+  select:focus,
+  textarea:focus {
+    @apply outline-none border-signal/60 ring-1 ring-signal/30;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    @apply text-white/25;
+  }
+}
+
+@layer components {
+  /* Panels/cards used across match lists, admin tables, live console sections */
+  .lv-card {
+    @apply relative rounded-xl border border-white/10 bg-white/[0.02] backdrop-blur-sm
+      transition-all duration-200 hover:border-signal/40 hover:bg-white/[0.04];
+  }
+  .lv-card-flush {
+    @apply relative rounded-xl border border-white/10 bg-white/[0.02];
+  }
+
+  /* Buttons — bold, high-contrast, esports-style uppercase tracking on ghost/secondary */
+  .lv-btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md text-xs font-semibold
+      px-3.5 py-2 transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .lv-btn-primary {
+    @apply lv-btn bg-signal text-paper shadow-[0_0_0_0_rgba(232,72,58,0)]
+      hover:shadow-[0_0_20px_2px_rgba(232,72,58,0.45)] hover:brightness-110 active:brightness-95;
+  }
+  .lv-btn-ghost {
+    @apply lv-btn border border-white/15 text-white/70 hover:border-signal/50 hover:text-white hover:bg-signal/10;
+  }
+  .lv-btn-danger {
+    @apply lv-btn border border-red-500/30 text-red-300 hover:bg-red-500/10;
+  }
+
+  /* Status badges */
+  .lv-badge {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-bold
+      uppercase tracking-wider;
+  }
+  .lv-badge-live {
+    @apply lv-badge bg-emerald-500/15 text-emerald-400;
+  }
+  .lv-badge-live::before {
+    content: "";
+    @apply w-1.5 h-1.5 rounded-full bg-emerald-400 animate-lv-pulse-glow;
+  }
+  .lv-badge-scheduled {
+    @apply lv-badge bg-yellow-500/15 text-yellow-400;
+  }
+  .lv-badge-finished {
+    @apply lv-badge bg-white/10 text-white/50;
+  }
+
+  /* Nav links (public + admin) */
+  .lv-nav-link {
+    @apply text-xs uppercase tracking-wider text-white/50 hover:text-signal transition-colors duration-200;
+  }
+
+  /* Section heading treatment */
+  .lv-heading {
+    @apply font-display font-light text-lg tracking-tight text-paper;
+  }
+
+  /* Angular corner clip — echoes the brand mark's wing angularity. Use sparingly. */
+  .lv-clip-corner {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  }
+
+  /* Score display */
+  .lv-score {
+    @apply font-display font-extralight tabular-nums;
+  }
+}
+
+/* Route-change fade — see components/PageTransition.tsx */
+.lv-page-enter {
+  animation: lv-fade-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
 }

@@ -62,15 +62,15 @@ export default function TournamentsIndexPage() {
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">
       <header className="space-y-1">
-        <a href="/" className="text-xs text-white/40 hover:text-white/70">&larr; Matches</a>
-        <h1 className="text-2xl font-bold">Tournaments</h1>
+        <a href="/" className="lv-nav-link">&larr; Matches</a>
+        <h1 className="font-display font-light text-2xl tracking-tight">Tournaments</h1>
       </header>
 
       {loading && <p className="text-white/40 text-sm">Loading...</p>}
 
       {!loading && (
         <>
-          <TournamentSection title="🔴 Ongoing" tournaments={ongoing} />
+          <TournamentSection title="Ongoing" live tournaments={ongoing} />
           <TournamentSection title="Upcoming" tournaments={upcoming} empty="No upcoming tournaments." />
           <TournamentSection title="Completed" tournaments={completed} empty="No completed tournaments yet." />
         </>
@@ -79,18 +79,31 @@ export default function TournamentsIndexPage() {
   );
 }
 
-function TournamentSection({ title, tournaments, empty }: { title: string; tournaments: Tournament[]; empty?: string }) {
+function TournamentSection({
+  title,
+  tournaments,
+  empty,
+  live,
+}: {
+  title: string;
+  tournaments: Tournament[];
+  empty?: string;
+  live?: boolean;
+}) {
   if (tournaments.length === 0 && !empty) return null;
   return (
     <section className="space-y-3">
-      <h2 className="text-lg font-bold">{title}</h2>
+      <h2 className="lv-heading flex items-center gap-2">
+        {live && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-lv-pulse-glow" />}
+        {title}
+      </h2>
       {tournaments.length === 0 && empty && <p className="text-white/30 text-sm">{empty}</p>}
       <div className="space-y-2">
         {tournaments.map((t) => (
           <a
             key={t.id}
             href={t.liquipedia_slug ? `/tournaments/${t.liquipedia_slug}` : "#"}
-            className="flex items-center justify-between border border-white/10 rounded-lg px-4 py-3 hover:border-white/30 transition"
+            className="lv-card flex items-center justify-between px-4 py-3"
           >
             <div>
               <p className="font-semibold text-sm">{t.name}</p>
@@ -102,7 +115,7 @@ function TournamentSection({ title, tournaments, empty }: { title: string; tourn
                 t.date_display && <p className="text-xs text-white/40">{t.date_display}</p>
               )}
             </div>
-            <span className="text-xs px-2 py-1 rounded bg-white/10 uppercase shrink-0">{t.tier}-Tier</span>
+            <span className="lv-badge bg-white/10 text-white/60 shrink-0">{t.tier}-Tier</span>
           </a>
         ))}
       </div>

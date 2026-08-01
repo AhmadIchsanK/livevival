@@ -34,7 +34,7 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
   return (
     <a
       href={`/match/${m.id}`}
-      className="flex items-center justify-between border border-white/10 rounded-lg px-4 py-3 hover:border-white/30 transition"
+      className="lv-card flex items-center justify-between px-4 py-3"
     >
       <div>
         <p className="font-semibold text-sm">
@@ -45,12 +45,12 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
         </p>
       </div>
       {scoreLabel ? (
-        <span className="text-lg font-bold tabular-nums shrink-0 bg-white/10 rounded px-3 py-1">{scoreLabel}</span>
+        <span className="lv-score text-lg shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1.5">{scoreLabel}</span>
       ) : (
         <span
-          className={`text-xs px-2 py-1 rounded uppercase tracking-wide shrink-0 ${
-            m.status === "live" ? "bg-emerald-500/20 text-emerald-400" : m.status === "finished" ? "bg-white/10 text-white/50" : "bg-yellow-500/20 text-yellow-400"
-          }`}
+          className={
+            m.status === "live" ? "lv-badge-live" : m.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"
+          }
         >
           {m.status}
         </span>
@@ -132,7 +132,7 @@ export default function TournamentPage() {
     return (
       <main className="min-h-screen flex flex-col items-center justify-center text-white/50 text-sm gap-2">
         <p>No tournament found for &quot;{slug}&quot;.</p>
-        <a href="/tournaments" className="text-white/70 underline">Back to all tournaments</a>
+        <a href="/tournaments" className="lv-nav-link">Back to all tournaments</a>
       </main>
     );
   }
@@ -145,43 +145,45 @@ export default function TournamentPage() {
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-3xl mx-auto space-y-8">
-      <a href="/tournaments" className="text-xs text-white/40 hover:text-white/70">&larr; All tournaments</a>
+      <a href="/tournaments" className="lv-nav-link">&larr; All tournaments</a>
       <header>
-        <p className="text-xs text-white/50">{tournament.tier}-Tier</p>
-        <h1 className="text-2xl font-bold">{tournament.name}</h1>
+        <span className="lv-badge bg-white/10 text-white/60">{tournament.tier}-Tier</span>
+        <h1 className="font-display font-light text-3xl tracking-tight mt-2">{tournament.name}</h1>
         {(tournament.start_date || tournament.end_date) ? (
-          <p className="text-sm text-white/40">
+          <p className="text-sm text-white/40 mt-1">
             {tournament.start_date ?? "?"} → {tournament.end_date ?? "?"}
           </p>
         ) : (
-          tournament.date_display && <p className="text-sm text-white/40">{tournament.date_display}</p>
+          tournament.date_display && <p className="text-sm text-white/40 mt-1">{tournament.date_display}</p>
         )}
       </header>
 
       {standings.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-lg font-bold">Final standings</h2>
-          <table className="w-full text-sm">
-            <thead className="text-white/40 text-left">
-              <tr><th className="pb-2">Place</th><th className="pb-2">Team</th><th className="pb-2 text-right">Prize</th></tr>
-            </thead>
-            <tbody>
-              {standings.map((s) => (
-                <tr key={s.id} className="border-t border-white/10">
-                  <td className="py-2 font-semibold">{s.placement}</td>
-                  <td className="py-2">{s.team?.name ?? s.team_name_raw}</td>
-                  <td className="py-2 text-right text-white/60">
-                    {s.prize_usd ? `$${s.prize_usd.toLocaleString()}` : "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <h2 className="lv-heading">Final standings</h2>
+          <div className="lv-card-flush overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="text-white/40 text-left bg-white/[0.03]">
+                <tr><th className="pb-2 pt-3 px-4">Place</th><th className="pb-2 pt-3">Team</th><th className="pb-2 pt-3 px-4 text-right">Prize</th></tr>
+              </thead>
+              <tbody>
+                {standings.map((s) => (
+                  <tr key={s.id} className="border-t border-white/10 hover:bg-white/[0.03] transition-colors">
+                    <td className="py-2 px-4 font-semibold text-signal">{s.placement}</td>
+                    <td className="py-2">{s.team?.name ?? s.team_name_raw}</td>
+                    <td className="py-2 px-4 text-right text-white/60 tabular-nums">
+                      {s.prize_usd ? `$${s.prize_usd.toLocaleString()}` : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
       <section className="space-y-3">
-        <h2 className="text-lg font-bold">Upcoming &amp; live</h2>
+        <h2 className="lv-heading">Upcoming &amp; live</h2>
         <div className="space-y-2">
           {upcomingAndLive.map((m) => <MatchRowCard key={m.id} m={m} score={scores[m.id]} />)}
           {upcomingAndLive.length === 0 && <p className="text-white/30 text-sm">No upcoming matches scheduled yet.</p>}
@@ -191,7 +193,7 @@ export default function TournamentPage() {
       <hr className="border-white/10" />
 
       <section className="space-y-3">
-        <h2 className="text-lg font-bold">Match history</h2>
+        <h2 className="lv-heading">Match history</h2>
         <div className="space-y-2">
           {visibleHistory.map((m) => <MatchRowCard key={m.id} m={m} score={scores[m.id]} />)}
           {history.length === 0 && <p className="text-white/30 text-sm">No finished matches yet.</p>}
@@ -199,7 +201,7 @@ export default function TournamentPage() {
         {history.length > historyVisibleCount && (
           <button
             onClick={() => setHistoryVisibleCount((c) => c + 20)}
-            className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5"
+            className="lv-btn-ghost"
           >
             See more ({history.length - historyVisibleCount} more)
           </button>

@@ -268,7 +268,7 @@ export default function MatchesPage() {
   return (
     <div className="text-white space-y-8 max-w-4xl">
       <div>
-        <h1 className="text-lg font-bold mb-4">Detect match from stream URL</h1>
+        <h1 className="lv-heading text-lg mb-4">Detect match from stream URL</h1>
         <div className="flex gap-2 items-end max-w-xl">
           <input
             value={detectUrl}
@@ -279,7 +279,7 @@ export default function MatchesPage() {
           <button
             onClick={detectStream}
             disabled={detectLoading || !detectUrl}
-            className="bg-signal rounded px-4 py-2 text-sm font-semibold disabled:opacity-50"
+            className="lv-btn-primary !py-2"
           >
             {detectLoading ? "Checking..." : "Detect"}
           </button>
@@ -303,7 +303,7 @@ export default function MatchesPage() {
                 </span>
                 <button
                   onClick={() => assignStreamToMatch(match.id)}
-                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                  className="lv-btn-ghost"
                 >
                   Assign this stream
                 </button>
@@ -314,7 +314,7 @@ export default function MatchesPage() {
       </div>
 
       <div>
-        <h1 className="text-lg font-bold mb-4">Create a match</h1>
+        <h1 className="lv-heading text-lg mb-4">Create a match</h1>
         <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4 max-w-xl">
           <div className="col-span-2 space-y-1">
             <label className="text-xs text-white/50">Tournament</label>
@@ -387,7 +387,7 @@ export default function MatchesPage() {
           <button
             type="submit"
             disabled={loading}
-            className="col-span-2 bg-signal rounded px-4 py-2 text-sm font-semibold disabled:opacity-50"
+            className="col-span-2 lv-btn-primary !py-2"
           >
             Create match
           </button>
@@ -418,7 +418,7 @@ export default function MatchesPage() {
         </div>
 
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
-          <h2 className="text-lg font-bold">
+          <h2 className="lv-heading text-lg">
             {activeTab === "live" ? "Ongoing matches" : activeTab === "scheduled" ? "Upcoming matches" : "Finished matches"}
           </h2>
           <div className="flex items-center gap-2 flex-wrap">
@@ -440,7 +440,7 @@ export default function MatchesPage() {
             {selected.size > 0 && (
               <button
                 onClick={bulkDeleteMatches}
-                className="text-xs border border-red-500/30 text-red-300 rounded px-3 py-1.5 hover:bg-red-500/10 whitespace-nowrap"
+                className="lv-btn-danger whitespace-nowrap"
               >
                 Delete {selected.size} selected
               </button>
@@ -516,12 +516,12 @@ export default function MatchesPage() {
                     />
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => saveEditMatch(m.id)} className="text-xs bg-signal rounded px-3 py-1.5">
+                    <button onClick={() => saveEditMatch(m.id)} className="lv-btn-primary">
                       Save
                     </button>
                     <button
                       onClick={() => setEditingId(null)}
-                      className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                      className="lv-btn-ghost"
                     >
                       Cancel
                     </button>
@@ -538,26 +538,18 @@ export default function MatchesPage() {
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <span
-                      className={`text-xs px-2 py-1 rounded ${
-                        m.status === "live"
-                          ? "bg-emerald-500/20 text-emerald-400"
-                          : m.status === "finished"
-                          ? "bg-white/10 text-white/50"
-                          : "bg-yellow-500/20 text-yellow-400"
-                      }`}
-                    >
+                    <span className={m.status === "live" ? "lv-badge-live" : m.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
                       {m.status}
                     </span>
                     <button
                       onClick={() => startEditMatch(m)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Edit
                     </button>
                     <button
                       onClick={() => deleteMatch(m.id)}
-                      className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10"
+                      className="lv-btn-danger !px-2 !py-1"
                     >
                       Delete
                     </button>
@@ -602,26 +594,26 @@ export default function MatchesPage() {
                 />
                 <button
                   onClick={() => updateMatch(m.id, { status: "live" })}
-                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                  className="lv-btn-ghost"
                 >
                   Set live
                 </button>
                 <button
                   onClick={() => updateMatch(m.id, { status: "finished" })}
-                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                  className="lv-btn-ghost"
                 >
                   Set finished
                 </button>
                 <a
                   href={`/admin/matches/${m.id}/live`}
-                  className="text-xs bg-signal rounded px-3 py-1.5 hover:opacity-90"
+                  className="lv-btn-primary"
                 >
                   Open live console
                 </a>
                 <a
                   href={`/match/${m.id}`}
                   target="_blank"
-                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                  className="lv-btn-ghost"
                 >
                   View public page ↗
                 </a>

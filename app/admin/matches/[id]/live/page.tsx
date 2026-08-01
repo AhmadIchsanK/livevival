@@ -417,12 +417,12 @@ export default function LiveConsolePage() {
   return (
     <div className="text-white space-y-8 max-w-6xl">
       <div>
-        <h1 className="text-lg font-bold">
+        <h1 className="lv-heading text-lg">
           {match.team_a?.name} vs {match.team_b?.name}
         </h1>
-        <div className="flex items-center gap-3 mt-1">
+        <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
-          <span className="text-[10px] px-2 py-0.5 rounded bg-white/10 uppercase tracking-wide">
+          <span className="lv-badge bg-white/10 text-white/60">
             {match.state.replace(/_/g, " ")}
           </span>
           <button
@@ -491,7 +491,7 @@ export default function LiveConsolePage() {
             {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
             {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
           </select>
-          <button onClick={addPlayer} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+          <button onClick={addPlayer} className="lv-btn-ghost">
             Add player
           </button>
         </div>
@@ -516,7 +516,7 @@ export default function LiveConsolePage() {
             onChange={(e) => setPbHero(e.target.value)}
             className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
-          <button onClick={logPickBan} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+          <button onClick={logPickBan} className="lv-btn-ghost">
             Log
           </button>
         </div>
@@ -622,7 +622,7 @@ export default function LiveConsolePage() {
               <option key={p.id} value={p.id}>{p.ign}</option>
             ))}
           </select>
-          <button onClick={logKeyMoment} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+          <button onClick={logKeyMoment} className="lv-btn-ghost">
             Log moment
           </button>
         </div>
@@ -726,12 +726,12 @@ export default function LiveConsolePage() {
                   Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
                   <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>
                 </span>
-                <button onClick={confirmSuggestion} className="text-xs bg-signal rounded px-3 py-1.5">
+                <button onClick={confirmSuggestion} className="lv-btn-primary">
                   Log this
                 </button>
                 <button
                   onClick={() => setSuggestion(null)}
-                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
+                  className="lv-btn-ghost"
                 >
                   Dismiss
                 </button>

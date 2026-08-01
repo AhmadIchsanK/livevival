@@ -143,7 +143,7 @@ export default function PublicMatchPage() {
     return (
       <main className="min-h-screen flex flex-col items-center justify-center text-sm gap-2 px-6 text-center">
         <p className="text-red-400">Couldn&apos;t load this match: {loadError}</p>
-        <a href="/" className="text-white/50 underline">Back to homepage</a>
+        <a href="/" className="lv-nav-link">Back to homepage</a>
       </main>
     );
   }
@@ -195,14 +195,10 @@ export default function PublicMatchPage() {
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-5xl mx-auto space-y-8">
       <header className="space-y-1">
-        <p className="text-xs text-white/50">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
-        <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold">{match.team_a?.name} vs {match.team_b?.name}</h1>
-          <span
-            className={`text-xs px-2 py-1 rounded uppercase tracking-wide ${
-              match.status === "live" ? "bg-emerald-500/20 text-emerald-400" : "bg-white/10 text-white/50"
-            }`}
-          >
+        <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="font-display font-light text-2xl sm:text-3xl tracking-tight">{match.team_a?.name} vs {match.team_b?.name}</h1>
+          <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
             {match.status}
           </span>
         </div>
@@ -220,13 +216,15 @@ export default function PublicMatchPage() {
       </header>
 
       {games.length > 1 && (
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           {games.map((g) => (
             <button
               key={g.id}
               onClick={() => setSelectedGameId(g.id)}
-              className={`text-xs px-3 py-1.5 rounded border ${
-                selectedGameId === g.id ? "bg-signal border-signal" : "border-white/10 hover:bg-white/10"
+              className={`text-xs px-3 py-1.5 rounded-md border transition-all duration-200 ${
+                selectedGameId === g.id
+                  ? "bg-signal border-signal shadow-[0_0_16px_1px_rgba(232,72,58,0.4)]"
+                  : "border-white/10 hover:border-signal/40 hover:bg-white/5"
               }`}
             >
               Game {g.game_number}
@@ -241,10 +239,12 @@ export default function PublicMatchPage() {
       )}
 
       {embedUrl ? (
-        <iframe src={embedUrl} className="w-full aspect-video rounded" allow="autoplay; encrypted-media" allowFullScreen />
+        <div className="lv-card-flush overflow-hidden">
+          <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
+        </div>
       ) : (
         videoUrl && (
-          <a href={videoUrl} target="_blank" className="block text-sm text-white/60 underline">
+          <a href={videoUrl} target="_blank" className="lv-nav-link block">
             Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
           </a>
         )
@@ -252,7 +252,7 @@ export default function PublicMatchPage() {
 
       {chartData.length > 1 && (
         <section>
-          <h2 className="font-bold mb-2">Net worth difference</h2>
+          <h2 className="lv-heading mb-2">Net worth difference</h2>
           <p className="text-xs text-white/50 mb-2">Positive = {match.team_a?.name} ahead. Negative = {match.team_b?.name} ahead.</p>
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={chartData}>
@@ -267,13 +267,13 @@ export default function PublicMatchPage() {
       )}
 
       <section>
-        <h2 className="font-bold mb-2">Draft recap {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
-        <div className="grid grid-cols-2 gap-6 text-sm">
+        <h2 className="lv-heading mb-2">Draft recap {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <div className="grid grid-cols-2 gap-4 text-sm">
           {[
             { name: match.team_a?.name, bans: teamABans, picks: teamAPicks, teamId: teamAId },
             { name: match.team_b?.name, bans: teamBBans, picks: teamBPicks, teamId: teamBId },
           ].map((t, i) => (
-            <div key={i} className="space-y-2">
+            <div key={i} className="lv-card-flush p-4 space-y-2">
               <p className="text-white/70 font-semibold">{t.name}</p>
               <p className="text-xs text-white/40">Bans: {t.bans.map((b) => b.hero_name).join(", ") || "—"}</p>
               <div className="text-xs text-white/40 space-y-0.5">
@@ -295,25 +295,25 @@ export default function PublicMatchPage() {
       </section>
 
       <section>
-        <h2 className="font-bold mb-2">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
-        <div className="grid grid-cols-2 gap-6">
+        <h2 className="lv-heading mb-2">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <div className="grid grid-cols-2 gap-4">
           {[
             { name: match.team_a?.name, list: teamAStats },
             { name: match.team_b?.name, list: teamBStats },
           ].map((t, i) => (
-            <div key={i}>
-              <p className="text-white/70 font-semibold mb-1 text-sm">{t.name}</p>
+            <div key={i} className="lv-card-flush p-4">
+              <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
               <table className="w-full text-xs">
-                <thead className="text-white/40 text-left">
-                  <tr><th>Player</th><th>Hero</th><th>K/D/A</th><th>Gold</th></tr>
+                <thead className="text-white/40 text-left uppercase tracking-wide">
+                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K/D/A</th><th className="pb-1.5">Gold</th></tr>
                 </thead>
                 <tbody>
                   {t.list.map((s) => (
                     <tr key={s.id} className="border-t border-white/10">
-                      <td className="py-1">{s.player?.ign}</td>
+                      <td className="py-1.5">{s.player?.ign}</td>
                       <td>{s.hero_name}</td>
-                      <td>{s.kills}/{s.deaths}/{s.assists}</td>
-                      <td>{s.gold?.toLocaleString()}</td>
+                      <td className="tabular-nums">{s.kills}/{s.deaths}/{s.assists}</td>
+                      <td className="tabular-nums">{s.gold?.toLocaleString()}</td>
                     </tr>
                   ))}
                   {t.list.length === 0 && (
@@ -327,10 +327,10 @@ export default function PublicMatchPage() {
       </section>
 
       <section>
-        <h2 className="font-bold mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <h2 className="lv-heading mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="flex flex-wrap gap-2 text-xs">
           {gameObjectives.map((o) => (
-            <span key={o.id} className="px-2 py-1 rounded bg-white/10 capitalize">
+            <span key={o.id} className="lv-badge bg-white/10 text-white/70 capitalize">
               {o.minute_mark}&apos; {o.type} — {o.team_id === teamAId ? match.team_a?.name : match.team_b?.name}
             </span>
           ))}
@@ -339,16 +339,16 @@ export default function PublicMatchPage() {
       </section>
 
       <section>
-        <h2 className="font-bold mb-2">Key moments {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <h2 className="lv-heading mb-2">Key moments {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="flex flex-wrap gap-3">
           {gameKeyMoments.map((km) => (
-            <div key={km.id} className="w-40 space-y-1">
+            <div key={km.id} className="w-40 space-y-1.5 lv-card-flush p-2">
               {km.screenshot_url && (
-                <img src={km.screenshot_url} alt={km.type} className="w-full rounded border border-white/10" />
+                <img src={km.screenshot_url} alt={km.type} className="w-full rounded-md border border-white/10" />
               )}
-              <span className="text-xs px-2 py-1 rounded bg-signal/20 capitalize inline-block">
+              <span className="lv-badge bg-signal/15 text-signal capitalize inline-flex">
                 {km.minute_mark}&apos; {km.type.replace("_", " ")}{km.player?.ign ? ` — ${km.player.ign}` : ""}
-                {km.source === "auto" && <span className="text-white/40"> · auto</span>}
+                {km.source === "auto" && <span className="text-white/40 normal-case tracking-normal font-normal"> · auto</span>}
               </span>
             </div>
           ))}

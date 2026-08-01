@@ -162,7 +162,7 @@ export default function TournamentsAdminPage() {
   return (
     <div className="text-white space-y-6 max-w-4xl">
       <div>
-        <h1 className="text-lg font-bold">Tournaments</h1>
+        <h1 className="lv-heading text-lg">Tournaments</h1>
         <p className="text-xs text-white/40 mt-1">
           S/A-Tier tournaments auto-import from Liquipedia every 6h, scoped to a rolling past year
           (or still upcoming/ongoing). Edit dates/logo here, or add one manually if Liquipedia hasn&apos;t yet.
@@ -228,7 +228,7 @@ export default function TournamentsAdminPage() {
         <button
           type="submit"
           disabled={loading}
-          className="col-span-2 bg-signal rounded px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          className="col-span-2 lv-btn-primary !py-2"
         >
           Add
         </button>
@@ -257,7 +257,7 @@ export default function TournamentsAdminPage() {
         {selected.size > 0 && (
           <button
             onClick={bulkDelete}
-            className="text-xs border border-red-500/30 text-red-300 rounded px-3 py-1.5 hover:bg-red-500/10 whitespace-nowrap"
+            className="lv-btn-danger whitespace-nowrap"
           >
             Delete {selected.size} selected
           </button>
@@ -326,12 +326,12 @@ export default function TournamentsAdminPage() {
                     />
                   </td>
                   <td className="py-2 text-right space-x-2">
-                    <button onClick={() => saveEdit(t.id)} className="text-xs bg-signal rounded px-2 py-1">
+                    <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
                       Save
                     </button>
                     <button
                       onClick={() => setEditingId(null)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Cancel
                     </button>
@@ -351,13 +351,13 @@ export default function TournamentsAdminPage() {
                   <td className="py-2 text-right space-x-2">
                     <button
                       onClick={() => startEdit(t)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Edit
                     </button>
                     <button
                       onClick={() => deleteTournament(t.id, t.name)}
-                      className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10"
+                      className="lv-btn-danger !px-2 !py-1"
                     >
                       Delete
                     </button>

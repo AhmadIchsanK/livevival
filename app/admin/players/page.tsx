@@ -175,7 +175,7 @@ export default function PlayersPage() {
 
   return (
     <div className="text-white space-y-6 max-w-3xl">
-      <h1 className="text-lg font-bold">Players</h1>
+      <h1 className="lv-heading text-lg">Players</h1>
 
       <form onSubmit={handleAdd} className="grid grid-cols-3 gap-3 max-w-xl items-end">
         <div className="space-y-1">
@@ -212,7 +212,7 @@ export default function PlayersPage() {
         <button
           type="submit"
           disabled={loading}
-          className="col-span-3 bg-signal rounded px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          className="col-span-3 lv-btn-primary !py-2"
         >
           Add
         </button>
@@ -242,7 +242,7 @@ export default function PlayersPage() {
           <button
             onClick={bulkImport}
             disabled={bulkLoading || !bulkText.trim()}
-            className="text-xs bg-signal rounded px-3 py-1.5 disabled:opacity-50"
+            className="lv-btn-primary"
           >
             {bulkLoading ? "Importing..." : "Import"}
           </button>
@@ -291,7 +291,7 @@ export default function PlayersPage() {
             </button>
             <button
               onClick={bulkDelete}
-              className="text-xs border border-red-500/30 text-red-300 rounded px-3 py-1.5 hover:bg-red-500/10 whitespace-nowrap"
+              className="lv-btn-danger whitespace-nowrap"
             >
               Delete {selected.size}
             </button>
@@ -348,12 +348,12 @@ export default function PlayersPage() {
                     </select>
                   </td>
                   <td className="py-2 text-right space-x-2">
-                    <button onClick={() => saveEdit(p.id)} className="text-xs bg-signal rounded px-2 py-1">
+                    <button onClick={() => saveEdit(p.id)} className="lv-btn-primary !px-2 !py-1">
                       Save
                     </button>
                     <button
                       onClick={() => setEditingId(null)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Cancel
                     </button>
@@ -370,13 +370,13 @@ export default function PlayersPage() {
                   <td className="py-2 text-right space-x-2">
                     <button
                       onClick={() => startEdit(p)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Edit
                     </button>
                     <button
                       onClick={() => deletePlayer(p.id, p.ign)}
-                      className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10"
+                      className="lv-btn-danger !px-2 !py-1"
                     >
                       Delete
                     </button>

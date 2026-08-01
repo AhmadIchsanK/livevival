@@ -181,7 +181,7 @@ export default function HeroesPage() {
   return (
     <div className="text-white space-y-6 max-w-3xl">
       <div>
-        <h1 className="text-lg font-bold">Heroes</h1>
+        <h1 className="lv-heading text-lg">Heroes</h1>
         <p className="text-xs text-white/40 mt-1">
           Auto-imported from Liquipedia every 6h (name + icon). Edit role/aliases here, or add anything the
           importer missed.
@@ -229,7 +229,7 @@ export default function HeroesPage() {
         <button
           type="submit"
           disabled={loading}
-          className="col-span-2 bg-signal rounded px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          className="col-span-2 lv-btn-primary !py-2"
         >
           Add
         </button>
@@ -249,7 +249,7 @@ export default function HeroesPage() {
           <button
             onClick={bulkImport}
             disabled={bulkLoading || !bulkText.trim()}
-            className="text-xs bg-signal rounded px-3 py-1.5 disabled:opacity-50"
+            className="lv-btn-primary"
           >
             {bulkLoading ? "Importing..." : "Import"}
           </button>
@@ -268,7 +268,7 @@ export default function HeroesPage() {
         {selected.size > 0 && (
           <button
             onClick={bulkDelete}
-            className="text-xs border border-red-500/30 text-red-300 rounded px-3 py-1.5 hover:bg-red-500/10 whitespace-nowrap"
+            className="lv-btn-danger whitespace-nowrap"
           >
             Delete {selected.size} selected
           </button>
@@ -326,12 +326,12 @@ export default function HeroesPage() {
                     />
                   </td>
                   <td className="py-2 text-right space-x-2">
-                    <button onClick={() => saveEdit(h.id)} className="text-xs bg-signal rounded px-2 py-1">
+                    <button onClick={() => saveEdit(h.id)} className="lv-btn-primary !px-2 !py-1">
                       Save
                     </button>
                     <button
                       onClick={() => setEditingId(null)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Cancel
                     </button>
@@ -356,13 +356,13 @@ export default function HeroesPage() {
                   <td className="py-2 text-right space-x-2">
                     <button
                       onClick={() => startEdit(h)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Edit
                     </button>
                     <button
                       onClick={() => deleteHero(h.id, h.name)}
-                      className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10"
+                      className="lv-btn-danger !px-2 !py-1"
                     >
                       Delete
                     </button>

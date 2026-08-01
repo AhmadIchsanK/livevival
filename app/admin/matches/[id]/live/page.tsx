@@ -19,7 +19,7 @@ type Match = {
   format: string | null;
   current_game_number: number;
   state: string;
-  auto_managed: boolean;
+  update_source: "liquipedia" | "local_ocr";
   tournament: { name: string } | null;
   team_a: { id: string; name: string } | null;
   team_b: { id: string; name: string } | null;
@@ -55,7 +55,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number, state, auto_managed,
+        `id, youtube_url, format, current_game_number, state, update_source,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(id, name),
          team_b:teams!matches_team_b_id_fkey(id, name)`
@@ -214,53 +214,114 @@ export default function LiveConsolePage() {
     });
   }
 
-  // ── OCR assist (experimental) ────────────────────────────────────────
+  // ── Local capture (admin PC) ─────────────────────────────────────────
+  // Only meaningful when match.update_source === "local_ocr": deterministic,
+  // local, free OCR on a screen-shared tab — no AI, no rate limits, no
+  // datacenter-IP bot detection, because it's the admin's own browser
+  // watching whatever is already playing. Reads text/numbers only (timer,
+  // gold, kill-banner keywords) — hero icons and small scoreboard rows
+  // aren't reliable to OCR, so picks/bans and per-player K/D/A stay as the
+  // one-click pickers/inputs elsewhere on this page.
+  type CaptureField = "timer" | "gold" | "kill_banner";
+  const CAPTURE_FIELDS: { field: CaptureField; label: string }[] = [
+    { field: "timer", label: "Match timer" },
+    { field: "gold", label: "Team gold (A then B)" },
+    { field: "kill_banner", label: "Kill banner" },
+  ];
+  type RegionBox = { xPct: number; yPct: number; wPct: number; hPct: number };
+
   const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const workerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
 
-  const [ocrActive, setOcrActive] = useState(false);
-  const [calibrating, setCalibrating] = useState(false);
-  const [crop, setCrop] = useState({ xPct: 30, yPct: 35, wPct: 40, hPct: 20 });
+  const [captureActive, setCaptureActive] = useState(false);
+  const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
+  const [regions, setRegions] = useState<Record<CaptureField, RegionBox | null>>({
+    timer: null,
+    gold: null,
+    kill_banner: null,
+  });
+  const [readings, setReadings] = useState<Record<CaptureField, string>>({ timer: "", gold: "", kill_banner: "" });
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
 
-  async function captureAndRecognize() {
+  useEffect(() => {
+    if (!matchId) return;
+    (async () => {
+      const { data } = await supabase
+        .from("capture_regions")
+        .select("field, x_pct, y_pct, w_pct, h_pct")
+        .eq("match_id", matchId);
+      if (!data) return;
+      setRegions((prev) => {
+        const next = { ...prev };
+        for (const r of data) {
+          next[r.field as CaptureField] = { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct };
+        }
+        return next;
+      });
+    })();
+  }, [matchId]);
+
+  async function saveRegion(field: CaptureField, box: RegionBox) {
+    setRegions((prev) => ({ ...prev, [field]: box }));
+    await supabase.from("capture_regions").upsert(
+      { match_id: matchId, field, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct },
+      { onConflict: "match_id,field" }
+    );
+  }
+
+  function cropCanvasFor(video: HTMLVideoElement, box: RegionBox) {
+    const cx = (box.xPct / 100) * video.videoWidth;
+    const cy = (box.yPct / 100) * video.videoHeight;
+    const cw = (box.wPct / 100) * video.videoWidth;
+    const ch = (box.hPct / 100) * video.videoHeight;
+    if (cw < 5 || ch < 5) return null;
+
+    const full = document.createElement("canvas");
+    full.width = video.videoWidth;
+    full.height = video.videoHeight;
+    full.getContext("2d")?.drawImage(video, 0, 0);
+
+    const crop = document.createElement("canvas");
+    crop.width = cw;
+    crop.height = ch;
+    crop.getContext("2d")?.drawImage(full, cx, cy, cw, ch, 0, 0, cw, ch);
+    return crop;
+  }
+
+  async function captureTick() {
     const video = previewRef.current;
     const worker = workerRef.current;
     if (!video || !worker || video.videoWidth === 0) return;
 
-    const fullCanvas = document.createElement("canvas");
-    fullCanvas.width = video.videoWidth;
-    fullCanvas.height = video.videoHeight;
-    const ctx = fullCanvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
+    for (const { field } of CAPTURE_FIELDS) {
+      const box = regions[field];
+      if (!box) continue;
+      const canvas = cropCanvasFor(video, box);
+      if (!canvas) continue;
 
-    const cx = (crop.xPct / 100) * video.videoWidth;
-    const cy = (crop.yPct / 100) * video.videoHeight;
-    const cw = (crop.wPct / 100) * video.videoWidth;
-    const ch = (crop.hPct / 100) * video.videoHeight;
-    if (cw < 5 || ch < 5) return;
+      try {
+        const { data: { text } } = await worker.recognize(canvas);
+        const trimmed = text.trim();
+        setReadings((prev) => ({ ...prev, [field]: trimmed }));
 
-    const cropCanvas = document.createElement("canvas");
-    cropCanvas.width = cw;
-    cropCanvas.height = ch;
-    const cropCtx = cropCanvas.getContext("2d");
-    if (!cropCtx) return;
-    cropCtx.drawImage(fullCanvas, cx, cy, cw, ch, 0, 0, cw, ch);
-
-    try {
-      const { data: { text } } = await worker.recognize(cropCanvas);
-      const found = OCR_KEYWORDS.find((k) => k.pattern.test(text));
-      if (found) setSuggestion({ type: found.type, raw: text.trim() });
-    } catch (err) {
-      console.error("OCR error", err);
+        if (field === "kill_banner") {
+          const found = OCR_KEYWORDS.find((k) => k.pattern.test(trimmed));
+          if (found) setSuggestion({ type: found.type, raw: trimmed });
+        }
+        if (field === "timer") {
+          const m = trimmed.match(/(\d{1,2}):(\d{2})/);
+          if (m) setMinute(Number(m[1]));
+        }
+      } catch (err) {
+        console.error(`OCR error (${field})`, err);
+      }
     }
   }
 
-  async function startOcrAssist() {
+  async function startCapture() {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
       streamRef.current = stream;
@@ -269,33 +330,33 @@ export default function LiveConsolePage() {
         await previewRef.current.play();
       }
       workerRef.current = await createWorker("eng");
-      setOcrActive(true);
-      intervalRef.current = setInterval(captureAndRecognize, 5000);
+      setCaptureActive(true);
+      intervalRef.current = setInterval(captureTick, 5000);
     } catch (err) {
-      console.error("Could not start screen share for OCR assist", err);
+      console.error("Could not start screen share for local capture", err);
     }
   }
 
-  function stopOcrAssist() {
+  function stopCapture() {
     if (intervalRef.current) clearInterval(intervalRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     workerRef.current?.terminate();
-    setOcrActive(false);
+    setCaptureActive(false);
     setSuggestion(null);
   }
 
   useEffect(() => {
-    return () => stopOcrAssist();
+    return () => stopCapture();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleCropMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    if (!calibrating) return;
+    if (!calibratingField) return;
     const rect = e.currentTarget.getBoundingClientRect();
     dragStart.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
   function handleCropMouseUp(e: React.MouseEvent<HTMLDivElement>) {
-    if (!calibrating || !dragStart.current) return;
+    if (!calibratingField || !dragStart.current) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const endX = e.clientX - rect.left;
     const endY = e.clientY - rect.top;
@@ -303,30 +364,46 @@ export default function LiveConsolePage() {
     const y = Math.min(dragStart.current.y, endY);
     const w = Math.abs(endX - dragStart.current.x);
     const h = Math.abs(endY - dragStart.current.y);
-    setCrop({
+    saveRegion(calibratingField, {
       xPct: (x / rect.width) * 100,
       yPct: (y / rect.height) * 100,
       wPct: (w / rect.width) * 100,
       hPct: (h / rect.height) * 100,
     });
     dragStart.current = null;
-    setCalibrating(false);
+    setCalibratingField(null);
   }
 
   async function confirmSuggestion() {
     if (!suggestion || !game) return;
     await supabase.from("key_moments").insert({
       game_id: game.id,
+      match_id: matchId,
       type: suggestion.type,
       minute_mark: minute,
+      source: "manual",
     });
     setSuggestion(null);
     loadAll();
   }
 
-  async function toggleAutoManaged() {
+  async function applyGoldReading() {
+    if (!game) return;
+    const nums = readings.gold.match(/\d[\d,]*/g)?.map((n) => Number(n.replace(/,/g, "")));
+    if (!nums || nums.length < 2) return;
+    await supabase.from("net_worth_snapshots").insert({
+      game_id: game.id,
+      match_id: matchId,
+      minute_mark: minute,
+      team_a_gold: nums[0],
+      team_b_gold: nums[1],
+    });
+  }
+
+  async function toggleUpdateSource() {
     if (!match) return;
-    await supabase.from("matches").update({ auto_managed: !match.auto_managed }).eq("id", match.id);
+    const next = match.update_source === "liquipedia" ? "local_ocr" : "liquipedia";
+    await supabase.from("matches").update({ update_source: next }).eq("id", match.id);
     loadAll();
   }
 
@@ -340,23 +417,25 @@ export default function LiveConsolePage() {
   return (
     <div className="text-white space-y-8 max-w-6xl">
       <div>
-        <h1 className="text-lg font-bold">
+        <h1 className="lv-heading text-lg">
           {match.team_a?.name} vs {match.team_b?.name}
         </h1>
-        <div className="flex items-center gap-3 mt-1">
+        <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
-          <span className="text-[10px] px-2 py-0.5 rounded bg-white/10 uppercase tracking-wide">
+          <span className="lv-badge bg-white/10 text-white/60">
             {match.state.replace(/_/g, " ")}
           </span>
           <button
-            onClick={toggleAutoManaged}
+            onClick={toggleUpdateSource}
             className={`text-[10px] px-2 py-0.5 rounded border ${
-              match.auto_managed
+              match.update_source === "liquipedia"
                 ? "border-emerald-500/40 text-emerald-400"
                 : "border-yellow-500/40 text-yellow-400"
             }`}
           >
-            {match.auto_managed ? "🤖 Auto-detection ON — click to take manual control" : "✋ Manual control — click to re-enable auto-detection"}
+            {match.update_source === "liquipedia"
+              ? "🤖 Liquipedia auto ON — click to take over with local OCR"
+              : "✋ Local OCR (this PC) — click to hand back to Liquipedia auto"}
           </button>
         </div>
       </div>
@@ -412,7 +491,7 @@ export default function LiveConsolePage() {
             {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
             {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
           </select>
-          <button onClick={addPlayer} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+          <button onClick={addPlayer} className="lv-btn-ghost">
             Add player
           </button>
         </div>
@@ -437,7 +516,7 @@ export default function LiveConsolePage() {
             onChange={(e) => setPbHero(e.target.value)}
             className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
-          <button onClick={logPickBan} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+          <button onClick={logPickBan} className="lv-btn-ghost">
             Log
           </button>
         </div>
@@ -543,7 +622,7 @@ export default function LiveConsolePage() {
               <option key={p.id} value={p.id}>{p.ign}</option>
             ))}
           </select>
-          <button onClick={logKeyMoment} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+          <button onClick={logKeyMoment} className="lv-btn-ghost">
             Log moment
           </button>
         </div>
@@ -556,68 +635,109 @@ export default function LiveConsolePage() {
         </div>
       </section>
 
-      {/* OCR assist (experimental) */}
+      {/* Local capture (admin PC) — only drives anything when this match is on local_ocr */}
       <section className="space-y-3 border-t border-white/10 pt-6">
         <div className="flex items-center justify-between">
-          <h2 className="font-bold">OCR assist (experimental)</h2>
-          <button
-            onClick={ocrActive ? stopOcrAssist : startOcrAssist}
-            className={`text-xs rounded px-3 py-1.5 ${
-              ocrActive ? "bg-red-500/20 text-red-300" : "border border-white/10 hover:bg-white/10"
-            }`}
-          >
-            {ocrActive ? "Stop OCR assist" : "Start OCR assist"}
-          </button>
+          <h2 className="font-bold">Local capture (this PC)</h2>
+          {match.update_source === "local_ocr" && (
+            <button
+              onClick={captureActive ? stopCapture : startCapture}
+              className={`text-xs rounded px-3 py-1.5 ${
+                captureActive ? "bg-red-500/20 text-red-300" : "border border-white/10 hover:bg-white/10"
+              }`}
+            >
+              {captureActive ? "Stop capture" : "Start capture"}
+            </button>
+          )}
         </div>
-        <p className="text-[10px] text-white/40">
-          Reads kill-banner text (SAVAGE / MANIAC / etc.) from a screen-shared tab showing the stream.
-          Your browser will ask you to pick which tab to share — nothing is captured without that prompt.
-          Never logs anything automatically; it only ever suggests, and you confirm.
-        </p>
 
-        {ocrActive && (
-          <div className="space-y-2">
-            <div
-              className="relative w-full max-w-md border border-white/10 rounded overflow-hidden"
-              onMouseDown={handleCropMouseDown}
-              onMouseUp={handleCropMouseUp}
-            >
-              <video ref={previewRef} muted className="w-full block" />
-              <div
-                className="absolute border-2 border-signal pointer-events-none"
-                style={{
-                  left: `${crop.xPct}%`,
-                  top: `${crop.yPct}%`,
-                  width: `${crop.wPct}%`,
-                  height: `${crop.hPct}%`,
-                }}
-              />
-            </div>
-            <button
-              onClick={() => setCalibrating(true)}
-              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
-            >
-              {calibrating ? "Drag over the kill-banner area now..." : "Recalibrate crop region"}
-            </button>
-          </div>
-        )}
+        {match.update_source !== "local_ocr" ? (
+          <p className="text-xs text-white/40">
+            This match is on Liquipedia auto. Switch update source to &quot;Local OCR&quot; above to take over
+            with this PC&apos;s screen capture.
+          </p>
+        ) : (
+          <>
+            <p className="text-[10px] text-white/40">
+              Reads the match timer, team gold, and kill-banner text from a screen-shared tab showing the
+              stream — deterministic OCR running entirely in your browser, no AI involved, nothing sent
+              anywhere. Hero picks/bans and per-player K/D/A aren&apos;t reliable to OCR (icons have no text,
+              scoreboard rows vary too much) — keep using the pickers/inputs above for those.
+            </p>
 
-        {suggestion && (
-          <div className="flex flex-wrap items-center gap-3 bg-yellow-500/10 border border-yellow-500/30 rounded px-4 py-3">
-            <span className="text-sm">
-              Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
-              <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>
-            </span>
-            <button onClick={confirmSuggestion} className="text-xs bg-signal rounded px-3 py-1.5">
-              Log this
-            </button>
-            <button
-              onClick={() => setSuggestion(null)}
-              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10"
-            >
-              Dismiss
-            </button>
-          </div>
+            {captureActive && (
+              <div className="space-y-3">
+                <div
+                  className="relative w-full max-w-md border border-white/10 rounded overflow-hidden"
+                  onMouseDown={handleCropMouseDown}
+                  onMouseUp={handleCropMouseUp}
+                >
+                  <video ref={previewRef} muted className="w-full block" />
+                  {CAPTURE_FIELDS.map(({ field }) => {
+                    const box = regions[field];
+                    if (!box) return null;
+                    return (
+                      <div
+                        key={field}
+                        className={`absolute border-2 pointer-events-none ${
+                          calibratingField === field ? "border-signal" : "border-white/40"
+                        }`}
+                        style={{
+                          left: `${box.xPct}%`,
+                          top: `${box.yPct}%`,
+                          width: `${box.wPct}%`,
+                          height: `${box.hPct}%`,
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  {CAPTURE_FIELDS.map(({ field, label }) => (
+                    <div key={field} className="border border-white/10 rounded p-2 space-y-1.5">
+                      <p className="text-[10px] text-white/50">{label}</p>
+                      <button
+                        onClick={() => setCalibratingField(field)}
+                        className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 w-full"
+                      >
+                        {calibratingField === field ? "Drag the area now..." : regions[field] ? "Recalibrate" : "Calibrate"}
+                      </button>
+                      <p className="text-xs text-white/70 truncate" title={readings[field]}>
+                        {readings[field] || "—"}
+                      </p>
+                      {field === "gold" && readings.gold && (
+                        <button
+                          onClick={applyGoldReading}
+                          className="text-[10px] bg-signal rounded px-2 py-1 w-full"
+                        >
+                          Apply as net worth snapshot
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {suggestion && (
+              <div className="flex flex-wrap items-center gap-3 bg-yellow-500/10 border border-yellow-500/30 rounded px-4 py-3">
+                <span className="text-sm">
+                  Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
+                  <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>
+                </span>
+                <button onClick={confirmSuggestion} className="lv-btn-primary">
+                  Log this
+                </button>
+                <button
+                  onClick={() => setSuggestion(null)}
+                  className="lv-btn-ghost"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </>
         )}
       </section>
     </div>

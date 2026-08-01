@@ -126,7 +126,7 @@ export default function TeamsPage() {
 
   return (
     <div className="text-white space-y-6 max-w-2xl">
-      <h1 className="text-lg font-bold">Teams</h1>
+      <h1 className="lv-heading text-lg">Teams</h1>
 
       <form onSubmit={handleAdd} className="flex gap-3 items-end">
         <div className="flex-1 space-y-1">
@@ -151,7 +151,7 @@ export default function TeamsPage() {
         <button
           type="submit"
           disabled={loading}
-          className="bg-signal rounded px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          className="lv-btn-primary !py-2"
         >
           Add
         </button>
@@ -169,7 +169,7 @@ export default function TeamsPage() {
         {selected.size > 0 && (
           <button
             onClick={bulkDelete}
-            className="text-xs border border-red-500/30 text-red-300 rounded px-3 py-1.5 hover:bg-red-500/10 whitespace-nowrap"
+            className="lv-btn-danger whitespace-nowrap"
           >
             Delete {selected.size} selected
           </button>
@@ -212,12 +212,12 @@ export default function TeamsPage() {
                     />
                   </td>
                   <td className="py-2 text-right space-x-2">
-                    <button onClick={() => saveEdit(t.id)} className="text-xs bg-signal rounded px-2 py-1">
+                    <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
                       Save
                     </button>
                     <button
                       onClick={() => setEditingId(null)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Cancel
                     </button>
@@ -237,13 +237,13 @@ export default function TeamsPage() {
                   <td className="py-2 text-right space-x-2">
                     <button
                       onClick={() => startEdit(t)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      className="lv-btn-ghost !px-2 !py-1"
                     >
                       Edit
                     </button>
                     <button
                       onClick={() => deleteTeam(t.id, t.name)}
-                      className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10"
+                      className="lv-btn-danger !px-2 !py-1"
                     >
                       Delete
                     </button>

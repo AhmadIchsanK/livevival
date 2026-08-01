@@ -1,5 +1,12 @@
 name: Import Liquipedia tournaments
 
+# Core schedule/score data — tournaments, heroes, matches. Kept in its own
+# run (separate from liquipedia-import-details.yml) so the two don't
+# compete for the same rate-limit budget: a full matches pass across every
+# active tournament alone can take ~30 minutes and consume Liquipedia's
+# short-term throttle window, which previously starved the very next step
+# (team-rosters) in the same job. continue-on-error on each step means one
+# rate-limited tournament doesn't block the rest of the run.
 on:
   schedule:
     - cron: "0 */6 * * *"
@@ -15,22 +22,17 @@ jobs:
           node-version: 22
       - run: npm install @supabase/supabase-js cheerio
       - run: node scripts/import-liquipedia.mjs
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      - run: node scripts/import-liquipedia-heroes.mjs
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
       - run: node scripts/import-liquipedia-matches.mjs
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      - run: node scripts/import-liquipedia-team-rosters.mjs
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      - run: node scripts/import-liquipedia-region-rosters.mjs
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      - run: node scripts/refresh-finished-match-details.mjs
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

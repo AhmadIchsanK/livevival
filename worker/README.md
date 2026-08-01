@@ -1,54 +1,62 @@
-# Livevival worker — automated match & key-moment detection
+# Livevival worker — always-on Liquipedia poller
 
-This is a separate, always-on Node.js process. It does **not** run on Vercel
-(serverless functions can't stay alive watching a stream) — deploy it as its
-own Railway service, alongside the Nukhba bot pattern you're already using.
+This is a separate, always-on Node.js process (Railway, not Vercel —
+serverless functions can't stay alive polling on a tight loop). It replaces
+the old Groq-vision livestream watcher: instead of reading a video frame,
+it re-fetches Liquipedia's own match data every ~20 seconds for whichever
+tournaments currently have a live or soon-to-start match, and writes
+schedule, score, per-game winners, picks/bans, and VOD links straight to
+Supabase.
 
-## What it does
+## Why a separate process instead of just running the cron more often
 
-Every few seconds, for each stream row with `status IN ('scheduled','live')`:
-1. Grabs one frame from the livestream (`ffmpeg` + `yt-dlp`).
-2. Sends it to Groq's vision model, asking for structured JSON: current
-   phase, visible team names, a winner if a result screen is showing, and
-   whether a SAVAGE/MANIAC/LORD_STEAL/etc. banner is up.
-3. Figures out which scheduled match (if the stream covers several) is
-   currently live, by matching visible team names against the schedule.
-4. Advances `matches.state` / `games.state` through the requested lifecycle,
-   requiring several consecutive agreeing frames before committing a winner.
-5. Logs key moments to `key_moments` with `source='auto'`, a confidence
-   score, and an uploaded screenshot.
+GitHub Actions cron has a practical floor around 5 minutes between runs.
+Getting materially closer to real-time for a match that's live right now
+needs a long-running loop, not a faster schedule — that's this process.
+Everything that ISN'T time-sensitive (discovering brand-new tournaments,
+historical backfill, team/hero rosters) stays on the existing 6-hourly
+`.github/workflows/liquipedia-import.yml` cron; this worker only ever
+touches tournaments that already have a match in progress or starting soon.
 
-Admins can flip `matches.auto_managed = false` at any point (e.g. from the
-live console) to fall back to fully manual control for a specific match —
-the worker skips any match with that flag off.
+## What it does, every tick (`POLL_INTERVAL_SECONDS`, default 20s)
 
-## Requirements on the host
+1. Finds every match with `update_source = 'liquipedia'`, not yet
+   `finished`, scheduled within the last `RECENT_WINDOW_HOURS` (default 6)
+   or the next `IMMINENT_WINDOW_HOURS` (default 2).
+2. Groups those by tournament (one Liquipedia page fetch covers every match
+   in that tournament, not one fetch per match).
+3. Re-parses that tournament's bracket page and:
+   - updates `matches.status`/`format`/`stream_id` (schedule sync)
+   - if a match is now finished on Liquipedia: writes `games`
+     (per-game winner + VOD), `hero_picks_bans` (with `hero_id` resolved
+     against the `heroes` table), and the series winner (finished-match
+     sync)
 
-- **Node 20+**
-- **ffmpeg** on PATH — on Railway, add a `nixpacks.toml` with:
-  ```toml
-  [phases.setup]
-  nixPkgs = ["ffmpeg"]
-  ```
-- `yt-dlp`-compatible extraction via the `youtube-dl-exec` npm package
-  (it vendors its own binary, no separate install needed).
+## `update_source` — the admin's escape hatch
+
+A match defaults to `update_source = 'liquipedia'`. If Liquipedia won't have
+a piece of live detail in time (it only reflects what wiki editors have
+entered), an admin can flip a match to `update_source = 'local_ocr'` from
+its live console — this worker then skips that match entirely, and the
+admin's local-capture session (in the Next.js admin app, not this worker)
+becomes the sole writer for it. This worker never overwrites a
+`local_ocr` match, even for schedule fields.
 
 ## Environment variables
 
-Copy `.env.example` to `.env` and fill in:
-- `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` — service role, not anon, since
-  this writes to tables directly and bypasses RLS.
-- `GROQ_API_KEY` — from console.groq.com.
-- `GROQ_VISION_MODEL` — double-check the current vision-capable model name
-  on Groq's docs before deploying; model availability changes over time.
-- Polling intervals and the winner-confirmation frame count are tunable —
-  see the comments in `.env.example`.
+- `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` — service role, since this
+  writes to tables directly and bypasses RLS.
+- `POLL_INTERVAL_SECONDS` (default 20), `IMMINENT_WINDOW_HOURS` (default 2),
+  `RECENT_WINDOW_HOURS` (default 6) — all optional, tune as needed.
 
-## Supabase Storage setup (one-time)
+No `GROQ_*` variables are used anymore — safe to remove them from the
+Railway service.
 
-Create a public bucket named `key-moment-screenshots` (or whatever you set
-`SCREENSHOT_BUCKET` to) so `keyMoments.mjs` can upload frames and get back a
-public URL for the site to display.
+## Rate limiting
+
+`liquipediaClient.mjs` enforces a process-wide minimum 2-second gap between
+any two Liquipedia requests, matching their API Terms of Use, regardless of
+how many tournaments are active in a given tick.
 
 ## Running it
 
@@ -57,26 +65,6 @@ npm install
 npm start
 ```
 
-On Railway: point a new service at this `worker/` subdirectory, set the env
-vars above, and set the start command to `npm start`.
-
-## Overlay support (requirement #9)
-
-Rather than hardcoding pixel coordinates per tournament overlay, the Groq
-prompt asks the model to reason over the whole frame. For a tournament whose
-HUD is unusual enough to confuse the default prompt, set
-`streams.overlay_template` to a short free-text hint (e.g. "kill banners
-appear in a red ticker at the very top of the screen") — it gets appended to
-the prompt for that stream only.
-
-## Known limitations / next tuning steps
-
-- Winner detection depends entirely on the result screen being legible in
-  the captured frame — a heavily animated victory sequence may need the
-  confirmation-frame count raised.
-- Liquipedia doesn't publish livestream URLs — those still need to be
-  attached to a `streams` row manually (or via the existing YouTube-title
-  detection flow in the admin panel) until/unless a per-tournament stream
-  source becomes available.
-- This polls one frame at a time per stream; if you're watching many
-  concurrent streams, watch your Groq rate limits.
+On Railway: this service already points at this `worker/` subdirectory
+with `npm start` as the start command — no change needed there, just the
+env var cleanup above and a redeploy.

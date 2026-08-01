@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { BrandLockup } from "@/components/Brand";
 
 export default function AdminLoginPage() {
   const router = useRouter();
@@ -28,14 +29,14 @@ export default function AdminLoginPage() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center px-6 font-mono">
+    <main className="min-h-screen flex items-center justify-center px-6">
       <form
         onSubmit={handleSubmit}
-        className="max-w-sm w-full border border-white/10 rounded-lg p-8 space-y-5"
+        className="lv-card-flush max-w-sm w-full p-8 space-y-5"
       >
-        <div>
-          <h1 className="text-xl font-bold text-white">Livevival admin</h1>
-          <p className="text-sm text-white/50 mt-1">Moderator / super admin sign in</p>
+        <div className="space-y-3">
+          <BrandLockup className="justify-center" />
+          <p className="text-sm text-white/50 text-center uppercase tracking-widest text-[11px]">Admin sign in</p>
         </div>
 
         <div className="space-y-1">
@@ -65,7 +66,7 @@ export default function AdminLoginPage() {
         <button
           type="submit"
           disabled={loading}
-          className="w-full bg-signal text-white rounded py-2 text-sm font-semibold disabled:opacity-50"
+          className="lv-btn-primary w-full !py-2.5"
         >
           {loading ? "Signing in..." : "Sign in"}
         </button>

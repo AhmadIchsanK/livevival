@@ -18,45 +18,12 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-
-const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
-
-// TODO: same as the tournament importer — put a real contact email here.
-const USER_AGENT =
-  "LivevivalBot/1.0 (https://livevival.vercel.app; contact: YOUR_EMAIL_HERE)";
+import { fetchRenderedPage, sleep } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchRenderedPage(pageTitle, attempt = 1) {
-  const url = new URL(WIKI_API);
-  url.searchParams.set("action", "parse");
-  url.searchParams.set("page", pageTitle);
-  url.searchParams.set("prop", "text");
-  url.searchParams.set("format", "json");
-
-  const res = await fetch(url, {
-    headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
-  });
-
-  if (res.status === 429 && attempt <= 3) {
-    const waitMs = 15000 * attempt; // back off harder each retry
-    console.warn(`Rate limited on ${pageTitle}, waiting ${waitMs / 1000}s before retry ${attempt}/3...`);
-    await sleep(waitMs);
-    return fetchRenderedPage(pageTitle, attempt + 1);
-  }
-  if (!res.ok) {
-    throw new Error(`Liquipedia API returned ${res.status} for ${pageTitle}`);
-  }
-  const data = await res.json();
-  return data.parse?.text?.["*"] ?? "";
-}
 
 function parseFormat(text) {
   const m = text.match(/Bo(\d)/i);
@@ -265,7 +232,7 @@ async function main() {
     } catch (err) {
       console.error(`Failed refreshing ${t.name}:`, err.message);
     }
-    await sleep(3000);
+    await sleep(5000); // extra headroom beyond the documented 1 req/2s — see _liquipedia.mjs
   }
 }
 

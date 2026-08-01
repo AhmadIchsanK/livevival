@@ -8,23 +8,28 @@
 // tournaments' own overlay work and site redesigns (this is likely why
 // scripts/import-liquipedia-team-rosters.mjs and
 // import-liquipedia-region-rosters.mjs, which DO scrape hand-styled portal
-// pages, have produced almost no rows in production). Instead this uses two
-// core, template-independent MediaWiki API calls that are stable across
-// every wiki:
-//   - action=query&list=categorymembers&cmtitle=Category:Heroes — the
-//     canonical list of hero page titles, maintained by the wiki's own
-//     categorization rather than a bespoke portal layout.
-//   - action=query&prop=pageimages — each hero page's main image
-//     (typically its infobox portrait), batched up to 50 titles per call.
+// pages, have produced almost no rows in production).
+//
+// Names come from action=query&list=categorymembers&cmtitle=Category:Hero —
+// the wiki's own categorization, stable across template changes. Icons do
+// NOT come from action=query&prop=pageimages: confirmed live that this
+// wiki doesn't have the PageImages extension enabled at all ("Unrecognized
+// value for parameter \"prop\": pageimages"). Instead, each hero's own
+// rendered page is fetched and the portrait is read straight out of its
+// infobox (confirmed selector: `.infobox-image img`, e.g. Chou's page has
+// "Chou_Infobox.jpg" as literally the first image in that container) — one
+// request per hero, same pattern the other importers already use for
+// team/match data, just paced slower since it's ~130 individual page fetches
+// instead of a handful of batched queries.
 //
 // Respects Liquipedia's API Terms of Use: custom User-Agent + contact
 // email, only ever calls api.php, paced requests.
 
 import { createClient } from "@supabase/supabase-js";
-import { apiQuery, sleep } from "./_liquipedia.mjs";
+import * as cheerio from "cheerio";
+import { apiQuery, fetchRenderedPage, sleep } from "./_liquipedia.mjs";
 
 const CATEGORY = process.env.LIQUIPEDIA_HERO_CATEGORY || "Category:Hero";
-const BATCH_SIZE = 50; // MediaWiki's per-request title limit for non-bot accounts
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -51,28 +56,12 @@ async function fetchAllHeroTitles() {
   return titles;
 }
 
-// Batched pageimages lookup — returns { [title]: imageUrl|null }
-async function fetchThumbnails(titles) {
-  const result = {};
-  for (let i = 0; i < titles.length; i += BATCH_SIZE) {
-    const batch = titles.slice(i, i + BATCH_SIZE);
-    const data = await apiQuery({
-      action: "query",
-      titles: batch.join("|"),
-      prop: "pageimages",
-      piprop: "thumbnail|name",
-      pithumbsize: "300",
-    });
-    const pages = data.query?.pages ?? {};
-    if (i === 0) {
-      console.log("DEBUG first pageimages batch raw response:", JSON.stringify(data).slice(0, 2000));
-    }
-    for (const page of Object.values(pages)) {
-      if (page.title) result[page.title] = page.thumbnail?.source ?? null;
-    }
-    if (i + BATCH_SIZE < titles.length) await sleep(4000);
-  }
-  return result;
+async function fetchHeroIcon(title) {
+  const html = await fetchRenderedPage(title);
+  const $ = cheerio.load(html);
+  const src = $(".infobox-image img").first().attr("src");
+  if (!src) return null;
+  return src.startsWith("http") ? src : `https://liquipedia.net${src}`;
 }
 
 async function upsertHero(name, iconUrl) {
@@ -125,11 +114,29 @@ async function main() {
     process.exit(1);
   }
 
-  await sleep(4000);
-  const thumbnails = await fetchThumbnails(titles);
+  // Only fetch a per-hero page for heroes that don't already have an icon —
+  // this is what makes re-runs cheap (a handful of new/renamed heroes per
+  // patch) instead of re-fetching all ~130 pages every 6 hours forever.
+  const { data: existingHeroes } = await supabase.from("heroes").select("name, icon_url");
+  const missingIcon = new Set(
+    (existingHeroes ?? []).filter((h) => !h.icon_url).map((h) => h.name)
+  );
+  const knownNames = new Set((existingHeroes ?? []).map((h) => h.name));
+  const needsIconFetch = titles.filter((t) => !knownNames.has(t) || missingIcon.has(t));
+
+  console.log(`${needsIconFetch.length} of ${titles.length} hero(es) need an icon fetch this run`);
 
   for (const title of titles) {
-    await upsertHero(title, thumbnails[title] ?? null);
+    let iconUrl = null;
+    if (needsIconFetch.includes(title)) {
+      try {
+        iconUrl = await fetchHeroIcon(title);
+      } catch (err) {
+        console.error(`Failed to fetch icon for "${title}":`, err.message);
+      }
+      await sleep(4000);
+    }
+    await upsertHero(title, iconUrl);
   }
 }
 

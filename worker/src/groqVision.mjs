@@ -67,7 +67,12 @@ async function callGroq(frameJpeg, overlayHint, attempt = 1) {
     return await groq.chat.completions.create({
       model: config.groqVisionModel,
       temperature: 0,
-      max_tokens: 1800,
+      max_tokens: 3000,
+      // Suppresses inline <think> reasoning on models that support this
+      // param — if the model/API doesn't recognize it, it should just be
+      // ignored rather than error, and our parsing below still handles
+      // <think> blocks as a fallback either way.
+      reasoning_format: "hidden",
       messages: [
         {
           role: "user",
@@ -90,6 +95,27 @@ async function callGroq(frameJpeg, overlayHint, attempt = 1) {
   }
 }
 
+// Walks the string from the first '{' and tracks brace depth, returning
+// exactly the substring for ONE complete, balanced top-level JSON object —
+// correctly stops at the true end of the object regardless of what
+// (garbage, a second object, trailing prose) follows it. Naive
+// indexOf("{")/lastIndexOf("}") breaks the moment there's any trailing
+// content containing its own braces.
+function extractFirstJsonObject(text) {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") {
+      depth--;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null; // never balanced — response was likely truncated mid-object
+}
+
 /**
  * @param {Buffer} frameJpeg
  * @param {string|null} overlayHint
@@ -100,23 +126,16 @@ export async function classifyFrame(frameJpeg, overlayHint = null) {
 
   const raw = response.choices[0]?.message?.content ?? "{}";
   // Some Groq models emit a <think>...</think> reasoning preamble before
-  // the actual answer — strip it (and any markdown code fence) before
-  // parsing, rather than choking on the '<' as if it were malformed JSON.
+  // the actual answer even with reasoning_format: "hidden" requested (not
+  // all models honor it) — strip it before parsing either way.
   const withoutThinking = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-  try {
-    return JSON.parse(withoutThinking);
-  } catch {
-    const cleaned = withoutThinking.replace(/```json|```/g, "").trim();
-    try {
-      return JSON.parse(cleaned);
-    } catch {
-      // Last resort — an unterminated <think> block (cut off before its
-      // closing tag) would still leave junk before the real JSON. Just
-      // grab from the first '{' to the last '}' and try that.
-      const start = cleaned.indexOf("{");
-      const end = cleaned.lastIndexOf("}");
-      if (start === -1 || end === -1 || end <= start) throw new Error("No JSON object found in model response");
-      return JSON.parse(cleaned.slice(start, end + 1));
-    }
+
+  const extracted = extractFirstJsonObject(withoutThinking);
+  if (!extracted) {
+    throw new Error(
+      `No complete JSON object found in model response (got ${withoutThinking.length} chars, ` +
+        `starts with: "${withoutThinking.slice(0, 80)}")`
+    );
   }
+  return JSON.parse(extracted);
 }

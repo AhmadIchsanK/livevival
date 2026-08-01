@@ -6,14 +6,14 @@ import * as cheerio from "cheerio";
 import { supabase } from "./config.mjs";
 import { fetchRenderedPage } from "./liquipediaClient.mjs";
 
-function parseFormat(text) {
+export function parseFormat(text) {
   const m = text.match(/Bo(\d)/i);
   if (!m) return null;
   const n = m[1];
   return ["1", "2", "3", "5", "7"].includes(n) ? `BO${n}` : null;
 }
 
-function extractMatches(html) {
+export function extractMatches(html) {
   const $ = cheerio.load(html);
   const matches = [];
 

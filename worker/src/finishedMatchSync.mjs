@@ -8,15 +8,15 @@ import * as cheerio from "cheerio";
 import { supabase } from "./config.mjs";
 import { fetchRenderedPage } from "./liquipediaClient.mjs";
 
-function isRightSide($, championIconEl) {
+export function isRightSide($, championIconEl) {
   return $(championIconEl).hasClass("brkts-popup-body-element-thumbs-right");
 }
 
-function heroesIn($, containerEl) {
+export function heroesIn($, containerEl) {
   return $(containerEl).find("a[title]").map((_, a) => $(a).attr("title")).get();
 }
 
-function extractFinishedMatches($) {
+export function extractFinishedMatches($) {
   const matches = [];
 
   $(".brkts-popup-container.brkts-match-info-popup").each((_, el) => {

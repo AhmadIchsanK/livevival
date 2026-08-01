@@ -5,11 +5,16 @@
   "type": "module",
   "description": "Always-on Liquipedia poller: watches live/imminent matches' tournament pages every ~20s and writes schedule, score, picks/bans, and results to Supabase in near-real-time.",
   "scripts": {
-    "start": "node src/index.mjs"
+    "start": "node src/index.mjs",
+    "test": "vitest run"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10"
   }
 }

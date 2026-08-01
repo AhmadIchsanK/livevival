@@ -23,7 +23,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { apiQuery, sleep } from "./_liquipedia.mjs";
 
-const CATEGORY = process.env.LIQUIPEDIA_HERO_CATEGORY || "Category:Heroes";
+const CATEGORY = process.env.LIQUIPEDIA_HERO_CATEGORY || "Category:Hero";
 const BATCH_SIZE = 50; // MediaWiki's per-request title limit for non-bot accounts
 
 const supabase = createClient(

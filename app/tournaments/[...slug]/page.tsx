@@ -4,14 +4,21 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type Tournament = { id: string; name: string; tier: string; date_display: string | null };
+type Tournament = {
+  id: string;
+  name: string;
+  tier: string;
+  date_display: string | null;
+  start_date: string | null;
+  end_date: string | null;
+};
 type MatchRow = {
   id: string;
   status: string;
   scheduled_at: string | null;
   format: string | null;
-  team_a: { name: string } | null;
-  team_b: { name: string } | null;
+  team_a: { id: string; name: string } | null;
+  team_b: { id: string; name: string } | null;
 };
 type Standing = {
   id: string;
@@ -22,7 +29,8 @@ type Standing = {
   team: { name: string } | null;
 };
 
-function MatchRowCard({ m }: { m: MatchRow }) {
+function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: number } }) {
+  const scoreLabel = score ? `${score.a}–${score.b}` : null;
   return (
     <a
       href={`/match/${m.id}`}
@@ -36,13 +44,17 @@ function MatchRowCard({ m }: { m: MatchRow }) {
           {m.format}{m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
         </p>
       </div>
-      <span
-        className={`text-xs px-2 py-1 rounded uppercase tracking-wide shrink-0 ${
-          m.status === "live" ? "bg-emerald-500/20 text-emerald-400" : m.status === "finished" ? "bg-white/10 text-white/50" : "bg-yellow-500/20 text-yellow-400"
-        }`}
-      >
-        {m.status}
-      </span>
+      {scoreLabel ? (
+        <span className="text-lg font-bold tabular-nums shrink-0 bg-white/10 rounded px-3 py-1">{scoreLabel}</span>
+      ) : (
+        <span
+          className={`text-xs px-2 py-1 rounded uppercase tracking-wide shrink-0 ${
+            m.status === "live" ? "bg-emerald-500/20 text-emerald-400" : m.status === "finished" ? "bg-white/10 text-white/50" : "bg-yellow-500/20 text-yellow-400"
+          }`}
+        >
+          {m.status}
+        </span>
+      )}
     </a>
   );
 }
@@ -54,6 +66,7 @@ export default function TournamentPage() {
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
   const [matches, setMatches] = useState<MatchRow[]>([]);
+  const [scores, setScores] = useState<Record<string, { a: number; b: number }>>({});
   const [standings, setStandings] = useState<Standing[]>([]);
   const [notFound, setNotFound] = useState(false);
   const [historyVisibleCount, setHistoryVisibleCount] = useState(20);
@@ -63,7 +76,7 @@ export default function TournamentPage() {
     async function load() {
       const { data: t } = await supabase
         .from("tournaments")
-        .select("id, name, tier, date_display")
+        .select("id, name, tier, date_display, start_date, end_date")
         .eq("liquipedia_slug", slug)
         .maybeSingle();
 
@@ -78,8 +91,8 @@ export default function TournamentPage() {
           .from("matches")
           .select(
             `id, status, scheduled_at, format,
-             team_a:teams!matches_team_a_id_fkey(name),
-             team_b:teams!matches_team_b_id_fkey(name)`
+             team_a:teams!matches_team_a_id_fkey(id, name),
+             team_b:teams!matches_team_b_id_fkey(id, name)`
           )
           .eq("tournament_id", (t as Tournament).id)
           .order("scheduled_at", { ascending: true }),
@@ -89,8 +102,28 @@ export default function TournamentPage() {
           .eq("tournament_id", (t as Tournament).id)
           .order("placement_sort", { ascending: true }),
       ]);
-      setMatches((m as unknown as MatchRow[]) ?? []);
+      const matchList = (m as unknown as MatchRow[]) ?? [];
+      setMatches(matchList);
       setStandings((s as unknown as Standing[]) ?? []);
+
+      const scoredIds = matchList.filter((mm) => mm.status !== "scheduled").map((mm) => mm.id);
+      if (scoredIds.length > 0) {
+        const { data: games } = await supabase
+          .from("games")
+          .select("match_id, winner_team_id")
+          .in("match_id", scoredIds);
+        const teamAById = new Map(matchList.map((mm) => [mm.id, mm.team_a?.id]));
+        const teamBById = new Map(matchList.map((mm) => [mm.id, mm.team_b?.id]));
+        const byMatch: Record<string, { a: number; b: number }> = {};
+        for (const g of games ?? []) {
+          if (!g.winner_team_id) continue;
+          const entry = byMatch[g.match_id] ?? { a: 0, b: 0 };
+          if (g.winner_team_id === teamAById.get(g.match_id)) entry.a += 1;
+          else if (g.winner_team_id === teamBById.get(g.match_id)) entry.b += 1;
+          byMatch[g.match_id] = entry;
+        }
+        setScores(byMatch);
+      }
     }
     load();
   }, [slug]);
@@ -116,7 +149,13 @@ export default function TournamentPage() {
       <header>
         <p className="text-xs text-white/50">{tournament.tier}-Tier</p>
         <h1 className="text-2xl font-bold">{tournament.name}</h1>
-        {tournament.date_display && <p className="text-sm text-white/40">{tournament.date_display}</p>}
+        {(tournament.start_date || tournament.end_date) ? (
+          <p className="text-sm text-white/40">
+            {tournament.start_date ?? "?"} → {tournament.end_date ?? "?"}
+          </p>
+        ) : (
+          tournament.date_display && <p className="text-sm text-white/40">{tournament.date_display}</p>
+        )}
       </header>
 
       {standings.length > 0 && (
@@ -144,7 +183,7 @@ export default function TournamentPage() {
       <section className="space-y-3">
         <h2 className="text-lg font-bold">Upcoming &amp; live</h2>
         <div className="space-y-2">
-          {upcomingAndLive.map((m) => <MatchRowCard key={m.id} m={m} />)}
+          {upcomingAndLive.map((m) => <MatchRowCard key={m.id} m={m} score={scores[m.id]} />)}
           {upcomingAndLive.length === 0 && <p className="text-white/30 text-sm">No upcoming matches scheduled yet.</p>}
         </div>
       </section>
@@ -154,7 +193,7 @@ export default function TournamentPage() {
       <section className="space-y-3">
         <h2 className="text-lg font-bold">Match history</h2>
         <div className="space-y-2">
-          {visibleHistory.map((m) => <MatchRowCard key={m.id} m={m} />)}
+          {visibleHistory.map((m) => <MatchRowCard key={m.id} m={m} score={scores[m.id]} />)}
           {history.length === 0 && <p className="text-white/30 text-sm">No finished matches yet.</p>}
         </div>
         {history.length > historyVisibleCount && (

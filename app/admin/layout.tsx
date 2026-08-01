@@ -74,7 +74,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             Signed in as <span className="text-white/60">{admin.email}</span> ({admin.role})
           </span>
           <nav className="flex gap-4 text-xs">
+            <a href="/admin/tournaments" className="text-white/50 hover:text-white">Tournaments</a>
             <a href="/admin/teams" className="text-white/50 hover:text-white">Teams</a>
+            <a href="/admin/players" className="text-white/50 hover:text-white">Players</a>
+            <a href="/admin/heroes" className="text-white/50 hover:text-white">Heroes</a>
             <a href="/admin/matches" className="text-white/50 hover:text-white">Matches</a>
             <a href="/admin/streams" className="text-white/50 hover:text-white">Streams</a>
           </nav>

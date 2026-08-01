@@ -1,121 +1,60 @@
 import "dotenv/config";
 import { supabase, config } from "./config.mjs";
-import { captureFrame } from "./frameCapture.mjs";
-import { classifyFrame } from "./groqVision.mjs";
-import { applyDetection } from "./stateMachine.mjs";
-import { resolveCurrentMatch } from "./streamAssignment.mjs";
-import { maybeLogKeyMoment } from "./keyMoments.mjs";
-import { maybeLogDraftActions, maybeLogRoster } from "./draftTracking.mjs";
-import { maybeLogPlayerStats, maybeLogNetWorth } from "./statTracking.mjs";
+import { syncTournamentSchedule } from "./scheduleSync.mjs";
+import { syncTournamentFinishedMatches } from "./finishedMatchSync.mjs";
 
-const streamTimers = new Map(); // streamId -> interval handle
+// Always-on replacement for the 10-minute refresh-imminent-matches GitHub
+// Action: GitHub Actions cron cannot run faster than ~5 minutes, so getting
+// close to real-time for a match that's live or about to start requires a
+// long-running process. This polls only the tournaments that currently have
+// a live or imminent match — everything else (new tournaments, historical
+// backfill, team/hero rosters) stays on the slower 6-hour cron.
+async function loadActiveTournaments() {
+  const now = new Date();
+  const imminentCutoff = new Date(now.getTime() + config.imminentWindowHours * 3600_000).toISOString();
+  const recentCutoff = new Date(now.getTime() - config.recentWindowHours * 3600_000).toISOString();
 
-async function loadActiveStreams() {
-  const { data } = await supabase
-    .from("streams")
-    .select("id, url, platform, overlay_template, status, current_match_id, poll_interval_seconds")
-    .in("status", ["scheduled", "live"]);
-  return data ?? [];
+  const { data: matches, error } = await supabase
+    .from("matches")
+    .select("tournament_id, status, update_source, scheduled_at, tournaments(id, liquipedia_slug, name)")
+    .eq("update_source", "liquipedia")
+    .neq("status", "finished")
+    .gte("scheduled_at", recentCutoff)
+    .lte("scheduled_at", imminentCutoff);
+
+  if (error) {
+    console.error("Failed to load active matches:", error.message);
+    return [];
+  }
+
+  const byId = new Map();
+  for (const m of matches ?? []) {
+    const t = m.tournaments;
+    if (t?.liquipedia_slug && !byId.has(t.id)) byId.set(t.id, t);
+  }
+  return Array.from(byId.values());
 }
 
-async function tick(stream) {
-  try {
-    const frame = await captureFrame(stream.url);
-    const detection = await classifyFrame(frame, stream.overlay_template === "default" ? null : stream.overlay_template);
+async function tick() {
+  const tournaments = await loadActiveTournaments();
+  if (tournaments.length === 0) {
+    console.log("No live/imminent matches this tick.");
+    return;
+  }
+  console.log(`Polling ${tournaments.length} active tournament(s): ${tournaments.map((t) => t.name).join(", ")}`);
 
-    await supabase.from("vision_detections").insert({
-      stream_id: stream.id,
-      detected_phase: detection.phase,
-      detected_payload: detection,
-    });
-
-    if (detection.phase === "LOBBY" || detection.phase === "UNKNOWN") {
-      return; // nothing actionable this frame
+  for (const tournament of tournaments) {
+    try {
+      await syncTournamentSchedule(tournament);
+      await syncTournamentFinishedMatches(tournament);
+    } catch (err) {
+      console.error(`Failed polling ${tournament.name}:`, err.message);
     }
-
-    // Mark the stream live the first time we see actual match content.
-    if (stream.status === "scheduled") {
-      await supabase.from("streams").update({ status: "live" }).eq("id", stream.id);
-    }
-
-    const match = await resolveCurrentMatch(stream, detection.team_names_visible ?? []);
-    if (!match) return; // no matches scheduled against this stream yet
-
-    // Skip matches the admin has taken manual control of (auto_managed = false).
-    const { data: matchRow } = await supabase
-      .from("matches")
-      .select(
-        `id, format, current_game_number, state, auto_managed,
-         team_a:teams!matches_team_a_id_fkey(id, name),
-         team_b:teams!matches_team_b_id_fkey(id, name)`
-      )
-      .eq("id", match.id)
-      .single();
-    if (!matchRow || matchRow.auto_managed === false) return;
-
-    let { data: game } = await supabase
-      .from("games")
-      .select("*")
-      .eq("match_id", matchRow.id)
-      .eq("game_number", matchRow.current_game_number)
-      .maybeSingle();
-
-    if (!game) {
-      const { data: created } = await supabase
-        .from("games")
-        .insert({ match_id: matchRow.id, game_number: matchRow.current_game_number })
-        .select("*")
-        .single();
-      game = created;
-    }
-
-    await applyDetection({ match: matchRow, game, detection });
-    await maybeLogDraftActions({ game, teamA: matchRow.team_a, teamB: matchRow.team_b, detection });
-    await maybeLogRoster({ game, teamA: matchRow.team_a, teamB: matchRow.team_b, detection });
-
-    const minuteMark = game.started_at
-      ? Math.floor((Date.now() - new Date(game.started_at).getTime()) / 60000)
-      : null;
-    await maybeLogKeyMoment({ game, match: matchRow, detection, frameJpeg: frame, minuteMark });
-    await maybeLogPlayerStats({ game, teamA: matchRow.team_a, teamB: matchRow.team_b, detection });
-    await maybeLogNetWorth({ game, detection, minuteMark });
-  } catch (err) {
-    console.error(`[stream ${stream.id}] tick failed:`, err.message);
   }
 }
 
-function scheduleStream(stream) {
-  if (streamTimers.has(stream.id)) return; // already scheduled
-
-  const intervalSeconds =
-    stream.status === "live" ? config.pollIntervalLiveSeconds : config.pollIntervalIdleSeconds;
-
-  const handle = setInterval(() => tick(stream), intervalSeconds * 1000);
-  streamTimers.set(stream.id, handle);
-  console.log(`Scheduled stream ${stream.id} (${stream.status}) every ${intervalSeconds}s`);
-}
-
-async function reconcileStreams() {
-  const active = await loadActiveStreams();
-  console.log(`reconcileStreams: found ${active.length} active stream(s)`);
-  const activeIds = new Set(active.map((s) => s.id));
-
-  // Stop watching streams that ended or were removed.
-  for (const [id, handle] of streamTimers.entries()) {
-    if (!activeIds.has(id)) {
-      clearInterval(handle);
-      streamTimers.delete(id);
-      console.log(`Stopped watching stream ${id} (no longer active)`);
-    }
-  }
-
-  for (const stream of active) scheduleStream(stream);
-}
-
-console.log("Livevival worker starting...");
-reconcileStreams().catch((err) => console.error("Initial reconcileStreams failed:", err));
-// Re-check the list of active streams periodically in case an admin adds
-// a new one or marks one "ended" — no restart needed.
+console.log(`Livevival Liquipedia poller starting (every ${config.pollIntervalSeconds}s)...`);
+tick().catch((err) => console.error("Initial tick failed:", err));
 setInterval(() => {
-  reconcileStreams().catch((err) => console.error("reconcileStreams failed:", err));
-}, 60_000);
+  tick().catch((err) => console.error("Tick failed:", err));
+}, config.pollIntervalSeconds * 1000);

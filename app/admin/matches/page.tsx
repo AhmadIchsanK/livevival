@@ -12,7 +12,7 @@ type Match = {
   youtube_url: string | null;
   state: string;
   stream_id: string | null;
-  auto_managed: boolean;
+  update_source: "liquipedia" | "local_ocr";
   tournament_id: string | null;
   team_a_id: string | null;
   team_b_id: string | null;
@@ -107,7 +107,7 @@ export default function MatchesPage() {
     let query = supabase
       .from("matches")
       .select(
-        `id, scheduled_at, format, status, youtube_url, state, stream_id, auto_managed,
+        `id, scheduled_at, format, status, youtube_url, state, stream_id, update_source,
          tournament_id, team_a_id, team_b_id,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(name),
@@ -174,7 +174,7 @@ export default function MatchesPage() {
       status: string;
       youtube_url: string;
       stream_id: string | null;
-      auto_managed: boolean;
+      update_source: "liquipedia" | "local_ocr";
       tournament_id: string;
       team_a_id: string;
       team_b_id: string;
@@ -579,14 +579,18 @@ export default function MatchesPage() {
                     </option>
                   ))}
                 </select>
-                <label className="flex items-center gap-1.5 text-xs text-white/60">
-                  <input
-                    type="checkbox"
-                    checked={m.auto_managed}
-                    onChange={(e) => updateMatch(m.id, { auto_managed: e.target.checked })}
-                  />
-                  Auto-managed
-                </label>
+                <select
+                  value={m.update_source}
+                  onChange={(e) => updateMatch(m.id, { update_source: e.target.value as "liquipedia" | "local_ocr" })}
+                  className={`text-xs rounded px-2 py-1.5 border ${
+                    m.update_source === "liquipedia"
+                      ? "border-emerald-500/40 text-emerald-400 bg-black/30"
+                      : "border-yellow-500/40 text-yellow-400 bg-black/30"
+                  }`}
+                >
+                  <option value="liquipedia">🤖 Liquipedia auto</option>
+                  <option value="local_ocr">✋ Local OCR (admin PC)</option>
+                </select>
               </div>
 
               <div className="flex gap-2 items-center">

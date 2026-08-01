@@ -12,10 +12,16 @@ export const supabase = createClient(
 );
 
 export const config = {
-  groqApiKey: required("GROQ_API_KEY"),
-  groqVisionModel: process.env.GROQ_VISION_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct",
-  pollIntervalLiveSeconds: Number(process.env.POLL_INTERVAL_LIVE_SECONDS ?? 5),
-  pollIntervalIdleSeconds: Number(process.env.POLL_INTERVAL_IDLE_SECONDS ?? 30),
-  winnerConfirmationFrames: Number(process.env.WINNER_CONFIRMATION_FRAMES ?? 3),
-  screenshotBucket: process.env.SCREENSHOT_BUCKET ?? "key-moment-screenshots",
+  // How often the poll loop wakes up to re-check active tournaments. This is
+  // the "always-on" replacement for the 10-minute refresh-imminent-matches
+  // GitHub Action — a cron job can't run faster than ~5 minutes, so getting
+  // meaningfully closer to real-time requires a long-running process.
+  pollIntervalSeconds: Number(process.env.POLL_INTERVAL_SECONDS ?? 20),
+  // Matches scheduled to start within this many hours are considered
+  // "imminent" and included in the fast poll even before Liquipedia marks
+  // them live (brackets are sometimes a few minutes late to update).
+  imminentWindowHours: Number(process.env.IMMINENT_WINDOW_HOURS ?? 2),
+  // How far back a "recently started" match is still worth polling fast,
+  // in case it finished without ever being marked "live" in our own table.
+  recentWindowHours: Number(process.env.RECENT_WINDOW_HOURS ?? 6),
 };

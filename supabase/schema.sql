@@ -103,7 +103,6 @@ create table if not exists matches (
 alter table matches add column if not exists state match_state not null default 'MATCH_NOT_STARTED';
 alter table matches add column if not exists stream_id uuid references streams(id);
 alter table matches add column if not exists series_winner_team_id uuid references teams(id);
-alter table matches add column if not exists auto_managed boolean not null default true;
 alter table matches add column if not exists liquipedia_match_key text;
 
 -- FK from streams.current_match_id -> matches.id, added now that matches
@@ -257,3 +256,44 @@ create table if not exists tournament_results (
 
 create unique index if not exists tournament_results_dedup
   on tournament_results (tournament_id, placement, team_name_raw);
+
+-- ── Heroes, update_source, and local-OCR capture regions ──
+-- (applied directly to the live project via the Supabase MCP connector;
+-- mirrored here so schema.sql stays the source of truth for a fresh setup)
+
+create table if not exists heroes (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  liquipedia_slug text unique,
+  aliases text[] not null default '{}',
+  role text,
+  icon_url text,
+  created_at timestamptz not null default now()
+);
+
+alter table hero_picks_bans add column if not exists hero_id uuid references heroes(id);
+alter table player_stats add column if not exists hero_id uuid references heroes(id);
+
+-- Replaces the old auto_managed boolean: which pipeline is authoritative for
+-- a match's live state — the always-on Liquipedia poller (default) or an
+-- admin's local-OCR capture session.
+alter table matches add column if not exists update_source text not null default 'liquipedia'
+  check (update_source in ('liquipedia', 'local_ocr'));
+alter table matches drop column if exists auto_managed;
+
+-- Keyed by match_id, not stream_id: calibration belongs to one admin's live-
+-- console session for one match (a stream can cover several matches back to
+-- back, each needing its own timer/gold calibration since the clock resets).
+create table if not exists capture_regions (
+  id uuid primary key default gen_random_uuid(),
+  match_id uuid not null references matches(id) on delete cascade,
+  field text not null,
+  x_pct numeric not null,
+  y_pct numeric not null,
+  w_pct numeric not null,
+  h_pct numeric not null,
+  created_at timestamptz not null default now()
+);
+create unique index if not exists capture_regions_match_field_key on capture_regions(match_id, field);
+
+alter table players add column if not exists liquipedia_slug text unique;

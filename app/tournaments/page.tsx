@@ -94,7 +94,13 @@ function TournamentSection({ title, tournaments, empty }: { title: string; tourn
           >
             <div>
               <p className="font-semibold text-sm">{t.name}</p>
-              {t.date_display && <p className="text-xs text-white/40">{t.date_display}</p>}
+              {t.start_date || t.end_date ? (
+                <p className="text-xs text-white/40">
+                  {t.start_date ?? "?"} → {t.end_date ?? "?"}
+                </p>
+              ) : (
+                t.date_display && <p className="text-xs text-white/40">{t.date_display}</p>
+              )}
             </div>
             <span className="text-xs px-2 py-1 rounded bg-white/10 uppercase shrink-0">{t.tier}-Tier</span>
           </a>

@@ -64,6 +64,9 @@ async function fetchThumbnails(titles) {
       pithumbsize: "300",
     });
     const pages = data.query?.pages ?? {};
+    if (i === 0) {
+      console.log("DEBUG first pageimages batch raw response:", JSON.stringify(data).slice(0, 2000));
+    }
     for (const page of Object.values(pages)) {
       if (page.title) result[page.title] = page.thumbnail?.source ?? null;
     }

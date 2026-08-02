@@ -12,6 +12,8 @@ type Tournament = {
   start_date: string | null;
   end_date: string | null;
   logo_url: string | null;
+  fmvp_player_id: string | null;
+  fmvp_player: { ign: string } | null;
 };
 
 type Status = "ongoing" | "upcoming" | "completed";
@@ -55,14 +57,22 @@ export default function TournamentsAdminPage() {
   const [editStartDate, setEditStartDate] = useState("");
   const [editEndDate, setEditEndDate] = useState("");
   const [editLogoUrl, setEditLogoUrl] = useState("");
+  const [editFmvpIgn, setEditFmvpIgn] = useState("");
+  const [allPlayerIgns, setAllPlayerIgns] = useState<string[]>([]);
 
   async function loadTournaments() {
     const { data } = await supabase
       .from("tournaments")
-      .select("id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url")
+      .select("id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, fmvp_player_id, fmvp_player:players(ign)")
       .order("start_date", { ascending: false, nullsFirst: false });
-    setTournaments((data as Tournament[]) ?? []);
+    setTournaments((data as unknown as Tournament[]) ?? []);
   }
+
+  useEffect(() => {
+    supabase.from("players").select("ign").order("ign").then(({ data }) => {
+      setAllPlayerIgns((data ?? []).map((p) => p.ign));
+    });
+  }, []);
 
   useEffect(() => {
     loadTournaments();
@@ -142,9 +152,28 @@ export default function TournamentsAdminPage() {
     setEditStartDate(t.start_date ?? "");
     setEditEndDate(t.end_date ?? "");
     setEditLogoUrl(t.logo_url ?? "");
+    setEditFmvpIgn(t.fmvp_player?.ign ?? "");
   }
 
   async function saveEdit(id: string) {
+    let fmvpPlayerId: string | null = null;
+    if (editFmvpIgn.trim()) {
+      const { data: player, error: lookupError } = await supabase
+        .from("players")
+        .select("id")
+        .ilike("ign", editFmvpIgn.trim())
+        .maybeSingle();
+      if (lookupError) {
+        setError(lookupError.message);
+        return;
+      }
+      if (!player) {
+        setError(`No player found with IGN "${editFmvpIgn.trim()}" — check spelling (must match exactly, case-insensitive).`);
+        return;
+      }
+      fmvpPlayerId = player.id;
+    }
+
     const { error } = await supabase
       .from("tournaments")
       .update({
@@ -154,6 +183,7 @@ export default function TournamentsAdminPage() {
         start_date: editStartDate || null,
         end_date: editEndDate || null,
         logo_url: editLogoUrl || null,
+        fmvp_player_id: fmvpPlayerId,
       })
       .eq("id", id);
     if (error) {
@@ -389,12 +419,25 @@ export default function TournamentsAdminPage() {
                             className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
                           />
                         </td>
-                        <td className="py-2 pr-2">
+                        <td className="py-2 pr-2 space-y-1">
                           <input
                             value={editSlug}
                             onChange={(e) => setEditSlug(e.target.value)}
+                            placeholder="Liquipedia slug"
                             className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
                           />
+                          <input
+                            value={editFmvpIgn}
+                            onChange={(e) => setEditFmvpIgn(e.target.value)}
+                            placeholder="FMVP IGN (optional)"
+                            list="all-player-igns"
+                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                          />
+                          <datalist id="all-player-igns">
+                            {allPlayerIgns.map((ign) => (
+                              <option key={ign} value={ign} />
+                            ))}
+                          </datalist>
                         </td>
                         <td className="py-2 text-right space-x-2">
                           <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
@@ -418,7 +461,10 @@ export default function TournamentsAdminPage() {
                         <td className="py-2 text-white/60 text-xs">
                           {t.start_date ?? "?"} → {t.end_date ?? "?"}
                         </td>
-                        <td className="py-2 text-white/40 text-xs">{t.liquipedia_slug ?? "—"}</td>
+                        <td className="py-2 text-white/40 text-xs">
+                          {t.liquipedia_slug ?? "—"}
+                          {t.fmvp_player?.ign && <div className="text-white/30">FMVP: {t.fmvp_player.ign}</div>}
+                        </td>
                         <td className="py-2 text-right space-x-2">
                           <button
                             onClick={() => startEdit(t)}

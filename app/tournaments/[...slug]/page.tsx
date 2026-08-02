@@ -19,8 +19,8 @@ type MatchRow = {
   status: string;
   scheduled_at: string | null;
   format: string | null;
-  team_a: { id: string; name: string } | null;
-  team_b: { id: string; name: string } | null;
+  team_a: { id: string; name: string; logo_url: string | null } | null;
+  team_b: { id: string; name: string; logo_url: string | null } | null;
 };
 type Standing = {
   id: string;
@@ -48,8 +48,16 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
       className="lv-card flex items-center justify-between px-4 py-3"
     >
       <div>
-        <p className="font-semibold text-sm">
+        <p className="font-semibold text-sm flex items-center gap-1.5">
+          {m.team_a?.logo_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={m.team_a.logo_url} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
+          ) : null}
           {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
+          {m.team_b?.logo_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={m.team_b.logo_url} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
+          ) : null}
         </p>
         <p className="text-xs text-white/40">
           {m.format}{m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
@@ -103,8 +111,8 @@ export default function TournamentPage() {
           .from("matches")
           .select(
             `id, status, scheduled_at, format,
-             team_a:teams!matches_team_a_id_fkey(id, name),
-             team_b:teams!matches_team_b_id_fkey(id, name)`
+             team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
+             team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
           )
           .eq("tournament_id", t.id)
           .order("scheduled_at", { ascending: true }),

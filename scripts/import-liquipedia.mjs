@@ -77,12 +77,27 @@ function parseDateRange(dateDisplay) {
   if (parts.length !== 2) return { startDate: null, endDate: null };
 
   const [left, right] = parts;
+  // A bare 4-digit year (e.g. "2026", meaning Liquipedia hasn't confirmed
+  // an end date yet) would otherwise silently parse as Jan 1 of that year
+  // via `new Date("2026")` — and Jan 1 can land *before* a valid start
+  // date later that same year (a tournament starting in August would
+  // "end" the previous January), misclassifying an upcoming tournament as
+  // already completed. Treat it the same as no end date at all.
+  if (/^\d{4}$/.test(right)) return { startDate: null, endDate: null };
+
   const endDate = new Date(right);
   if (isNaN(endDate.getTime())) return { startDate: null, endDate: null };
 
   const leftHasYear = /\d{4}/.test(left);
   const startDate = leftHasYear ? new Date(left) : new Date(`${left}, ${endDate.getFullYear()}`);
   if (isNaN(startDate.getTime())) return { startDate: null, endDate: endDate.toISOString().slice(0, 10) };
+
+  // General sanity check regardless of root cause — an end date before
+  // the start date is never correct, and categorizing by a nonsensical
+  // range is worse than falling back to the match-status heuristic.
+  if (endDate.getTime() < startDate.getTime()) {
+    return { startDate: startDate.toISOString().slice(0, 10), endDate: null };
+  }
 
   return {
     startDate: startDate.toISOString().slice(0, 10),

@@ -10,8 +10,8 @@ type MatchRow = {
   scheduled_at: string | null;
   format: string | null;
   tournament: { name: string; tier: string; liquipedia_slug: string | null } | null;
-  team_a: { id: string; name: string } | null;
-  team_b: { id: string; name: string } | null;
+  team_a: { id: string; name: string; logo_url: string | null } | null;
+  team_b: { id: string; name: string; logo_url: string | null } | null;
 };
 type GameRow = { match_id: string; winner_team_id: string | null };
 
@@ -21,8 +21,14 @@ const FINISHED_FETCH_CAP = 300; // generous, but bounded — see note below
 
 const MATCH_SELECT = `id, status, scheduled_at, format,
   tournament:tournaments(name, tier, liquipedia_slug),
-  team_a:teams!matches_team_a_id_fkey(id, name),
-  team_b:teams!matches_team_b_id_fkey(id, name)`;
+  team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
+  team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
+
+function TeamLogo({ url, className = "w-5 h-5" }: { url: string | null | undefined; className?: string }) {
+  if (!url) return <div className={`${className} shrink-0 rounded bg-white/5`} />;
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={url} alt="" className={`${className} shrink-0 rounded object-contain`} />;
+}
 
 function dateKey(iso: string) {
   return new Date(iso).toISOString().slice(0, 10);
@@ -97,12 +103,16 @@ export default function Home() {
     load();
   }, []);
 
+  // Includes finished matches too (within the FINISHED_FETCH_CAP window)
+  // so navigating the calendar to a past month still shows which days had
+  // matches, not just the next 30 days of upcoming ones.
   const matchDates = useMemo(() => {
     const s = new Set<string>();
     for (const m of upcoming) if (m.scheduled_at) s.add(dateKey(m.scheduled_at));
     for (const m of live) if (m.scheduled_at) s.add(dateKey(m.scheduled_at));
+    for (const m of finished) if (m.scheduled_at) s.add(dateKey(m.scheduled_at));
     return s;
-  }, [upcoming, live]);
+  }, [upcoming, live, finished]);
 
   function jumpToDate(day: string) {
     setSelectedDate(day);
@@ -170,9 +180,15 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
     >
       <p className="lv-badge-live mb-3">Live</p>
       <div className="flex items-center justify-between gap-3">
-        <p className="font-semibold text-base truncate">{m.team_a?.name ?? "TBD"}</p>
+        <div className="flex items-center gap-2 min-w-0">
+          <TeamLogo url={m.team_a?.logo_url} className="w-6 h-6" />
+          <p className="font-semibold text-base truncate">{m.team_a?.name ?? "TBD"}</p>
+        </div>
         <p className="lv-score text-3xl shrink-0">{seriesScoreLabel(score) ?? "vs"}</p>
-        <p className="font-semibold text-base truncate text-right">{m.team_b?.name ?? "TBD"}</p>
+        <div className="flex items-center gap-2 min-w-0 flex-row-reverse">
+          <TeamLogo url={m.team_b?.logo_url} className="w-6 h-6" />
+          <p className="font-semibold text-base truncate text-right">{m.team_b?.name ?? "TBD"}</p>
+        </div>
       </div>
       <p className="text-xs text-white/40 mt-2 truncate">
         {m.tournament?.name} · {m.tournament?.tier}-Tier · {m.format}
@@ -235,16 +251,16 @@ function MonthCalendar({
               onClick={() => hasMatch && onSelect(key)}
               disabled={!hasMatch}
               className={`aspect-square rounded text-[11px] flex flex-col items-center justify-center gap-0.5 transition ${
-                isSelected ? "bg-signal text-white" : isToday ? "border border-signal/50" : ""
+                isSelected ? "bg-win text-black" : isToday ? "border border-signal/50" : ""
               } ${hasMatch ? "hover:bg-white/10 cursor-pointer" : "text-white/20 cursor-default"}`}
             >
               <span>{Number(key.slice(-2))}</span>
-              {hasMatch && <span className={`w-1 h-1 rounded-full ${isSelected ? "bg-white" : "bg-signal"}`} />}
+              {hasMatch && <span className={`w-1 h-1 rounded-full ${isSelected ? "bg-black" : "bg-win"}`} />}
             </button>
           );
         })}
       </div>
-      <p className="text-[10px] text-white/30 mt-2">Dot = at least one match that day.</p>
+      <p className="text-[10px] text-white/30 mt-2">Green = at least one match that day.</p>
     </div>
   );
 }
@@ -303,8 +319,10 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                     href={`/match/${m.id}`}
                     className="lv-card block px-3 py-2"
                   >
-                    <p className="font-semibold text-xs">
+                    <p className="font-semibold text-xs flex items-center gap-1.5">
+                      <TeamLogo url={m.team_a?.logo_url} className="w-4 h-4" />
                       {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
+                      <TeamLogo url={m.team_b?.logo_url} className="w-4 h-4" />
                     </p>
                     <p className="text-[11px] text-white/40 truncate">
                       {m.tournament?.name} · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -339,8 +357,10 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
               className="lv-card flex items-center justify-between px-4 py-3"
             >
               <div>
-                <p className="font-semibold text-sm">
+                <p className="font-semibold text-sm flex items-center gap-1.5">
+                  <TeamLogo url={m.team_a?.logo_url} className="w-4 h-4" />
                   {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
+                  <TeamLogo url={m.team_b?.logo_url} className="w-4 h-4" />
                 </p>
                 <p className="text-xs text-white/40">
                   {m.tournament?.liquipedia_slug ? (

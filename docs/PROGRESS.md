@@ -1,5 +1,12 @@
 # Livevival feature audit — progress tracker
 
+**Status (2026-08-02): every tracked item below is done or explicitly
+documented as blocked on something only the owner can supply.** See
+"Known hard blockers" for the remaining short list (a Telegram bot token,
+an optional YouTube fallback needing an API key, and OCR real-world
+calibration that needs the admin's own PC). Everything else has been
+merged to `main` across PRs #1–#12 (see `git log --oneline` on main).
+
 Working from the owner's full feature request (admin CRUD audit + public
 site audit + fan features + future Telegram bot). This file is the source
 of truth for what's done vs. pending — updated as each piece lands.
@@ -125,12 +132,27 @@ decision with no reasonable default).
       logic against a real stream from this sandbox, so forcing it would
       repeat the exact "shipped blind, worked in ~20% of cases" mistake
       already fixed once this session (team-roster scrapers).
-- [ ] Telegram bot infrastructure — in progress. Will be built and ready
-      to deploy, but **cannot go live without a BotFather token only the
-      owner can create**. This is a hard blocker I can't find an
-      alternative for; everything else (notification logic, admin
-      controls) will be built regardless.
-- [ ] Fan feature recommendations writeup
+- [x] Telegram bot infrastructure — outbound-only (no bot commands,
+      no webhook). Automatic from the always-on worker: match went live,
+      15-min-before reminder, per-game result, match finished — deduped
+      via a new `telegram_notifications` table. Admin-controlled from the
+      live console for what the worker can't automate (Liquipedia has no
+      live picks/bans feed for an in-progress series): an "Announce
+      draft" button and a per-key-moment post button, plus automatic
+      game/match results specifically for `update_source='local_ocr'`
+      matches, which the worker skips entirely. New `/api/telegram/notify`
+      route authorizes via the caller's own Supabase session + `is_admin()`
+      RPC, no service-role key needed in the Next.js deployment.
+      **Cannot go live without a BotFather token only the owner can
+      create** — everything else is built and will start working the
+      moment `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are set (see the
+      header comment in `worker/src/telegram.mjs` for the exact steps).
+- [x] Fan feature recommendations writeup — `docs/fan-feature-recommendations.md`,
+      also published as a Claude Artifact during the session. Grouped into
+      catching-up features, stay-in-the-loop features, deeper-stats
+      features, and smaller polish items, each tagged by whether it's
+      buildable now with existing data or needs new collection/integration
+      work.
 
 ## Known hard blockers (not workaroundable, flagged not skipped)
 

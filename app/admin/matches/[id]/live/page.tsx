@@ -258,6 +258,9 @@ export default function LiveConsolePage() {
   const [kmTeam, setKmTeam] = useState("");
   const [kmHero, setKmHero] = useState("");
   const [kmPlayer, setKmPlayer] = useState("");
+  const [kmAttachScreenshot, setKmAttachScreenshot] = useState(false);
+  const [editingMomentId, setEditingMomentId] = useState<string | null>(null);
+  const [editingMomentText, setEditingMomentText] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -289,15 +292,27 @@ export default function LiveConsolePage() {
       minute_mark: minute,
       source: "manual",
     });
+    if (kmAttachScreenshot && captureActive && (selectedTemplate.type === "game_finish" || selectedTemplate.type === "match_finish")) {
+      captureScreenshotFromPreview(description);
+    }
     setKmTeam("");
     setKmHero("");
     setKmPlayer("");
+    setKmAttachScreenshot(false);
     loadAll();
   }
   async function deleteKeyMoment(id: string) {
     const { error } = await supabase.from("key_moments").delete().eq("id", id);
     if (error) setError(error.message);
     else loadAll();
+  }
+  async function updateKeyMoment(id: string, description: string) {
+    const { error } = await supabase.from("key_moments").update({ description }).eq("id", id);
+    if (error) setError(error.message);
+    else {
+      setEditingMomentId(null);
+      loadAll();
+    }
   }
 
   // ── Game screenshots ────────────────────────────────────────────────
@@ -308,7 +323,7 @@ export default function LiveConsolePage() {
   const [screenshotUploading, setScreenshotUploading] = useState(false);
   const [screenshotNote, setScreenshotNote] = useState("");
 
-  async function uploadScreenshot(blob: Blob) {
+  async function uploadScreenshot(blob: Blob, noteOverride?: string) {
     if (!game) return;
     setScreenshotUploading(true);
     try {
@@ -327,7 +342,7 @@ export default function LiveConsolePage() {
         match_id: matchId,
         image_url: pub.publicUrl,
         in_game_time: inGameTime,
-        note: screenshotNote || null,
+        note: noteOverride ?? screenshotNote ?? null,
       });
       if (insertErr) {
         setError(insertErr.message);
@@ -340,7 +355,7 @@ export default function LiveConsolePage() {
     }
   }
 
-  function captureScreenshotFromPreview() {
+  function captureScreenshotFromPreview(noteOverride?: string) {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
     const canvas = document.createElement("canvas");
@@ -348,7 +363,7 @@ export default function LiveConsolePage() {
     canvas.height = video.videoHeight;
     canvas.getContext("2d")?.drawImage(video, 0, 0);
     canvas.toBlob((blob) => {
-      if (blob) uploadScreenshot(blob);
+      if (blob) uploadScreenshot(blob, noteOverride);
     }, "image/jpeg", 0.85);
   }
 
@@ -654,21 +669,28 @@ export default function LiveConsolePage() {
     (async () => {
       // Tournament-wide defaults first, then match-specific rows layered on
       // top — a match that was never calibrated inherits the tournament's
-      // saved regions; one that was calibrated keeps its own.
+      // saved regions; one that was calibrated keeps its own. "overlay_hint"
+      // is a text-only field (crop-region columns stay null for it) reusing
+      // this same table/scoping instead of a dedicated one.
       const [{ data: tournamentDefaults }, { data: matchRegions }] = await Promise.all([
-        supabase.from("capture_regions").select("field, x_pct, y_pct, w_pct, h_pct").eq("tournament_id", match.tournament_id),
-        supabase.from("capture_regions").select("field, x_pct, y_pct, w_pct, h_pct").eq("match_id", matchId),
+        supabase.from("capture_regions").select("field, x_pct, y_pct, w_pct, h_pct, hint_text").eq("tournament_id", match.tournament_id),
+        supabase.from("capture_regions").select("field, x_pct, y_pct, w_pct, h_pct, hint_text").eq("match_id", matchId),
       ]);
       setRegions((prev) => {
         const next = { ...prev };
         for (const r of tournamentDefaults ?? []) {
+          if (r.field === "overlay_hint") continue;
           next[r.field as CaptureField] = { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct };
         }
         for (const r of matchRegions ?? []) {
+          if (r.field === "overlay_hint") continue;
           next[r.field as CaptureField] = { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct };
         }
         return next;
       });
+      const tournamentHint = tournamentDefaults?.find((r) => r.field === "overlay_hint")?.hint_text;
+      const matchHint = matchRegions?.find((r) => r.field === "overlay_hint")?.hint_text;
+      if (matchHint ?? tournamentHint) setOverlayHint(matchHint ?? tournamentHint ?? "");
     })();
   }, [matchId, match?.tournament_id]);
 
@@ -690,6 +712,25 @@ export default function LiveConsolePage() {
     );
     setSavedDefaultField(field);
     setTimeout(() => setSavedDefaultField(null), 2000);
+  }
+
+  async function saveOverlayHint() {
+    if (!matchId) return;
+    await supabase.from("capture_regions").upsert(
+      { match_id: matchId, field: "overlay_hint", hint_text: overlayHint || null },
+      { onConflict: "match_id,field" }
+    );
+  }
+
+  const [overlayHintSavedAsDefault, setOverlayHintSavedAsDefault] = useState(false);
+  async function saveOverlayHintAsTournamentDefault() {
+    if (!match?.tournament_id) return;
+    await supabase.from("capture_regions").upsert(
+      { tournament_id: match.tournament_id, field: "overlay_hint", hint_text: overlayHint || null },
+      { onConflict: "tournament_id,field" }
+    );
+    setOverlayHintSavedAsDefault(true);
+    setTimeout(() => setOverlayHintSavedAsDefault(false), 2000);
   }
 
   function cropCanvasFor(video: HTMLVideoElement, box: RegionBox) {
@@ -973,11 +1014,28 @@ export default function LiveConsolePage() {
   const [customLabelDraft, setCustomLabelDraft] = useState("");
   async function setMatchPhase(newState: string) {
     if (!match) return;
+    const previousState = match.state;
     const payload: { state: string; custom_state_label?: string | null } = { state: newState };
     if (newState !== "CUSTOM") payload.custom_state_label = null;
     const { error } = await supabase.from("matches").update(payload).eq("id", match.id);
-    if (error) setError(error.message);
-    else loadAll();
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    // Only Hot matches get a moment log at all (Normal matches hide that
+    // section entirely — see the update_source check further down), so
+    // only they get phase transitions recorded into it.
+    if (game && match.update_source === "local_ocr" && newState !== previousState) {
+      await supabase.from("key_moments").insert({
+        game_id: game.id,
+        match_id: matchId,
+        type: "phase_change",
+        description: `Phase changed to ${newState.replace(/_/g, " ")}`,
+        minute_mark: minute,
+        source: "manual",
+      });
+    }
+    loadAll();
   }
   async function saveCustomLabel() {
     if (!match) return;
@@ -1277,6 +1335,15 @@ export default function LiveConsolePage() {
         )}
       </section>
 
+      {match.update_source !== "local_ocr" && (
+        <p className="text-xs text-white/40 border border-white/10 rounded px-3 py-2">
+          This is a Normal match — KDA, screenshots, and the moment log aren&apos;t tracked here (Liquipedia-only
+          data: picks/bans, score, stream, VOD). Switch to Hot match above to take manual/OCR control.
+        </p>
+      )}
+
+      {match.update_source === "local_ocr" && (
+        <>
       {/* Scoreboard */}
       <section className="space-y-3">
         <h2 className="font-bold">Live scoreboard</h2>
@@ -1327,7 +1394,7 @@ export default function LiveConsolePage() {
         </p>
         <div className="flex gap-2 items-center flex-wrap">
           <button
-            onClick={captureScreenshotFromPreview}
+            onClick={() => captureScreenshotFromPreview()}
             disabled={!captureActive || screenshotUploading}
             className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
             title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
@@ -1441,13 +1508,49 @@ export default function LiveConsolePage() {
             Log moment
           </button>
         </div>
+        {(selectedTemplate?.type === "game_finish" || selectedTemplate?.type === "match_finish") && (
+          <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+            <input
+              type="checkbox"
+              checked={kmAttachScreenshot}
+              onChange={(e) => setKmAttachScreenshot(e.target.checked)}
+              disabled={!captureActive}
+            />
+            📸 Also grab the current frame into this game&apos;s screenshots
+            {!captureActive && " (start capture above first)"}
+          </label>
+        )}
         <div className="flex flex-wrap gap-2 text-xs">
           {keyMoments.map((km) => {
             const player = players.find((p) => p.id === km.player_id);
             const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
+            if (editingMomentId === km.id) {
+              return (
+                <span key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5">
+                  <input
+                    value={editingMomentText}
+                    onChange={(e) => setEditingMomentText(e.target.value)}
+                    className="bg-black/30 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
+                    autoFocus
+                  />
+                  <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
+                  <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
+                </span>
+              );
+            }
             return (
               <span key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5">
                 {km.minute_mark}&apos; {label}
+                <button
+                  onClick={() => {
+                    setEditingMomentId(km.id);
+                    setEditingMomentText(label);
+                  }}
+                  className="text-white/30 hover:text-white/70 normal-case"
+                  title="Edit"
+                >
+                  ✎
+                </button>
                 <button
                   onClick={() =>
                     postToTelegram(
@@ -1466,6 +1569,8 @@ export default function LiveConsolePage() {
           })}
         </div>
       </section>
+        </>
+      )}
 
       {telegramStatus && (
         <p className="text-xs text-white/50 fixed bottom-4 right-4 bg-black/80 border border-white/10 rounded px-3 py-2 z-50">
@@ -1541,12 +1646,23 @@ export default function LiveConsolePage() {
             )}
 
             {captureMode === "ai" && (
-              <input
-                value={overlayHint}
-                onChange={(e) => setOverlayHint(e.target.value)}
-                placeholder="Overlay hint (optional) — e.g. &quot;kill banners appear top-center in yellow text&quot;"
-                className="w-full bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
-              />
+              <div className="flex gap-2 items-center">
+                <input
+                  value={overlayHint}
+                  onChange={(e) => setOverlayHint(e.target.value)}
+                  onBlur={saveOverlayHint}
+                  placeholder="Overlay hint (optional) — e.g. &quot;kill banners appear top-center in yellow text&quot;"
+                  className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                />
+                <button
+                  onClick={saveOverlayHintAsTournamentDefault}
+                  disabled={!overlayHint}
+                  className="text-[10px] border border-white/10 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                  title="New matches in this tournament will start with this hint already filled in"
+                >
+                  {overlayHintSavedAsDefault ? "Saved ✓" : "Save as tournament default"}
+                </button>
+              </div>
             )}
 
             {captureActive && (

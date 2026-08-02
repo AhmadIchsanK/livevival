@@ -71,6 +71,7 @@ type KeyMoment = {
   type: string;
   description: string | null;
   minute_mark: number | null;
+  created_at: string;
   player: { ign: string } | null;
   screenshot_url: string | null;
   source: string;
@@ -156,7 +157,7 @@ export default function PublicMatchPage() {
         .select("id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id), hero:heroes(icon_url)")
         .eq("match_id", matchId),
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
-      supabase.from("key_moments").select("id, game_id, type, description, minute_mark, player:players(ign), screenshot_url, source").eq("match_id", matchId).order("minute_mark"),
+      supabase.from("key_moments").select("id, game_id, type, description, minute_mark, created_at, player:players(ign), screenshot_url, source").eq("match_id", matchId).order("minute_mark"),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
       supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
     ]);
@@ -214,6 +215,8 @@ export default function PublicMatchPage() {
 
   const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId);
   const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId);
+  const teamAKills = teamAStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  const teamBKills = teamBStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
   const teamAPicks = gamePickBans
     .filter((p) => p.team_id === teamAId && p.type === "pick")
@@ -235,16 +238,12 @@ export default function PublicMatchPage() {
 
   const gamesWonByA = games.filter((g) => g.winner_team_id === teamAId).length;
   const gamesWonByB = games.filter((g) => g.winner_team_id === teamBId).length;
+  const seriesWinnerTeamId =
+    match.series_winner_team_id ??
+    (gamesWonByA > gamesWonByB ? teamAId : gamesWonByB > gamesWonByA ? teamBId : null) ??
+    null;
   const seriesWinnerName =
-    match.series_winner_team_id === teamAId
-      ? match.team_a?.name
-      : match.series_winner_team_id === teamBId
-      ? match.team_b?.name
-      : gamesWonByA > gamesWonByB
-      ? match.team_a?.name
-      : gamesWonByB > gamesWonByA
-      ? match.team_b?.name
-      : null;
+    seriesWinnerTeamId === teamAId ? match.team_a?.name : seriesWinnerTeamId === teamBId ? match.team_b?.name : null;
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-5xl mx-auto space-y-8">
@@ -254,12 +253,30 @@ export default function PublicMatchPage() {
           <h1 className="font-display font-light text-2xl sm:text-3xl tracking-tight flex items-center gap-2 flex-wrap">
             {match.team_a?.logo_url && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={proxiedImageUrl(match.team_a.logo_url)} alt="" className="w-8 h-8 rounded object-contain" />
+              <img
+                src={proxiedImageUrl(match.team_a.logo_url)}
+                alt=""
+                className={`w-8 h-8 rounded object-contain ${
+                  match.status === "finished" && seriesWinnerTeamId === teamAId ? "ring-2 ring-signal" : ""
+                }`}
+              />
             )}
-            {match.team_a?.name} vs {match.team_b?.name}
+            <span className={match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""}>
+              {match.team_a?.name}
+            </span>
+            <span className="text-white/30">vs</span>
+            <span className={match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""}>
+              {match.team_b?.name}
+            </span>
             {match.team_b?.logo_url && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={proxiedImageUrl(match.team_b.logo_url)} alt="" className="w-8 h-8 rounded object-contain" />
+              <img
+                src={proxiedImageUrl(match.team_b.logo_url)}
+                alt=""
+                className={`w-8 h-8 rounded object-contain ${
+                  match.status === "finished" && seriesWinnerTeamId === teamBId ? "ring-2 ring-signal" : ""
+                }`}
+              />
             )}
           </h1>
           <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
@@ -381,7 +398,17 @@ export default function PublicMatchPage() {
       </section>
 
       <section>
-        <h2 className="lv-heading mb-2">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="lv-heading">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+          {gameStats.length > 0 && (
+            <p className="text-sm tabular-nums">
+              <span className={teamAKills > teamBKills ? "text-signal font-semibold" : "text-white/60"}>{teamAKills}</span>
+              <span className="text-white/30"> — </span>
+              <span className={teamBKills > teamAKills ? "text-signal font-semibold" : "text-white/60"}>{teamBKills}</span>
+              <span className="text-white/40 text-xs"> kills</span>
+            </p>
+          )}
+        </div>
         <div className="grid grid-cols-2 gap-4">
           {[
             { name: match.team_a?.name, list: teamAStats },
@@ -440,6 +467,7 @@ export default function PublicMatchPage() {
                 {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
                 {km.source === "auto" && <span className="text-white/40 normal-case tracking-normal font-normal"> · auto</span>}
               </span>
+              <p className="text-[9px] text-white/30 normal-case">{new Date(km.created_at).toLocaleTimeString()}</p>
             </div>
           ))}
           {gameKeyMoments.length === 0 && <span className="text-white/30 text-xs">No key moments yet.</span>}

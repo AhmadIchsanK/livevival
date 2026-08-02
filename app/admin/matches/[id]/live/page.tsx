@@ -322,6 +322,7 @@ export default function LiveConsolePage() {
   const [kmHero, setKmHero] = useState("");
   const [kmPlayer, setKmPlayer] = useState("");
   const [kmAttachScreenshot, setKmAttachScreenshot] = useState(false);
+  const [kmCustomText, setKmCustomText] = useState("");
   const [editingMomentId, setEditingMomentId] = useState<string | null>(null);
   const [editingMomentText, setEditingMomentText] = useState("");
 
@@ -340,10 +341,15 @@ export default function LiveConsolePage() {
     const teamName = kmTeam === match?.team_a?.id ? match.team_a?.name : kmTeam === match?.team_b?.id ? match?.team_b?.name : "";
     const heroName = heroes.find((h) => h.id === kmHero)?.name ?? "";
     const playerName = players.find((p) => p.id === kmPlayer)?.ign ?? "";
-    const description = selectedTemplate.label_template
-      .replace("{team}", teamName)
-      .replace("{hero}", heroName)
-      .replace("{player}", playerName);
+    // "custom" is the one type meant for genuine free typing, not a fixed
+    // prefilled string — everything else still comes from the template.
+    const description =
+      selectedTemplate.type === "custom" && kmCustomText.trim()
+        ? kmCustomText.trim()
+        : selectedTemplate.label_template
+            .replace("{team}", teamName)
+            .replace("{hero}", heroName)
+            .replace("{player}", playerName);
 
     await supabase.from("key_moments").insert({
       game_id: game.id,
@@ -373,6 +379,7 @@ export default function LiveConsolePage() {
     setKmHero("");
     setKmPlayer("");
     setKmAttachScreenshot(false);
+    setKmCustomText("");
     loadAll();
   }
   async function deleteKeyMoment(id: string) {
@@ -1728,6 +1735,14 @@ export default function LiveConsolePage() {
                 <option key={p.id} value={p.id}>{p.ign}</option>
               ))}
             </select>
+          )}
+          {selectedTemplate?.type === "custom" && (
+            <input
+              value={kmCustomText}
+              onChange={(e) => setKmCustomText(e.target.value)}
+              placeholder="Type the custom moment..."
+              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+            />
           )}
           <button onClick={logKeyMoment} disabled={!selectedTemplate} className="lv-btn-ghost disabled:opacity-40">
             Log moment

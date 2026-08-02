@@ -23,6 +23,7 @@ type Match = {
   update_source: "liquipedia" | "local_ocr";
   series_winner_team_id: string | null;
   tournament_id: string | null;
+  ocr_left_team_id: string | null;
   tournament: { name: string } | null;
   team_a: { id: string; name: string } | null;
   team_b: { id: string; name: string } | null;
@@ -96,7 +97,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number, state, custom_state_label, update_source, series_winner_team_id, tournament_id,
+        `id, youtube_url, format, current_game_number, state, custom_state_label, update_source, series_winner_team_id, tournament_id, ocr_left_team_id,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(id, name),
          team_b:teams!matches_team_b_id_fkey(id, name)`
@@ -552,16 +553,27 @@ export default function LiveConsolePage() {
   // Only meaningful when match.update_source === "local_ocr": deterministic,
   // local, free OCR on a screen-shared tab — no AI, no rate limits, no
   // datacenter-IP bot detection, because it's the admin's own browser
-  // watching whatever is already playing. Reads text/numbers only (timer,
-  // gold, kill-banner keywords) — hero icons and small scoreboard rows
-  // aren't reliable to OCR, so picks/bans and per-player K/D/A stay as the
-  // one-click pickers/inputs elsewhere on this page.
+  // watching whatever is already playing.
+  //
+  // "left"/"right" fields track whichever physical side of the broadcast
+  // overlay they're calibrated against — ocr_left_team_id (set once per
+  // match below) is what resolves "left" to a real team, so the regions
+  // themselves never need recalibrating when sides swap between games.
   type CaptureField =
     | "countdown"
     | "draft_timer_a"
     | "draft_timer_b"
-    | "timer"
-    | "gold"
+    | "draft_picks_left"
+    | "draft_picks_right"
+    | "game_timer"
+    | "objectives_left"
+    | "objectives_right"
+    | "kills_left"
+    | "kills_right"
+    | "networth_left"
+    | "networth_right"
+    | "kda_left"
+    | "kda_right"
     | "kill_banner"
     | "victory_banner"
     | "pause_word";
@@ -569,9 +581,18 @@ export default function LiveConsolePage() {
     { field: "countdown", label: "Pre-game countdown" },
     { field: "draft_timer_a", label: "Draft timer — Team A" },
     { field: "draft_timer_b", label: "Draft timer — Team B" },
-    { field: "timer", label: "Match timer" },
-    { field: "gold", label: "Team gold (A then B)" },
-    { field: "kill_banner", label: "Kill banner" },
+    { field: "draft_picks_left", label: "Draft picks — left side (player + hero text)" },
+    { field: "draft_picks_right", label: "Draft picks — right side (player + hero text)" },
+    { field: "game_timer", label: "Game timer" },
+    { field: "objectives_left", label: "Objectives — left (tower, lord, turtle)" },
+    { field: "objectives_right", label: "Objectives — right (tower, lord, turtle)" },
+    { field: "kills_left", label: "Team kills — left" },
+    { field: "kills_right", label: "Team kills — right" },
+    { field: "networth_left", label: "Net worth — left" },
+    { field: "networth_right", label: "Net worth — right" },
+    { field: "kda_left", label: "K/D/A — left (5 lines, one per player)" },
+    { field: "kda_right", label: "K/D/A — right (5 lines, one per player)" },
+    { field: "kill_banner", label: "Kill banner (Savage/Maniac/etc.)" },
     { field: "victory_banner", label: "Victory/defeat banner" },
     { field: "pause_word", label: "Pause indicator" },
   ];
@@ -579,16 +600,48 @@ export default function LiveConsolePage() {
   // phase's tracker genuinely different instead of one field list shown
   // regardless of what's actually on screen. Draft-finish (DRAFT_COMPLETE)
   // has no region of its own: its tracker is the staged-picks review panel
-  // built in the phase-aware OCR PR, surfaced separately below.
+  // surfaced separately below. Bans stay manual/AI-only — ban slots show no
+  // text on screen, only an icon, so there's nothing for deterministic OCR
+  // to read there.
   const PHASE_CAPTURE_FIELDS: Record<string, CaptureField[]> = {
     MATCH_NOT_STARTED: ["countdown"],
-    DRAFT_STARTED: ["draft_timer_a", "draft_timer_b"],
+    DRAFT_STARTED: ["draft_timer_a", "draft_timer_b", "draft_picks_left", "draft_picks_right"],
     DRAFT_COMPLETE: [],
-    GAME_STARTED: ["timer", "gold", "kill_banner"],
+    GAME_STARTED: [
+      "game_timer",
+      "objectives_left",
+      "objectives_right",
+      "kills_left",
+      "kills_right",
+      "networth_left",
+      "networth_right",
+      "kda_left",
+      "kda_right",
+      "kill_banner",
+    ],
     GAME_FINISHED: ["victory_banner"],
     SERIES_FINISHED: [],
     TECHNICAL_PAUSE: ["pause_word"],
     CUSTOM: [],
+  };
+  const EMPTY_CAPTURE_RECORD = {
+    countdown: null,
+    draft_timer_a: null,
+    draft_timer_b: null,
+    draft_picks_left: null,
+    draft_picks_right: null,
+    game_timer: null,
+    objectives_left: null,
+    objectives_right: null,
+    kills_left: null,
+    kills_right: null,
+    networth_left: null,
+    networth_right: null,
+    kda_left: null,
+    kda_right: null,
+    kill_banner: null,
+    victory_banner: null,
+    pause_word: null,
   };
   type RegionBox = { xPct: number; yPct: number; wPct: number; hPct: number };
 
@@ -600,30 +653,39 @@ export default function LiveConsolePage() {
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
+  // Counts consecutive ticks where game_timer failed to parse a valid
+  // mm:ss while the match is GAME_STARTED — the one case reserved for
+  // "tracker went blank" inference (technical pause), since a blank timer
+  // alone can't otherwise distinguish a pause from a caster cutaway or the
+  // game actually ending (those have their own, better signals: the
+  // victory-banner OCR and the deterministic win-count math below).
+  const unreadableTimerTicks = useRef(0);
 
   const [captureActive, setCaptureActive] = useState(false);
   const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
-  const [regions, setRegions] = useState<Record<CaptureField, RegionBox | null>>({
-    countdown: null,
-    draft_timer_a: null,
-    draft_timer_b: null,
-    timer: null,
-    gold: null,
-    kill_banner: null,
-    victory_banner: null,
-    pause_word: null,
-  });
+  const [regions, setRegions] = useState<Record<CaptureField, RegionBox | null>>({ ...EMPTY_CAPTURE_RECORD });
   const [readings, setReadings] = useState<Record<CaptureField, string>>({
+    ...EMPTY_CAPTURE_RECORD,
     countdown: "",
     draft_timer_a: "",
     draft_timer_b: "",
-    timer: "",
-    gold: "",
+    draft_picks_left: "",
+    draft_picks_right: "",
+    game_timer: "",
+    objectives_left: "",
+    objectives_right: "",
+    kills_left: "",
+    kills_right: "",
+    networth_left: "",
+    networth_right: "",
+    kda_left: "",
+    kda_right: "",
     kill_banner: "",
     victory_banner: "",
     pause_word: "",
   });
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
+  const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
 
   // ── Full-frame AI capture (no calibration) ───────────────────────────
   // Alternative to the manual crop-region OCR above: sends the whole
@@ -644,7 +706,12 @@ export default function LiveConsolePage() {
     net_worth: { team_a_gold: number | null; team_b_gold: number | null };
     confidence: number;
   };
-  const [captureMode, setCaptureMode] = useState<"ai" | "manual">("ai");
+  // Locked to "manual" from the UI (see the Local capture panel below) —
+  // AI vision stays fully implemented but unreachable until manual OCR is
+  // proven out, per explicit instruction. setCaptureMode is kept (not
+  // deleted) since applyAiDetection/captureFrameAndAnalyze still exist and
+  // will need it again once AI is re-enabled.
+  const [captureMode, setCaptureMode] = useState<"ai" | "manual">("manual");
   const [heroes, setHeroes] = useState<{ id: string; name: string }[]>([]);
   const [overlayHint, setOverlayHint] = useState("");
   const [aiDetection, setAiDetection] = useState<AiDetection | null>(null);
@@ -679,6 +746,21 @@ export default function LiveConsolePage() {
     const n = normalize(playerName);
     const pool = teamId ? players.filter((p) => p.team_id === teamId) : players;
     return (pool.find((p) => normalize(p.ign) === n) ?? pool.find((p) => normalize(p.ign).includes(n) || n.includes(normalize(p.ign))))?.id ?? null;
+  }
+  // ocr_left_team_id resolves which real team the "left"-labeled regions
+  // belong to for this match; unset defaults to team_a=left so a fresh
+  // match still works before the admin explicitly sets it.
+  function resolveLeftTeamId(): string | null {
+    return match?.ocr_left_team_id ?? match?.team_a?.id ?? null;
+  }
+  function resolveRightTeamId(): string | null {
+    const left = resolveLeftTeamId();
+    return match?.team_a?.id === left ? match?.team_b?.id ?? null : match?.team_a?.id ?? null;
+  }
+  async function setOcrLeftTeam(teamId: string) {
+    if (!match) return;
+    await supabase.from("matches").update({ ocr_left_team_id: teamId || null }).eq("id", match.id);
+    loadAll();
   }
 
   // Draft phases (DRAFT_STARTED/DRAFT_COMPLETE) never auto-write detected
@@ -908,6 +990,11 @@ export default function LiveConsolePage() {
       { onConflict: "match_id,field" }
     );
   }
+  async function clearRegion(field: CaptureField) {
+    setRegions((prev) => ({ ...prev, [field]: null }));
+    setReadings((prev) => ({ ...prev, [field]: "" }));
+    await supabase.from("capture_regions").delete().eq("match_id", matchId).eq("field", field);
+  }
 
   const [savedDefaultField, setSavedDefaultField] = useState<CaptureField | null>(null);
   async function saveRegionAsTournamentDefault(field: CaptureField) {
@@ -1073,6 +1160,54 @@ export default function LiveConsolePage() {
     else loadAll();
   }
 
+  // Best-effort line parser shared by draft-pick and K/D/A regions: scans
+  // each OCR'd line for a known hero name and a known player ign as
+  // substrings (fuzzy via normalize()) rather than assuming a fixed column
+  // layout, since the exact overlay text format varies by tournament.
+  function findPlayerAndHeroInLine(line: string, teamId: string | null) {
+    const teamPlayers = teamId ? players.filter((p) => p.team_id === teamId) : players;
+    const n = normalize(line);
+    const player = teamPlayers.find((p) => n.includes(normalize(p.ign)));
+    const hero = heroes.find((h) => n.includes(normalize(h.name)));
+    return { player, hero };
+  }
+  function parseDraftPickLines(text: string, teamId: string | null): { player: string; hero: string }[] {
+    const results: { player: string; hero: string }[] = [];
+    for (const rawLine of text.split(/\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const { player, hero } = findPlayerAndHeroInLine(line, teamId);
+      if (player && hero) results.push({ player: player.ign, hero: hero.name });
+    }
+    return results;
+  }
+  function parseKdaLines(text: string, teamId: string | null) {
+    const results: { playerId: string; heroName: string | null; kills: number; deaths: number; assists: number }[] = [];
+    for (const rawLine of text.split(/\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const kda = line.match(/(\d+)\D+(\d+)\D+(\d+)/);
+      if (!kda) continue;
+      const { player, hero } = findPlayerAndHeroInLine(line, teamId);
+      if (!player) continue;
+      results.push({ playerId: player.id, heroName: hero?.name ?? null, kills: Number(kda[1]), deaths: Number(kda[2]), assists: Number(kda[3]) });
+    }
+    return results;
+  }
+  async function applyObjectiveReading(teamId: string, text: string) {
+    const nums = text.match(/\d+/g)?.map(Number);
+    if (!nums || nums.length < 3) return;
+    const targets: [string, number][] = [
+      ["tower", nums[0]],
+      ["lord", nums[1]],
+      ["turtle", nums[2]],
+    ];
+    for (const [type, target] of targets) {
+      const current = objectiveCount(teamId, type);
+      for (let i = current; i < target; i++) await incrementObjective(teamId, type);
+    }
+  }
+
   async function captureTick() {
     const video = previewRef.current;
     const worker = workerRef.current;
@@ -1083,6 +1218,15 @@ export default function LiveConsolePage() {
     // tracker genuinely distinct instead of always reading the same trio
     // regardless of what's actually on screen.
     const activeFields = PHASE_CAPTURE_FIELDS[match?.state ?? ""] ?? [];
+    const leftTeamId = resolveLeftTeamId();
+    const rightTeamId = resolveRightTeamId();
+    // Collected across the loop and applied once at the end, since both
+    // sides of a paired region (net worth, K/D/A) need to be read before
+    // they can be cross-checked or combined into one write.
+    let networthLeft: number | null = null;
+    let networthRight: number | null = null;
+    let kdaLeftParsed: ReturnType<typeof parseKdaLines> = [];
+    let kdaRightParsed: ReturnType<typeof parseKdaLines> = [];
 
     for (const field of activeFields) {
       const box = regions[field];
@@ -1101,10 +1245,20 @@ export default function LiveConsolePage() {
           const found = OCR_KEYWORDS.find((k) => k.pattern.test(trimmed));
           if (found) setSuggestion({ type: found.type, raw: trimmed });
         }
-        if (field === "timer" && mmss) {
-          setMinute(Number(mmss[1]));
-          updateGameClock(Number(mmss[1]), Number(mmss[2]));
-          maybeAutoStartGame();
+        if (field === "game_timer") {
+          if (mmss) {
+            unreadableTimerTicks.current = 0;
+            setMinute(Number(mmss[1]));
+            updateGameClock(Number(mmss[1]), Number(mmss[2]));
+            maybeAutoStartGame();
+          } else if (match?.state === "GAME_STARTED") {
+            // The one case reserved for "tracker went blank" inference — see
+            // the comment on unreadableTimerTicks above.
+            unreadableTimerTicks.current += 1;
+            if (unreadableTimerTicks.current === 3) {
+              setSuggestion({ type: "game_pause", raw: "Game timer unreadable for 3 consecutive ticks" });
+            }
+          }
         }
         if (field === "countdown") {
           if (mmss) updateCountdown(Number(mmss[1]), Number(mmss[2]));
@@ -1115,6 +1269,37 @@ export default function LiveConsolePage() {
           if (mmss) updateDraftTimer(side, Number(mmss[1]) * 60 + Number(mmss[2]));
           else if (secondsOnly) updateDraftTimer(side, Number(secondsOnly[1]));
         }
+        if (field === "draft_picks_left" || field === "draft_picks_right") {
+          const teamId = field === "draft_picks_left" ? leftTeamId : rightTeamId;
+          const teamName = teamId === match?.team_a?.id ? match?.team_a?.name : match?.team_b?.name;
+          if (teamName) {
+            // Player attribution isn't part of the shared staged-action shape
+            // (same limitation the AI-vision draft path already has) — the
+            // player match is only used here to increase confidence that a
+            // line is really a pick line, not junk OCR noise.
+            const pairs = parseDraftPickLines(trimmed, teamId);
+            setStagedDraftActions((prev) => {
+              const next = [...prev];
+              for (const { hero } of pairs) {
+                const dupe = next.some((a) => a.type === "pick" && a.team_name === teamName && a.hero_name.toLowerCase() === hero.toLowerCase());
+                if (!dupe) next.push({ type: "pick", team_name: teamName, hero_name: hero });
+              }
+              return next;
+            });
+          }
+        }
+        if (field === "objectives_left" && leftTeamId) await applyObjectiveReading(leftTeamId, trimmed);
+        if (field === "objectives_right" && rightTeamId) await applyObjectiveReading(rightTeamId, trimmed);
+        if (field === "networth_left") {
+          const n = trimmed.match(/\d[\d,]*/);
+          if (n) networthLeft = Number(n[0].replace(/,/g, ""));
+        }
+        if (field === "networth_right") {
+          const n = trimmed.match(/\d[\d,]*/);
+          if (n) networthRight = Number(n[0].replace(/,/g, ""));
+        }
+        if (field === "kda_left") kdaLeftParsed = parseKdaLines(trimmed, leftTeamId);
+        if (field === "kda_right") kdaRightParsed = parseKdaLines(trimmed, rightTeamId);
         if (field === "victory_banner" && /victory|defeat|win/i.test(trimmed)) {
           const teamId = guessWinnerFromText(trimmed);
           if (teamId) setSuggestedWinner(teamId);
@@ -1126,6 +1311,41 @@ export default function LiveConsolePage() {
         console.error(`OCR error (${field})`, err);
       }
     }
+
+    // Net worth: only worth a snapshot once we actually have both sides —
+    // feeds the same net_worth_snapshots table the manual "Snapshot net
+    // worth" button already writes to.
+    if (networthLeft != null && networthRight != null && game && match) {
+      const teamAGold = leftTeamId === match.team_a?.id ? networthLeft : networthRight;
+      const teamBGold = leftTeamId === match.team_a?.id ? networthRight : networthLeft;
+      await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: teamAGold, team_b_gold: teamBGold });
+    }
+
+    // K/D/A: same auto-upsert precedent already used by the AI-vision path
+    // (applyAiDetection) — a misread here just gets corrected by the next
+    // tick or a manual edit in Live scoreboard, unlike draft picks (staged,
+    // reviewed, pushed explicitly) where a wrong write is a one-time event
+    // that's costlier to have gone live.
+    if (game) {
+      for (const row of [...kdaLeftParsed, ...kdaRightParsed]) {
+        await supabase.from("player_stats").upsert(
+          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills: row.kills, deaths: row.deaths, assists: row.assists },
+          { onConflict: "game_id,player_id" }
+        );
+      }
+    }
+
+    // Consistency checks — dismissible warnings only, never block a write.
+    const leftIds = new Set(kdaLeftParsed.map((r) => r.playerId));
+    const crossedSides = kdaRightParsed.some((r) => leftIds.has(r.playerId));
+    const leftHeroes = kdaLeftParsed.map((r) => r.heroName).filter(Boolean);
+    const rightHeroes = kdaRightParsed.map((r) => r.heroName).filter(Boolean);
+    const duplicateHero = leftHeroes.find((h) => rightHeroes.includes(h));
+    if (crossedSides) setConsistencyWarning("Same player matched on both K/D/A regions — check ocr_left team mapping or region calibration.");
+    else if (duplicateHero) setConsistencyWarning(`"${duplicateHero}" matched as picked on both teams — check hero OCR/roster data.`);
+    else setConsistencyWarning(null);
+
+    if (game && (kdaLeftParsed.length > 0 || kdaRightParsed.length > 0)) loadAll();
   }
 
   async function startCapture() {
@@ -1240,19 +1460,6 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  async function applyGoldReading() {
-    if (!game) return;
-    const nums = readings.gold.match(/\d[\d,]*/g)?.map((n) => Number(n.replace(/,/g, "")));
-    if (!nums || nums.length < 2) return;
-    await supabase.from("net_worth_snapshots").insert({
-      game_id: game.id,
-      match_id: matchId,
-      minute_mark: minute,
-      team_a_gold: nums[0],
-      team_b_gold: nums[1],
-    });
-  }
-
   async function setGameMap(map: string) {
     if (!game) return;
     const { error } = await supabase.from("games").update({ map }).eq("id", game.id);
@@ -1361,9 +1568,9 @@ export default function LiveConsolePage() {
   // differently, not just a label on the same always-on tracker.
   const PHASE_TRACKER_HINTS: Record<string, string> = {
     MATCH_NOT_STARTED: "Waiting — tracker reads a pre-game countdown, shown live on the public page. No countdown found usually means TVC/caster session; use Custom if so.",
-    DRAFT_STARTED: "Drafting — tracker reads each team's per-pick countdown, shown live on the public page. Picks/bans themselves aren't tracked until Draft complete.",
-    DRAFT_COMPLETE: "Drafting finished — detected picks/bans stage below (Full-frame AI) for review, then push explicitly. Nothing writes to the draft automatically.",
-    GAME_STARTED: "Game ongoing — the main event: timer, kills, gold/net worth, and per-player KDA all track here, stats/net-worth/moments applying automatically each tick.",
+    DRAFT_STARTED: "Drafting — reads each team's per-pick countdown, plus picks (player + hero text) from the two draft-picks regions, staged below for review before pushing. Bans stay manual — ban slots show no text, only an icon.",
+    DRAFT_COMPLETE: "Drafting finished — any picks still staged below can be reviewed and pushed. Nothing writes to the draft automatically.",
+    GAME_STARTED: "Game ongoing — the main event: game timer, objectives, kills, net worth, and per-player K/D/A all track here (one region per side), applying automatically each tick. Set which side is \"left\" below.",
     GAME_FINISHED: "Game finished — tracker optionally reads a victory/defeat banner to suggest a winner; otherwise declare the winner manually below.",
     SERIES_FINISHED: "Match finished — capture is no longer needed for this series.",
     TECHNICAL_PAUSE: "Technical pause — tracker just looks for the word \"pause\" to confirm what you already flagged manually.",
@@ -2037,6 +2244,23 @@ export default function LiveConsolePage() {
           </p>
         )}
 
+        {match.update_source === "local_ocr" && match.team_a && match.team_b && (
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-white/50">Which team is on the left of the broadcast overlay?</label>
+            <select
+              value={resolveLeftTeamId() ?? ""}
+              onChange={(e) => setOcrLeftTeam(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+            >
+              <option value={match.team_a.id}>{match.team_a.name}</option>
+              <option value={match.team_b.id}>{match.team_b.name}</option>
+            </select>
+            <span className="text-[10px] text-white/30">
+              Set this once per game if sides swap — the "left"/"right" regions below resolve to whichever team this says, no recalibration needed.
+            </span>
+          </div>
+        )}
+
         {match.update_source !== "local_ocr" ? (
           <p className="text-xs text-white/40">
             This is a Normal match (Liquipedia auto). Click &quot;Normal match&quot; above to make it a Hot match
@@ -2044,43 +2268,11 @@ export default function LiveConsolePage() {
           </p>
         ) : (
           <>
-            <div className="flex gap-2">
-              <button
-                onClick={() => !captureActive && setCaptureMode("ai")}
-                disabled={captureActive}
-                className={`text-[10px] rounded px-2 py-1 border ${
-                  captureMode === "ai" ? "border-signal bg-signal/10 text-signal" : "border-white/10 text-white/50"
-                } disabled:opacity-50`}
-              >
-                Full-frame AI (recommended)
-              </button>
-              <button
-                onClick={() => !captureActive && setCaptureMode("manual")}
-                disabled={captureActive}
-                className={`text-[10px] rounded px-2 py-1 border ${
-                  captureMode === "manual" ? "border-signal bg-signal/10 text-signal" : "border-white/10 text-white/50"
-                } disabled:opacity-50`}
-              >
-                Manual region OCR (legacy)
-              </button>
-            </div>
-
-            {captureMode === "ai" ? (
-              <p className="text-[10px] text-white/40">
-                Sends the whole captured frame to a vision model every 60s (paced to fit a free-tier token budget)
-                — no boxes to drag. Reads phase, game
-                timer, draft picks/bans, kill banners, per-player K/D/A, and net worth, and applies what it finds
-                directly (winner calls are only ever suggested, never auto-committed). Needs GROQ_API_KEY
-                configured server-side.
-              </p>
-            ) : (
-              <p className="text-[10px] text-white/40">
-                Reads the match timer, team gold, and kill-banner text from calibrated crop regions —
-                deterministic OCR running entirely in your browser, no AI involved. Hero picks/bans and
-                per-player K/D/A aren&apos;t reliable to OCR this way (icons have no text, scoreboard rows vary
-                too much) — keep using the pickers/inputs above for those, or switch to Full-frame AI.
-              </p>
-            )}
+            <p className="text-[10px] text-white/40 bg-white/5 border border-white/10 rounded px-2 py-1.5">
+              Manual region OCR — deterministic, runs entirely in your browser, no AI involved. Full-frame AI
+              capture is disabled for now until this manual pipeline is proven out end-to-end; the option
+              reappears here once that's done.
+            </p>
 
             {captureMode === "ai" && (
               <div className="flex gap-2 items-center">
@@ -2134,7 +2326,7 @@ export default function LiveConsolePage() {
                 {captureMode === "manual" && activeCaptureFields.length === 0 && (
                   <p className="text-xs text-white/40 border border-white/10 rounded p-3">
                     {match.state === "DRAFT_COMPLETE"
-                      ? "This phase's tracker is the staged-picks review panel above (switch to Full-frame AI to use it) — no crop region needed here."
+                      ? "Any picks staged during Draft started are still reviewable above — no crop region needed for this phase."
                       : "Nothing to track in this phase — move to Waiting, Draft started, Game ongoing, Game finished, or Technical pause to calibrate a region."}
                   </p>
                 )}
@@ -2144,12 +2336,23 @@ export default function LiveConsolePage() {
                     {activeCaptureFields.map(({ field, label }) => (
                       <div key={field} className="border border-white/10 rounded p-2 space-y-1.5">
                         <p className="text-[10px] text-white/50">{label}</p>
-                        <button
-                          onClick={() => setCalibratingField(field)}
-                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 w-full"
-                        >
-                          {calibratingField === field ? "Drag the area now..." : regions[field] ? "Recalibrate" : "Calibrate"}
-                        </button>
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() => setCalibratingField(field)}
+                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1"
+                          >
+                            {calibratingField === field ? "Drag the area now..." : regions[field] ? "Resize" : "Calibrate"}
+                          </button>
+                          {regions[field] && (
+                            <button
+                              onClick={() => clearRegion(field)}
+                              title="Clear this region"
+                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
+                            >
+                              ✕
+                            </button>
+                          )}
+                        </div>
                         {regions[field] && (
                           <button
                             onClick={() => saveRegionAsTournamentDefault(field)}
@@ -2162,20 +2365,12 @@ export default function LiveConsolePage() {
                         <p className="text-xs text-white/70 truncate" title={readings[field]}>
                           {readings[field] || "—"}
                         </p>
-                        {field === "gold" && readings.gold && (
-                          <button
-                            onClick={applyGoldReading}
-                            className="text-[10px] bg-signal rounded px-2 py-1 w-full"
-                          >
-                            Apply as net worth snapshot
-                          </button>
-                        )}
                       </div>
                     ))}
                   </div>
                 )}
 
-                {captureMode === "ai" && match && DRAFT_PHASES.includes(match.state) && stagedDraftActions.length > 0 && (
+                {match && DRAFT_PHASES.includes(match.state) && stagedDraftActions.length > 0 && (
                   <div className="border border-yellow-500/30 bg-yellow-500/10 rounded p-3 space-y-2 text-xs">
                     <p className="text-yellow-300 font-semibold">
                       {stagedDraftActions.length} draft action{stagedDraftActions.length === 1 ? "" : "s"} detected — review before pushing
@@ -2265,6 +2460,15 @@ export default function LiveConsolePage() {
                   onClick={() => setSuggestion(null)}
                   className="lv-btn-ghost"
                 >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {consistencyWarning && (
+              <div className="flex flex-wrap items-center gap-3 bg-orange-500/10 border border-orange-500/30 rounded px-4 py-2">
+                <span className="text-xs text-orange-300">⚠ {consistencyWarning}</span>
+                <button onClick={() => setConsistencyWarning(null)} className="lv-btn-ghost !text-xs !py-1">
                   Dismiss
                 </button>
               </div>

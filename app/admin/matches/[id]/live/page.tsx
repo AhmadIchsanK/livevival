@@ -34,6 +34,7 @@ type PlayerStat = { id: string; player_id: string; hero_name: string | null; kil
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null };
 type KeyMoment = { id: string; type: string; player_id: string | null; team_id: string | null; description: string | null; minute_mark: number | null };
 type MomentTemplate = { id: string; type: string; label_template: string; phase: string | null };
+type Screenshot = { id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
 
 // Same fixed left-to-right draft order used across the admin (Players page
 // role dropdown): exp lane, jungler, mid laner, gold laner, roamer.
@@ -62,6 +63,7 @@ export default function LiveConsolePage() {
   const [stats, setStats] = useState<PlayerStat[]>([]);
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
+  const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [minute, setMinute] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
@@ -122,16 +124,18 @@ export default function LiveConsolePage() {
 
     if (gameRow) {
       const gid = (gameRow as Game).id;
-      const [{ data: pb }, { data: ps }, { data: obj }, { data: km }] = await Promise.all([
+      const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: ss }] = await Promise.all([
         supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
         supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
         supabase.from("objectives").select("id, team_id, type, minute_mark").eq("game_id", gid).order("minute_mark"),
         supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark").eq("game_id", gid).order("minute_mark"),
+        supabase.from("game_screenshots").select("id, image_url, in_game_time, note, created_at").eq("game_id", gid).order("created_at"),
       ]);
       setPickBans((pb as PickBan[]) ?? []);
       setStats((ps as PlayerStat[]) ?? []);
       setObjectives((obj as Objective[]) ?? []);
       setKeyMoments((km as KeyMoment[]) ?? []);
+      setScreenshots((ss as Screenshot[]) ?? []);
     }
   }, [matchId]);
 
@@ -295,15 +299,73 @@ export default function LiveConsolePage() {
     else loadAll();
   }
 
-  // ── Item builds ─────────────────────────────────────────────────────
-  async function saveItems(playerId: string, items: string[]) {
+  // ── Game screenshots ────────────────────────────────────────────────
+  // Replaces the old per-player item-build text inputs: instead of the
+  // admin transcribing item icons into free-text slots, they capture (or
+  // upload) an actual screenshot of the in-game inventory/scoreboard,
+  // stamped with both the in-game timer and the real capture time.
+  const [screenshotUploading, setScreenshotUploading] = useState(false);
+  const [screenshotNote, setScreenshotNote] = useState("");
+
+  async function uploadScreenshot(blob: Blob) {
     if (!game) return;
-    await supabase.from("item_snapshots").insert({
-      game_id: game.id,
-      player_id: playerId,
-      minute_mark: minute,
-      item_slots: items,
-    });
+    setScreenshotUploading(true);
+    try {
+      const path = `${game.id}/${Date.now()}.jpg`;
+      const { error: uploadErr } = await supabase.storage.from("key-moment-screenshots").upload(path, blob, {
+        contentType: "image/jpeg",
+      });
+      if (uploadErr) {
+        setError(uploadErr.message);
+        return;
+      }
+      const { data: pub } = supabase.storage.from("key-moment-screenshots").getPublicUrl(path);
+      const inGameTime = `${String(minute).padStart(2, "0")}:00`;
+      const { error: insertErr } = await supabase.from("game_screenshots").insert({
+        game_id: game.id,
+        match_id: matchId,
+        image_url: pub.publicUrl,
+        in_game_time: inGameTime,
+        note: screenshotNote || null,
+      });
+      if (insertErr) {
+        setError(insertErr.message);
+        return;
+      }
+      setScreenshotNote("");
+      loadAll();
+    } finally {
+      setScreenshotUploading(false);
+    }
+  }
+
+  function captureScreenshotFromPreview() {
+    const video = previewRef.current;
+    if (!video || video.videoWidth === 0) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    canvas.toBlob((blob) => {
+      if (blob) uploadScreenshot(blob);
+    }, "image/jpeg", 0.85);
+  }
+
+  function handleScreenshotFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) uploadScreenshot(file);
+    e.target.value = "";
+  }
+
+  async function deleteScreenshot(id: string, imageUrl: string) {
+    const { error: delErr } = await supabase.from("game_screenshots").delete().eq("id", id);
+    if (delErr) {
+      setError(delErr.message);
+      return;
+    }
+    const path = imageUrl.split("/key-moment-screenshots/")[1];
+    if (path) await supabase.storage.from("key-moment-screenshots").remove([path]);
+    loadAll();
   }
 
   // ── Net worth snapshot ──────────────────────────────────────────────
@@ -1178,12 +1240,55 @@ export default function LiveConsolePage() {
                     onBlur={(e) => updateStat(p.id, "gold", Number(e.target.value))}
                     className="w-20 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
                   />
-                  <ItemRow onSave={(items) => saveItems(p.id, items)} />
                 </div>
               );
             })}
           </div>
         ))}
+      </section>
+
+      {/* Game screenshots */}
+      <section className="space-y-3">
+        <h2 className="font-bold">Game {game.game_number} screenshots</h2>
+        <p className="text-xs text-white/40">
+          Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
+          current in-game timer. Shown publicly at the bottom of this game&apos;s page.
+        </p>
+        <div className="flex gap-2 items-center flex-wrap">
+          <button
+            onClick={captureScreenshotFromPreview}
+            disabled={!captureActive || screenshotUploading}
+            className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
+            title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
+          >
+            📸 Capture current frame
+          </button>
+          <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
+            Upload image...
+            <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
+          </label>
+          <input
+            value={screenshotNote}
+            onChange={(e) => setScreenshotNote(e.target.value)}
+            placeholder="Note (optional)"
+            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
+          />
+          {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
+        </div>
+        <div className="flex flex-wrap gap-3">
+          {screenshots.map((s) => (
+            <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
+              <div className="flex items-center justify-between text-[10px] text-white/40">
+                <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
+                <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
+              </div>
+              {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
+            </div>
+          ))}
+          {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
+        </div>
       </section>
 
       {/* Objectives */}
@@ -1501,28 +1606,6 @@ export default function LiveConsolePage() {
           </>
         )}
       </section>
-    </div>
-  );
-}
-
-function ItemRow({ onSave }: { onSave: (items: string[]) => void }) {
-  const [items, setItems] = useState<string[]>(["", "", "", "", "", ""]);
-  return (
-    <div className="flex gap-1">
-      {items.map((val, i) => (
-        <input
-          key={i}
-          value={val}
-          onChange={(e) => {
-            const next = [...items];
-            next[i] = e.target.value;
-            setItems(next);
-          }}
-          onBlur={() => onSave(items)}
-          placeholder={`Item ${i + 1}`}
-          className="w-16 bg-black/30 border border-white/10 rounded px-1 py-1 text-[10px]"
-        />
-      ))}
     </div>
   );
 }

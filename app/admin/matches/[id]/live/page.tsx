@@ -141,6 +141,31 @@ export default function LiveConsolePage() {
     autoStartedGameId.current = null;
   }, [game?.id]);
 
+  // ── Telegram (admin-triggered) ───────────────────────────────────────
+  // For matches on Liquipedia auto-sync, the worker posts match-live/
+  // game-result/match-finished automatically. This is for what it can't:
+  // draft recaps and key moments (Liquipedia has no live picks/bans feed
+  // for an in-progress series — only once the whole match is marked
+  // finished), and anything on a local_ocr match, which the worker skips
+  // entirely since the admin's local capture session owns it.
+  const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
+  async function postToTelegram(message: string, meta?: { entityType: string; entityId: string; notificationType: string }) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) {
+      setTelegramStatus("Not signed in.");
+      return;
+    }
+    const res = await fetch("/api/telegram/notify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message, ...meta }),
+    });
+    const data = await res.json();
+    setTelegramStatus(res.ok ? "Posted to Telegram." : data.error ?? "Failed to post.");
+    setTimeout(() => setTelegramStatus(null), 4000);
+  }
+
   // ── Quick add player ────────────────────────────────────────────────
   const [newPlayerName, setNewPlayerName] = useState("");
   const [newPlayerTeam, setNewPlayerTeam] = useState("");
@@ -513,6 +538,25 @@ export default function LiveConsolePage() {
           .update({ current_game_number: match.current_game_number + 1, state: "GAME_FINISHED" })
           .eq("id", match.id);
     if (error) setError(error.message);
+
+    // The worker posts this automatically for Liquipedia-sourced matches,
+    // but never sees local_ocr matches at all — post it here instead so
+    // those results still reach Telegram.
+    if (match.update_source === "local_ocr") {
+      const winnerName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+      await postToTelegram(
+        `🎮 <b>Game ${game.game_number} result</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${winnerName}</b>\n${match.tournament?.name}`,
+        { entityType: "game", entityId: game.id, notificationType: "game_result" }
+      );
+      if (seriesWinner) {
+        const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+        await postToTelegram(
+          `🏆 <b>Match finished</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${seriesWinnerName}</b>\n${match.tournament?.name}`,
+          { entityType: "match", entityId: match.id, notificationType: "match_finished" }
+        );
+      }
+    }
+
     loadAll();
   }
 
@@ -690,7 +734,32 @@ export default function LiveConsolePage() {
 
       {/* Hero picks/bans */}
       <section className="space-y-3">
-        <h2 className="font-bold">Hero picks & bans</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Hero picks & bans</h2>
+          <button
+            onClick={() => {
+              const recap = [match.team_a, match.team_b]
+                .map((team) => {
+                  if (!team) return "";
+                  const picks = pickBans
+                    .filter((pb) => pb.team_id === team.id && pb.type === "pick")
+                    .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
+                    .map((pb) => `${pb.hero_name} (${players.find((p) => p.id === pb.player_id)?.ign ?? "?"})`)
+                    .join(", ");
+                  const bans = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "ban").map((pb) => pb.hero_name).join(", ");
+                  return `<b>${team.name}</b>\nPicks: ${picks || "—"}\nBans: ${bans || "—"}`;
+                })
+                .join("\n\n");
+              postToTelegram(
+                `📋 <b>Draft complete — Game ${game.game_number}</b>\n${match.tournament?.name}\n\n${recap}`,
+                { entityType: "game", entityId: game.id, notificationType: "draft_result" }
+              );
+            }}
+            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+          >
+            📢 Announce draft
+          </button>
+        </div>
         <div className="flex gap-2 items-end flex-wrap">
           <select
             value={pbTeam}
@@ -870,14 +939,35 @@ export default function LiveConsolePage() {
           </button>
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
-          {keyMoments.map((km) => (
-            <span key={km.id} className="px-2 py-1 rounded bg-signal/20 capitalize flex items-center gap-1.5">
-              {km.minute_mark}&apos; {km.type.replace("_", " ")}
-              <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-            </span>
-          ))}
+          {keyMoments.map((km) => {
+            const player = players.find((p) => p.id === km.player_id);
+            return (
+              <span key={km.id} className="px-2 py-1 rounded bg-signal/20 capitalize flex items-center gap-1.5">
+                {km.minute_mark}&apos; {km.type.replace("_", " ")}{player ? ` — ${player.ign}` : ""}
+                <button
+                  onClick={() =>
+                    postToTelegram(
+                      `🔥 <b>${km.type.replace("_", " ").toUpperCase()}</b>${player ? ` — ${player.ign}` : ""}\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
+                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" }
+                    )
+                  }
+                  className="text-white/30 hover:text-signal normal-case"
+                  title="Post to Telegram"
+                >
+                  📢
+                </button>
+                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
+              </span>
+            );
+          })}
         </div>
       </section>
+
+      {telegramStatus && (
+        <p className="text-xs text-white/50 fixed bottom-4 right-4 bg-black/80 border border-white/10 rounded px-3 py-2 z-50">
+          {telegramStatus}
+        </p>
+      )}
 
       {/* Local capture (admin PC) — only drives anything when this match is on local_ocr */}
       <section className="space-y-3 border-t border-white/10 pt-6">

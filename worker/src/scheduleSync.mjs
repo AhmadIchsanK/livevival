@@ -5,6 +5,7 @@
 import * as cheerio from "cheerio";
 import { supabase } from "./config.mjs";
 import { fetchRenderedPage } from "./liquipediaClient.mjs";
+import { notifyOnce } from "./telegram.mjs";
 
 export function parseFormat(text) {
   const m = text.match(/Bo(\d)/i);
@@ -114,6 +115,30 @@ export async function syncTournamentSchedule(tournament) {
     if (Object.keys(payload).length > 0) {
       const { error } = await supabase.from("matches").update(payload).eq("id", existing.id);
       if (error) console.error(`Failed to update match schedule: ${error.message}`);
+    }
+
+    if (payload.status === "live" && existing.status === "scheduled") {
+      await notifyOnce(
+        "match",
+        existing.id,
+        "match_live",
+        `🔴 <b>LIVE NOW</b>\n${m.teamAName} vs ${m.teamBName}\n${tournament.name}` +
+          (m.youtubeUrl ? `\n${m.youtubeUrl}` : "")
+      );
+    }
+
+    // "Upcoming match" reminder — fires once, for matches still scheduled
+    // and starting within the next 15 minutes. Uses the same
+    // notifyOnce/telegram_notifications dedup as every other notification
+    // type, so it's safe to re-evaluate on every tick without spamming.
+    const minutesUntilStart = (m.timestamp * 1000 - Date.now()) / 60000;
+    if (!m.finished && existing.status === "scheduled" && minutesUntilStart > 0 && minutesUntilStart <= 15) {
+      await notifyOnce(
+        "match",
+        existing.id,
+        "match_reminder",
+        `⏰ <b>Starting soon</b> (~${Math.max(1, Math.round(minutesUntilStart))} min)\n${m.teamAName} vs ${m.teamBName}\n${tournament.name}`
+      );
     }
   }
 

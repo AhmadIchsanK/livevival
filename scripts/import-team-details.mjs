@@ -164,8 +164,20 @@ async function main() {
   const { data: teams, error } = await supabase.from("teams").select("id, name, liquipedia_slug, logo_url");
   if (error) throw error;
 
-  console.log(`Processing ${teams.length} team(s)...`);
-  for (const team of teams) {
+  const { data: players, error: playersError } = await supabase.from("players").select("team_id, role");
+  if (playersError) throw playersError;
+  const teamsWithMissingRole = new Set(players.filter((p) => p.team_id && !p.role).map((p) => p.team_id));
+
+  // Re-fetching every team on every run (301 teams, Liquipedia rate-limited)
+  // was the actual cause of the slow backfill: with retries, a full pass
+  // routinely blew past GitHub Actions' 6h hard job cap and got force-
+  // cancelled before reaching the back half of the team list — confirmed
+  // via the last two scheduled runs of this workflow, both "cancelled" at
+  // ~6h05m. Skip teams that already have a logo and a fully-roled known
+  // roster; only re-fetch when a new player shows up with no role yet.
+  const needsFetch = teams.filter((t) => !t.logo_url || teamsWithMissingRole.has(t.id));
+  console.log(`Processing ${needsFetch.length} of ${teams.length} team(s) (rest already complete)...`);
+  for (const team of needsFetch) {
     try {
       await importTeam(team);
     } catch (err) {

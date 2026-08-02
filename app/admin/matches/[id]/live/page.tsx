@@ -19,6 +19,7 @@ type Match = {
   format: string | null;
   current_game_number: number;
   state: string;
+  custom_state_label: string | null;
   update_source: "liquipedia" | "local_ocr";
   series_winner_team_id: string | null;
   tournament: { name: string } | null;
@@ -31,7 +32,8 @@ type FinishedGame = { id: string; game_number: number; status: string; map: stri
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
 type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number; deaths: number; assists: number; gold: number };
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null };
-type KeyMoment = { id: string; type: string; player_id: string | null; minute_mark: number | null };
+type KeyMoment = { id: string; type: string; player_id: string | null; team_id: string | null; description: string | null; minute_mark: number | null };
+type MomentTemplate = { id: string; type: string; label_template: string; phase: string | null };
 
 // Same fixed left-to-right draft order used across the admin (Players page
 // role dropdown): exp lane, jungler, mid laner, gold laner, roamer.
@@ -67,7 +69,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number, state, update_source, series_winner_team_id,
+        `id, youtube_url, format, current_game_number, state, custom_state_label, update_source, series_winner_team_id,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(id, name),
          team_b:teams!matches_team_b_id_fkey(id, name)`
@@ -124,7 +126,7 @@ export default function LiveConsolePage() {
         supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
         supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
         supabase.from("objectives").select("id, team_id, type, minute_mark").eq("game_id", gid).order("minute_mark"),
-        supabase.from("key_moments").select("id, type, player_id, minute_mark").eq("game_id", gid).order("minute_mark"),
+        supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark").eq("game_id", gid).order("minute_mark"),
       ]);
       setPickBans((pb as PickBan[]) ?? []);
       setStats((ps as PlayerStat[]) ?? []);
@@ -241,17 +243,50 @@ export default function LiveConsolePage() {
     else loadAll();
   }
 
-  // ── Key moments ─────────────────────────────────────────────────────
-  const [kmType, setKmType] = useState("savage");
+  // ── Key moments (template-driven) ────────────────────────────────────
+  // Replaces free-typed moment logging with admin-managed prefilled
+  // templates (/admin/moment-templates) — "Team {team} picks {hero}"
+  // style placeholders get resolved from this match's own roster/hero
+  // data rather than retyped by hand every time.
+  const [momentTemplates, setMomentTemplates] = useState<MomentTemplate[]>([]);
+  const [kmTemplateId, setKmTemplateId] = useState("");
+  const [kmTeam, setKmTeam] = useState("");
+  const [kmHero, setKmHero] = useState("");
   const [kmPlayer, setKmPlayer] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from("moment_templates").select("id, type, label_template, phase").order("sort_order");
+      setMomentTemplates((data as MomentTemplate[]) ?? []);
+    })();
+  }, []);
+
+  const availableTemplates = momentTemplates.filter((t) => !t.phase || t.phase === match?.state);
+  const selectedTemplate = momentTemplates.find((t) => t.id === kmTemplateId) ?? null;
+
   async function logKeyMoment() {
-    if (!game) return;
+    if (!game || !selectedTemplate) return;
+    const teamName = kmTeam === match?.team_a?.id ? match.team_a?.name : kmTeam === match?.team_b?.id ? match?.team_b?.name : "";
+    const heroName = heroes.find((h) => h.id === kmHero)?.name ?? "";
+    const playerName = players.find((p) => p.id === kmPlayer)?.ign ?? "";
+    const description = selectedTemplate.label_template
+      .replace("{team}", teamName)
+      .replace("{hero}", heroName)
+      .replace("{player}", playerName);
+
     await supabase.from("key_moments").insert({
       game_id: game.id,
-      type: kmType,
+      match_id: matchId,
+      type: selectedTemplate.type,
+      description,
       player_id: kmPlayer || null,
+      team_id: kmTeam || null,
       minute_mark: minute,
+      source: "manual",
     });
+    setKmTeam("");
+    setKmHero("");
+    setKmPlayer("");
     loadAll();
   }
   async function deleteKeyMoment(id: string) {
@@ -798,6 +833,25 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  const MATCH_PHASES = [
+    "MATCH_NOT_STARTED", "DRAFT_STARTED", "DRAFT_COMPLETE", "GAME_STARTED",
+    "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM",
+  ];
+  const [customLabelDraft, setCustomLabelDraft] = useState("");
+  async function setMatchPhase(newState: string) {
+    if (!match) return;
+    const payload: { state: string; custom_state_label?: string | null } = { state: newState };
+    if (newState !== "CUSTOM") payload.custom_state_label = null;
+    const { error } = await supabase.from("matches").update(payload).eq("id", match.id);
+    if (error) setError(error.message);
+    else loadAll();
+  }
+  async function saveCustomLabel() {
+    if (!match) return;
+    await supabase.from("matches").update({ custom_state_label: customLabelDraft }).eq("id", match.id);
+    loadAll();
+  }
+
   if (error) return <p className="text-red-400 text-sm">{error}</p>;
   if (!match || !game) return <p className="text-white/50 text-sm">Loading match...</p>;
 
@@ -830,9 +884,27 @@ export default function LiveConsolePage() {
         </h1>
         <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
-          <span className="lv-badge bg-white/10 text-white/60">
-            {match.state.replace(/_/g, " ")}
-          </span>
+          <select
+            value={match.state}
+            onChange={(e) => setMatchPhase(e.target.value)}
+            title="Manual phase override — useful for technical pauses or anything OCR/Liquipedia sync can't reflect on its own"
+            className="lv-badge bg-white/10 text-white/60 border-none"
+          >
+            {MATCH_PHASES.map((s) => (
+              <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+            ))}
+          </select>
+          {match.state === "CUSTOM" && (
+            <span className="flex items-center gap-1">
+              <input
+                value={customLabelDraft || match.custom_state_label || ""}
+                onChange={(e) => setCustomLabelDraft(e.target.value)}
+                placeholder="e.g. TVC / caster session"
+                className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs w-48"
+              />
+              <button onClick={saveCustomLabel} className="lv-btn-ghost !px-2 !py-1 text-xs">Save</button>
+            </span>
+          )}
           <button
             onClick={toggleUpdateSource}
             title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
@@ -1151,35 +1223,59 @@ export default function LiveConsolePage() {
 
       {/* Key moments */}
       <section className="space-y-3">
-        <h2 className="font-bold">Key moments</h2>
-        <div className="flex gap-2 items-end">
-          <select value={kmType} onChange={(e) => setKmType(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
-            <option value="savage">Savage</option>
-            <option value="maniac">Maniac</option>
-            <option value="lord_steal">Lord steal</option>
-            <option value="turtle_steal">Turtle steal</option>
-            <option value="ace">Ace</option>
-          </select>
-          <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
-            <option value="">Player (optional)</option>
-            {players.map((p) => (
-              <option key={p.id} value={p.id}>{p.ign}</option>
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Key moments</h2>
+          <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
+        </div>
+        <div className="flex gap-2 items-end flex-wrap">
+          <select
+            value={kmTemplateId}
+            onChange={(e) => setKmTemplateId(e.target.value)}
+            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+          >
+            <option value="">Choose a template...</option>
+            {availableTemplates.map((t) => (
+              <option key={t.id} value={t.id}>{t.label_template}</option>
             ))}
           </select>
-          <button onClick={logKeyMoment} className="lv-btn-ghost">
+          {selectedTemplate?.label_template.includes("{team}") && (
+            <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
+              <option value="">Team</option>
+              {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
+              {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
+            </select>
+          )}
+          {selectedTemplate?.label_template.includes("{hero}") && (
+            <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
+              <option value="">Hero</option>
+              {heroes.map((h) => (
+                <option key={h.id} value={h.id}>{h.name}</option>
+              ))}
+            </select>
+          )}
+          {selectedTemplate?.label_template.includes("{player}") && (
+            <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
+              <option value="">Player</option>
+              {players.map((p) => (
+                <option key={p.id} value={p.id}>{p.ign}</option>
+              ))}
+            </select>
+          )}
+          <button onClick={logKeyMoment} disabled={!selectedTemplate} className="lv-btn-ghost disabled:opacity-40">
             Log moment
           </button>
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
           {keyMoments.map((km) => {
             const player = players.find((p) => p.id === km.player_id);
+            const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
             return (
-              <span key={km.id} className="px-2 py-1 rounded bg-signal/20 capitalize flex items-center gap-1.5">
-                {km.minute_mark}&apos; {km.type.replace("_", " ")}{player ? ` — ${player.ign}` : ""}
+              <span key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5">
+                {km.minute_mark}&apos; {label}
                 <button
                   onClick={() =>
                     postToTelegram(
-                      `🔥 <b>${km.type.replace("_", " ").toUpperCase()}</b>${player ? ` — ${player.ign}` : ""}\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
+                      `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
                       { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" }
                     )
                   }

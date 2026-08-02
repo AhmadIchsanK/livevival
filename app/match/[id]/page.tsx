@@ -40,6 +40,8 @@ type Game = {
   state: string;
   winner_team_id: string | null;
   vod_url: string | null;
+  current_time_seconds: number | null;
+  current_time_updated_at: string | null;
 };
 type PickBan = {
   id: string;
@@ -107,6 +109,12 @@ export default function PublicMatchPage() {
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const loadAll = useCallback(async () => {
     const { data: matchData, error: matchError } = await supabase
@@ -132,7 +140,7 @@ export default function PublicMatchPage() {
 
     const { data: gameRows } = await supabase
       .from("games")
-      .select("id, game_number, status, state, winner_team_id, vod_url")
+      .select("id, game_number, status, state, winner_team_id, vod_url, current_time_seconds, current_time_updated_at")
       .eq("match_id", matchId)
       .order("game_number", { ascending: true });
     const gameList = (gameRows as Game[]) ?? [];
@@ -203,6 +211,15 @@ export default function PublicMatchPage() {
   const teamBId = match.team_b?.id;
 
   const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
+
+  // Ticks up client-side between OCR reads instead of only jumping every
+  // capture interval — current_time_updated_at anchors it to real time.
+  const liveGameClock =
+    selectedGame?.current_time_seconds != null && selectedGame?.current_time_updated_at && match.state === "GAME_STARTED"
+      ? selectedGame.current_time_seconds + Math.floor((nowMs - new Date(selectedGame.current_time_updated_at).getTime()) / 1000)
+      : null;
+  const liveGameClockLabel =
+    liveGameClock != null ? `${String(Math.floor(liveGameClock / 60)).padStart(2, "0")}:${String(liveGameClock % 60).padStart(2, "0")}` : null;
   const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
   const embedUrl = youtubeEmbedUrl(videoUrl);
 
@@ -285,6 +302,11 @@ export default function PublicMatchPage() {
           {match.status === "live" && (
             <span className="lv-badge bg-white/10 text-white/70">
               {match.state === "CUSTOM" ? match.custom_state_label || "Custom" : PHASE_LABELS[match.state] ?? match.state}
+            </span>
+          )}
+          {liveGameClockLabel && (
+            <span className="lv-badge bg-signal/15 text-signal tabular-nums" title="Live in-game clock">
+              ⏱ {liveGameClockLabel}
             </span>
           )}
           {match.update_source === "local_ocr" && (

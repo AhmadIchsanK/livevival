@@ -171,6 +171,69 @@ export default function LiveConsolePage() {
     const data = await res.json();
     setTelegramStatus(res.ok ? "Posted to Telegram." : data.error ?? "Failed to post.");
     setTimeout(() => setTelegramStatus(null), 4000);
+    return res.ok;
+  }
+
+  // Builds the same "team → picks/bans" recap block used both by the manual
+  // "Announce draft" button and the automatic draft-finished notification.
+  function buildDraftRecap(): string {
+    if (!match) return "";
+    return [match.team_a, match.team_b]
+      .map((team) => {
+        if (!team) return "";
+        const picks = pickBans
+          .filter((pb) => pb.team_id === team.id && pb.type === "pick")
+          .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
+          .map((pb) => `${pb.hero_name} (${players.find((p) => p.id === pb.player_id)?.ign ?? "?"})`)
+          .join(", ");
+        const bans = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "ban").map((pb) => pb.hero_name).join(", ");
+        return `<b>${team.name}</b>\nPicks: ${picks || "—"}\nBans: ${bans || "—"}`;
+      })
+      .join("\n\n");
+  }
+
+  // Dumps everything currently on this page in one message — score so far,
+  // this game's draft, KDA, and moment list — for whenever the admin wants
+  // to share an update that doesn't fit one of the automatic triggers.
+  async function shareFullMatchInfo() {
+    if (!match || !game) return;
+    const winsFor = (id: string) =>
+      pastGames.filter((g) => g.winner_team_id === id).length + (game.winner_team_id === id ? 1 : 0);
+    const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
+    const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
+
+    const kdaLines = [match.team_a, match.team_b]
+      .map((team) => {
+        if (!team) return "";
+        const lines = stats
+          .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === team.id)
+          .map((s) => {
+            const p = players.find((pl) => pl.id === s.player_id);
+            return `${p?.ign ?? "?"} (${s.hero_name ?? "?"}): ${s.kills}/${s.deaths}/${s.assists}`;
+          })
+          .join("\n");
+        return lines ? `<b>${team.name}</b>\n${lines}` : "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
+
+    const momentLines = keyMoments
+      .map((km) => `${km.minute_mark}' ${km.description ?? km.type.replace(/_/g, " ")}`)
+      .join("\n");
+
+    const parts = [
+      `📊 <b>Match update — Game ${game.game_number}</b>`,
+      `${match.team_a?.name} ${aWins} – ${bWins} ${match.team_b?.name}\n${match.tournament?.name}`,
+      buildDraftRecap(),
+      kdaLines,
+      momentLines ? `<b>Moments</b>\n${momentLines}` : "",
+    ].filter(Boolean);
+
+    await postToTelegram(parts.join("\n\n"), {
+      entityType: "match",
+      entityId: match.id,
+      notificationType: "manual_share",
+    });
   }
 
   // ── Quick add player ────────────────────────────────────────────────
@@ -294,6 +357,17 @@ export default function LiveConsolePage() {
     });
     if (kmAttachScreenshot && captureActive && (selectedTemplate.type === "game_finish" || selectedTemplate.type === "match_finish")) {
       captureScreenshotFromPreview(description);
+    }
+    // The dramatic in-game moments auto-share — everything else (picks,
+    // bans, phase changes, custom notes) stays manual via the 📢 button per
+    // moment, since not every logged event is worth a push notification.
+    const AUTO_SHARE_TYPES = ["savage", "maniac", "lord_steal", "turtle_steal", "ace"];
+    if (AUTO_SHARE_TYPES.includes(selectedTemplate.type)) {
+      postToTelegram(`🔥 <b>${description}</b>\n${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`, {
+        entityType: "key_moment",
+        entityId: game.id,
+        notificationType: "key_moment_auto",
+      });
     }
     setKmTeam("");
     setKmHero("");
@@ -538,7 +612,10 @@ export default function LiveConsolePage() {
     if (!game || !match) return;
 
     const timerMatch = detection.game_timer_mm_ss?.match(/(\d{1,2}):(\d{2})/);
-    if (timerMatch) setMinute(Number(timerMatch[1]));
+    if (timerMatch) {
+      setMinute(Number(timerMatch[1]));
+      updateGameClock(Number(timerMatch[1]), Number(timerMatch[2]));
+    }
     if (detection.phase === "IN_GAME") maybeAutoStartGame();
 
     if (DRAFT_PHASES.includes(match.state)) {
@@ -752,6 +829,23 @@ export default function LiveConsolePage() {
     return crop;
   }
 
+  // Persists the full mm:ss reading (not just the minute used for
+  // minute_mark on logged events) so the public page can show a real
+  // running game clock instead of only updating once per admin action.
+  // Client-side ticking (in the public page) fills the gap between these
+  // writes, using current_time_updated_at as the anchor.
+  const lastPersistedSeconds = useRef<number | null>(null);
+  async function updateGameClock(mm: number, ss: number) {
+    if (!game) return;
+    const totalSeconds = mm * 60 + ss;
+    if (totalSeconds === lastPersistedSeconds.current) return;
+    lastPersistedSeconds.current = totalSeconds;
+    await supabase
+      .from("games")
+      .update({ current_time_seconds: totalSeconds, current_time_updated_at: new Date().toISOString() })
+      .eq("id", game.id);
+  }
+
   // The one auto phase-detection this local-OCR system attempts: a
   // readable in-game timer is a strong, text-based signal (unlike
   // pick/ban icons, which this console deliberately never tries to OCR —
@@ -791,6 +885,7 @@ export default function LiveConsolePage() {
           const m = trimmed.match(/(\d{1,2}):(\d{2})/);
           if (m) {
             setMinute(Number(m[1]));
+            updateGameClock(Number(m[1]), Number(m[2]));
             maybeAutoStartGame();
           }
         }
@@ -1034,6 +1129,31 @@ export default function LiveConsolePage() {
         minute_mark: minute,
         source: "manual",
       });
+
+      // Hot matches get a handful of phase transitions auto-shared to
+      // Telegram — the worker never sees local_ocr matches at all (see the
+      // postToTelegram comment above), so nothing else announces these.
+      if (newState !== previousState && game) {
+        const header = `${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`;
+        if (newState === "DRAFT_STARTED") {
+          await postToTelegram(`✏️ <b>Draft started — Game ${game.game_number}</b>\n${header}`, {
+            entityType: "match",
+            entityId: match.id,
+            notificationType: "draft_started",
+          });
+        } else if (newState === "DRAFT_COMPLETE") {
+          await postToTelegram(
+            `📋 <b>Draft complete — Game ${game.game_number}</b>\n${header}\n\n${buildDraftRecap()}`,
+            { entityType: "game", entityId: game.id, notificationType: "draft_result" }
+          );
+        } else if (newState === "GAME_STARTED") {
+          await postToTelegram(`🎮 <b>Game ${game.game_number} ongoing</b>\n${header}`, {
+            entityType: "game",
+            entityId: game.id,
+            notificationType: "game_started",
+          });
+        }
+      }
     }
     loadAll();
   }
@@ -1108,6 +1228,9 @@ export default function LiveConsolePage() {
             {match.update_source === "liquipedia"
               ? "📡 Normal match — click to make this a Hot match"
               : "🔥 Hot match — click to hand back to Normal (Liquipedia auto)"}
+          </button>
+          <button onClick={shareFullMatchInfo} className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10">
+            📢 Share everything to Telegram
           </button>
         </div>
         {match.state === "SERIES_FINISHED" && (
@@ -1232,24 +1355,12 @@ export default function LiveConsolePage() {
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Hero picks & bans</h2>
           <button
-            onClick={() => {
-              const recap = [match.team_a, match.team_b]
-                .map((team) => {
-                  if (!team) return "";
-                  const picks = pickBans
-                    .filter((pb) => pb.team_id === team.id && pb.type === "pick")
-                    .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
-                    .map((pb) => `${pb.hero_name} (${players.find((p) => p.id === pb.player_id)?.ign ?? "?"})`)
-                    .join(", ");
-                  const bans = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "ban").map((pb) => pb.hero_name).join(", ");
-                  return `<b>${team.name}</b>\nPicks: ${picks || "—"}\nBans: ${bans || "—"}`;
-                })
-                .join("\n\n");
+            onClick={() =>
               postToTelegram(
-                `📋 <b>Draft complete — Game ${game.game_number}</b>\n${match.tournament?.name}\n\n${recap}`,
+                `📋 <b>Draft complete — Game ${game.game_number}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
                 { entityType: "game", entityId: game.id, notificationType: "draft_result" }
-              );
-            }}
+              )
+            }
             className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
           >
             📢 Announce draft

@@ -11,6 +11,8 @@ type Tournament = {
   date_display: string | null;
   start_date: string | null;
   end_date: string | null;
+  logo_url: string | null;
+  fmvp_player: { ign: string; team: { name: string; logo_url: string | null } | null } | null;
 };
 type MatchRow = {
   id: string;
@@ -26,7 +28,16 @@ type Standing = {
   placement_sort: number | null;
   team_name_raw: string;
   prize_usd: number | null;
-  team: { name: string } | null;
+  team: { name: string; logo_url: string | null } | null;
+};
+type PlayerPerformance = {
+  playerId: string;
+  ign: string;
+  teamName: string | null;
+  games: number;
+  kills: number;
+  deaths: number;
+  assists: number;
 };
 
 function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: number } }) {
@@ -68,6 +79,7 @@ export default function TournamentPage() {
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [scores, setScores] = useState<Record<string, { a: number; b: number }>>({});
   const [standings, setStandings] = useState<Standing[]>([]);
+  const [performances, setPerformances] = useState<PlayerPerformance[]>([]);
   const [notFound, setNotFound] = useState(false);
   const [historyVisibleCount, setHistoryVisibleCount] = useState(20);
 
@@ -76,7 +88,7 @@ export default function TournamentPage() {
     async function load() {
       const { data: t } = await supabase
         .from("tournaments")
-        .select("id, name, tier, date_display, start_date, end_date")
+        .select("id, name, tier, date_display, start_date, end_date, logo_url, fmvp_player:players(ign, team:teams(name, logo_url))")
         .eq("liquipedia_slug", slug)
         .maybeSingle();
 
@@ -84,7 +96,7 @@ export default function TournamentPage() {
         setNotFound(true);
         return;
       }
-      setTournament(t as Tournament);
+      setTournament(t as unknown as Tournament);
 
       const [{ data: m }, { data: s }] = await Promise.all([
         supabase
@@ -94,17 +106,54 @@ export default function TournamentPage() {
              team_a:teams!matches_team_a_id_fkey(id, name),
              team_b:teams!matches_team_b_id_fkey(id, name)`
           )
-          .eq("tournament_id", (t as Tournament).id)
+          .eq("tournament_id", t.id)
           .order("scheduled_at", { ascending: true }),
         supabase
           .from("tournament_results")
-          .select("id, placement, placement_sort, team_name_raw, prize_usd, team:teams(name)")
-          .eq("tournament_id", (t as Tournament).id)
+          .select("id, placement, placement_sort, team_name_raw, prize_usd, team:teams(name, logo_url)")
+          .eq("tournament_id", t.id)
           .order("placement_sort", { ascending: true }),
       ]);
       const matchList = (m as unknown as MatchRow[]) ?? [];
       setMatches(matchList);
       setStandings((s as unknown as Standing[]) ?? []);
+
+      // "Player achievements" — built from player_stats already recorded
+      // against this tournament's matches (no separate MVP data source
+      // exists), aggregated across every game and ranked by a simple
+      // KDA-style score. Same shape of data the per-match MVP line uses.
+      // player_stats has no tournament_id — filter via this tournament's
+      // own match IDs instead.
+      const matchIds = matchList.map((mm) => mm.id);
+      const { data: statRows } = matchIds.length
+        ? await supabase
+            .from("player_stats")
+            .select("player_id, kills, deaths, assists, player:players(ign, team:teams(name))")
+            .in("match_id", matchIds)
+        : { data: [] };
+      const byPlayer = new Map<string, PlayerPerformance>();
+      for (const row of (statRows ?? []) as unknown as { player_id: string; kills: number; deaths: number; assists: number; player: { ign: string; team: { name: string } | null } | null }[]) {
+        if (!row.player_id || !row.player) continue;
+        const existing = byPlayer.get(row.player_id) ?? {
+          playerId: row.player_id,
+          ign: row.player.ign,
+          teamName: row.player.team?.name ?? null,
+          games: 0,
+          kills: 0,
+          deaths: 0,
+          assists: 0,
+        };
+        existing.games += 1;
+        existing.kills += row.kills ?? 0;
+        existing.deaths += row.deaths ?? 0;
+        existing.assists += row.assists ?? 0;
+        byPlayer.set(row.player_id, existing);
+      }
+      setPerformances(
+        [...byPlayer.values()]
+          .sort((a, b) => b.kills + b.assists - b.deaths - (a.kills + a.assists - a.deaths))
+          .slice(0, 5)
+      );
 
       const scoredIds = matchList.filter((mm) => mm.status !== "scheduled").map((mm) => mm.id);
       if (scoredIds.length > 0) {
@@ -146,17 +195,47 @@ export default function TournamentPage() {
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-3xl mx-auto space-y-8">
       <a href="/tournaments" className="lv-nav-link">&larr; All tournaments</a>
-      <header>
-        <span className="lv-badge bg-white/10 text-white/60">{tournament.tier}-Tier</span>
-        <h1 className="font-display font-light text-3xl tracking-tight mt-2">{tournament.name}</h1>
-        {(tournament.start_date || tournament.end_date) ? (
-          <p className="text-sm text-white/40 mt-1">
-            {tournament.start_date ?? "?"} → {tournament.end_date ?? "?"}
-          </p>
-        ) : (
-          tournament.date_display && <p className="text-sm text-white/40 mt-1">{tournament.date_display}</p>
+      <header className="flex items-start gap-4">
+        {tournament.logo_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={tournament.logo_url} alt="" className="w-14 h-14 rounded object-contain shrink-0" />
         )}
+        <div>
+          <span className="lv-badge bg-white/10 text-white/60">{tournament.tier}-Tier</span>
+          <h1 className="font-display font-light text-3xl tracking-tight mt-2">{tournament.name}</h1>
+          {(tournament.start_date || tournament.end_date) ? (
+            <p className="text-sm text-white/40 mt-1">
+              {tournament.start_date ?? "?"} → {tournament.end_date ?? "?"}
+            </p>
+          ) : (
+            tournament.date_display && <p className="text-sm text-white/40 mt-1">{tournament.date_display}</p>
+          )}
+        </div>
       </header>
+
+      {(tournament.fmvp_player || standings.some((s) => s.prize_usd)) && (
+        <section className="flex flex-wrap gap-4 text-sm">
+          {tournament.fmvp_player && (
+            <div className="lv-card-flush px-4 py-3 flex items-center gap-2">
+              <span className="text-white/40 text-xs uppercase tracking-wide">FMVP</span>
+              {tournament.fmvp_player.team?.logo_url && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={tournament.fmvp_player.team.logo_url} alt="" className="w-5 h-5 rounded object-contain" />
+              )}
+              <span className="font-semibold">{tournament.fmvp_player.ign}</span>
+              {tournament.fmvp_player.team && <span className="text-white/40">({tournament.fmvp_player.team.name})</span>}
+            </div>
+          )}
+          {standings.some((s) => s.prize_usd) && (
+            <div className="lv-card-flush px-4 py-3 flex items-center gap-2">
+              <span className="text-white/40 text-xs uppercase tracking-wide">Total prize pool</span>
+              <span className="font-semibold tabular-nums">
+                ${standings.reduce((sum, s) => sum + (s.prize_usd ?? 0), 0).toLocaleString()}
+              </span>
+            </div>
+          )}
+        </section>
+      )}
 
       {standings.length > 0 && (
         <section className="space-y-3">
@@ -170,10 +249,49 @@ export default function TournamentPage() {
                 {standings.map((s) => (
                   <tr key={s.id} className="border-t border-white/10 hover:bg-white/[0.03] transition-colors">
                     <td className="py-2 px-4 font-semibold text-signal">{s.placement}</td>
-                    <td className="py-2">{s.team?.name ?? s.team_name_raw}</td>
+                    <td className="py-2">
+                      <div className="flex items-center gap-2">
+                        {s.team?.logo_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={s.team.logo_url} alt="" className="w-5 h-5 rounded object-contain shrink-0" />
+                        ) : (
+                          <div className="w-5 h-5 shrink-0" />
+                        )}
+                        {s.team?.name ?? s.team_name_raw}
+                      </div>
+                    </td>
                     <td className="py-2 px-4 text-right text-white/60 tabular-nums">
                       {s.prize_usd ? `$${s.prize_usd.toLocaleString()}` : "—"}
                     </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {performances.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="lv-heading">Player performances</h2>
+          <p className="text-xs text-white/40 -mt-2">Top by combined kills + assists − deaths, across all recorded games.</p>
+          <div className="lv-card-flush overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="text-white/40 text-left bg-white/[0.03]">
+                <tr>
+                  <th className="pb-2 pt-3 px-4">Player</th>
+                  <th className="pb-2 pt-3">Team</th>
+                  <th className="pb-2 pt-3 text-right">K/D/A</th>
+                  <th className="pb-2 pt-3 px-4 text-right">Games</th>
+                </tr>
+              </thead>
+              <tbody>
+                {performances.map((p) => (
+                  <tr key={p.playerId} className="border-t border-white/10">
+                    <td className="py-2 px-4 font-semibold">{p.ign}</td>
+                    <td className="py-2 text-white/60">{p.teamName ?? "—"}</td>
+                    <td className="py-2 text-right tabular-nums">{p.kills}/{p.deaths}/{p.assists}</td>
+                    <td className="py-2 px-4 text-right text-white/60 tabular-nums">{p.games}</td>
                   </tr>
                 ))}
               </tbody>

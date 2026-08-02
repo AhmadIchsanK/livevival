@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type Tournament = {
   id: string;
@@ -176,7 +177,7 @@ function TournamentSection({
             <div className="flex items-center gap-3 min-w-0">
               {t.logo_url ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={t.logo_url} alt="" className="w-8 h-8 rounded object-contain shrink-0" />
+                <img src={proxiedImageUrl(t.logo_url)} alt="" className="w-8 h-8 rounded object-contain shrink-0" />
               ) : (
                 <div className="w-8 h-8 rounded bg-white/5 shrink-0" />
               )}

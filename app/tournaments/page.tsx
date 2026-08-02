@@ -14,6 +14,17 @@ type Tournament = {
   end_date: string | null;
   logo_url: string | null;
 };
+
+// date_display free text ("Feb 10-16, 2025", "Nov 27 - Dec 06, 2020") is the
+// only date info available for older tournaments the importer never parsed
+// start_date/end_date for — extracting just the trailing year is enough to
+// tell "this is history" from "this hasn't happened yet" without a full
+// date-range parser.
+function trailingYear(dateDisplay: string | null): number | null {
+  if (!dateDisplay) return null;
+  const m = dateDisplay.match(/(\d{4})\s*$/);
+  return m ? Number(m[1]) : null;
+}
 type MatchStatus = { tournament_id: string; status: string };
 type SortKey = "date_desc" | "date_asc" | "name";
 
@@ -57,7 +68,17 @@ export default function TournamentsIndexPage() {
     }
 
     const statuses = matchStatuses.filter((m) => m.tournament_id === t.id).map((m) => m.status);
-    if (statuses.length === 0) return "upcoming";
+    if (statuses.length === 0) {
+      // No dates parsed AND no matches imported — confirmed against real
+      // production data this defaulting to "upcoming" was showing
+      // tournaments from 2020-2025 (ESL Snapdragon, ONE Esports MPL
+      // Invitational, etc.) as upcoming. A real upcoming tournament always
+      // has at least a date_display; use its year to tell history from
+      // what hasn't happened yet.
+      const year = trailingYear(t.date_display);
+      if (year !== null && year < new Date().getFullYear()) return "completed";
+      return "upcoming";
+    }
     if (statuses.some((s) => s === "live")) return "ongoing";
     if (statuses.every((s) => s === "finished")) return "completed";
     if (statuses.some((s) => s === "finished") && statuses.some((s) => s === "scheduled")) return "ongoing";

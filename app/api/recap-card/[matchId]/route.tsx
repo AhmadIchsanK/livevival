@@ -33,6 +33,7 @@ function renderCard({
   mvpLine,
   ratio,
   mode,
+  logoUrl,
 }: {
   match: CardMatch;
   games: CardGame[];
@@ -40,6 +41,7 @@ function renderCard({
   mvpLine: string | null;
   ratio: Ratio;
   mode: Mode;
+  logoUrl: string;
 }) {
   const teamA = match.team_a;
   const teamB = match.team_b;
@@ -76,10 +78,10 @@ function renderCard({
           padding: `${64 * scale}px`,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <div style={{ width: 20 * scale, height: 20 * scale, borderRadius: 6 * scale, background: SIGNAL }} />
-          <span style={{ fontSize: 28 * scale, letterSpacing: 2, color: "#ffffff99" }}>LIVEVIVAL</span>
-        </div>
+        {/* Real width/height needed — Satori doesn't do intrinsic image
+            sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={logoUrl} alt="Livevival" width={142 * scale} height={40 * scale} />
 
         <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: "center", gap: 24 * scale }}>
           <span style={{ fontSize: 22 * scale, color: "#ffffff77", textTransform: "uppercase", letterSpacing: 2 }}>
@@ -138,9 +140,13 @@ function renderCard({
 }
 
 export async function GET(req: Request, { params }: { params: { matchId: string } }) {
-  const { searchParams } = new URL(req.url);
+  const { searchParams, origin } = new URL(req.url);
   const ratio: Ratio = searchParams.get("ratio") === "landscape" ? "landscape" : "portrait";
   const mode: Mode = searchParams.get("mode") === "advanced" ? "advanced" : "simple";
+  // Same-origin static asset — unlike Liquipedia's CDN this needs no proxy
+  // and no hotlink-protection workaround, so it's safe to fetch at render
+  // time even though it's still one network hop for the edge function.
+  const logoUrl = `${origin}/logo/logo-dark-bg.png`;
 
   const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
 
@@ -198,5 +204,6 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     mvpLine,
     ratio,
     mode,
+    logoUrl,
   });
 }

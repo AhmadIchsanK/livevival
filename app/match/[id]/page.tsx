@@ -45,6 +45,7 @@ type Game = {
   state: string;
   winner_team_id: string | null;
   vod_url: string | null;
+  map: string | null;
   current_time_seconds: number | null;
   current_time_updated_at: string | null;
 };
@@ -170,7 +171,7 @@ export default function PublicMatchPage() {
 
     const { data: gameRows } = await supabase
       .from("games")
-      .select("id, game_number, status, state, winner_team_id, vod_url, current_time_seconds, current_time_updated_at")
+      .select("id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at")
       .eq("match_id", matchId)
       .order("game_number", { ascending: true });
     const gameList = (gameRows as Game[]) ?? [];
@@ -420,6 +421,10 @@ export default function PublicMatchPage() {
         </div>
       )}
 
+      {selectedGame?.map && (
+        <p className="text-xs text-white/40">Map: <span className="text-white/60">{selectedGame.map}</span></p>
+      )}
+
       {embedUrl ? (
         <div className="lv-card-flush overflow-hidden">
           <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
@@ -485,6 +490,31 @@ export default function PublicMatchPage() {
         </div>
       </section>
 
+      {match.update_source !== "local_ocr" && (
+        <section>
+          <h2 className="lv-heading mb-2">Players {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            {[
+              { name: match.team_a?.name, picks: teamAPicks },
+              { name: match.team_b?.name, picks: teamBPicks },
+            ].map((t, i) => (
+              <div key={i} className="lv-card-flush p-4 space-y-1">
+                <p className="text-white/70 font-semibold text-sm">{t.name}</p>
+                {t.picks.length === 0 && <p className="text-xs text-white/30">Lineup not logged yet.</p>}
+                {t.picks.map((p) => (
+                  <p key={p.id} className="text-xs text-white/60">
+                    {p.player?.ign}
+                    {p.player?.role ? ` — ${p.player.role}` : ""}
+                  </p>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {match.update_source === "local_ocr" && (
+      <>
       <section>
         <div className="flex items-center justify-between mb-2">
           <h2 className="lv-heading">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
@@ -580,6 +610,8 @@ export default function PublicMatchPage() {
           {gameScreenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots yet.</span>}
         </div>
       </section>
+      </>
+      )}
 
       {match.status === "finished" && (
         <section>

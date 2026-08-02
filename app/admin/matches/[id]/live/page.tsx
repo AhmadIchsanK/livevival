@@ -236,16 +236,6 @@ export default function LiveConsolePage() {
     });
   }
 
-  // ── Quick add player ────────────────────────────────────────────────
-  const [newPlayerName, setNewPlayerName] = useState("");
-  const [newPlayerTeam, setNewPlayerTeam] = useState("");
-  async function addPlayer() {
-    if (!newPlayerName || !newPlayerTeam) return;
-    await supabase.from("players").insert({ ign: newPlayerName, team_id: newPlayerTeam });
-    setNewPlayerName("");
-    loadAll();
-  }
-
   // ── Hero picks/bans ─────────────────────────────────────────────────
   // player_id is required for picks (so the console can show who's
   // actually playing this game, not the whole roster) and left null for
@@ -1210,6 +1200,35 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  // Full reset for a Normal match gone wrong (bad sync, wrong teams matched,
+  // etc.) — every child table keyed by match_id, then the games themselves,
+  // then the match row back to its pre-anything state so the next sync (or
+  // manual entry) starts clean instead of layering on top of stale rows.
+  async function resetMatch() {
+    if (!match) return;
+    if (
+      !confirm(
+        "Reset this entire match? This deletes all games, picks/bans, stats, objectives, and moments for it, and reverts it to Match not started. This can't be undone."
+      )
+    )
+      return;
+    await Promise.all([
+      supabase.from("hero_picks_bans").delete().eq("match_id", match.id),
+      supabase.from("player_stats").delete().eq("match_id", match.id),
+      supabase.from("objectives").delete().eq("match_id", match.id),
+      supabase.from("net_worth_snapshots").delete().eq("match_id", match.id),
+      supabase.from("game_screenshots").delete().eq("match_id", match.id),
+      supabase.from("key_moments").delete().eq("match_id", match.id),
+    ]);
+    await supabase.from("games").delete().eq("match_id", match.id);
+    const { error } = await supabase
+      .from("matches")
+      .update({ state: "MATCH_NOT_STARTED", status: "scheduled", current_game_number: 1, series_winner_team_id: null })
+      .eq("id", match.id);
+    if (error) setError(error.message);
+    loadAll();
+  }
+
   const MATCH_PHASES = [
     "MATCH_NOT_STARTED", "DRAFT_STARTED", "DRAFT_COMPLETE", "GAME_STARTED",
     "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM",
@@ -1353,6 +1372,15 @@ export default function LiveConsolePage() {
           <button onClick={shareFullMatchInfo} className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10">
             📢 Share everything to Telegram
           </button>
+          {match.update_source !== "local_ocr" && (
+            <button
+              onClick={resetMatch}
+              title="Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
+              className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10"
+            >
+              ⟲ Reset match
+            </button>
+          )}
         </div>
         {match.state === "SERIES_FINISHED" && (
           <p className="text-sm text-emerald-400 mt-2">
@@ -1414,7 +1442,7 @@ export default function LiveConsolePage() {
         )}
       </section>
 
-      <div className="grid grid-cols-2 gap-6">
+      <div className={`grid gap-6 ${match.update_source === "local_ocr" ? "grid-cols-2" : "grid-cols-1"}`}>
         {embedUrl && (
           <iframe
             src={embedUrl}
@@ -1424,52 +1452,29 @@ export default function LiveConsolePage() {
           />
         )}
 
-        <div className="space-y-2">
-          <label className="text-xs text-white/50">Game clock (minutes) — update this as you watch</label>
-          <div className="flex gap-2 items-center">
-            <input
-              type="number"
-              value={minute}
-              onChange={(e) => setMinute(Number(e.target.value))}
-              className="w-32 bg-black/30 border border-white/10 rounded px-3 py-2 text-lg font-bold"
-            />
-            <button
-              onClick={logNetWorthSnapshot}
-              className="text-xs border border-white/10 rounded px-3 py-2 hover:bg-white/10"
-            >
-              📸 Snapshot net worth
-            </button>
+        {match.update_source === "local_ocr" && (
+          <div className="space-y-2">
+            <label className="text-xs text-white/50">Game clock (minutes) — update this as you watch</label>
+            <div className="flex gap-2 items-center">
+              <input
+                type="number"
+                value={minute}
+                onChange={(e) => setMinute(Number(e.target.value))}
+                className="w-32 bg-black/30 border border-white/10 rounded px-3 py-2 text-lg font-bold"
+              />
+              <button
+                onClick={logNetWorthSnapshot}
+                className="text-xs border border-white/10 rounded px-3 py-2 hover:bg-white/10"
+              >
+                📸 Snapshot net worth
+              </button>
+            </div>
+            <p className="text-[10px] text-white/40">
+              Tap this every minute or two — it's what powers the live gold-difference graph on the public page.
+            </p>
           </div>
-          <p className="text-[10px] text-white/40">
-            Tap this every minute or two — it's what powers the live gold-difference graph on the public page.
-          </p>
-        </div>
+        )}
       </div>
-
-      {/* Players */}
-      <section className="space-y-3">
-        <h2 className="font-bold">Players</h2>
-        <div className="flex gap-2 items-end">
-          <input
-            placeholder="Player IGN"
-            value={newPlayerName}
-            onChange={(e) => setNewPlayerName(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
-          />
-          <select
-            value={newPlayerTeam}
-            onChange={(e) => setNewPlayerTeam(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
-          >
-            <option value="">Team</option>
-            {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
-            {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
-          </select>
-          <button onClick={addPlayer} className="lv-btn-ghost">
-            Add player
-          </button>
-        </div>
-      </section>
 
       {/* Hero picks/bans */}
       <section className="space-y-3">

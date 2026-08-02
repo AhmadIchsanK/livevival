@@ -171,3 +171,17 @@ decision with no reasonable default).
   this as optional, not required) — needs either a YouTube Data API key
   or a channel-ID/RSS scraper I can't verify against real content from
   this sandbox (same liquipedia.net-style network block). Not built.
+
+## Data backfill status (as of 2026-08-02 ~06:35 UTC)
+
+The team-logo/player-role scraper (`import-team-details.mjs`) and the
+now-fixed hero-icon scraper are both mid-backfill: 28/301 teams have a
+logo, 119/1,119 players have a role, 39/133 heroes have an icon — all up
+from 0/0/26 respectively when this session started, so the fixes are
+confirmed working, just slow. Progress stalled for a stretch (likely
+Liquipedia's short-term rate limiter, not a bug — the same pattern that
+required cancelling one earlier stuck run). Not intervening further:
+these are `continue-on-error` cron jobs that already run every 6h
+regardless (`liquipedia-import.yml`, `liquipedia-import-details.yml`),
+so the backfill completes on its own schedule even if this particular
+manually-triggered run stalls out. No admin action needed.

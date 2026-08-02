@@ -24,7 +24,16 @@ type Game = {
   winner_team_id: string | null;
   vod_url: string | null;
 };
-type PickBan = { id: string; game_id: string; team_id: string; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
+type PickBan = {
+  id: string;
+  game_id: string;
+  team_id: string;
+  player_id: string | null;
+  hero_name: string;
+  type: "pick" | "ban";
+  pick_order: number | null;
+  player: { ign: string; role: string | null } | null;
+};
 type PlayerStat = {
   id: string;
   game_id: string;
@@ -47,6 +56,14 @@ type KeyMoment = {
   source: string;
 };
 type NetWorthPoint = { game_id: string; minute_mark: number; team_a_gold: number; team_b_gold: number };
+
+// Same fixed left-to-right draft order as the admin live console: exp
+// lane, jungler, mid laner, gold laner, roamer.
+const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
+function roleIndex(role: string | null | undefined) {
+  const i = ROLE_ORDER.indexOf(role ?? "");
+  return i === -1 ? ROLE_ORDER.length : i;
+}
 
 function youtubeEmbedUrl(url: string | null) {
   if (!url) return null;
@@ -107,13 +124,17 @@ export default function PublicMatchPage() {
     }
 
     const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }] = await Promise.all([
-      supabase.from("hero_picks_bans").select("id, game_id, team_id, hero_name, type, pick_order").eq("match_id", matchId).order("pick_order"),
+      supabase
+        .from("hero_picks_bans")
+        .select("id, game_id, team_id, player_id, hero_name, type, pick_order, player:players(ign, role)")
+        .eq("match_id", matchId)
+        .order("pick_order"),
       supabase.from("player_stats").select("id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id)").eq("match_id", matchId),
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
       supabase.from("key_moments").select("id, game_id, type, minute_mark, player:players(ign), screenshot_url, source").eq("match_id", matchId).order("minute_mark"),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
     ]);
-    setPickBans((pb as PickBan[]) ?? []);
+    setPickBans((pb as unknown as PickBan[]) ?? []);
     setStats((ps as unknown as PlayerStat[]) ?? []);
     setObjectives((obj as Objective[]) ?? []);
     setKeyMoments((km as unknown as KeyMoment[]) ?? []);
@@ -165,9 +186,13 @@ export default function PublicMatchPage() {
   const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId);
   const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId);
   const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
-  const teamAPicks = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "pick");
+  const teamAPicks = gamePickBans
+    .filter((p) => p.team_id === teamAId && p.type === "pick")
+    .sort((a, b) => roleIndex(a.player?.role) - roleIndex(b.player?.role));
   const teamBBans = gamePickBans.filter((p) => p.team_id === teamBId && p.type === "ban");
-  const teamBPicks = gamePickBans.filter((p) => p.team_id === teamBId && p.type === "pick");
+  const teamBPicks = gamePickBans
+    .filter((p) => p.team_id === teamBId && p.type === "pick")
+    .sort((a, b) => roleIndex(a.player?.role) - roleIndex(b.player?.role));
 
   const chartData = gameNetWorth.map((n) => ({
     minute: n.minute_mark,
@@ -279,15 +304,12 @@ export default function PublicMatchPage() {
               <div className="text-xs text-white/40 space-y-0.5">
                 <p>Picks:</p>
                 {t.picks.length === 0 && <p className="pl-2">—</p>}
-                {t.picks.map((p) => {
-                  const player = gameStats.find((s) => s.player?.team_id === t.teamId && s.hero_name === p.hero_name);
-                  return (
-                    <p key={p.id} className="pl-2">
-                      {p.hero_name}
-                      {player?.player?.ign ? <span className="text-white/60"> — {player.player.ign}</span> : ""}
-                    </p>
-                  );
-                })}
+                {t.picks.map((p) => (
+                  <p key={p.id} className="pl-2">
+                    {p.hero_name}
+                    {p.player?.ign ? <span className="text-white/60"> — {p.player.ign}{p.player.role ? ` (${p.player.role})` : ""}</span> : ""}
+                  </p>
+                ))}
               </div>
             </div>
           ))}

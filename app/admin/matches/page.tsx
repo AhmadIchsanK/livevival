@@ -385,8 +385,10 @@ export default function MatchesPage() {
               className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
             >
               <option value="BO1">BO1</option>
+              <option value="BO2">BO2</option>
               <option value="BO3">BO3</option>
               <option value="BO5">BO5</option>
+              <option value="BO7">BO7</option>
             </select>
           </div>
 
@@ -501,8 +503,10 @@ export default function MatchesPage() {
                       className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
                     >
                       <option value="BO1">BO1</option>
+                      <option value="BO2">BO2</option>
                       <option value="BO3">BO3</option>
                       <option value="BO5">BO5</option>
+                      <option value="BO7">BO7</option>
                     </select>
                     <select
                       value={editTeamAId}

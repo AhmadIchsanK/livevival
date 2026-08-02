@@ -27,6 +27,7 @@ type Standing = {
   id: string;
   placement: string;
   placement_sort: number | null;
+  team_id: string | null;
   team_name_raw: string;
   prize_usd: number | null;
   team: { name: string; logo_url: string | null } | null;
@@ -91,6 +92,22 @@ export default function TournamentPage() {
   const [performances, setPerformances] = useState<PlayerPerformance[]>([]);
   const [notFound, setNotFound] = useState(false);
   const [historyVisibleCount, setHistoryVisibleCount] = useState(20);
+  const [totalPrizePool, setTotalPrizePool] = useState(0);
+  const [scrapedMvpIgn, setScrapedMvpIgn] = useState<string | null>(null);
+  const [scrapedMvpPlayer, setScrapedMvpPlayer] = useState<{ ign: string; team: { name: string; logo_url: string | null } | null } | null>(null);
+
+  // Resolves the scraped MVP IGN (from tournament_results, see loader
+  // above) to an actual player row once we have it, so the FMVP card can
+  // show a team logo the same way the admin-set fmvp_player does.
+  useEffect(() => {
+    if (!scrapedMvpIgn) return;
+    supabase
+      .from("players")
+      .select("ign, team:teams(name, logo_url)")
+      .ilike("ign", scrapedMvpIgn)
+      .maybeSingle()
+      .then(({ data }) => setScrapedMvpPlayer(data as unknown as { ign: string; team: { name: string; logo_url: string | null } | null } | null));
+  }, [scrapedMvpIgn]);
 
   useEffect(() => {
     if (!slug) return;
@@ -119,13 +136,32 @@ export default function TournamentPage() {
           .order("scheduled_at", { ascending: true }),
         supabase
           .from("tournament_results")
-          .select("id, placement, placement_sort, team_name_raw, prize_usd, team:teams(name, logo_url)")
+          .select("id, placement, placement_sort, team_id, team_name_raw, prize_usd, team:teams(name, logo_url)")
           .eq("tournament_id", t.id)
           .order("placement_sort", { ascending: true }),
       ]);
       const matchList = (m as unknown as MatchRow[]) ?? [];
       setMatches(matchList);
-      setStandings((s as unknown as Standing[]) ?? []);
+      // tournament_results mixes two different kinds of rows from the same
+      // Liquipedia prize-pool table: real team placements (team_id set,
+      // placement like "1"/"5-8") and individual per-day/per-stage "Star
+      // Player"/MVP awards (team_id null, team_name_raw is a player's IGN,
+      // placement is a label like "Wild Card Day 1 Star" or "MVP") —
+      // confirmed against real production data showing both interleaved in
+      // one "Final standings" table. Only the team rows belong there.
+      const allResults = (s as unknown as Standing[]) ?? [];
+      setStandings(allResults.filter((r) => r.team_id));
+      // Total prize pool should reflect the whole tournament, including
+      // individual-award prizes (e.g. an MVP cash prize) — sum from every
+      // row, not just the team-only rows now shown in the standings table.
+      setTotalPrizePool(allResults.reduce((sum, r) => sum + (r.prize_usd ?? 0), 0));
+
+      // An official MVP is one of those individual-award rows, not always
+      // scrapable as a distinct field — reuse it here instead of requiring
+      // an admin to set fmvp_player_id by hand when Liquipedia already
+      // named one.
+      const mvpRow = allResults.find((r) => !r.team_id && /^MVP$/i.test(r.placement.trim()));
+      if (mvpRow) setScrapedMvpIgn(mvpRow.team_name_raw);
 
       // "Player achievements" — built from player_stats already recorded
       // against this tournament's matches (no separate MVP data source
@@ -222,25 +258,42 @@ export default function TournamentPage() {
         </div>
       </header>
 
-      {(tournament.fmvp_player || standings.some((s) => s.prize_usd)) && (
+      {(tournament.fmvp_player || scrapedMvpPlayer || scrapedMvpIgn || totalPrizePool > 0) && (
         <section className="flex flex-wrap gap-4 text-sm">
-          {tournament.fmvp_player && (
-            <div className="lv-card-flush px-4 py-3 flex items-center gap-2">
-              <span className="text-white/40 text-xs uppercase tracking-wide">FMVP</span>
-              {tournament.fmvp_player.team?.logo_url && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={proxiedImageUrl(tournament.fmvp_player.team.logo_url)} alt="" className="w-5 h-5 rounded object-contain" />
-              )}
-              <span className="font-semibold">{tournament.fmvp_player.ign}</span>
-              {tournament.fmvp_player.team && <span className="text-white/40">({tournament.fmvp_player.team.name})</span>}
-            </div>
-          )}
-          {standings.some((s) => s.prize_usd) && (
+          {(() => {
+            // Admin-set fmvp_player_id wins if present (an explicit
+            // override); otherwise use the MVP Liquipedia itself named in
+            // the prize-pool table (resolved to a player row for the team
+            // logo, falling back to plain text if that IGN isn't in our
+            // players table yet).
+            const mvp = tournament.fmvp_player ?? scrapedMvpPlayer;
+            if (mvp) {
+              return (
+                <div className="lv-card-flush px-4 py-3 flex items-center gap-2">
+                  <span className="text-white/40 text-xs uppercase tracking-wide">FMVP</span>
+                  {mvp.team?.logo_url && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={proxiedImageUrl(mvp.team.logo_url)} alt="" className="w-5 h-5 rounded object-contain" />
+                  )}
+                  <span className="font-semibold">{mvp.ign}</span>
+                  {mvp.team && <span className="text-white/40">({mvp.team.name})</span>}
+                </div>
+              );
+            }
+            if (scrapedMvpIgn) {
+              return (
+                <div className="lv-card-flush px-4 py-3 flex items-center gap-2">
+                  <span className="text-white/40 text-xs uppercase tracking-wide">FMVP</span>
+                  <span className="font-semibold">{scrapedMvpIgn}</span>
+                </div>
+              );
+            }
+            return null;
+          })()}
+          {totalPrizePool > 0 && (
             <div className="lv-card-flush px-4 py-3 flex items-center gap-2">
               <span className="text-white/40 text-xs uppercase tracking-wide">Total prize pool</span>
-              <span className="font-semibold tabular-nums">
-                ${standings.reduce((sum, s) => sum + (s.prize_usd ?? 0), 0).toLocaleString()}
-              </span>
+              <span className="font-semibold tabular-nums">${totalPrizePool.toLocaleString()}</span>
             </div>
           )}
         </section>

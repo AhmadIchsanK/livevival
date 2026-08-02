@@ -48,6 +48,10 @@ type Game = {
   map: string | null;
   current_time_seconds: number | null;
   current_time_updated_at: string | null;
+  clock_source: "ocr" | "manual";
+  manual_time_seconds: number | null;
+  manual_time_running: boolean;
+  manual_time_started_at: string | null;
 };
 type PickBan = {
   id: string;
@@ -172,7 +176,9 @@ export default function PublicMatchPage() {
 
     const { data: gameRows } = await supabase
       .from("games")
-      .select("id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at")
+      .select(
+        "id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at"
+      )
       .eq("match_id", matchId)
       .order("game_number", { ascending: true });
     const gameList = (gameRows as Game[]) ?? [];
@@ -249,9 +255,20 @@ export default function PublicMatchPage() {
   const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
 
   // Ticks up client-side between OCR reads instead of only jumping every
-  // capture interval — current_time_updated_at anchors it to real time.
+  // capture interval — current_time_updated_at (OCR) / manual_time_started_at
+  // (manual stopwatch) anchors it to real time. clock_source picks which of
+  // the two the admin wants shown publicly for this game.
   const liveGameClock =
-    selectedGame?.current_time_seconds != null && selectedGame?.current_time_updated_at && match.state === "GAME_STARTED"
+    match.state !== "GAME_STARTED" || !selectedGame
+      ? null
+      : selectedGame.clock_source === "manual"
+      ? selectedGame.manual_time_seconds != null
+        ? selectedGame.manual_time_seconds +
+          (selectedGame.manual_time_running && selectedGame.manual_time_started_at
+            ? Math.floor((nowMs - new Date(selectedGame.manual_time_started_at).getTime()) / 1000)
+            : 0)
+        : null
+      : selectedGame.current_time_seconds != null && selectedGame.current_time_updated_at
       ? selectedGame.current_time_seconds + Math.floor((nowMs - new Date(selectedGame.current_time_updated_at).getTime()) / 1000)
       : null;
   const liveGameClockLabel =

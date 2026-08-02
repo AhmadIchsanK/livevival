@@ -28,7 +28,17 @@ type Match = {
   team_b: { id: string; name: string } | null;
 };
 type Player = { id: string; team_id: string; ign: string; role: string | null };
-type Game = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null };
+type Game = {
+  id: string;
+  game_number: number;
+  status: string;
+  map: string | null;
+  winner_team_id: string | null;
+  clock_source: "ocr" | "manual";
+  manual_time_seconds: number | null;
+  manual_time_running: boolean;
+  manual_time_started_at: string | null;
+};
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
 type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number; deaths: number; assists: number; gold: number };
@@ -103,7 +113,7 @@ export default function LiveConsolePage() {
 
     let { data: gameRow } = await supabase
       .from("games")
-      .select("id, game_number, status, map, winner_team_id")
+      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at")
       .eq("match_id", matchId)
       .eq("game_number", m.current_game_number)
       .maybeSingle();
@@ -112,7 +122,7 @@ export default function LiveConsolePage() {
       const { data: created, error: createErr } = await supabase
         .from("games")
         .insert({ match_id: matchId, game_number: m.current_game_number, status: "live" })
-        .select("id, game_number, status, map, winner_team_id")
+        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at")
         .single();
       if (createErr) {
         setError(createErr.message);
@@ -966,6 +976,53 @@ export default function LiveConsolePage() {
       .eq("id", game.id);
   }
 
+  // ── Manual stopwatch (OCR fallback) ──────────────────────────────────
+  // Same anchor-based ticking idea as the OCR clock above: manual_time_seconds
+  // is the last value the admin set, manual_time_started_at is when the
+  // stopwatch was (re)started from that value, and both the admin console
+  // and the public page compute "now" by adding elapsed real time on top —
+  // no per-second write loop needed while it's just running.
+  function manualElapsedSeconds(g: Game): number {
+    if (!g.manual_time_running || !g.manual_time_started_at) return g.manual_time_seconds ?? 0;
+    return (g.manual_time_seconds ?? 0) + Math.floor((Date.now() - new Date(g.manual_time_started_at).getTime()) / 1000);
+  }
+  async function startManualClock() {
+    if (!game) return;
+    await supabase
+      .from("games")
+      .update({ manual_time_running: true, manual_time_started_at: new Date().toISOString(), manual_time_seconds: manualElapsedSeconds(game) })
+      .eq("id", game.id);
+    loadAll();
+  }
+  async function pauseManualClock() {
+    if (!game) return;
+    await supabase
+      .from("games")
+      .update({ manual_time_running: false, manual_time_seconds: manualElapsedSeconds(game), manual_time_started_at: null })
+      .eq("id", game.id);
+    loadAll();
+  }
+  async function setManualClockSeconds(totalSeconds: number) {
+    if (!game) return;
+    await supabase
+      .from("games")
+      .update({
+        manual_time_seconds: Math.max(0, totalSeconds),
+        manual_time_started_at: game.manual_time_running ? new Date().toISOString() : null,
+      })
+      .eq("id", game.id);
+    loadAll();
+  }
+  async function adjustManualClock(deltaSeconds: number) {
+    if (!game) return;
+    await setManualClockSeconds(manualElapsedSeconds(game) + deltaSeconds);
+  }
+  async function setClockSource(source: "ocr" | "manual") {
+    if (!game) return;
+    await supabase.from("games").update({ clock_source: source }).eq("id", game.id);
+    loadAll();
+  }
+
   // Same pattern as updateGameClock but for the two other phase-scoped
   // clocks — Waiting's pre-game countdown and Draft's per-team pick timer —
   // each on its own last-persisted guard so the three never clobber one
@@ -1538,6 +1595,57 @@ export default function LiveConsolePage() {
             </div>
             <p className="text-[10px] text-white/40">
               Tap this every minute or two — it's what powers the live gold-difference graph on the public page.
+            </p>
+
+            <label className="text-xs text-white/50 block pt-2">Public clock source</label>
+            <div className="flex gap-1">
+              {(["ocr", "manual"] as const).map((src) => (
+                <button
+                  key={src}
+                  onClick={() => setClockSource(src)}
+                  className={`text-[10px] px-2 py-1 rounded border ${
+                    game.clock_source === src ? "border-signal text-signal" : "border-white/10 text-white/50"
+                  }`}
+                >
+                  {src === "ocr" ? "OCR clock" : "Manual stopwatch"}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <span className="text-lg font-bold tabular-nums w-16">
+                {String(Math.floor(manualElapsedSeconds(game) / 60)).padStart(2, "0")}:
+                {String(manualElapsedSeconds(game) % 60).padStart(2, "0")}
+              </span>
+              {game.manual_time_running ? (
+                <button onClick={pauseManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
+                  ⏸ Pause
+                </button>
+              ) : (
+                <button onClick={startManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
+                  ▶ Start
+                </button>
+              )}
+              <button onClick={() => adjustManualClock(-60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                −1m
+              </button>
+              <button onClick={() => adjustManualClock(60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                +1m
+              </button>
+              <input
+                type="number"
+                placeholder="Set min"
+                className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                onBlur={(e) => {
+                  if (e.target.value === "") return;
+                  const mins = Number(e.target.value);
+                  if (!Number.isNaN(mins)) setManualClockSeconds(mins * 60);
+                  e.target.value = "";
+                }}
+              />
+            </div>
+            <p className="text-[10px] text-white/40">
+              Manual stopwatch — a fallback for when OCR can&apos;t read the on-screen timer. Whichever source is
+              selected above is what the public page shows.
             </p>
           </div>
         )}

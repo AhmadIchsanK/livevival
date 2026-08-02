@@ -217,11 +217,20 @@ async function importMatchDetail(tournament, m) {
   // notifyOnce's own dedup (not a local check here — findMatch()'s select
   // doesn't fetch status/state) is what stops this firing every tick.
   const winnerName = m.leftWon ? m.leftName : m.rightName;
+  const leftWins = m.games.filter((g) => g.left?.won).length;
+  const rightWins = m.games.filter((g) => g.right?.won).length;
+  const recap = m.games
+    .map((g) => {
+      const leftPicks = (g.left?.picks ?? []).join(", ") || "—";
+      const rightPicks = (g.right?.picks ?? []).join(", ") || "—";
+      return `<b>Game ${g.gameNumber}</b>${g.map ? ` (${g.map})` : ""}\n${m.leftName}: ${leftPicks}\n${m.rightName}: ${rightPicks}`;
+    })
+    .join("\n\n");
   await notifyOnce(
     "match",
     match.id,
     "match_finished",
-    `🏆 <b>Match finished</b>\n${m.leftName} vs ${m.rightName}\nWinner: <b>${winnerName}</b>\n${tournament.name}`
+    `🏆 <b>Match finished</b>\n${m.leftName} vs ${m.rightName}\nWinner: <b>${winnerName}</b> (${Math.max(leftWins, rightWins)}-${Math.min(leftWins, rightWins)})\n${tournament.name}\n\n${recap}`
   );
 }
 

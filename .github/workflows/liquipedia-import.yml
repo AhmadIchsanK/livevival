@@ -1,27 +1,31 @@
 name: Import Liquipedia tournaments
 
-# Core schedule/score data — tournaments, heroes, matches. Kept in its own
-# run (separate from liquipedia-import-details.yml) so the two don't
-# compete for the same rate-limit budget: a full matches pass across every
-# active tournament alone can take ~30 minutes and consume Liquipedia's
-# short-term throttle window, which previously starved the very next step
-# (team-rosters) in the same job. continue-on-error on each step means one
-# rate-limited tournament doesn't block the rest of the run.
+# Core schedule/score data — tournaments, heroes, matches.
+#
+# THESE USED TO BE THREE STEPS IN ONE JOB — the same anti-pattern fixed in
+# liquipedia-import-details.yml, found here independently: this run sat
+# "in_progress" for 4+ hours on an old commit, never reaching
+# import-liquipedia-matches.mjs (step 3), which is why tournaments this
+# scraper already knows about (e.g. MPL Indonesia Season 18) showed zero
+# scheduled matches even though Liquipedia's own bracket page already had
+# a full published schedule — the step that would have imported it never
+# got a turn. Split into independent jobs so a slow step can never again
+# starve the ones after it. import-matches still needs tournaments to
+# exist first (it reads the tournaments table rather than discovering
+# pages itself), so it depends on import-tournaments; heroes has no such
+# dependency and runs in parallel.
 on:
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch: {}
 
-# Same reasoning as liquipedia-import-details.yml: prevent an overlapping
-# dispatch/schedule pair from hitting Liquipedia concurrently and doubling
-# the 429 rate for both.
-concurrency:
-  group: liquipedia-import
-  cancel-in-progress: false
-
 jobs:
-  import:
+  import-tournaments:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: liquipedia-import-tournaments
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,11 +37,38 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+  import-heroes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: liquipedia-import-heroes
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
       - run: node scripts/import-liquipedia-heroes.mjs
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+  import-matches:
+    needs: import-tournaments
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: liquipedia-import-matches
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
       - run: node scripts/import-liquipedia-matches.mjs
         continue-on-error: true
         env:

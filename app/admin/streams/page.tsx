@@ -203,7 +203,11 @@ export default function StreamsPage() {
           Streams are just the embeddable YouTube link(s) shown on a match's public page —
           they don't drive automation. Live match state/score comes from the always-on Liquipedia
           poller (per tournament) or, for a match switched to local OCR, from the admin's live
-          console. Link a stream to a match on the Matches page once it's created here.
+          console. Link a stream to a match on the Matches page once it's created here. Status
+          (scheduled/live/ended) now updates automatically once linked — live the moment its match
+          goes live, ended once every match linked to it is finished. &quot;End stream&quot; below is
+          still there for edge cases (no match linked yet, correcting a mistake) but a status change
+          on the linked match will override it again.
         </p>
         <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4 max-w-xl">
           <div className="col-span-2 space-y-1">

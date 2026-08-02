@@ -33,9 +33,23 @@ type FinishedGame = { id: string; game_number: number; status: string; map: stri
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
 type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number; deaths: number; assists: number; gold: number };
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null };
-type KeyMoment = { id: string; type: string; player_id: string | null; team_id: string | null; description: string | null; minute_mark: number | null };
+type KeyMoment = {
+  id: string;
+  type: string;
+  player_id: string | null;
+  team_id: string | null;
+  description: string | null;
+  minute_mark: number | null;
+  is_key_moment: boolean;
+  screenshot_url: string | null;
+};
 type MomentTemplate = { id: string; type: string; label_template: string; phase: string | null };
 type Screenshot = { id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
+
+// The handful of genuinely dramatic moment types that stand out inline in
+// the moment list — everything else (phase changes, picks, custom notes)
+// still appears in the same feed, just styled as a regular line item.
+const KEY_MOMENT_TYPES = ["savage", "maniac", "lord_steal", "turtle_steal", "ace"];
 
 // Same fixed left-to-right draft order used across the admin (Players page
 // role dropdown): exp lane, jungler, mid laner, gold laner, roamer.
@@ -129,7 +143,7 @@ export default function LiveConsolePage() {
         supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
         supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
         supabase.from("objectives").select("id, team_id, type, minute_mark").eq("game_id", gid).order("minute_mark"),
-        supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark").eq("game_id", gid).order("minute_mark"),
+        supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark, is_key_moment, screenshot_url").eq("game_id", gid).order("minute_mark"),
         supabase.from("game_screenshots").select("id, image_url, in_game_time, note, created_at").eq("game_id", gid).order("created_at"),
       ]);
       setPickBans((pb as PickBan[]) ?? []);
@@ -313,6 +327,7 @@ export default function LiveConsolePage() {
   const [kmPlayer, setKmPlayer] = useState("");
   const [kmAttachScreenshot, setKmAttachScreenshot] = useState(false);
   const [kmCustomText, setKmCustomText] = useState("");
+  const [kmMarkAsKey, setKmMarkAsKey] = useState(false);
   const [editingMomentId, setEditingMomentId] = useState<string | null>(null);
   const [editingMomentText, setEditingMomentText] = useState("");
 
@@ -325,6 +340,40 @@ export default function LiveConsolePage() {
 
   const availableTemplates = momentTemplates.filter((t) => !t.phase || t.phase === match?.state);
   const selectedTemplate = momentTemplates.find((t) => t.id === kmTemplateId) ?? null;
+
+  // Captures the current shared-screen frame and uploads it straight into
+  // the moment being logged (key_moments.screenshot_url) instead of a
+  // separate game_screenshots row — one attach action, one moment, one
+  // image, rather than two records that have to be manually cross-referenced.
+  function captureFrameBlob(): Promise<Blob | null> {
+    return new Promise((resolve) => {
+      const video = previewRef.current;
+      if (!video || video.videoWidth === 0) {
+        resolve(null);
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext("2d")?.drawImage(video, 0, 0);
+      canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
+    });
+  }
+  async function uploadMomentScreenshot(): Promise<string | null> {
+    if (!game) return null;
+    const blob = await captureFrameBlob();
+    if (!blob) return null;
+    const path = `${game.id}/${Date.now()}-moment.jpg`;
+    const { error: uploadErr } = await supabase.storage.from("key-moment-screenshots").upload(path, blob, {
+      contentType: "image/jpeg",
+    });
+    if (uploadErr) {
+      setError(uploadErr.message);
+      return null;
+    }
+    const { data: pub } = supabase.storage.from("key-moment-screenshots").getPublicUrl(path);
+    return pub.publicUrl;
+  }
 
   async function logKeyMoment() {
     if (!game || !selectedTemplate) return;
@@ -340,6 +389,11 @@ export default function LiveConsolePage() {
             .replace("{team}", teamName)
             .replace("{hero}", heroName)
             .replace("{player}", playerName);
+    // Savage/maniac/etc. are always key moments; a custom entry can be
+    // explicitly flagged as one too (e.g. an admin's own big-play call).
+    const isKeyMoment = KEY_MOMENT_TYPES.includes(selectedTemplate.type) || (selectedTemplate.type === "custom" && kmMarkAsKey);
+
+    const screenshotUrl = kmAttachScreenshot && captureActive ? await uploadMomentScreenshot() : null;
 
     await supabase.from("key_moments").insert({
       game_id: game.id,
@@ -350,15 +404,13 @@ export default function LiveConsolePage() {
       team_id: kmTeam || null,
       minute_mark: minute,
       source: "manual",
+      is_key_moment: isKeyMoment,
+      screenshot_url: screenshotUrl,
     });
-    if (kmAttachScreenshot && captureActive && (selectedTemplate.type === "game_finish" || selectedTemplate.type === "match_finish")) {
-      captureScreenshotFromPreview(description);
-    }
     // The dramatic in-game moments auto-share — everything else (picks,
     // bans, phase changes, custom notes) stays manual via the 📢 button per
     // moment, since not every logged event is worth a push notification.
-    const AUTO_SHARE_TYPES = ["savage", "maniac", "lord_steal", "turtle_steal", "ace"];
-    if (AUTO_SHARE_TYPES.includes(selectedTemplate.type)) {
+    if (isKeyMoment) {
       postToTelegram(`🔥 <b>${description}</b>\n${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`, {
         entityType: "key_moment",
         entityId: game.id,
@@ -370,6 +422,7 @@ export default function LiveConsolePage() {
     setKmPlayer("");
     setKmAttachScreenshot(false);
     setKmCustomText("");
+    setKmMarkAsKey(false);
     loadAll();
   }
   async function deleteKeyMoment(id: string) {
@@ -725,6 +778,7 @@ export default function LiveConsolePage() {
             minute_mark: minute,
             source: "ai",
             confidence: detection.confidence ?? null,
+            is_key_moment: KEY_MOMENT_TYPES.includes(detection.key_moment_banner.toLowerCase()),
           });
         }
       }
@@ -1111,6 +1165,7 @@ export default function LiveConsolePage() {
       type: suggestion.type,
       minute_mark: minute,
       source: "manual",
+      is_key_moment: KEY_MOMENT_TYPES.includes(suggestion.type),
     });
     setSuggestion(null);
     loadAll();
@@ -1701,10 +1756,10 @@ export default function LiveConsolePage() {
         </div>
       </section>
 
-      {/* Key moments */}
+      {/* Moment list */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="font-bold">Key moments</h2>
+          <h2 className="font-bold">Moment list</h2>
           <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
         </div>
         <div className="flex gap-2 items-end flex-wrap">
@@ -1753,17 +1808,25 @@ export default function LiveConsolePage() {
             Log moment
           </button>
         </div>
-        {(selectedTemplate?.type === "game_finish" || selectedTemplate?.type === "match_finish") && (
-          <label className="flex items-center gap-1.5 text-[10px] text-white/50">
-            <input
-              type="checkbox"
-              checked={kmAttachScreenshot}
-              onChange={(e) => setKmAttachScreenshot(e.target.checked)}
-              disabled={!captureActive}
-            />
-            📸 Also grab the current frame into this game&apos;s screenshots
-            {!captureActive && " (start capture above first)"}
-          </label>
+        {selectedTemplate && (
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+              <input
+                type="checkbox"
+                checked={kmAttachScreenshot}
+                onChange={(e) => setKmAttachScreenshot(e.target.checked)}
+                disabled={!captureActive}
+              />
+              📸 Also grab the current frame into this moment
+              {!captureActive && " (start capture above first)"}
+            </label>
+            {selectedTemplate.type === "custom" && (
+              <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+                <input type="checkbox" checked={kmMarkAsKey} onChange={(e) => setKmMarkAsKey(e.target.checked)} />
+                ⭐ Mark as key moment
+              </label>
+            )}
+          </div>
         )}
         <div className="flex flex-wrap gap-2 text-xs">
           {keyMoments.map((km) => {
@@ -1784,8 +1847,15 @@ export default function LiveConsolePage() {
               );
             }
             return (
-              <span key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5">
+              <span
+                key={km.id}
+                className={`px-2 py-1 rounded flex items-center gap-1.5 ${
+                  km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
+                }`}
+              >
+                {km.is_key_moment && "⭐ "}
                 {km.minute_mark}&apos; {label}
+                {km.screenshot_url && " 📸"}
                 <button
                   onClick={() => {
                     setEditingMomentId(km.id);

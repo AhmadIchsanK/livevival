@@ -168,6 +168,13 @@ export default function MatchesPage() {
     loadMatches(activeTab);
   }
 
+  // Optimistic: patches local state immediately (and drops the row from
+  // view if its new status no longer matches the active tab) instead of
+  // waiting on a second network round-trip via loadMatches(). Previously
+  // every field edit — including "Set live" — paid for an update *and* a
+  // full re-fetch before anything visibly changed, and "Set live" while
+  // viewing the Upcoming tab made the row vanish with no feedback while
+  // that round-trip was in flight, which read as the toggle being stuck.
   async function updateMatch(
     id: string,
     fields: Partial<{
@@ -182,9 +189,18 @@ export default function MatchesPage() {
       scheduled_at: string | null;
     }>
   ) {
+    const previous = matches;
+    setMatches((prev) =>
+      prev
+        .map((m) => (m.id === id ? { ...m, ...fields } : m))
+        .filter((m) => !("status" in fields) || m.id !== id || m.status === activeTab)
+    );
+
     const { error } = await supabase.from("matches").update(fields).eq("id", id);
-    if (error) setError(error.message);
-    else loadMatches(activeTab);
+    if (error) {
+      setError(error.message);
+      setMatches(previous);
+    }
   }
 
   async function deleteMatch(id: string) {

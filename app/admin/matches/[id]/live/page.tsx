@@ -20,16 +20,27 @@ type Match = {
   current_game_number: number;
   state: string;
   update_source: "liquipedia" | "local_ocr";
+  series_winner_team_id: string | null;
   tournament: { name: string } | null;
   team_a: { id: string; name: string } | null;
   team_b: { id: string; name: string } | null;
 };
 type Player = { id: string; team_id: string; ign: string; role: string | null };
-type Game = { id: string; game_number: number; status: string };
-type PickBan = { id: string; team_id: string; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
+type Game = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null };
+type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
+type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
 type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number; deaths: number; assists: number; gold: number };
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null };
 type KeyMoment = { id: string; type: string; player_id: string | null; minute_mark: number | null };
+
+// Same fixed left-to-right draft order used across the admin (Players page
+// role dropdown): exp lane, jungler, mid laner, gold laner, roamer.
+const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
+const MAPS = ["Expanding Rivers", "Flying Cloud", "Dangerous Grass"];
+function roleIndex(role: string | null) {
+  const i = ROLE_ORDER.indexOf(role ?? "");
+  return i === -1 ? ROLE_ORDER.length : i;
+}
 
 function youtubeEmbedUrl(url: string | null) {
   if (!url) return null;
@@ -43,6 +54,7 @@ export default function LiveConsolePage() {
 
   const [match, setMatch] = useState<Match | null>(null);
   const [game, setGame] = useState<Game | null>(null);
+  const [pastGames, setPastGames] = useState<FinishedGame[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
   const [pickBans, setPickBans] = useState<PickBan[]>([]);
   const [stats, setStats] = useState<PlayerStat[]>([]);
@@ -55,7 +67,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number, state, update_source,
+        `id, youtube_url, format, current_game_number, state, update_source, series_winner_team_id,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(id, name),
          team_b:teams!matches_team_b_id_fkey(id, name)`
@@ -72,7 +84,7 @@ export default function LiveConsolePage() {
 
     let { data: gameRow } = await supabase
       .from("games")
-      .select("id, game_number, status")
+      .select("id, game_number, status, map, winner_team_id")
       .eq("match_id", matchId)
       .eq("game_number", m.current_game_number)
       .maybeSingle();
@@ -81,7 +93,7 @@ export default function LiveConsolePage() {
       const { data: created, error: createErr } = await supabase
         .from("games")
         .insert({ match_id: matchId, game_number: m.current_game_number, status: "live" })
-        .select("id, game_number, status")
+        .select("id, game_number, status, map, winner_team_id")
         .single();
       if (createErr) {
         setError(createErr.message);
@@ -90,6 +102,14 @@ export default function LiveConsolePage() {
       gameRow = created;
     }
     setGame(gameRow as Game);
+
+    const { data: past } = await supabase
+      .from("games")
+      .select("id, game_number, status, map, winner_team_id, duration_seconds")
+      .eq("match_id", matchId)
+      .neq("id", (gameRow as Game).id)
+      .order("game_number");
+    setPastGames((past as FinishedGame[]) ?? []);
 
     const teamIds = [m.team_a?.id, m.team_b?.id].filter(Boolean) as string[];
     const { data: playerRows } = await supabase
@@ -101,7 +121,7 @@ export default function LiveConsolePage() {
     if (gameRow) {
       const gid = (gameRow as Game).id;
       const [{ data: pb }, { data: ps }, { data: obj }, { data: km }] = await Promise.all([
-        supabase.from("hero_picks_bans").select("id, team_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
+        supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
         supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
         supabase.from("objectives").select("id, team_id, type, minute_mark").eq("game_id", gid).order("minute_mark"),
         supabase.from("key_moments").select("id, type, player_id, minute_mark").eq("game_id", gid).order("minute_mark"),
@@ -128,20 +148,36 @@ export default function LiveConsolePage() {
   }
 
   // ── Hero picks/bans ─────────────────────────────────────────────────
+  // player_id is required for picks (so the console can show who's
+  // actually playing this game, not the whole roster) and left null for
+  // bans, which are team-level decisions rather than one player's.
   const [pbTeam, setPbTeam] = useState("");
   const [pbType, setPbType] = useState<"pick" | "ban">("ban");
+  const [pbPlayer, setPbPlayer] = useState("");
   const [pbHero, setPbHero] = useState("");
   async function logPickBan() {
     if (!pbTeam || !pbHero || !game) return;
-    await supabase.from("hero_picks_bans").insert({
+    if (pbType === "pick" && !pbPlayer) return;
+    const { error } = await supabase.from("hero_picks_bans").insert({
       game_id: game.id,
       team_id: pbTeam,
+      player_id: pbType === "pick" ? pbPlayer : null,
       hero_name: pbHero,
       type: pbType,
       pick_order: pickBans.length + 1,
     });
+    if (error) {
+      setError(error.message);
+      return;
+    }
     setPbHero("");
+    setPbPlayer("");
     loadAll();
+  }
+  async function deletePickBan(id: string) {
+    const { error } = await supabase.from("hero_picks_bans").delete().eq("id", id);
+    if (error) setError(error.message);
+    else loadAll();
   }
 
   // ── Scoreboard ──────────────────────────────────────────────────────
@@ -170,6 +206,11 @@ export default function LiveConsolePage() {
     await supabase.from("objectives").insert({ game_id: game.id, team_id: teamId, type, minute_mark: minute });
     loadAll();
   }
+  async function deleteObjective(id: string) {
+    const { error } = await supabase.from("objectives").delete().eq("id", id);
+    if (error) setError(error.message);
+    else loadAll();
+  }
 
   // ── Key moments ─────────────────────────────────────────────────────
   const [kmType, setKmType] = useState("savage");
@@ -183,6 +224,11 @@ export default function LiveConsolePage() {
       minute_mark: minute,
     });
     loadAll();
+  }
+  async function deleteKeyMoment(id: string) {
+    const { error } = await supabase.from("key_moments").delete().eq("id", id);
+    if (error) setError(error.message);
+    else loadAll();
   }
 
   // ── Item builds ─────────────────────────────────────────────────────
@@ -400,6 +446,51 @@ export default function LiveConsolePage() {
     });
   }
 
+  async function setGameMap(map: string) {
+    if (!game) return;
+    const { error } = await supabase.from("games").update({ map }).eq("id", game.id);
+    if (error) setError(error.message);
+    else loadAll();
+  }
+
+  // Finishes the current game with a winner, then either closes out the
+  // series (once a team hits the format's required win count) or advances
+  // current_game_number so the next loadAll() auto-creates the next game —
+  // this is what was missing for "per game result" to show anywhere.
+  const SERIES_WINS_REQUIRED: Record<string, number> = { BO1: 1, BO2: 2, BO3: 2, BO5: 3, BO7: 4 };
+  async function declareGameWinner(teamId: string) {
+    if (!game || !match) return;
+    if (!confirm("Finish this game with this team as the winner?")) return;
+
+    const { error: gameErr } = await supabase
+      .from("games")
+      .update({ status: "finished", state: "GAME_FINISHED", winner_team_id: teamId, finished_at: new Date().toISOString() })
+      .eq("id", game.id);
+    if (gameErr) {
+      setError(gameErr.message);
+      return;
+    }
+
+    const allGames = [...pastGames, { ...game, winner_team_id: teamId }];
+    const winsFor = (id: string) => allGames.filter((g) => g.winner_team_id === id).length;
+    const required = SERIES_WINS_REQUIRED[match.format ?? "BO3"] ?? 2;
+    const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
+    const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
+    const seriesWinner = aWins >= required ? match.team_a?.id : bWins >= required ? match.team_b?.id : null;
+
+    const { error } = seriesWinner
+      ? await supabase
+          .from("matches")
+          .update({ status: "finished", state: "SERIES_FINISHED", series_winner_team_id: seriesWinner })
+          .eq("id", match.id)
+      : await supabase
+          .from("matches")
+          .update({ current_game_number: match.current_game_number + 1, state: "GAME_FINISHED" })
+          .eq("id", match.id);
+    if (error) setError(error.message);
+    loadAll();
+  }
+
   async function toggleUpdateSource() {
     if (!match) return;
     const next = match.update_source === "liquipedia" ? "local_ocr" : "liquipedia";
@@ -411,8 +502,25 @@ export default function LiveConsolePage() {
   if (!match || !game) return <p className="text-white/50 text-sm">Loading match...</p>;
 
   const embedUrl = youtubeEmbedUrl(match.youtube_url);
-  const teamAPlayers = players.filter((p) => p.team_id === match.team_a?.id);
-  const teamBPlayers = players.filter((p) => p.team_id === match.team_b?.id);
+
+  // The starting five for this game = whoever has a logged pick, not the
+  // whole roster (which included bench/subs never playing this game —
+  // the source of "mistakenly taking other data than players"). Falls
+  // back to the full roster, sorted the same way, until picks are logged
+  // so the admin has someone to pick from. Both always sort left-to-right
+  // by role: exp lane, jungler, mid laner, gold laner, roamer.
+  function activeFive(teamId: string | undefined) {
+    if (!teamId) return [];
+    const picked = pickBans
+      .filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id)
+      .map((pb) => players.find((p) => p.id === pb.player_id))
+      .filter((p): p is Player => Boolean(p));
+    const base = picked.length > 0 ? picked : players.filter((p) => p.team_id === teamId);
+    return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
+  }
+  const teamAPlayers = activeFive(match.team_a?.id);
+  const teamBPlayers = activeFive(match.team_b?.id);
+  const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
 
   return (
     <div className="text-white space-y-8 max-w-6xl">
@@ -438,7 +546,65 @@ export default function LiveConsolePage() {
               : "✋ Local OCR (this PC) — click to hand back to Liquipedia auto"}
           </button>
         </div>
+        {match.state === "SERIES_FINISHED" && (
+          <p className="text-sm text-emerald-400 mt-2">
+            Series finished — winner: {match.series_winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
+          </p>
+        )}
       </div>
+
+      {/* Game history — the per-game results that previously showed nowhere in this console */}
+      {pastGames.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="font-bold text-sm text-white/60">Previous games</h2>
+          <div className="flex flex-wrap gap-2 text-xs">
+            {pastGames.map((g) => (
+              <span key={g.id} className="px-3 py-1.5 rounded bg-white/5 border border-white/10">
+                Game {g.game_number}
+                {g.map && <span className="text-white/40"> · {g.map}</span>} —{" "}
+                <strong>{g.winner_team_id === match.team_a?.id ? match.team_a?.name : g.winner_team_id === match.team_b?.id ? match.team_b?.name : "no winner set"}</strong>
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* This game: map + result */}
+      <section className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <label className="text-xs text-white/50">Map</label>
+          <select
+            value={game.map ?? ""}
+            onChange={(e) => setGameMap(e.target.value)}
+            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="">Not set</option>
+            {MAPS.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </div>
+        {game.status !== "finished" && match.state !== "SERIES_FINISHED" && (
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-white/50">Declare game {game.game_number} winner</label>
+            {match.team_a && (
+              <button onClick={() => declareGameWinner(match.team_a!.id)} className="lv-btn-ghost !px-3 !py-1.5">
+                {match.team_a.name}
+              </button>
+            )}
+            {match.team_b && (
+              <button onClick={() => declareGameWinner(match.team_b!.id)} className="lv-btn-ghost !px-3 !py-1.5">
+                {match.team_b.name}
+              </button>
+            )}
+          </div>
+        )}
+        {game.status === "finished" && (
+          <span className="lv-badge bg-emerald-500/15 text-emerald-400">
+            Game {game.game_number} winner: {game.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
+          </span>
+        )}
+      </section>
 
       <div className="grid grid-cols-2 gap-6">
         {embedUrl && (
@@ -500,16 +666,40 @@ export default function LiveConsolePage() {
       {/* Hero picks/bans */}
       <section className="space-y-3">
         <h2 className="font-bold">Hero picks & bans</h2>
-        <div className="flex gap-2 items-end">
-          <select value={pbTeam} onChange={(e) => setPbTeam(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
+        <div className="flex gap-2 items-end flex-wrap">
+          <select
+            value={pbTeam}
+            onChange={(e) => {
+              setPbTeam(e.target.value);
+              setPbPlayer("");
+            }}
+            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+          >
             <option value="">Team</option>
             {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
             {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
           </select>
-          <select value={pbType} onChange={(e) => setPbType(e.target.value as "pick" | "ban")} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
+          <select
+            value={pbType}
+            onChange={(e) => setPbType(e.target.value as "pick" | "ban")}
+            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+          >
             <option value="ban">Ban</option>
             <option value="pick">Pick</option>
           </select>
+          {pbType === "pick" && (
+            <select
+              value={pbPlayer}
+              onChange={(e) => setPbPlayer(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            >
+              <option value="">Player</option>
+              {pbTeam &&
+                rosterFor(pbTeam).map((p) => (
+                  <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                ))}
+            </select>
+          )}
           <input
             placeholder="Hero name"
             value={pbHero}
@@ -520,13 +710,40 @@ export default function LiveConsolePage() {
             Log
           </button>
         </div>
-        <div className="flex flex-wrap gap-2 text-xs">
-          {pickBans.map((pb) => (
-            <span key={pb.id} className={`px-2 py-1 rounded ${pb.type === "ban" ? "bg-red-500/20" : "bg-emerald-500/20"}`}>
-              {pb.type === "ban" ? "🚫" : "✅"} {pb.hero_name}
-            </span>
-          ))}
-        </div>
+
+        {[match.team_a, match.team_b].map((team, idx) =>
+          team ? (
+            <div key={team.id} className="space-y-1">
+              <p className="text-xs text-white/50">{team.name}</p>
+              <div className="flex flex-wrap gap-2 text-xs">
+                {pickBans
+                  .filter((pb) => pb.team_id === team.id && pb.type === "pick")
+                  .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
+                  .map((pb) => {
+                    const player = players.find((p) => p.id === pb.player_id);
+                    return (
+                      <span key={pb.id} className="px-2 py-1 rounded bg-emerald-500/20 flex items-center gap-1.5">
+                        ✅ {pb.hero_name}
+                        {player && <span className="text-white/50">({player.ign}{player.role ? ` · ${player.role}` : ""})</span>}
+                        <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                      </span>
+                    );
+                  })}
+                {pickBans
+                  .filter((pb) => pb.team_id === team.id && pb.type === "ban")
+                  .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0))
+                  .map((pb) => (
+                    <span key={pb.id} className="px-2 py-1 rounded bg-red-500/20 flex items-center gap-1.5">
+                      🚫 {pb.hero_name}
+                      <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                    </span>
+                  ))}
+              </div>
+            </div>
+          ) : (
+            <span key={idx} />
+          )
+        )}
       </section>
 
       {/* Scoreboard */}
@@ -598,8 +815,9 @@ export default function LiveConsolePage() {
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
           {objectives.map((o) => (
-            <span key={o.id} className="px-2 py-1 rounded bg-white/10 capitalize">
+            <span key={o.id} className="px-2 py-1 rounded bg-white/10 capitalize flex items-center gap-1.5">
               {o.minute_mark}&apos; {o.type} ({o.team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name})
+              <button onClick={() => deleteObjective(o.id)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
             </span>
           ))}
         </div>
@@ -628,8 +846,9 @@ export default function LiveConsolePage() {
         </div>
         <div className="flex flex-wrap gap-2 text-xs">
           {keyMoments.map((km) => (
-            <span key={km.id} className="px-2 py-1 rounded bg-signal/20 capitalize">
+            <span key={km.id} className="px-2 py-1 rounded bg-signal/20 capitalize flex items-center gap-1.5">
               {km.minute_mark}&apos; {km.type.replace("_", " ")}
+              <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
             </span>
           ))}
         </div>

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type MatchRow = {
   id: string;
@@ -27,7 +28,7 @@ const MATCH_SELECT = `id, status, scheduled_at, format,
 function TeamLogo({ url, className = "w-5 h-5" }: { url: string | null | undefined; className?: string }) {
   if (!url) return <div className={`${className} shrink-0 rounded bg-white/5`} />;
   // eslint-disable-next-line @next/next/no-img-element
-  return <img src={url} alt="" className={`${className} shrink-0 rounded object-contain`} />;
+  return <img src={proxiedImageUrl(url)} alt="" className={`${className} shrink-0 rounded object-contain`} />;
 }
 
 function dateKey(iso: string) {

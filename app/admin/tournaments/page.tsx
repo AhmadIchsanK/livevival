@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type Tournament = {
   id: string;
@@ -375,6 +376,7 @@ export default function TournamentsAdminPage() {
               <thead className="text-white/40 text-left">
                 <tr>
                   <th className="font-normal pb-2 w-8" />
+                  <th className="font-normal pb-2 w-8">Logo</th>
                   <th className="font-normal pb-2">Name</th>
                   <th className="font-normal pb-2">Tier</th>
                   <th className="font-normal pb-2">Dates</th>
@@ -387,6 +389,7 @@ export default function TournamentsAdminPage() {
                   <tr key={t.id} className="border-t border-white/10">
                     {editingId === t.id ? (
                       <>
+                        <td className="py-2" />
                         <td className="py-2" />
                         <td className="py-2 pr-2">
                           <input
@@ -455,6 +458,14 @@ export default function TournamentsAdminPage() {
                       <>
                         <td className="py-2">
                           <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelected(t.id)} />
+                        </td>
+                        <td className="py-2">
+                          {t.logo_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img src={proxiedImageUrl(t.logo_url)} alt="" className="w-6 h-6 rounded object-contain" />
+                          ) : (
+                            <span className="text-white/20">—</span>
+                          )}
                         </td>
                         <td className="py-2">{t.name}</td>
                         <td className="py-2 text-white/60">{t.tier}-Tier</td>

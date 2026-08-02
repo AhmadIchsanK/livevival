@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type Hero = {
   id: string;
@@ -345,7 +346,7 @@ export default function HeroesPage() {
                   <td className="py-2">
                     {h.icon_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={h.icon_url} alt={h.name} className="w-8 h-8 rounded object-cover" />
+                      <img src={proxiedImageUrl(h.icon_url)} alt={h.name} className="w-8 h-8 rounded object-cover" />
                     ) : (
                       <div className="w-8 h-8 rounded bg-white/10" />
                     )}

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type Tournament = {
   id: string;
@@ -51,12 +52,12 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
         <p className="font-semibold text-sm flex items-center gap-1.5">
           {m.team_a?.logo_url ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={m.team_a.logo_url} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
+            <img src={proxiedImageUrl(m.team_a.logo_url)} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
           ) : null}
           {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
           {m.team_b?.logo_url ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={m.team_b.logo_url} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
+            <img src={proxiedImageUrl(m.team_b.logo_url)} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
           ) : null}
         </p>
         <p className="text-xs text-white/40">
@@ -206,7 +207,7 @@ export default function TournamentPage() {
       <header className="flex items-start gap-4">
         {tournament.logo_url && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={tournament.logo_url} alt="" className="w-14 h-14 rounded object-contain shrink-0" />
+          <img src={proxiedImageUrl(tournament.logo_url)} alt="" className="w-14 h-14 rounded object-contain shrink-0" />
         )}
         <div>
           <span className="lv-badge bg-white/10 text-white/60">{tournament.tier}-Tier</span>
@@ -228,7 +229,7 @@ export default function TournamentPage() {
               <span className="text-white/40 text-xs uppercase tracking-wide">FMVP</span>
               {tournament.fmvp_player.team?.logo_url && (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={tournament.fmvp_player.team.logo_url} alt="" className="w-5 h-5 rounded object-contain" />
+                <img src={proxiedImageUrl(tournament.fmvp_player.team.logo_url)} alt="" className="w-5 h-5 rounded object-contain" />
               )}
               <span className="font-semibold">{tournament.fmvp_player.ign}</span>
               {tournament.fmvp_player.team && <span className="text-white/40">({tournament.fmvp_player.team.name})</span>}
@@ -261,7 +262,7 @@ export default function TournamentPage() {
                       <div className="flex items-center gap-2">
                         {s.team?.logo_url ? (
                           // eslint-disable-next-line @next/next/no-img-element
-                          <img src={s.team.logo_url} alt="" className="w-5 h-5 rounded object-contain shrink-0" />
+                          <img src={proxiedImageUrl(s.team.logo_url)} alt="" className="w-5 h-5 rounded object-contain shrink-0" />
                         ) : (
                           <div className="w-5 h-5 shrink-0" />
                         )}

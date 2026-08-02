@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 type Match = {
@@ -230,12 +231,12 @@ export default function PublicMatchPage() {
           <h1 className="font-display font-light text-2xl sm:text-3xl tracking-tight flex items-center gap-2 flex-wrap">
             {match.team_a?.logo_url && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={match.team_a.logo_url} alt="" className="w-8 h-8 rounded object-contain" />
+              <img src={proxiedImageUrl(match.team_a.logo_url)} alt="" className="w-8 h-8 rounded object-contain" />
             )}
             {match.team_a?.name} vs {match.team_b?.name}
             {match.team_b?.logo_url && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={match.team_b.logo_url} alt="" className="w-8 h-8 rounded object-contain" />
+              <img src={proxiedImageUrl(match.team_b.logo_url)} alt="" className="w-8 h-8 rounded object-contain" />
             )}
           </h1>
           <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
@@ -320,7 +321,7 @@ export default function PublicMatchPage() {
                 {t.bans.length === 0 && "—"}
                 {t.bans.map((b) => (
                   <span key={b.id} className="inline-flex items-center gap-1">
-                    {b.hero?.icon_url && <img src={b.hero.icon_url} alt="" className="w-4 h-4 rounded-full object-cover grayscale opacity-70" />}
+                    {b.hero?.icon_url && <img src={proxiedImageUrl(b.hero.icon_url)} alt="" className="w-4 h-4 rounded-full object-cover grayscale opacity-70" />}
                     {b.hero_name}
                   </span>
                 ))}
@@ -330,7 +331,7 @@ export default function PublicMatchPage() {
                 {t.picks.length === 0 && <p className="pl-2">—</p>}
                 {t.picks.map((p) => (
                   <p key={p.id} className="pl-2 flex items-center gap-1.5">
-                    {p.hero?.icon_url && <img src={p.hero.icon_url} alt="" className="w-5 h-5 rounded-full object-cover" />}
+                    {p.hero?.icon_url && <img src={proxiedImageUrl(p.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover" />}
                     <span>
                       {p.hero_name}
                       {p.player?.ign ? <span className="text-white/60"> — {p.player.ign}{p.player.role ? ` (${p.player.role})` : ""}</span> : ""}
@@ -361,7 +362,7 @@ export default function PublicMatchPage() {
                     <tr key={s.id} className="border-t border-white/10">
                       <td className="py-1.5">{s.player?.ign}</td>
                       <td className="flex items-center gap-1.5 py-1.5">
-                        {s.hero?.icon_url && <img src={s.hero.icon_url} alt="" className="w-5 h-5 rounded-full object-cover" />}
+                        {s.hero?.icon_url && <img src={proxiedImageUrl(s.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover" />}
                         {s.hero_name}
                       </td>
                       <td className="tabular-nums">{s.kills}/{s.deaths}/{s.assists}</td>

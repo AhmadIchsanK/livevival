@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type Team = { id: string; name: string; short_name: string | null; logo_url: string | null };
 type SortKey = "name" | "name_desc";
@@ -303,7 +304,7 @@ export default function TeamsPage() {
                   <td className="py-2 pr-2">
                     {editLogoUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={editLogoUrl} alt="" className="w-6 h-6 rounded object-cover" />
+                      <img src={proxiedImageUrl(editLogoUrl)} alt="" className="w-6 h-6 rounded object-cover" />
                     ) : (
                       <span className="text-white/20">—</span>
                     )}
@@ -353,7 +354,7 @@ export default function TeamsPage() {
                   <td className="py-2">
                     {t.logo_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={t.logo_url} alt="" className="w-6 h-6 rounded object-cover" />
+                      <img src={proxiedImageUrl(t.logo_url)} alt="" className="w-6 h-6 rounded object-cover" />
                     ) : (
                       <span className="text-white/20">—</span>
                     )}

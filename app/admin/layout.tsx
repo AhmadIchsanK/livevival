@@ -75,6 +75,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: "/admin/matches", label: "Matches" },
     { href: "/admin/streams", label: "Streams" },
     { href: "/admin/moment-templates", label: "Moment Templates" },
+    { href: "/admin/data-sync", label: "Data Sync" },
   ];
 
   return (

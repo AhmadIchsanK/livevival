@@ -9,12 +9,18 @@ type Template = {
   label_template: string;
   phase: string | null;
   sort_order: number;
+  telegram_enabled: boolean;
+  telegram_message_template: string | null;
 };
 
-// Matches key_moments_type_check in the DB — keep in sync.
+// Matches key_moments_type_check in the DB, plus "phase_notice" — a
+// config-only type that never shows up in the live console's moment
+// picker (see the phaseFilter/TYPES split below), used purely to hold a
+// Telegram toggle + message template for a phase transition (e.g. "Draft
+// started") that isn't itself a loggable moment.
 const TYPES = [
   "savage", "maniac", "lord_steal", "turtle_steal", "ace",
-  "phase_change", "game_finish", "match_finish", "game_pause", "pick", "ban", "custom",
+  "phase_change", "game_finish", "match_finish", "game_pause", "pick", "ban", "custom", "phase_notice",
 ];
 
 // Matches match_state (superset of game_state) — "Any" (null) applies the
@@ -34,17 +40,21 @@ export default function MomentTemplatesPage() {
   const [labelTemplate, setLabelTemplate] = useState("");
   const [phase, setPhase] = useState("");
   const [sortOrder, setSortOrder] = useState(0);
+  const [telegramEnabled, setTelegramEnabled] = useState(false);
+  const [telegramMessageTemplate, setTelegramMessageTemplate] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editType, setEditType] = useState("custom");
   const [editLabel, setEditLabel] = useState("");
   const [editPhase, setEditPhase] = useState("");
   const [editSortOrder, setEditSortOrder] = useState(0);
+  const [editTelegramEnabled, setEditTelegramEnabled] = useState(false);
+  const [editTelegramMessageTemplate, setEditTelegramMessageTemplate] = useState("");
 
   async function loadTemplates() {
     const { data } = await supabase
       .from("moment_templates")
-      .select("id, type, label_template, phase, sort_order")
+      .select("id, type, label_template, phase, sort_order, telegram_enabled, telegram_message_template")
       .order("sort_order", { ascending: true });
     setTemplates((data as Template[]) ?? []);
   }
@@ -69,6 +79,8 @@ export default function MomentTemplatesPage() {
       label_template: labelTemplate.trim(),
       phase: phase || null,
       sort_order: sortOrder,
+      telegram_enabled: telegramEnabled,
+      telegram_message_template: telegramMessageTemplate.trim() || null,
     });
 
     setLoading(false);
@@ -78,6 +90,8 @@ export default function MomentTemplatesPage() {
     }
     setLabelTemplate("");
     setSortOrder(0);
+    setTelegramEnabled(false);
+    setTelegramMessageTemplate("");
     loadTemplates();
   }
 
@@ -87,12 +101,21 @@ export default function MomentTemplatesPage() {
     setEditLabel(t.label_template);
     setEditPhase(t.phase ?? "");
     setEditSortOrder(t.sort_order);
+    setEditTelegramEnabled(t.telegram_enabled);
+    setEditTelegramMessageTemplate(t.telegram_message_template ?? "");
   }
 
   async function saveEdit(id: string) {
     const { error } = await supabase
       .from("moment_templates")
-      .update({ type: editType, label_template: editLabel, phase: editPhase || null, sort_order: editSortOrder })
+      .update({
+        type: editType,
+        label_template: editLabel,
+        phase: editPhase || null,
+        sort_order: editSortOrder,
+        telegram_enabled: editTelegramEnabled,
+        telegram_message_template: editTelegramMessageTemplate.trim() || null,
+      })
       .eq("id", id);
     if (error) {
       setError(error.message);
@@ -105,6 +128,12 @@ export default function MomentTemplatesPage() {
   async function deleteTemplate(id: string) {
     if (!confirm("Delete this template? This can't be undone.")) return;
     const { error } = await supabase.from("moment_templates").delete().eq("id", id);
+    if (error) setError(error.message);
+    else loadTemplates();
+  }
+
+  async function toggleTelegram(t: Template) {
+    const { error } = await supabase.from("moment_templates").update({ telegram_enabled: !t.telegram_enabled }).eq("id", t.id);
     if (error) setError(error.message);
     else loadTemplates();
   }
@@ -167,6 +196,22 @@ export default function MomentTemplatesPage() {
             className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
+        <div className="col-span-2 flex items-center gap-1.5 pt-1">
+          <input type="checkbox" checked={telegramEnabled} onChange={(e) => setTelegramEnabled(e.target.checked)} id="telegram-enabled" />
+          <label htmlFor="telegram-enabled" className="text-xs text-white/50">Auto-post to Telegram when this is logged</label>
+        </div>
+        {telegramEnabled && (
+          <div className="col-span-2 space-y-1">
+            <label className="text-xs text-white/50">Telegram message template (optional — falls back to a default format)</label>
+            <textarea
+              value={telegramMessageTemplate}
+              onChange={(e) => setTelegramMessageTemplate(e.target.value)}
+              placeholder="e.g. 🔥 {team} just picked {hero}!"
+              rows={2}
+              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            />
+          </div>
+        )}
         <button type="submit" disabled={loading} className="col-span-2 lv-btn-primary !py-2">
           Add template
         </button>
@@ -192,6 +237,7 @@ export default function MomentTemplatesPage() {
             <th className="font-normal pb-2">Type</th>
             <th className="font-normal pb-2">Phase</th>
             <th className="font-normal pb-2 w-16">Order</th>
+            <th className="font-normal pb-2">Telegram</th>
             <th className="font-normal pb-2 text-right">Actions</th>
           </tr>
         </thead>
@@ -238,6 +284,21 @@ export default function MomentTemplatesPage() {
                       className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
+                  <td className="py-2 pr-2 space-y-1">
+                    <label className="flex items-center gap-1 text-xs text-white/60">
+                      <input type="checkbox" checked={editTelegramEnabled} onChange={(e) => setEditTelegramEnabled(e.target.checked)} />
+                      Auto-post
+                    </label>
+                    {editTelegramEnabled && (
+                      <textarea
+                        value={editTelegramMessageTemplate}
+                        onChange={(e) => setEditTelegramMessageTemplate(e.target.value)}
+                        placeholder="Default format"
+                        rows={2}
+                        className="w-40 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                      />
+                    )}
+                  </td>
                   <td className="py-2 text-right space-x-2">
                     <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">Save</button>
                     <button onClick={() => setEditingId(null)} className="lv-btn-ghost !px-2 !py-1">Cancel</button>
@@ -249,6 +310,12 @@ export default function MomentTemplatesPage() {
                   <td className="py-2 text-white/60 capitalize">{t.type.replace(/_/g, " ")}</td>
                   <td className="py-2 text-white/60">{t.phase ? t.phase.replace(/_/g, " ") : "Any"}</td>
                   <td className="py-2 text-white/40">{t.sort_order}</td>
+                  <td className="py-2">
+                    <label className="flex items-center gap-1 text-xs text-white/60 cursor-pointer" title={t.telegram_message_template ?? "Uses default message format"}>
+                      <input type="checkbox" checked={t.telegram_enabled} onChange={() => toggleTelegram(t)} />
+                      {t.telegram_enabled ? "On" : "Off"}
+                    </label>
+                  </td>
                   <td className="py-2 text-right space-x-2">
                     <button onClick={() => startEdit(t)} className="lv-btn-ghost !px-2 !py-1">Edit</button>
                     <button onClick={() => deleteTemplate(t.id)} className="lv-btn-danger !px-2 !py-1">Delete</button>
@@ -259,7 +326,7 @@ export default function MomentTemplatesPage() {
           ))}
           {filtered.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-white/30 text-center">No templates yet.</td>
+              <td colSpan={6} className="py-4 text-white/30 text-center">No templates yet.</td>
             </tr>
           )}
         </tbody>

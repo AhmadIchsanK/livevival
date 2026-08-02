@@ -54,7 +54,14 @@ type KeyMoment = {
   is_key_moment: boolean;
   screenshot_url: string | null;
 };
-type MomentTemplate = { id: string; type: string; label_template: string; phase: string | null };
+type MomentTemplate = {
+  id: string;
+  type: string;
+  label_template: string;
+  phase: string | null;
+  telegram_enabled: boolean;
+  telegram_message_template: string | null;
+};
 type Screenshot = { id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
 
 // The handful of genuinely dramatic moment types that stand out inline in
@@ -356,13 +363,25 @@ export default function LiveConsolePage() {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from("moment_templates").select("id, type, label_template, phase").order("sort_order");
+      const { data } = await supabase
+        .from("moment_templates")
+        .select("id, type, label_template, phase, telegram_enabled, telegram_message_template")
+        .order("sort_order");
       setMomentTemplates((data as MomentTemplate[]) ?? []);
     })();
   }, []);
 
-  const availableTemplates = momentTemplates.filter((t) => !t.phase || t.phase === match?.state);
+  // "phase_notice" rows are Telegram config only (see /admin/moment-templates)
+  // — a phase transition, not something the admin picks from this dropdown.
+  const availableTemplates = momentTemplates.filter((t) => t.type !== "phase_notice" && (!t.phase || t.phase === match?.state));
   const selectedTemplate = momentTemplates.find((t) => t.id === kmTemplateId) ?? null;
+
+  // Shared {placeholder} substitution for both moment-log and phase-notice
+  // Telegram messages — {team}/{hero}/{player} match the moment_templates
+  // convention already documented on /admin/moment-templates.
+  function fillTelegramTemplate(tpl: string, vars: Record<string, string>) {
+    return Object.entries(vars).reduce((s, [k, v]) => s.split(`{${k}}`).join(v ?? ""), tpl);
+  }
 
   // Captures the current shared-screen frame and uploads it straight into
   // the moment being logged (key_moments.screenshot_url) instead of a
@@ -430,11 +449,15 @@ export default function LiveConsolePage() {
       is_key_moment: isKeyMoment,
       screenshot_url: screenshotUrl,
     });
-    // The dramatic in-game moments auto-share — everything else (picks,
-    // bans, phase changes, custom notes) stays manual via the 📢 button per
-    // moment, since not every logged event is worth a push notification.
-    if (isKeyMoment) {
-      postToTelegram(`🔥 <b>${description}</b>\n${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`, {
+    // Whether this auto-shares to Telegram is config-driven per template
+    // (/admin/moment-templates), not tied to is_key_moment — everything else
+    // (picks, bans, phase changes not configured to auto-post) stays manual
+    // via the 📢 button per moment.
+    if (selectedTemplate.telegram_enabled) {
+      const message = selectedTemplate.telegram_message_template
+        ? fillTelegramTemplate(selectedTemplate.telegram_message_template, { team: teamName, hero: heroName, player: playerName })
+        : `🔥 <b>${description}</b>\n${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`;
+      postToTelegram(message, {
         entityType: "key_moment",
         entityId: game.id,
         notificationType: "key_moment_auto",
@@ -1603,25 +1626,29 @@ export default function LiveConsolePage() {
       // Hot matches get a handful of phase transitions auto-shared to
       // Telegram — the worker never sees local_ocr matches at all (see the
       // postToTelegram comment above), so nothing else announces these.
+      // Which transitions actually post, and with what message, is
+      // config-driven via the "phase_notice" rows on /admin/moment-templates
+      // instead of hardcoded here — falls back to a sensible default message
+      // per phase if a row exists but has no custom template text.
       if (newState !== previousState && game) {
+        const noticeTemplate = momentTemplates.find((t) => t.type === "phase_notice" && t.phase === newState);
         const header = `${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`;
-        if (newState === "DRAFT_STARTED") {
-          await postToTelegram(`✏️ <b>Draft started — Game ${game.game_number}</b>\n${header}`, {
-            entityType: "match",
-            entityId: match.id,
-            notificationType: "draft_started",
-          });
-        } else if (newState === "DRAFT_COMPLETE") {
-          await postToTelegram(
-            `📋 <b>Draft complete — Game ${game.game_number}</b>\n${header}\n\n${buildDraftRecap()}`,
-            { entityType: "game", entityId: game.id, notificationType: "draft_result" }
-          );
-        } else if (newState === "GAME_STARTED") {
-          await postToTelegram(`🎮 <b>Game ${game.game_number} ongoing</b>\n${header}`, {
-            entityType: "game",
-            entityId: game.id,
-            notificationType: "game_started",
-          });
+        const DEFAULT_PHASE_MESSAGES: Record<string, string> = {
+          DRAFT_STARTED: `✏️ <b>Draft started — Game ${game.game_number}</b>\n${header}`,
+          DRAFT_COMPLETE: `📋 <b>Draft complete — Game ${game.game_number}</b>\n${header}\n\n${buildDraftRecap()}`,
+          GAME_STARTED: `🎮 <b>Game ${game.game_number} ongoing</b>\n${header}`,
+        };
+        if (noticeTemplate?.telegram_enabled) {
+          const message = noticeTemplate.telegram_message_template
+            ? fillTelegramTemplate(noticeTemplate.telegram_message_template, { team_a: match.team_a?.name ?? "", team_b: match.team_b?.name ?? "", tournament: match.tournament?.name ?? "" })
+            : DEFAULT_PHASE_MESSAGES[newState];
+          if (message) {
+            await postToTelegram(message, {
+              entityType: newState === "DRAFT_COMPLETE" ? "game" : newState === "GAME_STARTED" ? "game" : "match",
+              entityId: newState === "DRAFT_STARTED" ? match.id : game.id,
+              notificationType: newState === "DRAFT_STARTED" ? "draft_started" : newState === "DRAFT_COMPLETE" ? "draft_result" : "game_started",
+            });
+          }
         }
       }
     }

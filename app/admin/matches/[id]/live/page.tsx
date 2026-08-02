@@ -22,6 +22,7 @@ type Match = {
   custom_state_label: string | null;
   update_source: "liquipedia" | "local_ocr";
   series_winner_team_id: string | null;
+  tournament_id: string | null;
   tournament: { name: string } | null;
   team_a: { id: string; name: string } | null;
   team_b: { id: string; name: string } | null;
@@ -71,7 +72,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number, state, custom_state_label, update_source, series_winner_team_id,
+        `id, youtube_url, format, current_game_number, state, custom_state_label, update_source, series_winner_team_id, tournament_id,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(id, name),
          team_b:teams!matches_team_b_id_fkey(id, name)`
@@ -477,6 +478,47 @@ export default function LiveConsolePage() {
     return (pool.find((p) => normalize(p.ign) === n) ?? pool.find((p) => normalize(p.ign).includes(n) || n.includes(normalize(p.ign))))?.id ?? null;
   }
 
+  // Draft phases (DRAFT_STARTED/DRAFT_COMPLETE) never auto-write detected
+  // picks/bans straight to the DB — a misread hero name during a fast draft
+  // is much costlier to have gone live already than a stat glitch that
+  // gets overwritten next tick. Detections pile up here for the admin to
+  // review and explicitly push instead.
+  const DRAFT_PHASES = ["DRAFT_STARTED", "DRAFT_COMPLETE"];
+  const [stagedDraftActions, setStagedDraftActions] = useState<
+    { type: "pick" | "ban"; team_name: string; hero_name: string }[]
+  >([]);
+
+  async function commitDraftAction(action: { type: "pick" | "ban"; team_name: string; hero_name: string }) {
+    const teamId = matchTeamId(action.team_name);
+    if (!teamId || !action.hero_name || !game) return;
+    const alreadyLogged = pickBans.some(
+      (pb) => pb.team_id === teamId && pb.hero_name.toLowerCase() === action.hero_name.toLowerCase() && pb.type === action.type
+    );
+    if (alreadyLogged) return;
+    await supabase.from("hero_picks_bans").upsert(
+      {
+        game_id: game.id,
+        match_id: matchId,
+        team_id: teamId,
+        hero_name: action.hero_name,
+        hero_id: matchHeroId(action.hero_name),
+        type: action.type,
+        pick_order: pickBans.length + 1,
+      },
+      { onConflict: "game_id,team_id,hero_name,type" }
+    );
+  }
+
+  async function pushStagedDraftActions() {
+    for (const action of stagedDraftActions) await commitDraftAction(action);
+    setStagedDraftActions([]);
+    loadAll();
+  }
+
+  function discardStagedDraftAction(index: number) {
+    setStagedDraftActions((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function applyAiDetection(detection: AiDetection) {
     if (!game || !match) return;
 
@@ -484,25 +526,20 @@ export default function LiveConsolePage() {
     if (timerMatch) setMinute(Number(timerMatch[1]));
     if (detection.phase === "IN_GAME") maybeAutoStartGame();
 
-    for (const action of detection.draft_actions ?? []) {
-      const teamId = matchTeamId(action.team_name);
-      if (!teamId || !action.hero_name) continue;
-      const alreadyLogged = pickBans.some(
-        (pb) => pb.team_id === teamId && pb.hero_name.toLowerCase() === action.hero_name.toLowerCase() && pb.type === action.type
-      );
-      if (alreadyLogged) continue;
-      await supabase.from("hero_picks_bans").upsert(
-        {
-          game_id: game.id,
-          match_id: matchId,
-          team_id: teamId,
-          hero_name: action.hero_name,
-          hero_id: matchHeroId(action.hero_name),
-          type: action.type,
-          pick_order: pickBans.length + 1,
-        },
-        { onConflict: "game_id,team_id,hero_name,type" }
-      );
+    if (DRAFT_PHASES.includes(match.state)) {
+      setStagedDraftActions((prev) => {
+        const next = [...prev];
+        for (const action of detection.draft_actions ?? []) {
+          if (!action.hero_name) continue;
+          const dupe = next.some(
+            (a) => a.type === action.type && a.team_name === action.team_name && a.hero_name.toLowerCase() === action.hero_name.toLowerCase()
+          );
+          if (!dupe) next.push(action);
+        }
+        return next;
+      });
+    } else {
+      for (const action of detection.draft_actions ?? []) await commitDraftAction(action);
     }
 
     for (const row of detection.player_stats ?? []) {
@@ -613,22 +650,27 @@ export default function LiveConsolePage() {
   }
 
   useEffect(() => {
-    if (!matchId) return;
+    if (!matchId || !match?.tournament_id) return;
     (async () => {
-      const { data } = await supabase
-        .from("capture_regions")
-        .select("field, x_pct, y_pct, w_pct, h_pct")
-        .eq("match_id", matchId);
-      if (!data) return;
+      // Tournament-wide defaults first, then match-specific rows layered on
+      // top — a match that was never calibrated inherits the tournament's
+      // saved regions; one that was calibrated keeps its own.
+      const [{ data: tournamentDefaults }, { data: matchRegions }] = await Promise.all([
+        supabase.from("capture_regions").select("field, x_pct, y_pct, w_pct, h_pct").eq("tournament_id", match.tournament_id),
+        supabase.from("capture_regions").select("field, x_pct, y_pct, w_pct, h_pct").eq("match_id", matchId),
+      ]);
       setRegions((prev) => {
         const next = { ...prev };
-        for (const r of data) {
+        for (const r of tournamentDefaults ?? []) {
+          next[r.field as CaptureField] = { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct };
+        }
+        for (const r of matchRegions ?? []) {
           next[r.field as CaptureField] = { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct };
         }
         return next;
       });
     })();
-  }, [matchId]);
+  }, [matchId, match?.tournament_id]);
 
   async function saveRegion(field: CaptureField, box: RegionBox) {
     setRegions((prev) => ({ ...prev, [field]: box }));
@@ -636,6 +678,18 @@ export default function LiveConsolePage() {
       { match_id: matchId, field, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct },
       { onConflict: "match_id,field" }
     );
+  }
+
+  const [savedDefaultField, setSavedDefaultField] = useState<CaptureField | null>(null);
+  async function saveRegionAsTournamentDefault(field: CaptureField) {
+    const box = regions[field];
+    if (!box || !match?.tournament_id) return;
+    await supabase.from("capture_regions").upsert(
+      { tournament_id: match.tournament_id, field, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct },
+      { onConflict: "tournament_id,field" }
+    );
+    setSavedDefaultField(field);
+    setTimeout(() => setSavedDefaultField(null), 2000);
   }
 
   function cropCanvasFor(video: HTMLVideoElement, box: RegionBox) {
@@ -774,6 +828,11 @@ export default function LiveConsolePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  useEffect(() => {
+    if (!match || !DRAFT_PHASES.includes(match.state)) setStagedDraftActions([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [match?.state]);
+
   function handleCropMouseDown(e: React.MouseEvent<HTMLDivElement>) {
     if (!calibratingField) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -899,6 +958,18 @@ export default function LiveConsolePage() {
     "MATCH_NOT_STARTED", "DRAFT_STARTED", "DRAFT_COMPLETE", "GAME_STARTED",
     "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM",
   ];
+  // What this phase's tracker area actually does — each phase behaves
+  // differently, not just a label on the same always-on tracker.
+  const PHASE_TRACKER_HINTS: Record<string, string> = {
+    MATCH_NOT_STARTED: "Waiting — capture can run, but nothing auto-applies yet. Screenshots still work.",
+    DRAFT_STARTED: "Draft in progress — detected picks/bans stage below for review, then push explicitly. Nothing writes to the draft automatically.",
+    DRAFT_COMPLETE: "Draft complete — push any remaining staged picks/bans, then move the phase to Game started.",
+    GAME_STARTED: "Game ongoing — stats, net worth, and key moments apply automatically each tick.",
+    GAME_FINISHED: "Game finished — capture stays available for post-game screenshots and a possible winner suggestion.",
+    SERIES_FINISHED: "Match finished — capture is no longer needed for this series.",
+    TECHNICAL_PAUSE: "Technical pause — tracking is effectively idle; resume the correct phase when play resumes.",
+    CUSTOM: "Custom phase — behaves like Waiting; use the label above to describe what's actually happening.",
+  };
   const [customLabelDraft, setCustomLabelDraft] = useState("");
   async function setMatchPhase(newState: string) {
     if (!match) return;
@@ -1418,6 +1489,12 @@ export default function LiveConsolePage() {
           )}
         </div>
 
+        {match.update_source === "local_ocr" && (
+          <p className="text-xs text-white/50 bg-white/5 border border-white/10 rounded px-3 py-2">
+            {PHASE_TRACKER_HINTS[match.state] ?? PHASE_TRACKER_HINTS.CUSTOM}
+          </p>
+        )}
+
         {match.update_source !== "local_ocr" ? (
           <p className="text-xs text-white/40">
             This is a Normal match (Liquipedia auto). Click &quot;Normal match&quot; above to make it a Hot match
@@ -1512,6 +1589,15 @@ export default function LiveConsolePage() {
                         >
                           {calibratingField === field ? "Drag the area now..." : regions[field] ? "Recalibrate" : "Calibrate"}
                         </button>
+                        {regions[field] && (
+                          <button
+                            onClick={() => saveRegionAsTournamentDefault(field)}
+                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 w-full text-white/50"
+                            title="New matches in this tournament will start with this region already calibrated"
+                          >
+                            {savedDefaultField === field ? "Saved as default ✓" : "Save as tournament default"}
+                          </button>
+                        )}
                         <p className="text-xs text-white/70 truncate" title={readings[field]}>
                           {readings[field] || "—"}
                         </p>
@@ -1525,6 +1611,25 @@ export default function LiveConsolePage() {
                         )}
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {captureMode === "ai" && match && DRAFT_PHASES.includes(match.state) && stagedDraftActions.length > 0 && (
+                  <div className="border border-yellow-500/30 bg-yellow-500/10 rounded p-3 space-y-2 text-xs">
+                    <p className="text-yellow-300 font-semibold">
+                      {stagedDraftActions.length} draft action{stagedDraftActions.length === 1 ? "" : "s"} detected — review before pushing
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {stagedDraftActions.map((a, i) => (
+                        <span key={i} className="lv-badge bg-white/10 text-white/70 capitalize inline-flex items-center gap-1">
+                          {a.type} {a.hero_name} ({a.team_name})
+                          <button onClick={() => discardStagedDraftAction(i)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
+                        </span>
+                      ))}
+                    </div>
+                    <button onClick={pushStagedDraftActions} className="lv-btn-primary !text-xs !py-1.5">
+                      Push draft update
+                    </button>
                   </div>
                 )}
 

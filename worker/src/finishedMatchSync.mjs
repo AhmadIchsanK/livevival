@@ -7,6 +7,7 @@
 import * as cheerio from "cheerio";
 import { supabase } from "./config.mjs";
 import { fetchRenderedPage } from "./liquipediaClient.mjs";
+import { notifyOnce } from "./telegram.mjs";
 
 export function isRightSide($, championIconEl) {
   return $(championIconEl).hasClass("brkts-popup-body-element-thumbs-right");
@@ -142,8 +143,8 @@ async function insertPicksAndBans(gameId, side, teamId) {
   if (side.bans) await insertAll(side.bans, "ban");
 }
 
-async function importMatchDetail(tournamentId, m) {
-  const match = await findMatch(tournamentId, m.leftName, m.rightName);
+async function importMatchDetail(tournament, m) {
+  const match = await findMatch(tournament.id, m.leftName, m.rightName);
   if (!match || match.update_source === "local_ocr") return;
 
   const seriesWinnerTeamId = m.leftWon ? match.leftId : match.rightId;
@@ -180,7 +181,31 @@ async function importMatchDetail(tournamentId, m) {
 
     if (g.left) await insertPicksAndBans(gameRow.id, { picks: g.left.picks, bans: g.leftBans }, match.leftId);
     if (g.right) await insertPicksAndBans(gameRow.id, { picks: g.right.picks, bans: g.rightBans }, match.rightId);
+
+    if (gameWinnerTeamId) {
+      const winnerName = g.left?.won ? m.leftName : m.rightName;
+      await notifyOnce(
+        "game",
+        gameRow.id,
+        "game_result",
+        `🎮 <b>Game ${g.gameNumber} result</b>\n${m.leftName} vs ${m.rightName}\nWinner: <b>${winnerName}</b>\n${tournament.name}`
+      );
+    }
   }
+
+  // Liquipedia only exposes per-game data once the whole series is marked
+  // finished (see the module comment on extractFinishedMatches) — so the
+  // per-game notifications above and this match-finished one land in the
+  // same tick for a normal match, not spread out live as each game ends.
+  // notifyOnce's own dedup (not a local check here — findMatch()'s select
+  // doesn't fetch status/state) is what stops this firing every tick.
+  const winnerName = m.leftWon ? m.leftName : m.rightName;
+  await notifyOnce(
+    "match",
+    match.id,
+    "match_finished",
+    `🏆 <b>Match finished</b>\n${m.leftName} vs ${m.rightName}\nWinner: <b>${winnerName}</b>\n${tournament.name}`
+  );
 }
 
 export async function syncTournamentFinishedMatches(tournament) {
@@ -188,7 +213,7 @@ export async function syncTournamentFinishedMatches(tournament) {
   const $ = cheerio.load(html);
   const finished = extractFinishedMatches($);
   for (const m of finished) {
-    await importMatchDetail(tournament.id, m);
+    await importMatchDetail(tournament, m);
   }
   return finished;
 }

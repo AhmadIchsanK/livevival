@@ -4,25 +4,55 @@ name: Import Liquipedia rosters and finished-match details
 # own fresh rate-limit window instead of running back-to-back with the
 # matches import — a full matches pass alone can consume ~30 minutes of
 # request budget and leave Liquipedia's short-term throttle still active
-# for whatever runs next in the same job. continue-on-error on each step
-# means one rate-limited tournament doesn't block the rest of the run;
-# whatever doesn't complete this cycle picks up on the next one.
+# for whatever runs next in the same job.
+#
+# THESE USED TO BE TWO STEPS IN ONE JOB. That was the bug: import-team-
+# details.mjs's own header comment documents a cold run across ~300 teams
+# taking up to "~6h05m" — as the first step in a single sequential job,
+# it could (and in production did — observed stuck "in_progress" for
+# hours, never reaching the second step) consume the entire job runtime,
+# meaning refresh-finished-match-details.mjs — the actually time-critical
+# script that fixes finished-match scores/picks/VODs — silently never got
+# to run at all, cycle after cycle. Split into two independent jobs with
+# their own timeouts and concurrency groups so a slow roster pass can
+# never starve the match-details refresh (or vice versa) again.
 on:
   schedule:
     - cron: "0 3,9,15,21 * * *"
   workflow_dispatch: {}
 
-# A manual dispatch overlapping a scheduled run (or two schedules overlapping
-# a slow run) means two jobs hammer the same Liquipedia pages at once, which
-# doubles the 429 rate and can make both jobs retry-loop far longer than
-# either would alone. Queue instead of running concurrently.
-concurrency:
-  group: liquipedia-import-details
-  cancel-in-progress: false
-
 jobs:
-  import-details:
+  refresh-match-details:
     runs-on: ubuntu-latest
+    # ~150 tournaments x a handful of paced requests each comfortably fits
+    # in well under an hour — this is the priority script, so it gets to
+    # run to completion on every trigger regardless of the roster job.
+    timeout-minutes: 60
+    concurrency:
+      group: liquipedia-refresh-match-details
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/refresh-finished-match-details.mjs
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+  import-team-rosters:
+    runs-on: ubuntu-latest
+    # Genuinely can take hours on a cold run (see script header) — capped
+    # so a slow/rate-limited run can't run past the next scheduled trigger
+    # and queue up behind itself. Already-complete teams are skipped on
+    # each run, so a capped run just picks up more next cycle.
+    timeout-minutes: 180
+    concurrency:
+      group: liquipedia-import-team-rosters
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,11 +60,6 @@ jobs:
           node-version: 22
       - run: npm install @supabase/supabase-js cheerio
       - run: node scripts/import-team-details.mjs
-        continue-on-error: true
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-      - run: node scripts/refresh-finished-match-details.mjs
         continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

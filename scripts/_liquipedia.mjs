@@ -56,12 +56,23 @@ async function requestJson(url, label, attempt) {
   return res.json();
 }
 
-/** Fetches a page's rendered HTML via action=parse. */
+/**
+ * Fetches a page's rendered HTML via action=parse, following redirects.
+ * Without redirects=1, action=parse on a page that's actually a redirect
+ * (e.g. an old/alternate hero or team name Liquipedia has since merged
+ * into a canonical page) returns the redirect stub's own near-empty
+ * content instead of the real page — no infobox, no roster table, nothing
+ * to scrape, and no error either since the request itself succeeds. This
+ * was confirmed as the fetch pattern to use for team pages
+ * (import-team-details.mjs); applying it here too since every script
+ * using this shared client can silently hit the same redirect gap.
+ */
 export async function fetchRenderedPage(pageTitle, attempt = 1) {
   const url = new URL(WIKI_API);
   url.searchParams.set("action", "parse");
   url.searchParams.set("page", pageTitle);
   url.searchParams.set("prop", "text");
+  url.searchParams.set("redirects", "1");
   url.searchParams.set("format", "json");
 
   const data = await requestJson(url, pageTitle, attempt);

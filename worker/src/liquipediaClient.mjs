@@ -33,6 +33,10 @@ export async function fetchRenderedPage(pageTitle, attempt = 1) {
   url.searchParams.set("action", "parse");
   url.searchParams.set("page", pageTitle);
   url.searchParams.set("prop", "text");
+  // Without this, a page that's actually a redirect (e.g. a tournament
+  // slug Liquipedia has since renamed) returns the redirect stub's
+  // near-empty content instead of the real page — silently, no error.
+  url.searchParams.set("redirects", "1");
   url.searchParams.set("format", "json");
 
   const res = await fetch(url, {

@@ -835,15 +835,16 @@ export default function LiveConsolePage() {
           </span>
           <button
             onClick={toggleUpdateSource}
+            title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
             className={`text-[10px] px-2 py-0.5 rounded border ${
               match.update_source === "liquipedia"
                 ? "border-emerald-500/40 text-emerald-400"
-                : "border-yellow-500/40 text-yellow-400"
+                : "border-signal/50 text-signal"
             }`}
           >
             {match.update_source === "liquipedia"
-              ? "🤖 Liquipedia auto ON — click to take over with local OCR"
-              : "✋ Local OCR (this PC) — click to hand back to Liquipedia auto"}
+              ? "📡 Normal match — click to make this a Hot match"
+              : "🔥 Hot match — click to hand back to Normal (Liquipedia auto)"}
           </button>
         </div>
         {match.state === "SERIES_FINISHED" && (
@@ -1218,8 +1219,8 @@ export default function LiveConsolePage() {
 
         {match.update_source !== "local_ocr" ? (
           <p className="text-xs text-white/40">
-            This match is on Liquipedia auto. Switch update source to &quot;Local OCR&quot; above to take over
-            with this PC&apos;s screen capture.
+            This is a Normal match (Liquipedia auto). Click &quot;Normal match&quot; above to make it a Hot match
+            and take over with this PC&apos;s screen capture.
           </p>
         ) : (
           <>

@@ -594,14 +594,15 @@ export default function MatchesPage() {
                 <select
                   value={m.update_source}
                   onChange={(e) => updateMatch(m.id, { update_source: e.target.value as "liquipedia" | "local_ocr" })}
+                  title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
                   className={`text-xs rounded px-2 py-1.5 border ${
                     m.update_source === "liquipedia"
                       ? "border-emerald-500/40 text-emerald-400 bg-black/30"
-                      : "border-yellow-500/40 text-yellow-400 bg-black/30"
+                      : "border-signal/50 text-signal bg-black/30"
                   }`}
                 >
-                  <option value="liquipedia">🤖 Liquipedia auto</option>
-                  <option value="local_ocr">✋ Local OCR (admin PC)</option>
+                  <option value="liquipedia">📡 Normal match</option>
+                  <option value="local_ocr">🔥 Hot match</option>
                 </select>
               </div>
 

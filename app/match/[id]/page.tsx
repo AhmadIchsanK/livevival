@@ -12,6 +12,7 @@ type Match = {
   format: string | null;
   youtube_url: string | null;
   series_winner_team_id: string | null;
+  update_source: "liquipedia" | "local_ocr";
   tournament: { name: string; tier: string } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
@@ -92,7 +93,7 @@ export default function PublicMatchPage() {
     const { data: matchData, error: matchError } = await supabase
       .from("matches")
       .select(
-        `id, status, format, youtube_url, series_winner_team_id,
+        `id, status, format, youtube_url, series_winner_team_id, update_source,
          tournament:tournaments(name, tier),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url),
@@ -242,6 +243,14 @@ export default function PublicMatchPage() {
           <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
             {match.status}
           </span>
+          {match.update_source === "local_ocr" && (
+            <span
+              className="lv-badge bg-signal/20 text-signal border border-signal/40"
+              title="Fully admin-tracked: live KDA, items, and moment log"
+            >
+              🔥 HOT
+            </span>
+          )}
         </div>
 
         {match.status === "finished" && seriesWinnerName && (

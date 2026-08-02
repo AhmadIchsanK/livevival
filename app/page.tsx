@@ -10,6 +10,7 @@ type MatchRow = {
   status: string;
   scheduled_at: string | null;
   format: string | null;
+  update_source: "liquipedia" | "local_ocr";
   tournament: { name: string; tier: string; liquipedia_slug: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
@@ -20,10 +21,22 @@ const PAGE_SIZE = 30;
 const UPCOMING_DAYS_RANGE = 30;
 const FINISHED_FETCH_CAP = 300; // generous, but bounded — see note below
 
-const MATCH_SELECT = `id, status, scheduled_at, format,
+const MATCH_SELECT = `id, status, scheduled_at, format, update_source,
   tournament:tournaments(name, tier, liquipedia_slug),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
+
+// Hot = fully admin/OCR-controlled (KDA, items, moment log all available).
+// Normal = Liquipedia auto-sync only (score, picks/bans, VOD). Shown so
+// fans know which matches will have the deeper coverage.
+function HotBadge({ updateSource }: { updateSource: "liquipedia" | "local_ocr" }) {
+  if (updateSource !== "local_ocr") return null;
+  return (
+    <span className="lv-badge bg-signal/20 text-signal border border-signal/40 shrink-0" title="Fully admin-tracked: live KDA, items, and moment log">
+      🔥 HOT
+    </span>
+  );
+}
 
 function TeamLogo({ url, className = "w-5 h-5" }: { url: string | null | undefined; className?: string }) {
   if (!url) return <div className={`${className} shrink-0 rounded bg-white/5`} />;
@@ -179,7 +192,10 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
       href={`/match/${m.id}`}
       className="lv-card lv-clip-corner block border-signal/30 bg-signal/[0.04] hover:border-signal/60 px-5 py-4"
     >
-      <p className="lv-badge-live mb-3">Live</p>
+      <div className="flex items-center gap-2 mb-3">
+        <p className="lv-badge-live">Live</p>
+        <HotBadge updateSource={m.update_source} />
+      </div>
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
           <TeamLogo url={m.team_a?.logo_url} className="w-6 h-6" />
@@ -379,8 +395,11 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
                 </p>
               </div>
-              <span className="lv-score text-xl shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1.5">
-                {seriesScoreLabel(score) ?? "—"}
+              <span className="flex items-center gap-2 shrink-0">
+                <HotBadge updateSource={m.update_source} />
+                <span className="lv-score text-xl bg-white/5 border border-white/10 rounded-md px-3 py-1.5">
+                  {seriesScoreLabel(score) ?? "—"}
+                </span>
               </span>
             </a>
           );

@@ -30,25 +30,49 @@ decision with no reasonable default).
 - [x] New scraper `scripts/import-team-details.mjs` — replaces two
       broken importers, pulls team logo + per-player role from each
       team's own Liquipedia page in one fetch. Wired into the 6-hourly
-      cron. **Not yet run against prod data** — needs a cron fire or
-      manual `workflow_dispatch` to actually backfill the 1,100 null
-      player roles / 301 null team logos.
+      cron, and manually triggered via workflow_dispatch on 2026-08-02 —
+      check GitHub Actions for its run status; once it completes it
+      backfills the (at last count) 1,100 null player roles / 301 null
+      team logos.
 - [x] Full brand kit applied (logo, colors, typography, favicons)
-
-## In progress / pending — in priority order
-
-- [ ] Matches admin + live console: slow LIVE toggle, live console data
-      display (per-game results, per-player hero picks, role-ordered
-      pick/ban, map setting), full CRUD in console
-- [ ] Public match page: BO1/BO2/BO5/BO7 display (reported limited to
-      BO3), VOD/picks-bans/KDA audit
-- [ ] Public /tournaments: filter/search/sort, default-view rules
-- [ ] Per-tournament finished page: rank/FMVP/prizepool/advancement,
-      team+player achievement sections
-- [ ] Homepage: month calendar view (green match-days), tournament
-      coverage audit (MPL ID S18 missing, "not all Tier S/A included")
-- [ ] Team logos on public site (match cards, tournament pages)
-- [ ] Heroes admin: icon auto-import bug
+- [x] Matches admin + live console: optimistic status toggle (fixed the
+      "slow LIVE" complaint — was a real UX bug, row vanished mid
+      round-trip with no feedback), per-game map field + declare-winner
+      control + previous-games summary, picks now record player_id so
+      the scoreboard shows only the 5 players actually picked (role-
+      ordered), delete added on objectives/key moments (picks/bans
+      already had it)
+- [x] Public match page: BO1/BO2/BO5/BO7 — page itself was already
+      format-agnostic (counts real game wins); real bug was the admin
+      match form's dropdown only offering BO1/BO3/BO5 despite the DB and
+      importer supporting all five (confirmed 34 existing BO7 matches).
+      Fixed the dropdown. Also switched picks display to the direct
+      player_id link instead of a fragile hero-name text match.
+- [x] Public /tournaments: search/tier-filter/sort added; completed
+      section defaults to 8 most recent (uncapped when filtering);
+      upcoming stays uncapped (already Tier S/A only)
+- [x] Per-tournament finished page: FMVP (new tournaments.fmvp_player_id
+      column, admin-settable via IGN autocomplete, shown only if set —
+      Liquipedia doesn't expose this scrapably), total prize pool (summed
+      from existing tournament_results data), team logos in standings,
+      "Player performances" leaderboard built from existing player_stats
+      (no new data source needed). "Advanced to next stage" scoped out —
+      would need new scraper work to parse stage/bracket linkage that
+      doesn't exist in the current data model.
+- [x] Homepage: calendar already existed from a prior session — extended
+      it to mark finished-match days too (previously only upcoming/live),
+      recolored the day-marker to green. Investigated "MPL ID S18 not
+      detected": tournament is correctly imported with correct dates, has
+      zero matches yet same as every other upcoming tournament — looks
+      like Liquipedia hasn't published those brackets, not an importer
+      bug. That investigation found and fixed a real bug instead: bare-
+      year date strings ("2026") parsed as Jan 1 via `new Date()`,
+      corrupting 2 tournaments' end_date to before their start_date and
+      misclassifying them as completed — fixed parser + repaired prod
+      rows directly.
+- [x] Team logos on public site: homepage cards, match detail header,
+      per-tournament match list, tournament page standings.
+- [ ] Heroes admin: icon auto-import bug — in progress
 - [ ] Streams: auto-detect started/ended
 - [ ] Stream auto-import (~2min delay) + per-game VOD auto-import
       (Liquipedia hourly, MLBB YouTube channel fallback)

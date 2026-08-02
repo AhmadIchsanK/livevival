@@ -321,7 +321,7 @@ export default function PublicMatchPage() {
                 {t.bans.length === 0 && "—"}
                 {t.bans.map((b) => (
                   <span key={b.id} className="inline-flex items-center gap-1">
-                    {b.hero?.icon_url && <img src={proxiedImageUrl(b.hero.icon_url)} alt="" className="w-4 h-4 rounded-full object-cover grayscale opacity-70" />}
+                    {b.hero?.icon_url && <img src={proxiedImageUrl(b.hero.icon_url)} alt="" className="w-4 h-4 rounded-full object-cover object-top grayscale opacity-70" />}
                     {b.hero_name}
                   </span>
                 ))}
@@ -331,7 +331,7 @@ export default function PublicMatchPage() {
                 {t.picks.length === 0 && <p className="pl-2">—</p>}
                 {t.picks.map((p) => (
                   <p key={p.id} className="pl-2 flex items-center gap-1.5">
-                    {p.hero?.icon_url && <img src={proxiedImageUrl(p.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover" />}
+                    {p.hero?.icon_url && <img src={proxiedImageUrl(p.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
                     <span>
                       {p.hero_name}
                       {p.player?.ign ? <span className="text-white/60"> — {p.player.ign}{p.player.role ? ` (${p.player.role})` : ""}</span> : ""}
@@ -362,7 +362,7 @@ export default function PublicMatchPage() {
                     <tr key={s.id} className="border-t border-white/10">
                       <td className="py-1.5">{s.player?.ign}</td>
                       <td className="flex items-center gap-1.5 py-1.5">
-                        {s.hero?.icon_url && <img src={proxiedImageUrl(s.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover" />}
+                        {s.hero?.icon_url && <img src={proxiedImageUrl(s.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
                         {s.hero_name}
                       </td>
                       <td className="tabular-nums">{s.kills}/{s.deaths}/{s.assists}</td>

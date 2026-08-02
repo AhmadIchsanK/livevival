@@ -383,9 +383,14 @@ export default function StreamsPage() {
                         />
                       )}
                       <div>
-                        <p className="text-sm font-semibold truncate max-w-md">{s.url}</p>
-                        <p className="text-xs text-white/40">
-                          {s.tournament?.name ?? "No tournament linked"} · overlay: {s.overlay_template}
+                        <p className="text-sm font-semibold truncate max-w-md">
+                          {s.overlay_template && s.overlay_template !== "default" ? s.overlay_template : s.url}
+                        </p>
+                        <p className="text-xs text-white/40 truncate max-w-md">
+                          {s.tournament?.name ?? "No tournament linked"} ·{" "}
+                          <a href={s.url} target="_blank" className="hover:text-signal underline">
+                            {s.url}
+                          </a>
                         </p>
                       </div>
                     </div>

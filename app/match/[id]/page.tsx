@@ -32,6 +32,7 @@ type PickBan = {
   hero_name: string;
   type: "pick" | "ban";
   pick_order: number | null;
+  hero: { icon_url: string | null } | null;
   player: { ign: string; role: string | null } | null;
 };
 type PlayerStat = {
@@ -43,6 +44,7 @@ type PlayerStat = {
   deaths: number;
   assists: number;
   gold: number;
+  hero: { icon_url: string | null } | null;
   player: { ign: string; team_id: string } | null;
 };
 type Objective = { id: string; game_id: string; team_id: string; type: string; minute_mark: number | null };
@@ -126,10 +128,13 @@ export default function PublicMatchPage() {
     const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }] = await Promise.all([
       supabase
         .from("hero_picks_bans")
-        .select("id, game_id, team_id, player_id, hero_name, type, pick_order, player:players(ign, role)")
+        .select("id, game_id, team_id, player_id, hero_name, type, pick_order, player:players(ign, role), hero:heroes(icon_url)")
         .eq("match_id", matchId)
         .order("pick_order"),
-      supabase.from("player_stats").select("id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id)").eq("match_id", matchId),
+      supabase
+        .from("player_stats")
+        .select("id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id), hero:heroes(icon_url)")
+        .eq("match_id", matchId),
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
       supabase.from("key_moments").select("id, game_id, type, minute_mark, player:players(ign), screenshot_url, source").eq("match_id", matchId).order("minute_mark"),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
@@ -310,14 +315,26 @@ export default function PublicMatchPage() {
           ].map((t, i) => (
             <div key={i} className="lv-card-flush p-4 space-y-2">
               <p className="text-white/70 font-semibold">{t.name}</p>
-              <p className="text-xs text-white/40">Bans: {t.bans.map((b) => b.hero_name).join(", ") || "—"}</p>
+              <div className="text-xs text-white/40 flex items-center gap-1.5 flex-wrap">
+                <span>Bans:</span>
+                {t.bans.length === 0 && "—"}
+                {t.bans.map((b) => (
+                  <span key={b.id} className="inline-flex items-center gap-1">
+                    {b.hero?.icon_url && <img src={b.hero.icon_url} alt="" className="w-4 h-4 rounded-full object-cover grayscale opacity-70" />}
+                    {b.hero_name}
+                  </span>
+                ))}
+              </div>
               <div className="text-xs text-white/40 space-y-0.5">
                 <p>Picks:</p>
                 {t.picks.length === 0 && <p className="pl-2">—</p>}
                 {t.picks.map((p) => (
-                  <p key={p.id} className="pl-2">
-                    {p.hero_name}
-                    {p.player?.ign ? <span className="text-white/60"> — {p.player.ign}{p.player.role ? ` (${p.player.role})` : ""}</span> : ""}
+                  <p key={p.id} className="pl-2 flex items-center gap-1.5">
+                    {p.hero?.icon_url && <img src={p.hero.icon_url} alt="" className="w-5 h-5 rounded-full object-cover" />}
+                    <span>
+                      {p.hero_name}
+                      {p.player?.ign ? <span className="text-white/60"> — {p.player.ign}{p.player.role ? ` (${p.player.role})` : ""}</span> : ""}
+                    </span>
                   </p>
                 ))}
               </div>
@@ -343,7 +360,10 @@ export default function PublicMatchPage() {
                   {t.list.map((s) => (
                     <tr key={s.id} className="border-t border-white/10">
                       <td className="py-1.5">{s.player?.ign}</td>
-                      <td>{s.hero_name}</td>
+                      <td className="flex items-center gap-1.5 py-1.5">
+                        {s.hero?.icon_url && <img src={s.hero.icon_url} alt="" className="w-5 h-5 rounded-full object-cover" />}
+                        {s.hero_name}
+                      </td>
                       <td className="tabular-nums">{s.kills}/{s.deaths}/{s.assists}</td>
                       <td className="tabular-nums">{s.gold?.toLocaleString()}</td>
                     </tr>

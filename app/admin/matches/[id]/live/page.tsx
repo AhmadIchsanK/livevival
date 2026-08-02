@@ -473,11 +473,21 @@ export default function LiveConsolePage() {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
 
+    // Vision models tokenize images by pixel area, not file size — sending
+    // the full 1920x1080 (or higher) capture straight through burned ~6.2k
+    // of an 8k tokens-per-minute free-tier budget on a SINGLE frame,
+    // guaranteeing a 429 on every request regardless of which vision model
+    // is behind it. On-screen HUD text/timer/KDA is still perfectly
+    // readable well below full resolution, so downscale to a fixed max
+    // width before encoding — this is the actual fix, independent of model
+    // choice.
+    const MAX_WIDTH = 960;
+    const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
     const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d")?.drawImage(video, 0, 0);
-    const imageBase64 = canvas.toDataURL("image/jpeg", 0.7);
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imageBase64 = canvas.toDataURL("image/jpeg", 0.6);
 
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
@@ -611,9 +621,11 @@ export default function LiveConsolePage() {
       // has mounted the element.
       setCaptureActive(true);
       if (captureMode === "ai") {
-        // 10s cadence, not 5s like the manual OCR loop — each tick is a
-        // paid vision-model call (Groq), not a free local Tesseract read.
-        intervalRef.current = setInterval(captureFrameAndAnalyze, 10000);
+        // 15s cadence, not 5s like the manual OCR loop — each tick is a
+        // paid vision-model call (Groq), not a free local Tesseract read,
+        // and free-tier TPM budgets are tight even with the downscaled
+        // frame (see captureFrameAndAnalyze).
+        intervalRef.current = setInterval(captureFrameAndAnalyze, 15000);
       } else {
         workerRef.current = await createWorker("eng");
         intervalRef.current = setInterval(captureTick, 5000);

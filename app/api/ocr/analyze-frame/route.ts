@@ -132,7 +132,11 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model,
         temperature: 0,
-        max_tokens: 3000,
+        // Reserved output budget also counts against the account's tokens-
+        // per-minute limit alongside the (now downscaled) input image — a
+        // single 10-player scoreboard + full draft board response still
+        // fits comfortably under 2000.
+        max_tokens: 2000,
         reasoning_format: "hidden",
         messages: [
           {

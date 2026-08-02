@@ -11,16 +11,22 @@
 // pages, have produced almost no rows in production).
 //
 // Names come from action=query&list=categorymembers&cmtitle=Category:Hero —
-// the wiki's own categorization, stable across template changes. Icons do
-// NOT come from action=query&prop=pageimages: confirmed live that this
-// wiki doesn't have the PageImages extension enabled at all ("Unrecognized
-// value for parameter \"prop\": pageimages"). Instead, each hero's own
-// rendered page is fetched and the portrait is read straight out of its
-// infobox (confirmed selector: `.infobox-image img`, e.g. Chou's page has
-// "Chou_Infobox.jpg" as literally the first image in that container) — one
-// request per hero, same pattern the other importers already use for
-// team/match data, just paced slower since it's ~130 individual page fetches
-// instead of a handful of batched queries.
+// the wiki's own categorization, stable across template changes.
+//
+// Icons: Liquipedia has a dedicated small square icon per hero, separate
+// from the tall infobox portrait — filename convention
+// "File:ML_icon_<HeroName>.png" (confirmed against a real URL the owner
+// pasted from production: .../ML_icon_Aamon.png/85px-ML_icon_Aamon.png).
+// Resolved via action=query&titles=File:...&prop=imageinfo rather than
+// guessing the CDN path (MediaWiki shards file storage into a hash-prefixed
+// directory — "1/14" in that example — that can't be computed without
+// either the API or replicating MediaWiki's own hashing), which also
+// degrades cleanly: if a hero's name doesn't match this convention exactly,
+// the API just reports the file missing and this falls back to the old
+// infobox-portrait scrape rather than erroring. Icons do NOT come from
+// action=query&prop=pageimages: confirmed live that this wiki doesn't have
+// the PageImages extension enabled at all ("Unrecognized value for
+// parameter \"prop\": pageimages").
 //
 // Respects Liquipedia's API Terms of Use: custom User-Agent + contact
 // email, only ever calls api.php, paced requests.
@@ -56,7 +62,21 @@ async function fetchAllHeroTitles() {
   return titles;
 }
 
-async function fetchHeroIcon(title) {
+async function fetchHeroSmallIcon(heroName) {
+  const filename = `ML_icon_${heroName.replace(/ /g, "_")}.png`;
+  const data = await apiQuery({
+    action: "query",
+    titles: `File:${filename}`,
+    prop: "imageinfo",
+    iiprop: "url",
+  });
+  const pages = data.query?.pages ?? {};
+  const page = Object.values(pages)[0];
+  if (!page || page.missing !== undefined) return null;
+  return page.imageinfo?.[0]?.url ?? null;
+}
+
+async function fetchHeroInfoboxPortrait(title) {
   const html = await fetchRenderedPage(title);
   const $ = cheerio.load(html);
   // Same infobox structure confirmed on team pages: light/dark image
@@ -69,6 +89,17 @@ async function fetchHeroIcon(title) {
   return src.startsWith("http") ? src : `https://liquipedia.net${src}`;
 }
 
+async function fetchHeroIcon(title) {
+  const smallIcon = await fetchHeroSmallIcon(title);
+  if (smallIcon) return smallIcon;
+  // Falls back to the full portrait for any hero whose name doesn't match
+  // the ML_icon_<Name>.png convention exactly — better than no image at all.
+  // Extra pacing here since this is a second sequential request for the
+  // same hero, on top of the caller's own per-hero sleep.
+  await sleep(4000);
+  return fetchHeroInfoboxPortrait(title);
+}
+
 async function upsertHero(name, iconUrl) {
   const { data: existing } = await supabase
     .from("heroes")
@@ -77,9 +108,12 @@ async function upsertHero(name, iconUrl) {
     .maybeSingle();
 
   if (existing) {
-    // Never clobber an icon an admin manually set/overrode with null, but
-    // do fill it in if we now have one and the row didn't.
-    if (iconUrl && !existing.icon_url) {
+    // Fill in a missing icon, or upgrade an old infobox-portrait URL (this
+    // script's own earlier output, before the small-icon source existed) to
+    // the new small icon — but never touch a value that's neither: that's
+    // either already a good small icon or something an admin set by hand.
+    const isUpgradeable = !existing.icon_url || /infobox/i.test(existing.icon_url);
+    if (iconUrl && isUpgradeable && iconUrl !== existing.icon_url) {
       const { error } = await supabase.from("heroes").update({ icon_url: iconUrl }).eq("id", existing.id);
       if (error) console.error(`Failed to backfill icon for "${name}":`, error.message);
     }
@@ -119,15 +153,18 @@ async function main() {
     process.exit(1);
   }
 
-  // Only fetch a per-hero page for heroes that don't already have an icon —
-  // this is what makes re-runs cheap (a handful of new/renamed heroes per
-  // patch) instead of re-fetching all ~130 pages every 6 hours forever.
+  // Only fetch a per-hero page for heroes that don't already have a *good*
+  // icon — this is what makes re-runs cheap (a handful of new/renamed
+  // heroes per patch) instead of re-fetching all ~130 pages every 6 hours
+  // forever. "Good" excludes the old infobox-portrait URLs this script used
+  // to produce before the small-icon source existed, so those get upgraded
+  // once and then left alone.
   const { data: existingHeroes } = await supabase.from("heroes").select("name, icon_url");
-  const missingIcon = new Set(
-    (existingHeroes ?? []).filter((h) => !h.icon_url).map((h) => h.name)
+  const needsUpgrade = new Set(
+    (existingHeroes ?? []).filter((h) => !h.icon_url || /infobox/i.test(h.icon_url)).map((h) => h.name)
   );
   const knownNames = new Set((existingHeroes ?? []).map((h) => h.name));
-  const needsIconFetch = titles.filter((t) => !knownNames.has(t) || missingIcon.has(t));
+  const needsIconFetch = titles.filter((t) => !knownNames.has(t) || needsUpgrade.has(t));
 
   console.log(`${needsIconFetch.length} of ${titles.length} hero(es) need an icon fetch this run`);
 

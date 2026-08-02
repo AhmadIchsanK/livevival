@@ -59,7 +59,12 @@ async function fetchAllHeroTitles() {
 async function fetchHeroIcon(title) {
   const html = await fetchRenderedPage(title);
   const $ = cheerio.load(html);
-  const src = $(".infobox-image img").first().attr("src");
+  // Same infobox structure confirmed on team pages: light/dark image
+  // variants both under .infobox-image, light listed first. Try that
+  // specific variant before falling back to the bare selector in case a
+  // hero page's infobox doesn't split by mode at all.
+  let src = $(".infobox-image.lightmode img").first().attr("src");
+  if (!src) src = $(".infobox-image img").first().attr("src");
   if (!src) return null;
   return src.startsWith("http") ? src : `https://liquipedia.net${src}`;
 }

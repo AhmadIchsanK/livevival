@@ -45,8 +45,13 @@ type Game = {
   state: string;
   winner_team_id: string | null;
   vod_url: string | null;
+  map: string | null;
   current_time_seconds: number | null;
   current_time_updated_at: string | null;
+  clock_source: "ocr" | "manual";
+  manual_time_seconds: number | null;
+  manual_time_running: boolean;
+  manual_time_started_at: string | null;
 };
 type PickBan = {
   id: string;
@@ -82,6 +87,7 @@ type KeyMoment = {
   player: { ign: string } | null;
   screenshot_url: string | null;
   source: string;
+  is_key_moment: boolean;
 };
 type NetWorthPoint = { game_id: string; minute_mark: number; team_a_gold: number; team_b_gold: number };
 type Screenshot = { id: string; game_id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
@@ -170,7 +176,9 @@ export default function PublicMatchPage() {
 
     const { data: gameRows } = await supabase
       .from("games")
-      .select("id, game_number, status, state, winner_team_id, vod_url, current_time_seconds, current_time_updated_at")
+      .select(
+        "id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at"
+      )
       .eq("match_id", matchId)
       .order("game_number", { ascending: true });
     const gameList = (gameRows as Game[]) ?? [];
@@ -195,7 +203,11 @@ export default function PublicMatchPage() {
         .select("id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id), hero:heroes(icon_url)")
         .eq("match_id", matchId),
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
-      supabase.from("key_moments").select("id, game_id, type, description, minute_mark, created_at, player:players(ign), screenshot_url, source").eq("match_id", matchId).order("minute_mark"),
+      supabase
+        .from("key_moments")
+        .select("id, game_id, type, description, minute_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
+        .eq("match_id", matchId)
+        .order("created_at"),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
       supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
     ]);
@@ -243,9 +255,20 @@ export default function PublicMatchPage() {
   const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
 
   // Ticks up client-side between OCR reads instead of only jumping every
-  // capture interval — current_time_updated_at anchors it to real time.
+  // capture interval — current_time_updated_at (OCR) / manual_time_started_at
+  // (manual stopwatch) anchors it to real time. clock_source picks which of
+  // the two the admin wants shown publicly for this game.
   const liveGameClock =
-    selectedGame?.current_time_seconds != null && selectedGame?.current_time_updated_at && match.state === "GAME_STARTED"
+    match.state !== "GAME_STARTED" || !selectedGame
+      ? null
+      : selectedGame.clock_source === "manual"
+      ? selectedGame.manual_time_seconds != null
+        ? selectedGame.manual_time_seconds +
+          (selectedGame.manual_time_running && selectedGame.manual_time_started_at
+            ? Math.floor((nowMs - new Date(selectedGame.manual_time_started_at).getTime()) / 1000)
+            : 0)
+        : null
+      : selectedGame.current_time_seconds != null && selectedGame.current_time_updated_at
       ? selectedGame.current_time_seconds + Math.floor((nowMs - new Date(selectedGame.current_time_updated_at).getTime()) / 1000)
       : null;
   const liveGameClockLabel =
@@ -277,7 +300,6 @@ export default function PublicMatchPage() {
   const gamePickBans = pickBans.filter((p) => p.game_id === selectedGameId);
   const gameStats = stats.filter((s) => s.game_id === selectedGameId);
   const gameObjectives = objectives.filter((o) => o.game_id === selectedGameId);
-  const gameKeyMoments = keyMoments.filter((k) => k.game_id === selectedGameId);
   const gameNetWorth = netWorth.filter((n) => n.game_id === selectedGameId);
   const gameScreenshots = screenshots.filter((s) => s.game_id === selectedGameId);
 
@@ -397,6 +419,47 @@ export default function PublicMatchPage() {
         )}
       </header>
 
+      {match.update_source === "local_ocr" && (
+        <section>
+          <h2 className="lv-heading mb-2">Moment list</h2>
+          <div className="space-y-2">
+            {keyMoments.map((km) =>
+              km.is_key_moment ? (
+                <div key={km.id} className="lv-card-flush p-3 flex gap-3 items-start border border-signal/40 bg-signal/10">
+                  {km.screenshot_url && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={km.screenshot_url} alt={km.type} className="w-24 rounded-md border border-white/10 shrink-0" />
+                  )}
+                  <div className="space-y-0.5">
+                    <p className="text-signal font-semibold text-sm">
+                      ⭐ {km.description ?? km.type.replace(/_/g, " ")}
+                      {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
+                    </p>
+                    <p className="text-[10px] text-white/40">
+                      {new Date(km.created_at).toLocaleTimeString()}
+                      {match.state === "GAME_STARTED" && km.minute_mark != null && ` · ${km.minute_mark}' in-game`}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div key={km.id} className="flex items-center gap-2 text-xs text-white/60">
+                  <span className="text-white/30 tabular-nums">{new Date(km.created_at).toLocaleTimeString()}</span>
+                  {match.state === "GAME_STARTED" && km.minute_mark != null && (
+                    <span className="text-white/30 tabular-nums">{km.minute_mark}&apos;</span>
+                  )}
+                  <span>
+                    {km.description ?? km.type.replace(/_/g, " ")}
+                    {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
+                  </span>
+                  {km.screenshot_url && <span>📸</span>}
+                </div>
+              )
+            )}
+            {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
+          </div>
+        </section>
+      )}
+
       {games.length > 1 && (
         <div className="flex gap-2 flex-wrap">
           {games.map((g) => (
@@ -418,6 +481,10 @@ export default function PublicMatchPage() {
             </button>
           ))}
         </div>
+      )}
+
+      {selectedGame?.map && (
+        <p className="text-xs text-white/40">Map: <span className="text-white/60">{selectedGame.map}</span></p>
       )}
 
       {embedUrl ? (
@@ -485,6 +552,52 @@ export default function PublicMatchPage() {
         </div>
       </section>
 
+      {match.update_source !== "local_ocr" && (
+        <section>
+          <h2 className="lv-heading mb-2">Players {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            {[
+              { name: match.team_a?.name, picks: teamAPicks },
+              { name: match.team_b?.name, picks: teamBPicks },
+            ].map((t, i) => (
+              <div key={i} className="lv-card-flush p-4 space-y-1">
+                <p className="text-white/70 font-semibold text-sm">{t.name}</p>
+                {t.picks.length === 0 && <p className="text-xs text-white/30">Lineup not logged yet.</p>}
+                {t.picks.map((p) => (
+                  <p key={p.id} className="text-xs text-white/60">
+                    {p.player?.ign}
+                    {p.player?.role ? ` — ${p.player.role}` : ""}
+                  </p>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {match.update_source === "local_ocr" && (
+      <>
+      <section>
+        <h2 className="lv-heading mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <div className="flex gap-8 text-sm">
+          {[
+            { name: match.team_a?.name, teamId: teamAId },
+            { name: match.team_b?.name, teamId: teamBId },
+          ].map((t, i) => (
+            <div key={i} className="space-y-1">
+              <p className="text-white/50 text-xs">{t.name}</p>
+              <div className="flex gap-3 text-xs">
+                {(["tower", "lord", "turtle"] as const).map((type) => (
+                  <span key={type} className="capitalize text-white/70">
+                    {type} <span className="font-bold tabular-nums text-white">{gameObjectives.filter((o) => o.team_id === t.teamId && o.type === type).length}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <section>
         <div className="flex items-center justify-between mb-2">
           <h2 className="lv-heading">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
@@ -531,38 +644,6 @@ export default function PublicMatchPage() {
       </section>
 
       <section>
-        <h2 className="lv-heading mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
-        <div className="flex flex-wrap gap-2 text-xs">
-          {gameObjectives.map((o) => (
-            <span key={o.id} className="lv-badge bg-white/10 text-white/70 capitalize">
-              {o.minute_mark}&apos; {o.type} — {o.team_id === teamAId ? match.team_a?.name : match.team_b?.name}
-            </span>
-          ))}
-          {gameObjectives.length === 0 && <span className="text-white/30">No objectives logged yet.</span>}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="lv-heading mb-2">Key moments {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
-        <div className="flex flex-wrap gap-3">
-          {gameKeyMoments.map((km) => (
-            <div key={km.id} className="w-40 space-y-1.5 lv-card-flush p-2">
-              {km.screenshot_url && (
-                <img src={km.screenshot_url} alt={km.type} className="w-full rounded-md border border-white/10" />
-              )}
-              <span className="lv-badge bg-signal/15 text-signal capitalize inline-flex">
-                {km.minute_mark}&apos; {km.description ?? km.type.replace("_", " ")}
-                {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
-                {km.source === "auto" && <span className="text-white/40 normal-case tracking-normal font-normal"> · auto</span>}
-              </span>
-              <p className="text-[9px] text-white/30 normal-case">{new Date(km.created_at).toLocaleTimeString()}</p>
-            </div>
-          ))}
-          {gameKeyMoments.length === 0 && <span className="text-white/30 text-xs">No key moments yet.</span>}
-        </div>
-      </section>
-
-      <section>
         <h2 className="lv-heading mb-2">Screenshots {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="flex flex-wrap gap-3">
           {gameScreenshots.map((s) => (
@@ -580,6 +661,8 @@ export default function PublicMatchPage() {
           {gameScreenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots yet.</span>}
         </div>
       </section>
+      </>
+      )}
 
       {match.status === "finished" && (
         <section>

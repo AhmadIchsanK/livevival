@@ -1,9 +1,11 @@
-// Writes per-game winners, picks, bans, and VOD links the moment Liquipedia
-// marks a match finished. Same selectors as
-// scripts/import-finished-match-details.mjs (confirmed against a real
-// api.php response for MSC/2026) — see that file for the full structural
-// notes. Adds hero_id resolution against the `heroes` table so the public
-// site can show a portrait, not just text.
+// Writes per-game winners, picks, bans, VOD links, and map the moment
+// Liquipedia marks a match finished. Same selectors as
+// scripts/import-finished-match-details.mjs — see that file for the full
+// structural notes, confirmed against real Liquipedia bracket-page HTML
+// (the owner's own paste of a live tournament page, not a hand-made
+// guess — see that file's fix commit for the discrepancy this corrected).
+// Adds hero_id resolution against the `heroes` table so the public site
+// can show a portrait, not just text.
 import * as cheerio from "cheerio";
 import { supabase } from "./config.mjs";
 import { fetchRenderedPage } from "./liquipediaClient.mjs";
@@ -33,24 +35,35 @@ export function extractFinishedMatches($) {
 
     const leftWon = teamLeft.hasClass("match-info-header-winner");
 
-    const pickRows = $popup.find(".brkts-popup-body-grid-row");
+    // Each .brkts-popup-body-grid-row is ONE FULL GAME (both sides), not
+    // half of one — confirmed against real Liquipedia markup (the previous
+    // version paired up consecutive rows via Math.floor(i/2), which both
+    // miscounted the number of games and only ever read the LEFT side's
+    // data, since it took only the *first* .brkts-champion-icon/
+    // .generic-label found in each row — the right side's picks and
+    // result were silently dropped every time). Within one row: a
+    // .generic-label for the left side's result, then a
+    // .brkts-popup-body-grid-row-detail containing the left side's 5
+    // picks followed by the right side's 5 picks (marked with the
+    // "-right" modifier), then a second .generic-label for the right
+    // side's result — in that document order. A trailing
+    // .brkts-popup-comment, when present, names the map.
     const gamesByNumber = new Map();
-    for (let i = 0; i < pickRows.length; i++) {
-      const $row = $(pickRows[i]);
-      const gameNumber = Math.floor(i / 2) + 1;
-      const championIcon = $row.find(".brkts-champion-icon").first();
-      if (championIcon.length === 0) continue;
+    $popup.find(".brkts-popup-body-grid-row").each((idx, row) => {
+      const $row = $(row);
+      const gameNumber = idx + 1;
+      const labels = $row.find(".generic-label");
+      const leftIcon = $row.find(".brkts-champion-icon").not(".brkts-popup-body-element-thumbs-right").first();
+      const rightIcon = $row.find(".brkts-champion-icon.brkts-popup-body-element-thumbs-right").first();
+      const map = $row.find(".brkts-popup-comment b").first().text().trim() || null;
 
-      const side = isRightSide($, championIcon) ? "right" : "left";
-      const label = $row.find(".generic-label").attr("data-label-type");
-      const heroes = heroesIn($, championIcon);
-
-      const game = gamesByNumber.get(gameNumber) ?? { gameNumber, left: null, right: null };
-      const entry = { picks: heroes, won: label === "result-win" };
-      if (side === "right") game.right = entry;
-      else game.left = entry;
-      gamesByNumber.set(gameNumber, game);
-    }
+      gamesByNumber.set(gameNumber, {
+        gameNumber,
+        left: { picks: heroesIn($, leftIcon), won: labels.eq(0).attr("data-label-type") === "result-win" },
+        right: { picks: heroesIn($, rightIcon), won: labels.eq(1).attr("data-label-type") === "result-win" },
+        map,
+      });
+    });
 
     $popup.find(".brkts-popup-veto-wrapper .brkts-popup-veto-row").each((rowIndex, row) => {
       const $row = $(row);
@@ -170,6 +183,7 @@ async function importMatchDetail(tournament, m) {
     // conflict, so this can't clobber a link the YouTube fallback already
     // found (youtubeVodFallback.mjs) on a later tick.
     if (m.vods[g.gameNumber]) gamePayload.vod_url = m.vods[g.gameNumber];
+    if (g.map) gamePayload.map = g.map;
 
     const { data: gameRow, error } = await supabase
       .from("games")

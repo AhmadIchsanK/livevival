@@ -137,6 +137,10 @@ export default function LiveConsolePage() {
     loadAll();
   }, [loadAll]);
 
+  useEffect(() => {
+    autoStartedGameId.current = null;
+  }, [game?.id]);
+
   // ── Quick add player ────────────────────────────────────────────────
   const [newPlayerName, setNewPlayerName] = useState("");
   const [newPlayerTeam, setNewPlayerTeam] = useState("");
@@ -281,6 +285,9 @@ export default function LiveConsolePage() {
   const workerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
+  // Guards the auto GAME_STARTED transition below so it only fires once
+  // per game, not on every OCR tick that finds a readable timer.
+  const autoStartedGameId = useRef<string | null>(null);
 
   const [captureActive, setCaptureActive] = useState(false);
   const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
@@ -337,6 +344,21 @@ export default function LiveConsolePage() {
     return crop;
   }
 
+  // The one auto phase-detection this local-OCR system attempts: a
+  // readable in-game timer is a strong, text-based signal (unlike
+  // pick/ban icons, which this console deliberately never tries to OCR —
+  // see the note in the capture section below) that the game has moved
+  // past the draft screen. Fires once per game.
+  async function maybeAutoStartGame() {
+    if (!match || !game) return;
+    if (autoStartedGameId.current === game.id) return;
+    if (match.state === "GAME_STARTED" || match.state === "GAME_FINISHED" || match.state === "SERIES_FINISHED") return;
+    autoStartedGameId.current = game.id;
+    const { error } = await supabase.from("matches").update({ state: "GAME_STARTED" }).eq("id", match.id);
+    if (error) console.error("Failed to auto-set GAME_STARTED:", error.message);
+    else loadAll();
+  }
+
   async function captureTick() {
     const video = previewRef.current;
     const worker = workerRef.current;
@@ -359,7 +381,10 @@ export default function LiveConsolePage() {
         }
         if (field === "timer") {
           const m = trimmed.match(/(\d{1,2}):(\d{2})/);
-          if (m) setMinute(Number(m[1]));
+          if (m) {
+            setMinute(Number(m[1]));
+            maybeAutoStartGame();
+          }
         }
       } catch (err) {
         console.error(`OCR error (${field})`, err);

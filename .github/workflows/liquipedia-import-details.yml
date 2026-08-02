@@ -24,10 +24,17 @@ on:
 jobs:
   refresh-match-details:
     runs-on: ubuntu-latest
-    # ~150 tournaments x a handful of paced requests each comfortably fits
-    # in well under an hour — this is the priority script, so it gets to
-    # run to completion on every trigger regardless of the roster job.
-    timeout-minutes: 60
+    # Originally capped at 60 min on the assumption ~150 tournaments x a
+    # handful of paced requests each would comfortably fit under an hour.
+    # Wrong: run 30758529923 was still working through the tournament list
+    # when GitHub force-cancelled it at exactly 60 min (271 of 733 games
+    # still had <2 teams' picks recorded at cancellation, down from 731 at
+    # the start of that same run — real progress, just not enough runway).
+    # The script has no resume/skip-state — every trigger restarts from
+    # tournament #1 in table order, so a too-short cap keeps cutting off at
+    # the same point instead of ever reaching the tail of the list. Raised
+    # to match the roster job's ceiling so a single run can actually finish.
+    timeout-minutes: 180
     concurrency:
       group: liquipedia-refresh-match-details
       cancel-in-progress: false

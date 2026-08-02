@@ -484,12 +484,40 @@ export default function LiveConsolePage() {
   // gold, kill-banner keywords) — hero icons and small scoreboard rows
   // aren't reliable to OCR, so picks/bans and per-player K/D/A stay as the
   // one-click pickers/inputs elsewhere on this page.
-  type CaptureField = "timer" | "gold" | "kill_banner";
+  type CaptureField =
+    | "countdown"
+    | "draft_timer_a"
+    | "draft_timer_b"
+    | "timer"
+    | "gold"
+    | "kill_banner"
+    | "victory_banner"
+    | "pause_word";
   const CAPTURE_FIELDS: { field: CaptureField; label: string }[] = [
+    { field: "countdown", label: "Pre-game countdown" },
+    { field: "draft_timer_a", label: "Draft timer — Team A" },
+    { field: "draft_timer_b", label: "Draft timer — Team B" },
     { field: "timer", label: "Match timer" },
     { field: "gold", label: "Team gold (A then B)" },
     { field: "kill_banner", label: "Kill banner" },
+    { field: "victory_banner", label: "Victory/defeat banner" },
+    { field: "pause_word", label: "Pause indicator" },
   ];
+  // Which crop regions are relevant to each phase — this is what makes each
+  // phase's tracker genuinely different instead of one field list shown
+  // regardless of what's actually on screen. Draft-finish (DRAFT_COMPLETE)
+  // has no region of its own: its tracker is the staged-picks review panel
+  // built in the phase-aware OCR PR, surfaced separately below.
+  const PHASE_CAPTURE_FIELDS: Record<string, CaptureField[]> = {
+    MATCH_NOT_STARTED: ["countdown"],
+    DRAFT_STARTED: ["draft_timer_a", "draft_timer_b"],
+    DRAFT_COMPLETE: [],
+    GAME_STARTED: ["timer", "gold", "kill_banner"],
+    GAME_FINISHED: ["victory_banner"],
+    SERIES_FINISHED: [],
+    TECHNICAL_PAUSE: ["pause_word"],
+    CUSTOM: [],
+  };
   type RegionBox = { xPct: number; yPct: number; wPct: number; hPct: number };
 
   const previewRef = useRef<HTMLVideoElement>(null);
@@ -504,11 +532,25 @@ export default function LiveConsolePage() {
   const [captureActive, setCaptureActive] = useState(false);
   const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
   const [regions, setRegions] = useState<Record<CaptureField, RegionBox | null>>({
+    countdown: null,
+    draft_timer_a: null,
+    draft_timer_b: null,
     timer: null,
     gold: null,
     kill_banner: null,
+    victory_banner: null,
+    pause_word: null,
   });
-  const [readings, setReadings] = useState<Record<CaptureField, string>>({ timer: "", gold: "", kill_banner: "" });
+  const [readings, setReadings] = useState<Record<CaptureField, string>>({
+    countdown: "",
+    draft_timer_a: "",
+    draft_timer_b: "",
+    timer: "",
+    gold: "",
+    kill_banner: "",
+    victory_banner: "",
+    pause_word: "",
+  });
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
 
   // ── Full-frame AI capture (no calibration) ───────────────────────────
@@ -634,60 +676,75 @@ export default function LiveConsolePage() {
       for (const action of detection.draft_actions ?? []) await commitDraftAction(action);
     }
 
-    for (const row of detection.player_stats ?? []) {
-      const teamId = matchTeamId(row.team_name);
-      const playerId = matchPlayerId(row.player_name, teamId);
-      if (!playerId) continue;
-      await supabase.from("player_stats").upsert(
-        {
+    // Game-ongoing's tracker area — stats, net worth, moment banners — only
+    // applies while the admin actually has this phase selected, same
+    // principle as the manual crop-region scoping above. Otherwise a stray
+    // vision-model reading during e.g. a Technical pause could write
+    // nonsense stats nobody asked for.
+    if (match.state === "GAME_STARTED") {
+      for (const row of detection.player_stats ?? []) {
+        const teamId = matchTeamId(row.team_name);
+        const playerId = matchPlayerId(row.player_name, teamId);
+        if (!playerId) continue;
+        await supabase.from("player_stats").upsert(
+          {
+            game_id: game.id,
+            match_id: matchId,
+            player_id: playerId,
+            hero_name: row.hero_name ?? null,
+            hero_id: matchHeroId(row.hero_name),
+            kills: row.kills ?? null,
+            deaths: row.deaths ?? null,
+            assists: row.assists ?? null,
+            gold: row.gold ?? null,
+          },
+          { onConflict: "game_id,player_id" }
+        );
+      }
+
+      if (detection.net_worth?.team_a_gold != null || detection.net_worth?.team_b_gold != null) {
+        await supabase.from("net_worth_snapshots").insert({
           game_id: game.id,
           match_id: matchId,
-          player_id: playerId,
-          hero_name: row.hero_name ?? null,
-          hero_id: matchHeroId(row.hero_name),
-          kills: row.kills ?? null,
-          deaths: row.deaths ?? null,
-          assists: row.assists ?? null,
-          gold: row.gold ?? null,
-        },
-        { onConflict: "game_id,player_id" }
-      );
-    }
-
-    if (detection.net_worth?.team_a_gold != null || detection.net_worth?.team_b_gold != null) {
-      await supabase.from("net_worth_snapshots").insert({
-        game_id: game.id,
-        match_id: matchId,
-        minute_mark: minute,
-        team_a_gold: detection.net_worth?.team_a_gold ?? null,
-        team_b_gold: detection.net_worth?.team_b_gold ?? null,
-      });
-    }
-
-    // Dedup within a cooldown — a banner lingers on screen for several
-    // seconds, so without this the same moment gets logged on every tick.
-    if (detection.key_moment_banner && detection.key_moment_banner !== "NONE") {
-      const playerId = matchPlayerId(detection.key_moment_player_name);
-      const key = `${detection.key_moment_banner}:${playerId ?? ""}`;
-      const now = Date.now();
-      if (lastAutoKeyMoment.current.key !== key || now - lastAutoKeyMoment.current.at > 60000) {
-        lastAutoKeyMoment.current = { key, at: now };
-        await supabase.from("key_moments").insert({
-          game_id: game.id,
-          match_id: matchId,
-          type: detection.key_moment_banner.toLowerCase(),
-          player_id: playerId,
           minute_mark: minute,
-          source: "ai",
-          confidence: detection.confidence ?? null,
+          team_a_gold: detection.net_worth?.team_a_gold ?? null,
+          team_b_gold: detection.net_worth?.team_b_gold ?? null,
         });
+      }
+
+      // Dedup within a cooldown — a banner lingers on screen for several
+      // seconds, so without this the same moment gets logged on every tick.
+      if (detection.key_moment_banner && detection.key_moment_banner !== "NONE") {
+        const playerId = matchPlayerId(detection.key_moment_player_name);
+        const key = `${detection.key_moment_banner}:${playerId ?? ""}`;
+        const now = Date.now();
+        if (lastAutoKeyMoment.current.key !== key || now - lastAutoKeyMoment.current.at > 60000) {
+          lastAutoKeyMoment.current = { key, at: now };
+          await supabase.from("key_moments").insert({
+            game_id: game.id,
+            match_id: matchId,
+            type: detection.key_moment_banner.toLowerCase(),
+            player_id: playerId,
+            minute_mark: minute,
+            source: "ai",
+            confidence: detection.confidence ?? null,
+          });
+        }
       }
     }
 
     // Surfaced, not auto-applied — declareGameWinner() closes out the
     // series and already requires a confirm() click; too consequential to
-    // fire from an unattended tick.
-    if ((detection.phase === "VICTORY_DEFEAT_SCREEN" || detection.phase === "POST_GAME_STATS") && detection.winning_team_name) {
+    // fire from an unattended tick. Deliberately allowed during
+    // GAME_STARTED (the natural transition — this is what tells the admin
+    // the game just ended in the first place) as well as GAME_FINISHED;
+    // excluded from earlier phases (draft, waiting) where a misread is
+    // more likely to be an unrelated overlay.
+    if (
+      (match.state === "GAME_STARTED" || match.state === "GAME_FINISHED") &&
+      (detection.phase === "VICTORY_DEFEAT_SCREEN" || detection.phase === "POST_GAME_STATS") &&
+      detection.winning_team_name
+    ) {
       const teamId = matchTeamId(detection.winning_team_name);
       if (teamId) setSuggestedWinner(teamId);
     }
@@ -846,6 +903,41 @@ export default function LiveConsolePage() {
       .eq("id", game.id);
   }
 
+  // Same pattern as updateGameClock but for the two other phase-scoped
+  // clocks — Waiting's pre-game countdown and Draft's per-team pick timer —
+  // each on its own last-persisted guard so the three never clobber one
+  // another's dedup state.
+  const lastPersistedCountdown = useRef<number | null>(null);
+  async function updateCountdown(mm: number, ss: number) {
+    if (!match) return;
+    const totalSeconds = mm * 60 + ss;
+    if (totalSeconds === lastPersistedCountdown.current) return;
+    lastPersistedCountdown.current = totalSeconds;
+    await supabase
+      .from("matches")
+      .update({ countdown_seconds: totalSeconds, countdown_updated_at: new Date().toISOString() })
+      .eq("id", match.id);
+  }
+
+  const lastPersistedDraftTimers = useRef<{ a: number | null; b: number | null }>({ a: null, b: null });
+  async function updateDraftTimer(side: "a" | "b", totalSeconds: number) {
+    if (!match) return;
+    if (totalSeconds === lastPersistedDraftTimers.current[side]) return;
+    lastPersistedDraftTimers.current[side] = totalSeconds;
+    const column = side === "a" ? "draft_timer_a_seconds" : "draft_timer_b_seconds";
+    await supabase
+      .from("matches")
+      .update({ [column]: totalSeconds, draft_timer_updated_at: new Date().toISOString() })
+      .eq("id", match.id);
+  }
+
+  function guessWinnerFromText(text: string): string | null {
+    const n = normalize(text);
+    if (match?.team_a && n.includes(normalize(match.team_a.name))) return match.team_a.id;
+    if (match?.team_b && n.includes(normalize(match.team_b.name))) return match.team_b.id;
+    return null;
+  }
+
   // The one auto phase-detection this local-OCR system attempts: a
   // readable in-game timer is a strong, text-based signal (unlike
   // pick/ban icons, which this console deliberately never tries to OCR —
@@ -866,7 +958,13 @@ export default function LiveConsolePage() {
     const worker = workerRef.current;
     if (!video || !worker || video.videoWidth === 0) return;
 
-    for (const { field } of CAPTURE_FIELDS) {
+    // Only scan the fields that matter for whatever phase the admin has
+    // this match set to right now — this is what makes each phase's
+    // tracker genuinely distinct instead of always reading the same trio
+    // regardless of what's actually on screen.
+    const activeFields = PHASE_CAPTURE_FIELDS[match?.state ?? ""] ?? [];
+
+    for (const field of activeFields) {
       const box = regions[field];
       if (!box) continue;
       const canvas = cropCanvasFor(video, box);
@@ -876,18 +974,33 @@ export default function LiveConsolePage() {
         const { data: { text } } = await worker.recognize(canvas);
         const trimmed = text.trim();
         setReadings((prev) => ({ ...prev, [field]: trimmed }));
+        const mmss = trimmed.match(/(\d{1,2}):(\d{2})/);
+        const secondsOnly = trimmed.match(/^(\d{1,3})$/);
 
         if (field === "kill_banner") {
           const found = OCR_KEYWORDS.find((k) => k.pattern.test(trimmed));
           if (found) setSuggestion({ type: found.type, raw: trimmed });
         }
-        if (field === "timer") {
-          const m = trimmed.match(/(\d{1,2}):(\d{2})/);
-          if (m) {
-            setMinute(Number(m[1]));
-            updateGameClock(Number(m[1]), Number(m[2]));
-            maybeAutoStartGame();
-          }
+        if (field === "timer" && mmss) {
+          setMinute(Number(mmss[1]));
+          updateGameClock(Number(mmss[1]), Number(mmss[2]));
+          maybeAutoStartGame();
+        }
+        if (field === "countdown") {
+          if (mmss) updateCountdown(Number(mmss[1]), Number(mmss[2]));
+          else if (secondsOnly) updateCountdown(0, Number(secondsOnly[1]));
+        }
+        if (field === "draft_timer_a" || field === "draft_timer_b") {
+          const side = field === "draft_timer_a" ? "a" : "b";
+          if (mmss) updateDraftTimer(side, Number(mmss[1]) * 60 + Number(mmss[2]));
+          else if (secondsOnly) updateDraftTimer(side, Number(secondsOnly[1]));
+        }
+        if (field === "victory_banner" && /victory|defeat|win/i.test(trimmed)) {
+          const teamId = guessWinnerFromText(trimmed);
+          if (teamId) setSuggestedWinner(teamId);
+        }
+        if (field === "pause_word" && /pause/i.test(trimmed)) {
+          setSuggestion({ type: "game_pause", raw: trimmed });
         }
       } catch (err) {
         console.error(`OCR error (${field})`, err);
@@ -1097,14 +1210,14 @@ export default function LiveConsolePage() {
   // What this phase's tracker area actually does — each phase behaves
   // differently, not just a label on the same always-on tracker.
   const PHASE_TRACKER_HINTS: Record<string, string> = {
-    MATCH_NOT_STARTED: "Waiting — capture can run, but nothing auto-applies yet. Screenshots still work.",
-    DRAFT_STARTED: "Draft in progress — detected picks/bans stage below for review, then push explicitly. Nothing writes to the draft automatically.",
-    DRAFT_COMPLETE: "Draft complete — push any remaining staged picks/bans, then move the phase to Game started.",
-    GAME_STARTED: "Game ongoing — stats, net worth, and key moments apply automatically each tick.",
-    GAME_FINISHED: "Game finished — capture stays available for post-game screenshots and a possible winner suggestion.",
+    MATCH_NOT_STARTED: "Waiting — tracker reads a pre-game countdown, shown live on the public page. No countdown found usually means TVC/caster session; use Custom if so.",
+    DRAFT_STARTED: "Drafting — tracker reads each team's per-pick countdown, shown live on the public page. Picks/bans themselves aren't tracked until Draft complete.",
+    DRAFT_COMPLETE: "Drafting finished — detected picks/bans stage below (Full-frame AI) for review, then push explicitly. Nothing writes to the draft automatically.",
+    GAME_STARTED: "Game ongoing — the main event: timer, kills, gold/net worth, and per-player KDA all track here, stats/net-worth/moments applying automatically each tick.",
+    GAME_FINISHED: "Game finished — tracker optionally reads a victory/defeat banner to suggest a winner; otherwise declare the winner manually below.",
     SERIES_FINISHED: "Match finished — capture is no longer needed for this series.",
-    TECHNICAL_PAUSE: "Technical pause — tracking is effectively idle; resume the correct phase when play resumes.",
-    CUSTOM: "Custom phase — behaves like Waiting; use the label above to describe what's actually happening.",
+    TECHNICAL_PAUSE: "Technical pause — tracker just looks for the word \"pause\" to confirm what you already flagged manually.",
+    CUSTOM: "Custom phase — no dedicated tracker; use the label above to describe what's actually happening.",
   };
   const [customLabelDraft, setCustomLabelDraft] = useState("");
   async function setMatchPhase(newState: string) {
@@ -1167,6 +1280,7 @@ export default function LiveConsolePage() {
   if (!match || !game) return <p className="text-white/50 text-sm">Loading match...</p>;
 
   const embedUrl = youtubeEmbedUrl(match.youtube_url);
+  const activeCaptureFields = CAPTURE_FIELDS.filter((f) => (PHASE_CAPTURE_FIELDS[match.state] ?? []).includes(f.field));
 
   // The starting five for this game = whoever has a logged pick, not the
   // whole roster (which included bench/subs never playing this game —
@@ -1785,7 +1899,7 @@ export default function LiveConsolePage() {
                 >
                   <video ref={previewRef} muted className="w-full block" />
                   {captureMode === "manual" &&
-                    CAPTURE_FIELDS.map(({ field }) => {
+                    activeCaptureFields.map(({ field }) => {
                       const box = regions[field];
                       if (!box) return null;
                       return (
@@ -1805,9 +1919,17 @@ export default function LiveConsolePage() {
                     })}
                 </div>
 
-                {captureMode === "manual" && (
+                {captureMode === "manual" && activeCaptureFields.length === 0 && (
+                  <p className="text-xs text-white/40 border border-white/10 rounded p-3">
+                    {match.state === "DRAFT_COMPLETE"
+                      ? "This phase's tracker is the staged-picks review panel above (switch to Full-frame AI to use it) — no crop region needed here."
+                      : "Nothing to track in this phase — move to Waiting, Draft started, Game ongoing, Game finished, or Technical pause to calibrate a region."}
+                  </p>
+                )}
+
+                {captureMode === "manual" && activeCaptureFields.length > 0 && (
                   <div className="grid grid-cols-3 gap-2">
-                    {CAPTURE_FIELDS.map(({ field, label }) => (
+                    {activeCaptureFields.map(({ field, label }) => (
                       <div key={field} className="border border-white/10 rounded p-2 space-y-1.5">
                         <p className="text-[10px] text-white/50">{label}</p>
                         <button

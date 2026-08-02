@@ -15,6 +15,11 @@ type Match = {
   youtube_url: string | null;
   series_winner_team_id: string | null;
   update_source: "liquipedia" | "local_ocr";
+  countdown_seconds: number | null;
+  countdown_updated_at: string | null;
+  draft_timer_a_seconds: number | null;
+  draft_timer_b_seconds: number | null;
+  draft_timer_updated_at: string | null;
   tournament: { name: string; tier: string } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
@@ -121,6 +126,7 @@ export default function PublicMatchPage() {
       .from("matches")
       .select(
         `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source,
+         countdown_seconds, countdown_updated_at, draft_timer_a_seconds, draft_timer_b_seconds, draft_timer_updated_at,
          tournament:tournaments(name, tier),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url),
@@ -220,6 +226,27 @@ export default function PublicMatchPage() {
       : null;
   const liveGameClockLabel =
     liveGameClock != null ? `${String(Math.floor(liveGameClock / 60)).padStart(2, "0")}:${String(liveGameClock % 60).padStart(2, "0")}` : null;
+
+  function formatMMSS(totalSeconds: number) {
+    const clamped = Math.max(0, totalSeconds);
+    return `${String(Math.floor(clamped / 60)).padStart(2, "0")}:${String(clamped % 60).padStart(2, "0")}`;
+  }
+
+  // Waiting phase: counts DOWN client-side from the last OCR read. No
+  // countdown detected at all (the field stays null) usually means a
+  // TVC/caster session rather than a real pre-game clock.
+  const liveCountdownLabel =
+    match.state === "MATCH_NOT_STARTED" && match.countdown_seconds != null && match.countdown_updated_at
+      ? formatMMSS(match.countdown_seconds - Math.floor((nowMs - new Date(match.countdown_updated_at).getTime()) / 1000))
+      : null;
+
+  // Draft phase: same idea, one countdown per side.
+  const draftElapsed = match.draft_timer_updated_at ? Math.floor((nowMs - new Date(match.draft_timer_updated_at).getTime()) / 1000) : 0;
+  const liveDraftTimerA =
+    match.state === "DRAFT_STARTED" && match.draft_timer_a_seconds != null ? formatMMSS(match.draft_timer_a_seconds - draftElapsed) : null;
+  const liveDraftTimerB =
+    match.state === "DRAFT_STARTED" && match.draft_timer_b_seconds != null ? formatMMSS(match.draft_timer_b_seconds - draftElapsed) : null;
+
   const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
   const embedUrl = youtubeEmbedUrl(videoUrl);
 
@@ -307,6 +334,16 @@ export default function PublicMatchPage() {
           {liveGameClockLabel && (
             <span className="lv-badge bg-signal/15 text-signal tabular-nums" title="Live in-game clock">
               ⏱ {liveGameClockLabel}
+            </span>
+          )}
+          {liveCountdownLabel && (
+            <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Starts in">
+              ⏳ Starts in {liveCountdownLabel}
+            </span>
+          )}
+          {(liveDraftTimerA || liveDraftTimerB) && (
+            <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Draft pick timer">
+              ⏳ {match.team_a?.name}: {liveDraftTimerA ?? "—"} · {match.team_b?.name}: {liveDraftTimerB ?? "—"}
             </span>
           )}
           {match.update_source === "local_ocr" && (

@@ -12,8 +12,8 @@ type Match = {
   youtube_url: string | null;
   series_winner_team_id: string | null;
   tournament: { name: string; tier: string } | null;
-  team_a: { id: string; name: string } | null;
-  team_b: { id: string; name: string } | null;
+  team_a: { id: string; name: string; logo_url: string | null } | null;
+  team_b: { id: string; name: string; logo_url: string | null } | null;
   stream: { url: string } | null;
 };
 type Game = {
@@ -91,8 +91,8 @@ export default function PublicMatchPage() {
       .select(
         `id, status, format, youtube_url, series_winner_team_id,
          tournament:tournaments(name, tier),
-         team_a:teams!matches_team_a_id_fkey(id, name),
-         team_b:teams!matches_team_b_id_fkey(id, name),
+         team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
+         team_b:teams!matches_team_b_id_fkey(id, name, logo_url),
          stream:streams!matches_stream_id_fkey(url)`
       )
       .eq("id", matchId)
@@ -222,7 +222,17 @@ export default function PublicMatchPage() {
       <header className="space-y-1">
         <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="font-display font-light text-2xl sm:text-3xl tracking-tight">{match.team_a?.name} vs {match.team_b?.name}</h1>
+          <h1 className="font-display font-light text-2xl sm:text-3xl tracking-tight flex items-center gap-2 flex-wrap">
+            {match.team_a?.logo_url && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={match.team_a.logo_url} alt="" className="w-8 h-8 rounded object-contain" />
+            )}
+            {match.team_a?.name} vs {match.team_b?.name}
+            {match.team_b?.logo_url && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={match.team_b.logo_url} alt="" className="w-8 h-8 rounded object-contain" />
+            )}
+          </h1>
           <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
             {match.status}
           </span>

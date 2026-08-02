@@ -25,7 +25,7 @@ describe("extractFinishedMatches", () => {
     expect(m.timestamp).toBe(1700000000);
   });
 
-  it("groups picks per game by pairing consecutive grid rows", () => {
+  it("reads one full game (both sides) per grid row, not two rows per game", () => {
     const [m] = matches;
     expect(m.games).toHaveLength(2);
 
@@ -33,10 +33,12 @@ describe("extractFinishedMatches", () => {
     expect(game1.gameNumber).toBe(1);
     expect(game1.left).toEqual({ picks: ["Hero One", "Hero Two"], won: true });
     expect(game1.right).toEqual({ picks: ["Hero Three", "Hero Four"], won: false });
+    expect(game1.map).toBe("Dangerous Grass");
 
     expect(game2.gameNumber).toBe(2);
     expect(game2.left).toEqual({ picks: ["Hero Five", "Hero Six"], won: false });
     expect(game2.right).toEqual({ picks: ["Hero Seven", "Hero Eight"], won: true });
+    expect(game2.map).toBe("Expanding Rivers");
   });
 
   it("attaches bans from the veto rows to the matching game number", () => {

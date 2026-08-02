@@ -1,8 +1,11 @@
 // Livevival — imports finished-match detail (per-game VOD links, winners,
-// champion picks, AND bans) from a tournament's Liquipedia bracket page.
+// champion picks, bans, and map) from a tournament's Liquipedia bracket page.
 //
-// Structure this relies on (confirmed against a real api.php response for
-// MSC/2026):
+// Structure this relies on — confirmed against real Liquipedia bracket-page
+// HTML (the owner pasted a live tournament page directly; the previous
+// version of this comment claimed the same "confirmed against a real api.php
+// response" but was actually a hand-built guess that turned out wrong in a
+// way that only showed up on real data — see below):
 //
 //   .brkts-popup-container.brkts-match-info-popup   one block per match
 //     .timer-object[data-timestamp][data-finished]  schedule + completion
@@ -12,14 +15,21 @@
 //       left side always won or always picks first.
 //     .match-info-header-scoreholder-lower            "(BoX)" format tag
 //
-//     Picks — one row PER TEAM PER GAME (two rows per game):
+//     Picks — one row PER GAME, both sides together (NOT one row per team
+//     per game — that was the bug: the old version paired up consecutive
+//     rows two-at-a-time and, within each row, only ever read the first
+//     .brkts-champion-icon/.generic-label it found, which is always the
+//     LEFT side — so every game's RIGHT side picks and result were
+//     silently dropped, and a 2-game series produced 1 merged "game" while
+//     an N-game series' row count got halved and misattributed):
 //     .brkts-popup-body-grid-row
-//       .generic-label[data-label-type="result-win"|"result-loss"]  who
-//         won THAT SPECIFIC GAME (not necessarily the series winner)
-//       .brkts-champion-icon                          5 heroes that row's
-//         team picked; if this div also has the class
-//         "brkts-popup-body-element-thumbs-right" the row belongs to the
-//         RIGHT-side team, otherwise the LEFT-side team.
+//       .generic-label[data-label-type]  (1st = left result, 2nd = right
+//         result, in document order — "result-win"|"result-loss")
+//       .brkts-popup-body-grid-row-detail
+//         .brkts-champion-icon (no "-right")     left side's 5 picks
+//         .brkts-popup-spaced                    game duration text (e.g. "17:08")
+//         .brkts-champion-icon.brkts-popup-body-element-thumbs-right   right side's 5 picks
+//       .brkts-popup-comment > b   map name, when Liquipedia records one
 //
 //     Bans — one row PER GAME (both teams together), inside a collapsed
 //     panel that's still present in the static HTML:
@@ -28,6 +38,8 @@
 //       second .brkts-champion-icon.brkts-popup-body-element-thumbs-right
 //              = RIGHT team's bans
 //       rows appear in game order (row 1 = game 1, row 2 = game 2, ...)
+//       — this part of the original comment was correct, only the picks
+//       section above was wrong.
 //
 //     .brkts-popup-footer .plainlinks.vodlink a[href][title="Watch Game N"]
 //       per-game VOD link. Multiple games can share one base video with a
@@ -45,10 +57,6 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
-function isRightSide($, championIconEl) {
-  return $(championIconEl).hasClass("brkts-popup-body-element-thumbs-right");
-}
 
 function heroesIn($, containerEl) {
   return $(containerEl)
@@ -78,28 +86,23 @@ function extractFinishedMatches($) {
     const leftWon = teamLeft.hasClass("match-info-header-winner");
     const format = $popup.find(".match-info-header-scoreholder-lower").text().trim().replace(/[()]/g, "");
 
-    // ── Picks: two rows per game (one per side), side determined by the
-    // "-right" class rather than by win/loss, since a team can lose game 1
-    // and still win the series — win/loss alone can't tell us WHICH side
-    // a row belongs to.
-    const pickRows = $popup.find(".brkts-popup-body-grid-row");
+    // ── Picks: one row per game, both sides together — see module comment.
     const gamesByNumber = new Map();
-    for (let i = 0; i < pickRows.length; i++) {
-      const $row = $(pickRows[i]);
-      const gameNumber = Math.floor(i / 2) + 1;
-      const championIcon = $row.find(".brkts-champion-icon").first();
-      if (championIcon.length === 0) continue;
+    $popup.find(".brkts-popup-body-grid-row").each((idx, row) => {
+      const $row = $(row);
+      const gameNumber = idx + 1;
+      const labels = $row.find(".generic-label");
+      const leftIcon = $row.find(".brkts-champion-icon").not(".brkts-popup-body-element-thumbs-right").first();
+      const rightIcon = $row.find(".brkts-champion-icon.brkts-popup-body-element-thumbs-right").first();
+      const map = $row.find(".brkts-popup-comment b").first().text().trim() || null;
 
-      const side = isRightSide($, championIcon) ? "right" : "left";
-      const label = $row.find(".generic-label").attr("data-label-type"); // result-win / result-loss
-      const heroes = heroesIn($, championIcon);
-
-      const game = gamesByNumber.get(gameNumber) ?? { gameNumber, left: null, right: null };
-      const entry = { picks: heroes, won: label === "result-win" };
-      if (side === "right") game.right = entry;
-      else game.left = entry;
-      gamesByNumber.set(gameNumber, game);
-    }
+      gamesByNumber.set(gameNumber, {
+        gameNumber,
+        left: { picks: heroesIn($, leftIcon), won: labels.eq(0).attr("data-label-type") === "result-win" },
+        right: { picks: heroesIn($, rightIcon), won: labels.eq(1).attr("data-label-type") === "result-win" },
+        map,
+      });
+    });
 
     // ── Bans: one row per game, both sides together.
     $popup.find(".brkts-popup-veto-wrapper .brkts-popup-veto-row").each((rowIndex, row) => {

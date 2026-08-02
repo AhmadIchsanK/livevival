@@ -602,10 +602,13 @@ export default function LiveConsolePage() {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
       streamRef.current = stream;
-      if (previewRef.current) {
-        previewRef.current.srcObject = stream;
-        await previewRef.current.play();
-      }
+      // previewRef.current is null here — the <video> only exists in the
+      // DOM once captureActive is true, and this runs before that state
+      // update is committed. Attaching srcObject was silently a no-op the
+      // whole time (video always mounted with nothing attached, hence
+      // permanently black regardless of what was shared). The actual
+      // attach now happens in the effect below, which fires after React
+      // has mounted the element.
       setCaptureActive(true);
       if (captureMode === "ai") {
         // 10s cadence, not 5s like the manual OCR loop — each tick is a
@@ -629,6 +632,16 @@ export default function LiveConsolePage() {
     setAiDetection(null);
     setAiStatus(null);
   }
+
+  // Runs after captureActive flips true and React has actually mounted the
+  // <video> element — this is what attaches the shared stream, not
+  // startCapture() itself (see the comment there).
+  useEffect(() => {
+    if (!captureActive || !streamRef.current || !previewRef.current) return;
+    previewRef.current.srcObject = streamRef.current;
+    previewRef.current.play().catch((err) => console.error("Preview play() failed", err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captureActive]);
 
   useEffect(() => {
     return () => stopCapture();

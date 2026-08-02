@@ -324,6 +324,187 @@ export default function LiveConsolePage() {
   const [readings, setReadings] = useState<Record<CaptureField, string>>({ timer: "", gold: "", kill_banner: "" });
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
 
+  // ── Full-frame AI capture (no calibration) ───────────────────────────
+  // Alternative to the manual crop-region OCR above: sends the whole
+  // captured frame to /api/ocr/analyze-frame (Groq vision) every tick and
+  // applies whatever it finds directly, instead of the admin dragging
+  // pixel boxes around each element. Default mode — the manual regions
+  // above stay available as a free, deterministic fallback if AI analysis
+  // isn't configured (GROQ_API_KEY unset) or a tournament's overlay trips
+  // it up.
+  type AiDetection = {
+    phase: string;
+    game_timer_mm_ss: string | null;
+    winning_team_name: string | null;
+    key_moment_banner: string;
+    key_moment_player_name: string | null;
+    draft_actions: { type: "pick" | "ban"; team_name: string; hero_name: string }[];
+    player_stats: { player_name: string; team_name: string; hero_name: string | null; kills: number | null; deaths: number | null; assists: number | null; gold: number | null }[];
+    net_worth: { team_a_gold: number | null; team_b_gold: number | null };
+    confidence: number;
+  };
+  const [captureMode, setCaptureMode] = useState<"ai" | "manual">("ai");
+  const [heroes, setHeroes] = useState<{ id: string; name: string }[]>([]);
+  const [overlayHint, setOverlayHint] = useState("");
+  const [aiDetection, setAiDetection] = useState<AiDetection | null>(null);
+  const [aiStatus, setAiStatus] = useState<string | null>(null);
+  const [suggestedWinner, setSuggestedWinner] = useState<string | null>(null);
+  const lastAutoKeyMoment = useRef<{ key: string; at: number }>({ key: "", at: 0 });
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from("heroes").select("id, name");
+      setHeroes((data as { id: string; name: string }[]) ?? []);
+    })();
+  }, []);
+
+  function normalize(s: string) {
+    return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  }
+  function matchTeamId(teamName?: string | null): string | null {
+    if (!teamName || !match) return null;
+    const n = normalize(teamName);
+    if (match.team_a && (normalize(match.team_a.name).includes(n) || n.includes(normalize(match.team_a.name)))) return match.team_a.id;
+    if (match.team_b && (normalize(match.team_b.name).includes(n) || n.includes(normalize(match.team_b.name)))) return match.team_b.id;
+    return null;
+  }
+  function matchHeroId(heroName?: string | null): string | null {
+    if (!heroName) return null;
+    const n = normalize(heroName);
+    return (heroes.find((h) => normalize(h.name) === n) ?? heroes.find((h) => normalize(h.name).includes(n) || n.includes(normalize(h.name))))?.id ?? null;
+  }
+  function matchPlayerId(playerName?: string | null, teamId?: string | null): string | null {
+    if (!playerName) return null;
+    const n = normalize(playerName);
+    const pool = teamId ? players.filter((p) => p.team_id === teamId) : players;
+    return (pool.find((p) => normalize(p.ign) === n) ?? pool.find((p) => normalize(p.ign).includes(n) || n.includes(normalize(p.ign))))?.id ?? null;
+  }
+
+  async function applyAiDetection(detection: AiDetection) {
+    if (!game || !match) return;
+
+    const timerMatch = detection.game_timer_mm_ss?.match(/(\d{1,2}):(\d{2})/);
+    if (timerMatch) setMinute(Number(timerMatch[1]));
+    if (detection.phase === "IN_GAME") maybeAutoStartGame();
+
+    for (const action of detection.draft_actions ?? []) {
+      const teamId = matchTeamId(action.team_name);
+      if (!teamId || !action.hero_name) continue;
+      const alreadyLogged = pickBans.some(
+        (pb) => pb.team_id === teamId && pb.hero_name.toLowerCase() === action.hero_name.toLowerCase() && pb.type === action.type
+      );
+      if (alreadyLogged) continue;
+      await supabase.from("hero_picks_bans").upsert(
+        {
+          game_id: game.id,
+          match_id: matchId,
+          team_id: teamId,
+          hero_name: action.hero_name,
+          hero_id: matchHeroId(action.hero_name),
+          type: action.type,
+          pick_order: pickBans.length + 1,
+        },
+        { onConflict: "game_id,team_id,hero_name,type" }
+      );
+    }
+
+    for (const row of detection.player_stats ?? []) {
+      const teamId = matchTeamId(row.team_name);
+      const playerId = matchPlayerId(row.player_name, teamId);
+      if (!playerId) continue;
+      await supabase.from("player_stats").upsert(
+        {
+          game_id: game.id,
+          match_id: matchId,
+          player_id: playerId,
+          hero_name: row.hero_name ?? null,
+          hero_id: matchHeroId(row.hero_name),
+          kills: row.kills ?? null,
+          deaths: row.deaths ?? null,
+          assists: row.assists ?? null,
+          gold: row.gold ?? null,
+        },
+        { onConflict: "game_id,player_id" }
+      );
+    }
+
+    if (detection.net_worth?.team_a_gold != null || detection.net_worth?.team_b_gold != null) {
+      await supabase.from("net_worth_snapshots").insert({
+        game_id: game.id,
+        match_id: matchId,
+        minute_mark: minute,
+        team_a_gold: detection.net_worth?.team_a_gold ?? null,
+        team_b_gold: detection.net_worth?.team_b_gold ?? null,
+      });
+    }
+
+    // Dedup within a cooldown — a banner lingers on screen for several
+    // seconds, so without this the same moment gets logged on every tick.
+    if (detection.key_moment_banner && detection.key_moment_banner !== "NONE") {
+      const playerId = matchPlayerId(detection.key_moment_player_name);
+      const key = `${detection.key_moment_banner}:${playerId ?? ""}`;
+      const now = Date.now();
+      if (lastAutoKeyMoment.current.key !== key || now - lastAutoKeyMoment.current.at > 60000) {
+        lastAutoKeyMoment.current = { key, at: now };
+        await supabase.from("key_moments").insert({
+          game_id: game.id,
+          match_id: matchId,
+          type: detection.key_moment_banner.toLowerCase(),
+          player_id: playerId,
+          minute_mark: minute,
+          source: "ai",
+          confidence: detection.confidence ?? null,
+        });
+      }
+    }
+
+    // Surfaced, not auto-applied — declareGameWinner() closes out the
+    // series and already requires a confirm() click; too consequential to
+    // fire from an unattended tick.
+    if ((detection.phase === "VICTORY_DEFEAT_SCREEN" || detection.phase === "POST_GAME_STATS") && detection.winning_team_name) {
+      const teamId = matchTeamId(detection.winning_team_name);
+      if (teamId) setSuggestedWinner(teamId);
+    }
+
+    loadAll();
+  }
+
+  async function captureFrameAndAnalyze() {
+    const video = previewRef.current;
+    if (!video || video.videoWidth === 0) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    const imageBase64 = canvas.toDataURL("image/jpeg", 0.7);
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) {
+      setAiStatus("Not signed in.");
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/ocr/analyze-frame", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ imageBase64, overlayHint: overlayHint || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAiStatus(data.error ?? "Analysis failed.");
+        return;
+      }
+      setAiDetection(data as AiDetection);
+      setAiStatus(null);
+      await applyAiDetection(data as AiDetection);
+    } catch (err) {
+      setAiStatus((err as Error).message);
+    }
+  }
+
   useEffect(() => {
     if (!matchId) return;
     (async () => {
@@ -425,9 +606,15 @@ export default function LiveConsolePage() {
         previewRef.current.srcObject = stream;
         await previewRef.current.play();
       }
-      workerRef.current = await createWorker("eng");
       setCaptureActive(true);
-      intervalRef.current = setInterval(captureTick, 5000);
+      if (captureMode === "ai") {
+        // 10s cadence, not 5s like the manual OCR loop — each tick is a
+        // paid vision-model call (Groq), not a free local Tesseract read.
+        intervalRef.current = setInterval(captureFrameAndAnalyze, 10000);
+      } else {
+        workerRef.current = await createWorker("eng");
+        intervalRef.current = setInterval(captureTick, 5000);
+      }
     } catch (err) {
       console.error("Could not start screen share for local capture", err);
     }
@@ -439,6 +626,8 @@ export default function LiveConsolePage() {
     workerRef.current?.terminate();
     setCaptureActive(false);
     setSuggestion(null);
+    setAiDetection(null);
+    setAiStatus(null);
   }
 
   useEffect(() => {
@@ -992,65 +1181,163 @@ export default function LiveConsolePage() {
           </p>
         ) : (
           <>
-            <p className="text-[10px] text-white/40">
-              Reads the match timer, team gold, and kill-banner text from a screen-shared tab showing the
-              stream — deterministic OCR running entirely in your browser, no AI involved, nothing sent
-              anywhere. Hero picks/bans and per-player K/D/A aren&apos;t reliable to OCR (icons have no text,
-              scoreboard rows vary too much) — keep using the pickers/inputs above for those.
-            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => !captureActive && setCaptureMode("ai")}
+                disabled={captureActive}
+                className={`text-[10px] rounded px-2 py-1 border ${
+                  captureMode === "ai" ? "border-signal bg-signal/10 text-signal" : "border-white/10 text-white/50"
+                } disabled:opacity-50`}
+              >
+                Full-frame AI (recommended)
+              </button>
+              <button
+                onClick={() => !captureActive && setCaptureMode("manual")}
+                disabled={captureActive}
+                className={`text-[10px] rounded px-2 py-1 border ${
+                  captureMode === "manual" ? "border-signal bg-signal/10 text-signal" : "border-white/10 text-white/50"
+                } disabled:opacity-50`}
+              >
+                Manual region OCR (legacy)
+              </button>
+            </div>
+
+            {captureMode === "ai" ? (
+              <p className="text-[10px] text-white/40">
+                Sends the whole captured frame to a vision model every 10s — no boxes to drag. Reads phase, game
+                timer, draft picks/bans, kill banners, per-player K/D/A, and net worth, and applies what it finds
+                directly (winner calls are only ever suggested, never auto-committed). Needs GROQ_API_KEY
+                configured server-side.
+              </p>
+            ) : (
+              <p className="text-[10px] text-white/40">
+                Reads the match timer, team gold, and kill-banner text from calibrated crop regions —
+                deterministic OCR running entirely in your browser, no AI involved. Hero picks/bans and
+                per-player K/D/A aren&apos;t reliable to OCR this way (icons have no text, scoreboard rows vary
+                too much) — keep using the pickers/inputs above for those, or switch to Full-frame AI.
+              </p>
+            )}
+
+            {captureMode === "ai" && (
+              <input
+                value={overlayHint}
+                onChange={(e) => setOverlayHint(e.target.value)}
+                placeholder="Overlay hint (optional) — e.g. &quot;kill banners appear top-center in yellow text&quot;"
+                className="w-full bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+              />
+            )}
 
             {captureActive && (
               <div className="space-y-3">
                 <div
                   className="relative w-full max-w-md border border-white/10 rounded overflow-hidden"
-                  onMouseDown={handleCropMouseDown}
-                  onMouseUp={handleCropMouseUp}
+                  onMouseDown={captureMode === "manual" ? handleCropMouseDown : undefined}
+                  onMouseUp={captureMode === "manual" ? handleCropMouseUp : undefined}
                 >
                   <video ref={previewRef} muted className="w-full block" />
-                  {CAPTURE_FIELDS.map(({ field }) => {
-                    const box = regions[field];
-                    if (!box) return null;
-                    return (
-                      <div
-                        key={field}
-                        className={`absolute border-2 pointer-events-none ${
-                          calibratingField === field ? "border-signal" : "border-white/40"
-                        }`}
-                        style={{
-                          left: `${box.xPct}%`,
-                          top: `${box.yPct}%`,
-                          width: `${box.wPct}%`,
-                          height: `${box.hPct}%`,
-                        }}
-                      />
-                    );
-                  })}
+                  {captureMode === "manual" &&
+                    CAPTURE_FIELDS.map(({ field }) => {
+                      const box = regions[field];
+                      if (!box) return null;
+                      return (
+                        <div
+                          key={field}
+                          className={`absolute border-2 pointer-events-none ${
+                            calibratingField === field ? "border-signal" : "border-white/40"
+                          }`}
+                          style={{
+                            left: `${box.xPct}%`,
+                            top: `${box.yPct}%`,
+                            width: `${box.wPct}%`,
+                            height: `${box.hPct}%`,
+                          }}
+                        />
+                      );
+                    })}
                 </div>
 
-                <div className="grid grid-cols-3 gap-2">
-                  {CAPTURE_FIELDS.map(({ field, label }) => (
-                    <div key={field} className="border border-white/10 rounded p-2 space-y-1.5">
-                      <p className="text-[10px] text-white/50">{label}</p>
-                      <button
-                        onClick={() => setCalibratingField(field)}
-                        className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 w-full"
-                      >
-                        {calibratingField === field ? "Drag the area now..." : regions[field] ? "Recalibrate" : "Calibrate"}
-                      </button>
-                      <p className="text-xs text-white/70 truncate" title={readings[field]}>
-                        {readings[field] || "—"}
-                      </p>
-                      {field === "gold" && readings.gold && (
+                {captureMode === "manual" && (
+                  <div className="grid grid-cols-3 gap-2">
+                    {CAPTURE_FIELDS.map(({ field, label }) => (
+                      <div key={field} className="border border-white/10 rounded p-2 space-y-1.5">
+                        <p className="text-[10px] text-white/50">{label}</p>
                         <button
-                          onClick={applyGoldReading}
-                          className="text-[10px] bg-signal rounded px-2 py-1 w-full"
+                          onClick={() => setCalibratingField(field)}
+                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 w-full"
                         >
-                          Apply as net worth snapshot
+                          {calibratingField === field ? "Drag the area now..." : regions[field] ? "Recalibrate" : "Calibrate"}
                         </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                        <p className="text-xs text-white/70 truncate" title={readings[field]}>
+                          {readings[field] || "—"}
+                        </p>
+                        {field === "gold" && readings.gold && (
+                          <button
+                            onClick={applyGoldReading}
+                            className="text-[10px] bg-signal rounded px-2 py-1 w-full"
+                          >
+                            Apply as net worth snapshot
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {captureMode === "ai" && (
+                  <div className="border border-white/10 rounded p-3 space-y-1 text-xs">
+                    {aiStatus && <p className="text-red-400">{aiStatus}</p>}
+                    {aiDetection ? (
+                      <>
+                        <p>
+                          Phase: <strong>{aiDetection.phase}</strong>
+                          {aiDetection.game_timer_mm_ss && <> · Timer: <strong>{aiDetection.game_timer_mm_ss}</strong></>}
+                          {typeof aiDetection.confidence === "number" && (
+                            <span className="text-white/40"> · confidence {Math.round(aiDetection.confidence * 100)}%</span>
+                          )}
+                        </p>
+                        {aiDetection.draft_actions?.length > 0 && (
+                          <p className="text-white/60">
+                            Draft: {aiDetection.draft_actions.map((a) => `${a.type} ${a.hero_name} (${a.team_name})`).join(", ")}
+                          </p>
+                        )}
+                        {aiDetection.player_stats?.length > 0 && (
+                          <p className="text-white/60">
+                            Stats read for: {aiDetection.player_stats.map((s) => s.player_name).join(", ")}
+                          </p>
+                        )}
+                        {aiDetection.key_moment_banner !== "NONE" && (
+                          <p className="text-yellow-300">
+                            Key moment: {aiDetection.key_moment_banner}
+                            {aiDetection.key_moment_player_name ? ` — ${aiDetection.key_moment_player_name}` : ""}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-white/40">Waiting for first frame…</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {suggestedWinner && match.team_a && match.team_b && (
+              <div className="flex flex-wrap items-center gap-3 bg-yellow-500/10 border border-yellow-500/30 rounded px-4 py-3">
+                <span className="text-sm">
+                  AI detected a possible winner:{" "}
+                  <strong>{suggestedWinner === match.team_a.id ? match.team_a.name : match.team_b.name}</strong>
+                </span>
+                <button
+                  onClick={() => {
+                    declareGameWinner(suggestedWinner);
+                    setSuggestedWinner(null);
+                  }}
+                  className="lv-btn-primary"
+                >
+                  Confirm & finish game
+                </button>
+                <button onClick={() => setSuggestedWinner(null)} className="lv-btn-ghost">
+                  Dismiss
+                </button>
               </div>
             )}
 

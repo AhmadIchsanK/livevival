@@ -561,6 +561,27 @@ export default function PublicMatchPage() {
       {match.update_source === "local_ocr" && (
       <>
       <section>
+        <h2 className="lv-heading mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <div className="flex gap-8 text-sm">
+          {[
+            { name: match.team_a?.name, teamId: teamAId },
+            { name: match.team_b?.name, teamId: teamBId },
+          ].map((t, i) => (
+            <div key={i} className="space-y-1">
+              <p className="text-white/50 text-xs">{t.name}</p>
+              <div className="flex gap-3 text-xs">
+                {(["tower", "lord", "turtle"] as const).map((type) => (
+                  <span key={type} className="capitalize text-white/70">
+                    {type} <span className="font-bold tabular-nums text-white">{gameObjectives.filter((o) => o.team_id === t.teamId && o.type === type).length}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section>
         <div className="flex items-center justify-between mb-2">
           <h2 className="lv-heading">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
           {gameStats.length > 0 && (
@@ -602,18 +623,6 @@ export default function PublicMatchPage() {
               </table>
             </div>
           ))}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="lv-heading mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
-        <div className="flex flex-wrap gap-2 text-xs">
-          {gameObjectives.map((o) => (
-            <span key={o.id} className="lv-badge bg-white/10 text-white/70 capitalize">
-              {o.minute_mark}&apos; {o.type} — {o.team_id === teamAId ? match.team_a?.name : match.team_b?.name}
-            </span>
-          ))}
-          {gameObjectives.length === 0 && <span className="text-white/30">No objectives logged yet.</span>}
         </div>
       </section>
 

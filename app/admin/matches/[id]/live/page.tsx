@@ -32,7 +32,7 @@ type Game = { id: string; game_number: number; status: string; map: string | nul
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
 type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number; deaths: number; assists: number; gold: number };
-type Objective = { id: string; team_id: string; type: string; minute_mark: number | null };
+type Objective = { id: string; team_id: string; type: string; minute_mark: number | null; created_at: string };
 type KeyMoment = {
   id: string;
   type: string;
@@ -142,7 +142,7 @@ export default function LiveConsolePage() {
       const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: ss }] = await Promise.all([
         supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
         supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
-        supabase.from("objectives").select("id, team_id, type, minute_mark").eq("game_id", gid).order("minute_mark"),
+        supabase.from("objectives").select("id, team_id, type, minute_mark, created_at").eq("game_id", gid).order("minute_mark"),
         supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark, is_key_moment, screenshot_url").eq("game_id", gid).order("minute_mark"),
         supabase.from("game_screenshots").select("id, image_url, in_game_time, note, created_at").eq("game_id", gid).order("created_at"),
       ]);
@@ -303,14 +303,26 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  // ── Objectives ──────────────────────────────────────────────────────
-  async function logObjective(teamId: string, type: string) {
+  // ── Objectives (counters) ────────────────────────────────────────────
+  // Stays an event-log table under the hood (one row per tower/lord/turtle
+  // taken) — a counter UI is just "+" inserts a row, "−" removes the most
+  // recently inserted row of that type/team, so the displayed number is
+  // always just objectives.filter(...).length.
+  const OBJECTIVE_TYPES = ["tower", "lord", "turtle"] as const;
+  function objectiveCount(teamId: string, type: string) {
+    return objectives.filter((o) => o.team_id === teamId && o.type === type).length;
+  }
+  async function incrementObjective(teamId: string, type: string) {
     if (!game) return;
-    await supabase.from("objectives").insert({ game_id: game.id, team_id: teamId, type, minute_mark: minute });
+    await supabase.from("objectives").insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute });
     loadAll();
   }
-  async function deleteObjective(id: string) {
-    const { error } = await supabase.from("objectives").delete().eq("id", id);
+  async function decrementObjective(teamId: string, type: string) {
+    const mostRecent = objectives
+      .filter((o) => o.team_id === teamId && o.type === type)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+    if (!mostRecent) return;
+    const { error } = await supabase.from("objectives").delete().eq("id", mostRecent.id);
     if (error) setError(error.message);
     else loadAll();
   }
@@ -1636,6 +1648,43 @@ export default function LiveConsolePage() {
 
       {match.update_source === "local_ocr" && (
         <>
+      {/* Objectives (counters) */}
+      <section className="space-y-3">
+        <h2 className="font-bold">Objectives</h2>
+        <div className="flex gap-8">
+          {[match.team_a, match.team_b].map((team, idx) =>
+            team ? (
+              <div key={team.id} className="space-y-1.5">
+                <p className="text-xs text-white/50">{team.name}</p>
+                <div className="flex gap-4">
+                  {OBJECTIVE_TYPES.map((type) => (
+                    <div key={type} className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => decrementObjective(team.id, type)}
+                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10"
+                      >
+                        −
+                      </button>
+                      <span className="text-xs w-12 text-center capitalize">
+                        {type} <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
+                      </span>
+                      <button
+                        onClick={() => incrementObjective(team.id, type)}
+                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10"
+                      >
+                        +
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <span key={idx} />
+            )
+          )}
+        </div>
+      </section>
+
       {/* Scoreboard */}
       <section className="space-y-3">
         <h2 className="font-bold">Live scoreboard</h2>
@@ -1718,41 +1767,6 @@ export default function LiveConsolePage() {
             </div>
           ))}
           {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
-        </div>
-      </section>
-
-      {/* Objectives */}
-      <section className="space-y-3">
-        <h2 className="font-bold">Objectives</h2>
-        <div className="flex gap-6">
-          {[match.team_a, match.team_b].map((team, idx) =>
-            team ? (
-              <div key={team.id} className="space-y-2">
-                <p className="text-xs text-white/50">{team.name}</p>
-                <div className="flex gap-2">
-                  {["tower", "lord", "turtle", "base"].map((type) => (
-                    <button
-                      key={type}
-                      onClick={() => logObjective(team.id, type)}
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 capitalize"
-                    >
-                      {type}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <span key={idx} />
-            )
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2 text-xs">
-          {objectives.map((o) => (
-            <span key={o.id} className="px-2 py-1 rounded bg-white/10 capitalize flex items-center gap-1.5">
-              {o.minute_mark}&apos; {o.type} ({o.team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name})
-              <button onClick={() => deleteObjective(o.id)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-            </span>
-          ))}
         </div>
       </section>
 

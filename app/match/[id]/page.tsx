@@ -9,6 +9,8 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 type Match = {
   id: string;
   status: string;
+  state: string;
+  custom_state_label: string | null;
   format: string | null;
   youtube_url: string | null;
   series_winner_team_id: string | null;
@@ -17,6 +19,19 @@ type Match = {
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
   stream: { url: string } | null;
+};
+
+// Same phase set as the admin live console (matches the match_state enum).
+// Only shown for live matches — for scheduled/finished ones the plainer
+// status badge already says everything useful.
+const PHASE_LABELS: Record<string, string> = {
+  MATCH_NOT_STARTED: "Waiting",
+  DRAFT_STARTED: "Draft in progress",
+  DRAFT_COMPLETE: "Draft complete",
+  GAME_STARTED: "Game ongoing",
+  GAME_FINISHED: "Game finished",
+  SERIES_FINISHED: "Match finished",
+  TECHNICAL_PAUSE: "Technical pause",
 };
 type Game = {
   id: string;
@@ -96,7 +111,7 @@ export default function PublicMatchPage() {
     const { data: matchData, error: matchError } = await supabase
       .from("matches")
       .select(
-        `id, status, format, youtube_url, series_winner_team_id, update_source,
+        `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source,
          tournament:tournaments(name, tier),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url),
@@ -250,6 +265,11 @@ export default function PublicMatchPage() {
           <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
             {match.status}
           </span>
+          {match.status === "live" && (
+            <span className="lv-badge bg-white/10 text-white/70">
+              {match.state === "CUSTOM" ? match.custom_state_label || "Custom" : PHASE_LABELS[match.state] ?? match.state}
+            </span>
+          )}
           {match.update_source === "local_ocr" && (
             <span
               className="lv-badge bg-signal/20 text-signal border border-signal/40"

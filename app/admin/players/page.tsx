@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Option = { id: string; label: string };
-type Player = { id: string; ign: string; role: string | null; team_id: string | null; team: { name: string } | null };
+type Player = { id: string; ign: string; role: string | null; team_id: string | null; photo_url: string | null; team: { name: string } | null };
 type SortKey = "ign" | "team" | "role";
 
 // Standard MLBB competitive roles, ordered left-to-right as they're read on
@@ -38,7 +38,7 @@ export default function PlayersPage() {
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
-      .select("id, ign, role, team_id, team:teams(name)")
+      .select("id, ign, role, team_id, photo_url, team:teams(name)")
       .order("ign", { ascending: true });
     if (error) {
       setError(error.message);
@@ -122,6 +122,23 @@ export default function PlayersPage() {
     }
     setEditingId(null);
     loadPlayers();
+  }
+
+  async function uploadPlayerPhoto(playerId: string, file: File) {
+    setError(null);
+    const path = `${playerId}/${Date.now()}.jpg`;
+    const { error: uploadErr } = await supabase.storage.from("player-photos").upload(path, file, {
+      contentType: file.type || "image/jpeg",
+      upsert: true,
+    });
+    if (uploadErr) {
+      setError(uploadErr.message);
+      return;
+    }
+    const { data: pub } = supabase.storage.from("player-photos").getPublicUrl(path);
+    const { error } = await supabase.from("players").update({ photo_url: pub.publicUrl }).eq("id", playerId);
+    if (error) setError(error.message);
+    else loadPlayers();
   }
 
   function friendlyDeleteError(message: string, label: string) {
@@ -369,6 +386,7 @@ export default function PlayersPage() {
                 onChange={toggleSelectAll}
               />
             </th>
+            <th className="font-normal pb-2 w-12">Photo</th>
             <th className="font-normal pb-2">IGN</th>
             <th className="font-normal pb-2">Role</th>
             <th className="font-normal pb-2">Team</th>
@@ -381,6 +399,9 @@ export default function PlayersPage() {
               {editingId === p.id ? (
                 <>
                   <td className="py-2" />
+                  <td className="py-2">
+                    <PlayerPhotoUpload player={p} onUpload={uploadPlayerPhoto} />
+                  </td>
                   <td className="py-2 pr-2">
                     <input
                       value={editIgn}
@@ -429,6 +450,9 @@ export default function PlayersPage() {
                   <td className="py-2">
                     <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggleSelected(p.id)} />
                   </td>
+                  <td className="py-2">
+                    <PlayerPhotoUpload player={p} onUpload={uploadPlayerPhoto} />
+                  </td>
                   <td className="py-2">{p.ign}</td>
                   <td className="py-2 text-white/60">{p.role ?? "—"}</td>
                   <td className="py-2 text-white/60">{p.team?.name ?? "—"}</td>
@@ -452,7 +476,7 @@ export default function PlayersPage() {
           ))}
           {filtered.length === 0 && (
             <tr>
-              <td colSpan={5} className="py-4 text-white/30 text-center">
+              <td colSpan={6} className="py-4 text-white/30 text-center">
                 No players match.
               </td>
             </tr>
@@ -460,5 +484,28 @@ export default function PlayersPage() {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function PlayerPhotoUpload({ player, onUpload }: { player: Player; onUpload: (playerId: string, file: File) => void }) {
+  return (
+    <label className="cursor-pointer block w-8 h-8" title="Click to upload a photo">
+      {player.photo_url ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={player.photo_url} alt="" className="w-8 h-8 rounded-full object-cover border border-white/10" />
+      ) : (
+        <span className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-white/40">+</span>
+      )}
+      <input
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) onUpload(player.id, file);
+          e.target.value = "";
+        }}
+      />
+    </label>
   );
 }

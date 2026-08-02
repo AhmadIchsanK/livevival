@@ -28,7 +28,7 @@ type Match = {
   team_a: { id: string; name: string } | null;
   team_b: { id: string; name: string } | null;
 };
-type Player = { id: string; team_id: string; ign: string; role: string | null };
+type Player = { id: string; team_id: string; ign: string; role: string | null; photo_url: string | null };
 type Game = {
   id: string;
   game_number: number;
@@ -151,7 +151,7 @@ export default function LiveConsolePage() {
     const teamIds = [m.team_a?.id, m.team_b?.id].filter(Boolean) as string[];
     const { data: playerRows } = await supabase
       .from("players")
-      .select("id, team_id, ign, role")
+      .select("id, team_id, ign, role, photo_url")
       .in("team_id", teamIds);
     setPlayers((playerRows as Player[]) ?? []);
 
@@ -317,7 +317,9 @@ export default function LiveConsolePage() {
     let row = stats.find((s) => s.player_id === playerId);
     if (!row) row = await ensureStatRow(playerId);
     if (!row) return;
-    await supabase.from("player_stats").update({ [field]: value }).eq("id", row.id);
+    const payload: Record<string, number | string | null> = { [field]: value };
+    if (field === "hero_name") payload.hero_id = matchHeroId(value as string);
+    await supabase.from("player_stats").update(payload).eq("id", row.id);
     loadAll();
   }
 
@@ -2037,13 +2039,23 @@ export default function LiveConsolePage() {
               const stat = stats.find((s) => s.player_id === p.id);
               return (
                 <div key={p.id} className="flex gap-2 items-center text-sm">
+                  {p.photo_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={p.photo_url} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10 shrink-0" />
+                  ) : (
+                    <span className="w-6 h-6 rounded-full bg-white/10 shrink-0" />
+                  )}
                   <span className="w-24 truncate">{p.ign}</span>
-                  <input
-                    placeholder="Hero"
-                    defaultValue={stat?.hero_name ?? ""}
-                    onBlur={(e) => updateStat(p.id, "hero_name", e.target.value)}
+                  <select
+                    value={stat?.hero_name ?? ""}
+                    onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
                     className="w-24 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
-                  />
+                  >
+                    <option value="">Hero</option>
+                    {heroes.map((h) => (
+                      <option key={h.id} value={h.name}>{h.name}</option>
+                    ))}
+                  </select>
                   {(["kills", "deaths", "assists"] as const).map((field) => (
                     <input
                       key={field}

@@ -72,19 +72,64 @@ decision with no reasonable default).
       rows directly.
 - [x] Team logos on public site: homepage cards, match detail header,
       per-tournament match list, tournament page standings.
-- [ ] Heroes admin: icon auto-import bug — in progress
-- [ ] Streams: auto-detect started/ended
-- [ ] Stream auto-import (~2min delay) + per-game VOD auto-import
-      (Liquipedia hourly, MLBB YouTube channel fallback)
-- [ ] OCR automation foundation (capture_regions-driven, auto phase
-      detection) — will ship as far as buildable without live
-      calibration; flagging that clearly rather than claiming it's fully
-      verified against a real stream
-- [ ] Telegram bot infrastructure — will be built and ready to deploy,
-      but **cannot go live without a BotFather token only the owner can
-      create**. This is a hard blocker I can't find an alternative for;
-      everything else about the bot (notification logic, admin controls)
-      will be built regardless.
+- [x] Heroes admin icon import: only 26/133 had icons. Fixed two gaps in
+      the shared Liquipedia client (scripts/_liquipedia.mjs AND its worker
+      counterpart worker/src/liquipediaClient.mjs) — neither passed
+      redirects=1, so a hero page that's actually a redirect returned
+      near-empty content silently; and the icon selector didn't try the
+      confirmed .lightmode infobox variant first. Both fixes apply to
+      every script using these shared clients, not just heroes.
+- [x] Streams auto-detect started/ended: implemented as a DB trigger
+      (recompute_stream_status(), fires on matches status/stream_id
+      changes) rather than client-side polling — live the moment a linked
+      match goes live, ended once every linked match is finished. Backfilled
+      existing linked streams immediately. Mirrored in
+      supabase/migrations/auto_sync_stream_status_from_matches.sql.
+- [x] Stream auto-import (~2min) + per-game VOD auto-import (hourly+):
+      **already fully working** via the existing always-on worker
+      (deployed on Railway, confirmed healthy and ticking every 20s live
+      in the logs) — syncTournamentSchedule() auto-creates+links a stream
+      the moment Liquipedia's match popup has a YouTube URL, and
+      syncTournamentFinishedMatches() writes per-game vod_url from
+      Liquipedia's "Watch Game N" links every tick, both running every
+      ~20s for any tournament with a live/imminent match — far exceeds
+      both the 2-minute and 1-hour asks. The public match page already
+      prioritizes per-game vod_url and falls back to the whole-stream URL
+      exactly as requested. The only unmet piece is the MLBB-official-
+      YouTube-channel fallback for matches where Liquipedia itself has no
+      per-game VOD — the owner offered this as an alternative ("or we can
+      always check..."), not a hard requirement, and I didn't build it:
+      no YouTube Data API key available, and I can't verify a channel-ID/
+      RSS-based scraper against real content from this sandboxed session
+      (same network block as Liquipedia). Flagging as backlog, not faking
+      it blind.
+- [x] OCR automation foundation: found that a full vision-AI pipeline
+      (Groq vision model + screenshot capture + winner-confirmation
+      frames — orphaned env vars still on the Railway service: 
+      GROQ_API_KEY, GROQ_VISION_MODEL, SCREENSHOT_BUCKET,
+      WINNER_CONFIRMATION_FRAMES) was already built in a prior session and
+      *deliberately replaced* by the current Liquipedia-polling worker
+      (see commit d9a9fe5, "Replace Groq vision worker with always-on
+      Liquipedia poller"). That's the right call to stick with — Liquipedia
+      polling already automates status/score/picks/bans/results for every
+      match on update_source='liquipedia', which is the large majority of
+      what "auto-detect match status" was asking for. The remaining local-
+      OCR system (browser screen capture + Tesseract.js, calibrated
+      capture_regions, for matches manually flagged update_source=
+      'local_ocr') already existed reading timer/gold/kill-banner text —
+      added one honest improvement: auto-transition to GAME_STARTED once
+      the timer becomes readable. Deliberately did NOT attempt icon-based
+      auto-detection of the draft/pick-ban phase — the existing code
+      already documents why (hero icons have no text, scoreboard rows
+      vary too much for reliable OCR) and I have no way to verify vision
+      logic against a real stream from this sandbox, so forcing it would
+      repeat the exact "shipped blind, worked in ~20% of cases" mistake
+      already fixed once this session (team-roster scrapers).
+- [ ] Telegram bot infrastructure — in progress. Will be built and ready
+      to deploy, but **cannot go live without a BotFather token only the
+      owner can create**. This is a hard blocker I can't find an
+      alternative for; everything else (notification logic, admin
+      controls) will be built regardless.
 - [ ] Fan feature recommendations writeup
 
 ## Known hard blockers (not workaroundable, flagged not skipped)
@@ -100,3 +145,7 @@ decision with no reasonable default).
 - OCR real-world accuracy — genuinely needs the admin's PC running the
   capture page against a real live stream to calibrate/verify. Will ship
   the most complete pipeline possible and say plainly what's unverified.
+- MLBB official YouTube channel as a fallback VOD source (owner offered
+  this as optional, not required) — needs either a YouTube Data API key
+  or a channel-ID/RSS scraper I can't verify against real content from
+  this sandbox (same liquipedia.net-style network block). Not built.

@@ -367,6 +367,8 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
       <div className="space-y-2">
         {visible.map((m) => {
           const score = scores[m.id];
+          const aWon = score && score.a > score.b;
+          const bWon = score && score.b > score.a;
           return (
             <a
               key={m.id}
@@ -375,9 +377,11 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
             >
               <div>
                 <p className="font-semibold text-sm flex items-center gap-1.5">
-                  <TeamLogo url={m.team_a?.logo_url} className="w-4 h-4" />
-                  {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
-                  <TeamLogo url={m.team_b?.logo_url} className="w-4 h-4" />
+                  <TeamLogo url={m.team_a?.logo_url} className={`w-4 h-4 ${aWon ? "ring-2 ring-signal rounded" : ""}`} />
+                  <span className={aWon ? "text-signal" : ""}>{m.team_a?.name ?? "TBD"}</span>
+                  <span className="text-white/30">vs</span>
+                  <span className={bWon ? "text-signal" : ""}>{m.team_b?.name ?? "TBD"}</span>
+                  <TeamLogo url={m.team_b?.logo_url} className={`w-4 h-4 ${bWon ? "ring-2 ring-signal rounded" : ""}`} />
                 </p>
                 <p className="text-xs text-white/40">
                   {m.tournament?.liquipedia_slug ? (

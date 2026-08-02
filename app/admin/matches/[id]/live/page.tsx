@@ -654,8 +654,21 @@ export default function LiveConsolePage() {
   // startCapture() itself (see the comment there).
   useEffect(() => {
     if (!captureActive || !streamRef.current || !previewRef.current) return;
-    previewRef.current.srcObject = streamRef.current;
-    previewRef.current.play().catch((err) => console.error("Preview play() failed", err));
+    const video = previewRef.current;
+    video.srcObject = streamRef.current;
+    video.play().catch((err) => console.error("Preview play() failed", err));
+
+    if (captureMode !== "ai") return;
+    // setInterval (in startCapture) never fires its callback immediately —
+    // only after the first full 60s pacing window — so without this, the
+    // console sits on "Waiting for first frame..." for a full minute after
+    // every "Start capture" click, which reads as hung rather than paced.
+    // The 60s budget only needs to apply *between* calls, so fire one as
+    // soon as the video actually has a frame ready instead.
+    const fireFirstFrame = () => captureFrameAndAnalyze();
+    if (video.readyState >= 1) fireFirstFrame(); // HAVE_METADATA already reached
+    else video.addEventListener("loadedmetadata", fireFirstFrame, { once: true });
+    return () => video.removeEventListener("loadedmetadata", fireFirstFrame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captureActive]);
 

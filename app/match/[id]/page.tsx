@@ -54,12 +54,14 @@ type KeyMoment = {
   id: string;
   game_id: string;
   type: string;
+  description: string | null;
   minute_mark: number | null;
   player: { ign: string } | null;
   screenshot_url: string | null;
   source: string;
 };
 type NetWorthPoint = { game_id: string; minute_mark: number; team_a_gold: number; team_b_gold: number };
+type Screenshot = { id: string; game_id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
 
 // Same fixed left-to-right draft order as the admin live console: exp
 // lane, jungler, mid laner, gold laner, roamer.
@@ -86,6 +88,7 @@ export default function PublicMatchPage() {
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
   const [netWorth, setNetWorth] = useState<NetWorthPoint[]>([]);
+  const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -127,7 +130,7 @@ export default function PublicMatchPage() {
       });
     }
 
-    const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }] = await Promise.all([
+    const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }, { data: ss }] = await Promise.all([
       supabase
         .from("hero_picks_bans")
         .select("id, game_id, team_id, player_id, hero_name, type, pick_order, player:players(ign, role), hero:heroes(icon_url)")
@@ -138,14 +141,16 @@ export default function PublicMatchPage() {
         .select("id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id), hero:heroes(icon_url)")
         .eq("match_id", matchId),
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
-      supabase.from("key_moments").select("id, game_id, type, minute_mark, player:players(ign), screenshot_url, source").eq("match_id", matchId).order("minute_mark"),
+      supabase.from("key_moments").select("id, game_id, type, description, minute_mark, player:players(ign), screenshot_url, source").eq("match_id", matchId).order("minute_mark"),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
+      supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
     ]);
     setPickBans((pb as unknown as PickBan[]) ?? []);
     setStats((ps as unknown as PlayerStat[]) ?? []);
     setObjectives((obj as Objective[]) ?? []);
     setKeyMoments((km as unknown as KeyMoment[]) ?? []);
     setNetWorth((nw as NetWorthPoint[]) ?? []);
+    setScreenshots((ss as Screenshot[]) ?? []);
   }, [matchId]);
 
   useEffect(() => {
@@ -160,6 +165,7 @@ export default function PublicMatchPage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "objectives", filter: `match_id=eq.${matchId}` }, loadAll)
       .on("postgres_changes", { event: "*", schema: "public", table: "key_moments", filter: `match_id=eq.${matchId}` }, loadAll)
       .on("postgres_changes", { event: "*", schema: "public", table: "net_worth_snapshots", filter: `match_id=eq.${matchId}` }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "game_screenshots", filter: `match_id=eq.${matchId}` }, loadAll)
       .subscribe();
 
     return () => {
@@ -189,6 +195,7 @@ export default function PublicMatchPage() {
   const gameObjectives = objectives.filter((o) => o.game_id === selectedGameId);
   const gameKeyMoments = keyMoments.filter((k) => k.game_id === selectedGameId);
   const gameNetWorth = netWorth.filter((n) => n.game_id === selectedGameId);
+  const gameScreenshots = screenshots.filter((s) => s.game_id === selectedGameId);
 
   const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId);
   const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId);
@@ -409,12 +416,32 @@ export default function PublicMatchPage() {
                 <img src={km.screenshot_url} alt={km.type} className="w-full rounded-md border border-white/10" />
               )}
               <span className="lv-badge bg-signal/15 text-signal capitalize inline-flex">
-                {km.minute_mark}&apos; {km.type.replace("_", " ")}{km.player?.ign ? ` — ${km.player.ign}` : ""}
+                {km.minute_mark}&apos; {km.description ?? km.type.replace("_", " ")}
+                {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
                 {km.source === "auto" && <span className="text-white/40 normal-case tracking-normal font-normal"> · auto</span>}
               </span>
             </div>
           ))}
           {gameKeyMoments.length === 0 && <span className="text-white/30 text-xs">No key moments yet.</span>}
+        </div>
+      </section>
+
+      <section>
+        <h2 className="lv-heading mb-2">Screenshots {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <div className="flex flex-wrap gap-3">
+          {gameScreenshots.map((s) => (
+            <div key={s.id} className="w-48 space-y-1 lv-card-flush p-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
+              <p className="text-[10px] text-white/40">
+                {s.in_game_time ? `${s.in_game_time} in-game` : ""}
+                {s.in_game_time && " · "}
+                {new Date(s.created_at).toLocaleString()}
+              </p>
+              {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
+            </div>
+          ))}
+          {gameScreenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots yet.</span>}
         </div>
       </section>
     </main>

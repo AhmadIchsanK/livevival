@@ -115,11 +115,35 @@ export default function PublicMatchPage() {
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [watchingNow, setWatchingNow] = useState(1);
+  const [recapRatio, setRecapRatio] = useState<"portrait" | "landscape">("portrait");
+  const [recapMode, setRecapMode] = useState<"simple" | "advanced">("simple");
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Supabase Realtime Presence — each open tab tracks itself under a random
+  // key on a per-match channel; presenceState()'s key count is how many
+  // tabs are currently on this page. Pure ephemeral broadcast, no table
+  // involved, so it costs nothing to leave running.
+  useEffect(() => {
+    if (!matchId) return;
+    const channel = supabase.channel(`presence-match-${matchId}`, {
+      config: { presence: { key: crypto.randomUUID() } },
+    });
+    channel
+      .on("presence", { event: "sync" }, () => {
+        setWatchingNow(Object.keys(channel.presenceState()).length || 1);
+      })
+      .subscribe(async (status) => {
+        if (status === "SUBSCRIBED") await channel.track({ at: Date.now() });
+      });
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [matchId]);
 
   const loadAll = useCallback(async () => {
     const { data: matchData, error: matchError } = await supabase
@@ -354,6 +378,11 @@ export default function PublicMatchPage() {
               🔥 HOT
             </span>
           )}
+          {match.status === "live" && (
+            <span className="lv-badge bg-white/10 text-white/60 tabular-nums" title="People currently on this page">
+              👀 {watchingNow} watching
+            </span>
+          )}
         </div>
 
         {match.status === "finished" && seriesWinnerName && (
@@ -551,6 +580,57 @@ export default function PublicMatchPage() {
           {gameScreenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots yet.</span>}
         </div>
       </section>
+
+      {match.status === "finished" && (
+        <section>
+          <h2 className="lv-heading mb-2">Share recap</h2>
+          <div className="flex flex-wrap items-start gap-4">
+            <div className="lv-card-flush p-2 overflow-hidden" style={{ width: recapRatio === "portrait" ? 135 : 240 }}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+                alt="Match recap card"
+                className="w-full rounded"
+              />
+            </div>
+            <div className="space-y-3 text-xs">
+              <div className="flex gap-2">
+                {(["portrait", "landscape"] as const).map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => setRecapRatio(r)}
+                    className={`px-3 py-1.5 rounded border ${
+                      recapRatio === r ? "border-signal text-signal" : "border-white/10 text-white/50 hover:bg-white/5"
+                    }`}
+                  >
+                    {r === "portrait" ? "9:16" : "16:9"}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                {(["simple", "advanced"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setRecapMode(m)}
+                    className={`px-3 py-1.5 rounded border capitalize ${
+                      recapMode === m ? "border-signal text-signal" : "border-white/10 text-white/50 hover:bg-white/5"
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <a
+                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+                download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
+                className="lv-btn-primary inline-block !text-xs !py-1.5"
+              >
+                Download
+              </a>
+            </div>
+          </div>
+        </section>
+      )}
     </main>
   );
 }

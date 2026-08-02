@@ -1,11 +1,11 @@
 # Livevival feature audit — progress tracker
 
-**Status (2026-08-02): every tracked item below is done or explicitly
-documented as blocked on something only the owner can supply.** See
-"Known hard blockers" for the remaining short list (a Telegram bot token,
-an optional YouTube fallback needing an API key, and OCR real-world
-calibration that needs the admin's own PC). Everything else has been
-merged to `main` across PRs #1–#12 (see `git log --oneline` on main).
+**Status (2026-08-02, later same day): the two remaining credential
+blockers are now resolved.** Owner supplied the Telegram bot token +
+chat ID and a YouTube Data API key. Both wired in (PRs #13–#15, see
+below). The only genuinely open item is OCR real-world calibration,
+which needs the admin to actually run a capture session (live or VOD) —
+in progress, see "OCR calibration" below.
 
 Working from the owner's full feature request (admin CRUD audit + public
 site audit + fan features + future Telegram bot). This file is the source
@@ -153,6 +153,54 @@ decision with no reasonable default).
       features, and smaller polish items, each tagged by whether it's
       buildable now with existing data or needs new collection/integration
       work.
+
+- [x] Fixed the actual cause of the slow team-logo/player-role backfill
+      (PR #13): `import-team-details.mjs` was re-fetching all 301 teams
+      from Liquipedia on every single 6h run, even ones already fully
+      populated — unlike the hero-icon importer, which already skipped
+      completed rows. With Liquipedia's rate limiting, a full re-scan
+      routinely exceeded GitHub Actions' 6h hard job cap and got force-
+      cancelled before reaching the back half of the team list (confirmed:
+      the two most recent scheduled runs both died at ~6h05m). Now skips
+      any team that already has a logo and a fully-roled known roster.
+      Cancelled the stale in-flight run and triggered fresh runs on the
+      fix immediately rather than waiting for the next cron.
+- [x] Telegram bot activated (PR was infrastructure-only before this):
+      owner provided `TELEGRAM_BOT_TOKEN` and a chat ID, both set on the
+      Railway worker. Chat ID given as `1004485997391` (positive, no
+      sign) — this exactly matches Telegram's `-100<10 digits>`
+      supergroup/channel ID format with the leading `-100` sign dropped
+      (`1004485997391` = `100` + `4485997391`), so it was set as
+      `-1004485997391`. **Not verified against the live Telegram API** —
+      this sandbox's network denies `api.telegram.org` outbound (confirmed
+      via a 403 on the proxy tunnel, same class of block as
+      `liquipedia.net`/`*.supabase.co`), so this is inference from
+      Telegram's documented ID scheme, not a tested value. If bot messages
+      don't show up in the target group, this sign is the first thing to
+      check. **Still needed:** the same two vars on the Next.js app's
+      Vercel project (no Vercel tool available in this session) — without
+      it, the worker's automatic notifications work but the admin
+      console's "Announce draft"/key-moment buttons (which call
+      `/api/telegram/notify` in the Next.js deployment) won't.
+- [x] MLBB official YouTube channel VOD fallback built (PR #14): owner
+      supplied a YouTube Data API key, set as `YOUTUBE_API_KEY` on the
+      Railway worker. New `worker/src/youtubeVodFallback.mjs` searches
+      @mlbbesportsofficial (channel ID confirmed live via `channels.list`:
+      `UCMncR-XXNXhMyJELEgCrHlg`) for a matching "Game N" upload when a
+      finished game still has no vod_url after Liquipedia's own per-game
+      links. Requires both team names AND a "Game N" title match before
+      accepting a result. Gated to at most once/hour, scans a 14-day
+      backlog window, no-ops if the key is ever unset. Found and fixed a
+      real bug this depended on: `finishedMatchSync.mjs`'s upsert always
+      wrote `vod_url` including `null`, which would've erased whatever
+      this fallback found on the very next tick — now only written when
+      Liquipedia actually has a value.
+- [ ] OCR calibration: owner confirmed testing against a past VOD
+      (paused/replayed in a browser tab) instead of a live stream — the
+      capture code (`getDisplayMedia`) is source-agnostic, this works and
+      is arguably better for calibration (repeatable, no time pressure).
+      Not yet run — this is the one item that needs a human at the
+      keyboard, not something to build further blind.
 
 ## Known hard blockers (not workaroundable, flagged not skipped)
 

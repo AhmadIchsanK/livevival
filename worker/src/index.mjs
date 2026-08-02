@@ -2,6 +2,7 @@ import "dotenv/config";
 import { supabase, config } from "./config.mjs";
 import { syncTournamentSchedule } from "./scheduleSync.mjs";
 import { syncTournamentFinishedMatches } from "./finishedMatchSync.mjs";
+import { maybeFillMissingVodsFromYoutube } from "./youtubeVodFallback.mjs";
 
 // Always-on replacement for the 10-minute refresh-imminent-matches GitHub
 // Action: GitHub Actions cron cannot run faster than ~5 minutes, so getting
@@ -45,6 +46,11 @@ const COOLDOWN_MS = 5 * 60 * 1000;
 const rateLimitedUntil = new Map(); // tournamentId -> timestamp
 
 async function tick() {
+  // Independent of the active-tournament polling below (own hourly gate,
+  // own no-op-if-unconfigured guard) — runs every tick but only actually
+  // does anything once an hour, and only once YOUTUBE_API_KEY is set.
+  await maybeFillMissingVodsFromYoutube();
+
   const tournaments = await loadActiveTournaments();
   if (tournaments.length === 0) {
     console.log("No live/imminent matches this tick.");

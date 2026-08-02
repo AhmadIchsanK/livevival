@@ -158,19 +158,22 @@ async function importMatchDetail(tournament, m) {
   for (const g of m.games) {
     const gameWinnerTeamId = g.left?.won ? match.leftId : g.right?.won ? match.rightId : null;
 
+    const gamePayload = {
+      match_id: match.id,
+      game_number: g.gameNumber,
+      state: "GAME_FINISHED",
+      status: "finished",
+      winner_team_id: gameWinnerTeamId,
+    };
+    // Only set vod_url when Liquipedia actually has one — omitting the key
+    // (rather than writing null) leaves an existing value alone on
+    // conflict, so this can't clobber a link the YouTube fallback already
+    // found (youtubeVodFallback.mjs) on a later tick.
+    if (m.vods[g.gameNumber]) gamePayload.vod_url = m.vods[g.gameNumber];
+
     const { data: gameRow, error } = await supabase
       .from("games")
-      .upsert(
-        {
-          match_id: match.id,
-          game_number: g.gameNumber,
-          state: "GAME_FINISHED",
-          status: "finished",
-          winner_team_id: gameWinnerTeamId,
-          vod_url: m.vods[g.gameNumber] ?? null,
-        },
-        { onConflict: "match_id,game_number" }
-      )
+      .upsert(gamePayload, { onConflict: "match_id,game_number" })
       .select("id")
       .single();
 

@@ -621,11 +621,15 @@ export default function LiveConsolePage() {
       // has mounted the element.
       setCaptureActive(true);
       if (captureMode === "ai") {
-        // 15s cadence, not 5s like the manual OCR loop — each tick is a
-        // paid vision-model call (Groq), not a free local Tesseract read,
-        // and free-tier TPM budgets are tight even with the downscaled
-        // frame (see captureFrameAndAnalyze).
-        intervalRef.current = setInterval(captureFrameAndAnalyze, 15000);
+        // 60s cadence, not 5s like the manual OCR loop. Confirmed against
+        // two real 429s in production that downscaling the frame only
+        // trims request size modestly (~6045 -> ~5045 tokens) — this vision
+        // model evidently normalizes images to something close to a fixed
+        // internal size, so it doesn't scale down much further with input
+        // resolution. Against an 8000 tokens-per-minute free-tier budget,
+        // a ~5000-token request only has room for one per rolling minute;
+        // anything faster was guaranteed to fail on most ticks.
+        intervalRef.current = setInterval(captureFrameAndAnalyze, 60000);
       } else {
         workerRef.current = await createWorker("eng");
         intervalRef.current = setInterval(captureTick, 5000);
@@ -1229,7 +1233,8 @@ export default function LiveConsolePage() {
 
             {captureMode === "ai" ? (
               <p className="text-[10px] text-white/40">
-                Sends the whole captured frame to a vision model every 10s — no boxes to drag. Reads phase, game
+                Sends the whole captured frame to a vision model every 60s (paced to fit a free-tier token budget)
+                — no boxes to drag. Reads phase, game
                 timer, draft picks/bans, kill banners, per-player K/D/A, and net worth, and applies what it finds
                 directly (winner calls are only ever suggested, never auto-committed). Needs GROQ_API_KEY
                 configured server-side.

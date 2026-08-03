@@ -197,7 +197,7 @@ export default function HeroesPage() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Yu Zhong"
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
           />
         </div>
         <div className="space-y-1">
@@ -206,7 +206,7 @@ export default function HeroesPage() {
             value={role}
             onChange={(e) => setRole(e.target.value)}
             placeholder="Fighter/Tank/..."
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <div className="space-y-1">
@@ -215,7 +215,7 @@ export default function HeroesPage() {
             value={iconUrl}
             onChange={(e) => setIconUrl(e.target.value)}
             placeholder="https://..."
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <div className="col-span-2 space-y-1">
@@ -224,7 +224,7 @@ export default function HeroesPage() {
             value={aliases}
             onChange={(e) => setAliases(e.target.value)}
             placeholder="e.g. YZ, Yu-Zhong"
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <button
@@ -245,7 +245,7 @@ export default function HeroesPage() {
             onChange={(e) => setBulkText(e.target.value)}
             rows={5}
             placeholder={"Yu Zhong, Fighter, https://...\nGusion, Assassin"}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-xs font-mono"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-xs font-mono"
           />
           <button
             onClick={bulkImport}
@@ -264,7 +264,7 @@ export default function HeroesPage() {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter by name, role, or alias..."
-          className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+          className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
         />
         {selected.size > 0 && (
           <button
@@ -303,27 +303,27 @@ export default function HeroesPage() {
                     <input
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
                   <td className="py-2 pr-2">
                     <input
                       value={editRole}
                       onChange={(e) => setEditRole(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
                   <td className="py-2 pr-2">
                     <input
                       value={editAliases}
                       onChange={(e) => setEditAliases(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                     <input
                       value={editIconUrl}
                       onChange={(e) => setEditIconUrl(e.target.value)}
                       placeholder="Icon URL"
-                      className="w-full mt-1 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                      className="w-full mt-1 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                     />
                   </td>
                   <td className="py-2 text-right space-x-2">

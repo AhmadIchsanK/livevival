@@ -160,7 +160,7 @@ export default function MomentTemplatesPage() {
             value={labelTemplate}
             onChange={(e) => setLabelTemplate(e.target.value)}
             placeholder="e.g. Team {team} picks {hero}"
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
           />
         </div>
         <div className="space-y-1">
@@ -168,7 +168,7 @@ export default function MomentTemplatesPage() {
           <select
             value={type}
             onChange={(e) => setType(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           >
             {TYPES.map((t) => (
               <option key={t} value={t}>{t.replace(/_/g, " ")}</option>
@@ -180,7 +180,7 @@ export default function MomentTemplatesPage() {
           <select
             value={phase}
             onChange={(e) => setPhase(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           >
             <option value="">Any phase</option>
             {PHASES.map((p) => (
@@ -194,7 +194,7 @@ export default function MomentTemplatesPage() {
             type="number"
             value={sortOrder}
             onChange={(e) => setSortOrder(Number(e.target.value))}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <div className="col-span-2 flex items-center gap-1.5 pt-1">
@@ -209,7 +209,7 @@ export default function MomentTemplatesPage() {
               onChange={(e) => setTelegramMessageTemplate(e.target.value)}
               placeholder="e.g. 🔥 {team} just picked {hero}!"
               rows={2}
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
             />
           </div>
         )}
@@ -223,7 +223,7 @@ export default function MomentTemplatesPage() {
       <select
         value={phaseFilter}
         onChange={(e) => setPhaseFilter(e.target.value)}
-        className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+        className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
       >
         <option value="">All phases</option>
         {PHASES.map((p) => (
@@ -250,13 +250,13 @@ export default function MomentTemplatesPage() {
                         value={editLabel}
                         onChange={(e) => setEditLabel(e.target.value)}
                         placeholder="Label template"
-                        className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+                        className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
                       />
                       <div className="grid grid-cols-3 gap-2">
                         <select
                           value={editType}
                           onChange={(e) => setEditType(e.target.value)}
-                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+                          className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
                         >
                           {TYPES.map((ty) => (
                             <option key={ty} value={ty}>{ty.replace(/_/g, " ")}</option>
@@ -265,7 +265,7 @@ export default function MomentTemplatesPage() {
                         <select
                           value={editPhase}
                           onChange={(e) => setEditPhase(e.target.value)}
-                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+                          className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
                         >
                           <option value="">Any phase</option>
                           {PHASES.map((p) => (
@@ -277,7 +277,7 @@ export default function MomentTemplatesPage() {
                           value={editSortOrder}
                           onChange={(e) => setEditSortOrder(Number(e.target.value))}
                           title="Sort order"
-                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+                          className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
                         />
                       </div>
                       <label className="flex items-center gap-1.5 text-xs text-white/60">
@@ -290,7 +290,7 @@ export default function MomentTemplatesPage() {
                           onChange={(e) => setEditTelegramMessageTemplate(e.target.value)}
                           placeholder="Telegram message (optional — falls back to a default format)"
                           rows={2}
-                          className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+                          className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
                         />
                       )}
                       <div className="flex gap-2">

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { TeamLogo } from "@/components/TeamLogo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 type Tournament = {
   id: string;
@@ -247,7 +248,10 @@ export default function TournamentPage() {
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-3xl mx-auto space-y-8">
-      <a href="/tournaments" className="lv-nav-link">&larr; All tournaments</a>
+      <div className="flex items-center justify-between">
+        <a href="/tournaments" className="lv-nav-link">&larr; All tournaments</a>
+        <ThemeToggle />
+      </div>
       <header className="flex items-start gap-4">
         {tournament.logo_url && <TeamLogo url={tournament.logo_url} size="md" />}
         <div>

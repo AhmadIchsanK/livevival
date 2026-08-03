@@ -236,7 +236,7 @@ export default function PlayersPage() {
             required
             value={ign}
             onChange={(e) => setIgn(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <div className="space-y-1">
@@ -244,7 +244,7 @@ export default function PlayersPage() {
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           >
             <option value="">Unknown</option>
             {ROLES.map((r) => (
@@ -257,7 +257,7 @@ export default function PlayersPage() {
           <select
             value={teamId}
             onChange={(e) => setTeamId(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           >
             <option value="">None</option>
             {teams.map((t) => (
@@ -280,7 +280,7 @@ export default function PlayersPage() {
           <select
             value={bulkTeamId}
             onChange={(e) => setBulkTeamId(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
           >
             <option value="">Select team...</option>
             {teams.map((t) => (
@@ -295,7 +295,7 @@ export default function PlayersPage() {
             onChange={(e) => setBulkText(e.target.value)}
             rows={5}
             placeholder={"Kairi, Jungler\nAlberttt"}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-xs font-mono"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-xs font-mono"
           />
           <button
             onClick={bulkImport}
@@ -315,12 +315,12 @@ export default function PlayersPage() {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter by IGN or team..."
-            className="flex-1 min-w-[160px] bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="flex-1 min-w-[160px] bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
             value={teamFilter}
             onChange={(e) => setTeamFilter(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
             <option value="">All teams</option>
             {teams.map((t) => (
@@ -330,7 +330,7 @@ export default function PlayersPage() {
           <select
             value={roleFilter}
             onChange={(e) => setRoleFilter(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
             <option value="">All roles</option>
             {ROLES.map((r) => (
@@ -340,7 +340,7 @@ export default function PlayersPage() {
           <select
             value={sortKey}
             onChange={(e) => setSortKey(e.target.value as SortKey)}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
             <option value="ign">Sort: IGN</option>
             <option value="team">Sort: Team</option>
@@ -352,7 +352,7 @@ export default function PlayersPage() {
             <select
               value={bulkTeamId}
               onChange={(e) => setBulkTeamId(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
             >
               <option value="">Reassign to team...</option>
               {teams.map((t) => (
@@ -406,14 +406,14 @@ export default function PlayersPage() {
                     <input
                       value={editIgn}
                       onChange={(e) => setEditIgn(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
                   <td className="py-2 pr-2">
                     <select
                       value={editRole}
                       onChange={(e) => setEditRole(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     >
                       <option value="">Unknown</option>
                       {ROLES.map((r) => (
@@ -425,7 +425,7 @@ export default function PlayersPage() {
                     <select
                       value={editTeamId}
                       onChange={(e) => setEditTeamId(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     >
                       <option value="">None</option>
                       {teams.map((t) => (

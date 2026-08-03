@@ -215,7 +215,7 @@ export default function TelegramNotificationsPage() {
                     onChange={(e) => setDrafts((prev) => ({ ...prev, [key]: e.target.value }))}
                     placeholder={ev.defaultMessage}
                     rows={2}
-                    className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+                    className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
                   />
                   <div className="flex flex-col gap-1 shrink-0">
                     <button

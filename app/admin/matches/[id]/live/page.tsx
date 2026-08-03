@@ -2823,7 +2823,7 @@ export default function LiveConsolePage() {
               else loadAll();
             }}
             placeholder="Livestream URL (YouTube or Facebook)"
-            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs w-56"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs w-56"
           />
           <select
             value={match.state}
@@ -2848,7 +2848,7 @@ export default function LiveConsolePage() {
                 value={customLabelDraft || match.custom_state_label || ""}
                 onChange={(e) => setCustomLabelDraft(e.target.value)}
                 placeholder="e.g. TVC / caster session"
-                className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs w-48"
+                className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs w-48"
               />
               <button onClick={saveCustomLabel} className="lv-btn-ghost !px-2 !py-1 text-xs">Save</button>
             </span>
@@ -3001,7 +3001,7 @@ export default function LiveConsolePage() {
             value={game.map ?? ""}
             onChange={(e) => setGameMap(e.target.value)}
             disabled={!isEditable}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
           >
             <option value="">Not set</option>
             {MAPS.map((m) => (
@@ -3111,7 +3111,7 @@ export default function LiveConsolePage() {
                   type="text"
                   placeholder="MM:SS"
                   title="Set the clock directly, e.g. 12:30"
-                  className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                  className="w-16 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                   onBlur={(e) => {
                     if (e.target.value === "") return;
                     const m = e.target.value.trim().match(/^(\d{1,3}):(\d{2})$/);
@@ -3157,7 +3157,7 @@ export default function LiveConsolePage() {
           <select
             value={kmTemplateId}
             onChange={(e) => setKmTemplateId(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
           >
             <option value="">Choose a template...</option>
             {availableTemplates.map((t) => (
@@ -3165,14 +3165,14 @@ export default function LiveConsolePage() {
             ))}
           </select>
           {selectedTemplate?.label_template.includes("{team}") && (
-            <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
+            <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
               <option value="">Team</option>
               {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
               {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
             </select>
           )}
           {selectedTemplate?.label_template.includes("{hero}") && (
-            <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
+            <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
               <option value="">Hero</option>
               {heroes.map((h) => (
                 <option key={h.id} value={h.id}>{h.name}</option>
@@ -3180,7 +3180,7 @@ export default function LiveConsolePage() {
             </select>
           )}
           {selectedTemplate?.label_template.includes("{player}") && (
-            <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
+            <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
               <option value="">Player</option>
               {players.map((p) => (
                 <option key={p.id} value={p.id}>{p.ign}</option>
@@ -3192,7 +3192,7 @@ export default function LiveConsolePage() {
               value={kmCustomText}
               onChange={(e) => setKmCustomText(e.target.value)}
               placeholder="Type the custom moment..."
-              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
             />
           )}
           <button onClick={logKeyMoment} disabled={!selectedTemplate || !isEditable} className="lv-btn-ghost disabled:opacity-40">
@@ -3229,7 +3229,7 @@ export default function LiveConsolePage() {
                   <input
                     value={editingMomentText}
                     onChange={(e) => setEditingMomentText(e.target.value)}
-                    className="bg-black/30 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
+                    className="bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
                     autoFocus
                   />
                   <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
@@ -3353,7 +3353,7 @@ export default function LiveConsolePage() {
             value={screenshotNote}
             onChange={(e) => setScreenshotNote(e.target.value)}
             placeholder="Note (optional)"
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
           />
           {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
         </div>
@@ -3496,7 +3496,7 @@ export default function LiveConsolePage() {
                   value={simHeroSearch}
                   onChange={(e) => setSimHeroSearch(e.target.value)}
                   placeholder="Search heroes..."
-                  className="w-full bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
+                  className="w-full bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
                 />
                 <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-2 max-h-64 overflow-y-auto">
                   {heroes
@@ -3568,7 +3568,7 @@ export default function LiveConsolePage() {
                             <select
                               defaultValue=""
                               onChange={(e) => e.target.value && assignHeroToPlayer(pb.id, e.target.value, pb.hero_name)}
-                              className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                              className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                             >
                               <option value="">Assign player...</option>
                               {activeRoster
@@ -3634,7 +3634,7 @@ export default function LiveConsolePage() {
               setPbTeam(e.target.value);
               setPbPlayer("");
             }}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           >
             <option value="">Team</option>
             {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
@@ -3643,7 +3643,7 @@ export default function LiveConsolePage() {
           <select
             value={pbType}
             onChange={(e) => setPbType(e.target.value as "pick" | "ban")}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           >
             <option value="ban">Ban</option>
             <option value="pick">Pick</option>
@@ -3652,7 +3652,7 @@ export default function LiveConsolePage() {
             <select
               value={pbPlayer}
               onChange={(e) => setPbPlayer(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
             >
               <option value="">Player</option>
               {pbTeam &&
@@ -3671,7 +3671,7 @@ export default function LiveConsolePage() {
             <select
               value={pbHero}
               onChange={(e) => setPbHero(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
             >
               <option value="">Hero</option>
               {heroes.map((h) => (
@@ -3756,7 +3756,7 @@ export default function LiveConsolePage() {
                     defaultValue={latestNetWorth?.[key] ?? ""}
                     disabled={!netWorthEditable}
                     placeholder="Gold"
-                    className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+                    className="w-28 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
                     onBlur={(e) => {
                       const value = Number(e.target.value);
                       if (Number.isNaN(value)) return;
@@ -3829,7 +3829,7 @@ export default function LiveConsolePage() {
                     <input
                       value={editingScoreboardIgn}
                       onChange={(e) => setEditingScoreboardIgn(e.target.value)}
-                      className="w-24 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-xs"
+                      className="w-24 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
                       autoFocus
                     />
                   ) : (
@@ -3847,7 +3847,7 @@ export default function LiveConsolePage() {
                     value={stat?.hero_name ?? ""}
                     onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
                     disabled={!scoreboardEditable}
-                    className="w-24 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
+                    className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
                   >
                     <option value="">Hero</option>
                     {heroes.map((h) => (
@@ -3861,7 +3861,7 @@ export default function LiveConsolePage() {
                       defaultValue={stat?.[field] ?? 0}
                       onBlur={(e) => updateStat(p.id, field, Number(e.target.value))}
                       disabled={!scoreboardEditable}
-                      className="w-14 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
+                      className="w-14 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
                     />
                   ))}
                   <div className="flex gap-1.5 ml-auto">
@@ -3912,7 +3912,7 @@ export default function LiveConsolePage() {
                       <select
                         value={addPlayerSelect[teamId] ?? ""}
                         onChange={(e) => setAddPlayerSelect((prev) => ({ ...prev, [teamId]: e.target.value }))}
-                        className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                       >
                         <option value="">Add player...</option>
                         {available.map((p) => (
@@ -4005,7 +4005,7 @@ export default function LiveConsolePage() {
             <select
               value={resolveLeftTeamId() ?? ""}
               onChange={(e) => setOcrLeftTeam(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
             >
               <option value={match.team_a.id}>{match.team_a.name}</option>
               <option value={match.team_b.id}>{match.team_b.name}</option>
@@ -4036,7 +4036,7 @@ export default function LiveConsolePage() {
                   onChange={(e) => setOverlayHint(e.target.value)}
                   onBlur={saveOverlayHint}
                   placeholder="Overlay hint (optional) — e.g. &quot;kill banners appear top-center in yellow text&quot;"
-                  className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                  className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                 />
                 <button
                   onClick={saveOverlayHintAsTournamentDefault}
@@ -4060,7 +4060,7 @@ export default function LiveConsolePage() {
                   <select
                     value={canvasPhaseFilter}
                     onChange={(e) => setCanvasPhaseFilter(e.target.value)}
-                    className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
+                    className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
                     title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
                   >
                     <option value="">All phases</option>
@@ -4217,7 +4217,7 @@ export default function LiveConsolePage() {
                         setPendingBoxPhase(e.target.value);
                         setPendingBoxField("");
                       }}
-                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     >
                       {MATCH_PHASES.map((p) => (
                         <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
@@ -4226,7 +4226,7 @@ export default function LiveConsolePage() {
                     <select
                       value={pendingBoxField}
                       onChange={(e) => setPendingBoxField(e.target.value)}
-                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
                     >
                       <option value="">
                         {pendingBoxOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
@@ -4275,7 +4275,7 @@ export default function LiveConsolePage() {
                           setNewTrackerPhase(e.target.value);
                           setNewTrackerChoice("");
                         }}
-                        className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                       >
                         {MATCH_PHASES.map((p) => (
                           <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
@@ -4284,7 +4284,7 @@ export default function LiveConsolePage() {
                       <select
                         value={newTrackerChoice}
                         onChange={(e) => setNewTrackerChoice(e.target.value)}
-                        className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs flex-1 min-w-[220px]"
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs flex-1 min-w-[220px]"
                       >
                         <option value="">
                           {catalogForPhase(newTrackerPhase).length === 0
@@ -4317,12 +4317,12 @@ export default function LiveConsolePage() {
                             value={trackerSearch}
                             onChange={(e) => setTrackerSearch(e.target.value)}
                             placeholder="Search trackers..."
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs flex-1 min-w-[160px]"
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs flex-1 min-w-[160px]"
                           />
                           <select
                             value={trackerPhaseFilter}
                             onChange={(e) => setTrackerPhaseFilter(e.target.value)}
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           >
                             <option value="">All phases</option>
                             {MATCH_PHASES.map((p) => (
@@ -4332,7 +4332,7 @@ export default function LiveConsolePage() {
                           <select
                             value={trackerCategoryFilter}
                             onChange={(e) => setTrackerCategoryFilter(e.target.value)}
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           >
                             <option value="">All categories</option>
                             {Array.from(new Set(trackers.map((t) => t.category))).map((c) => (
@@ -4372,7 +4372,7 @@ export default function LiveConsolePage() {
                                             onKeyDown={(e) => {
                                               if (e.key === "Enter") renameTracker(t, trackerLabelDrafts[t.id]);
                                             }}
-                                            className="bg-black/30 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-full"
+                                            className="bg-white/10 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-full"
                                           />
                                           <button onClick={() => renameTracker(t, trackerLabelDrafts[t.id])} className="text-emerald-400">✓</button>
                                         </div>
@@ -4432,7 +4432,7 @@ export default function LiveConsolePage() {
                                               value={manualTimeInputs[t.field] ?? ""}
                                               onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [t.field]: e.target.value }))}
                                               placeholder="MM:SS"
-                                              className="w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+                                              className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
                                             />
                                             <button
                                               onClick={() => {

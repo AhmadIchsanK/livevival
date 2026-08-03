@@ -40,6 +40,8 @@ type Game = {
   manual_time_seconds: number | null;
   manual_time_running: boolean;
   manual_time_started_at: string | null;
+  current_time_seconds: number | null;
+  current_time_updated_at: string | null;
 };
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
@@ -122,7 +124,7 @@ export default function LiveConsolePage() {
 
     let { data: gameRow } = await supabase
       .from("games")
-      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at")
+      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at")
       .eq("match_id", matchId)
       .eq("game_number", m.current_game_number)
       .maybeSingle();
@@ -131,7 +133,7 @@ export default function LiveConsolePage() {
       const { data: created, error: createErr } = await supabase
         .from("games")
         .insert({ match_id: matchId, game_number: m.current_game_number, status: "live" })
-        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at")
+        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at")
         .single();
       if (createErr) {
         setError(createErr.message);
@@ -1191,18 +1193,37 @@ export default function LiveConsolePage() {
   }
 
   // Keeps `minute` (used for minute_mark on every logged action) following
-  // the manual stopwatch while it's the active public clock source — the
-  // OCR path already keeps it in sync via setMinute() in captureTick, this
-  // is the manual-clock equivalent, replacing the old manual number input.
+  // whichever clock source is active — replaces the old manual number
+  // input entirely. captureTick() already calls setMinute() on every OCR
+  // read while capture is actively running; this covers the gaps: the
+  // manual-stopwatch source at all times, and the OCR source's persisted
+  // value (current_time_seconds/_updated_at) for whenever capture isn't
+  // actively running (paused, not yet started) so minute doesn't just sit
+  // stale at whatever it last was.
   useEffect(() => {
-    if (!game || game.clock_source !== "manual") return;
-    const tick = () => setMinute(Math.floor(manualElapsedSeconds(game) / 60));
-    tick();
-    if (!game.manual_time_running) return;
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
+    if (!game) return;
+    if (game.clock_source === "manual") {
+      const tick = () => setMinute(Math.floor(manualElapsedSeconds(game) / 60));
+      tick();
+      if (!game.manual_time_running) return;
+      const id = setInterval(tick, 1000);
+      return () => clearInterval(id);
+    }
+    if (captureActive) return; // captureTick() owns it while actively reading
+    if (game.current_time_seconds == null || !game.current_time_updated_at) return;
+    const elapsed = Math.floor((Date.now() - new Date(game.current_time_updated_at).getTime()) / 1000);
+    setMinute(Math.floor((game.current_time_seconds + elapsed) / 60));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game?.id, game?.clock_source, game?.manual_time_running, game?.manual_time_seconds, game?.manual_time_started_at]);
+  }, [
+    game?.id,
+    game?.clock_source,
+    game?.manual_time_running,
+    game?.manual_time_seconds,
+    game?.manual_time_started_at,
+    game?.current_time_seconds,
+    game?.current_time_updated_at,
+    captureActive,
+  ]);
 
   // Same pattern as updateGameClock but for the two other phase-scoped
   // clocks — Waiting's pre-game countdown and Draft's per-team pick timer —

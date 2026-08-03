@@ -826,13 +826,20 @@ export default function LiveConsolePage() {
     }
   }
 
-  function captureScreenshotFromPreview(noteOverride?: string) {
+  async function captureScreenshotFromPreview(noteOverride?: string) {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    // Same Livevival watermark as the moment-attach capture path
+    // (captureFrameBlob/drawWatermark) — this "Game screenshots" button was
+    // the one capture path that skipped it, so a screenshot from here had
+    // no branding at all.
+    await drawWatermark(ctx, canvas.width, canvas.height);
     canvas.toBlob((blob) => {
       if (blob) uploadScreenshot(blob, noteOverride);
     }, "image/jpeg", 0.85);

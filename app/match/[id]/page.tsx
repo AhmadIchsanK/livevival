@@ -937,13 +937,20 @@ export default function PublicMatchPage() {
         <div className="flex flex-wrap gap-3">
           {gameScreenshots.map((s) => (
             <div key={s.id} className="w-48 space-y-1 lv-card-flush p-2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
-              <p className="text-[10px] text-white/40">
-                {s.in_game_time ? `${s.in_game_time} in-game` : ""}
-                {s.in_game_time && " · "}
-                {new Date(s.created_at).toLocaleString()}
-              </p>
+              <a href={s.image_url} target="_blank" rel="noopener noreferrer">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
+              </a>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] text-white/40">
+                  {s.in_game_time ? `${s.in_game_time} in-game` : ""}
+                  {s.in_game_time && " · "}
+                  {new Date(s.created_at).toLocaleString()}
+                </p>
+                <a href={s.image_url} download className="text-[10px] text-white/50 hover:text-signal shrink-0">
+                  ⬇ Download
+                </a>
+              </div>
               {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
             </div>
           ))}

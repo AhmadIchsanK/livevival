@@ -83,6 +83,7 @@ type KeyMoment = {
   type: string;
   description: string | null;
   minute_mark: number | null;
+  second_mark: number | null;
   created_at: string;
   player: { ign: string } | null;
   screenshot_url: string | null;
@@ -90,6 +91,7 @@ type KeyMoment = {
   is_key_moment: boolean;
 };
 type NetWorthPoint = { game_id: string; minute_mark: number; team_a_gold: number; team_b_gold: number };
+type RosterPlayer = { id: string; ign: string; role: string | null; team_id: string; photo_url: string | null };
 type Screenshot = { id: string; game_id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
 
 // Same fixed left-to-right draft order as the admin live console: exp
@@ -106,6 +108,18 @@ function youtubeEmbedUrl(url: string | null) {
   return idMatch ? `https://www.youtube.com/embed/${idMatch[1]}` : null;
 }
 
+// YouTube's live chat has its own dedicated embed (separate iframe from the
+// player) — only available for YouTube, which is the only platform this
+// page actually embeds a player for (see youtubeEmbedUrl above / the
+// "link not embeddable" fallback for anything else).
+function youtubeChatEmbedUrl(url: string | null) {
+  if (!url) return null;
+  const idMatch = url.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
+  if (!idMatch) return null;
+  const domain = typeof window !== "undefined" ? window.location.hostname : "livevival-sigma.vercel.app";
+  return `https://www.youtube.com/live_chat?v=${idMatch[1]}&embed_domain=${domain}`;
+}
+
 export default function PublicMatchPage() {
   const params = useParams();
   const matchId = params.id as string;
@@ -118,12 +132,15 @@ export default function PublicMatchPage() {
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
   const [netWorth, setNetWorth] = useState<NetWorthPoint[]>([]);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
+  const [roster, setRoster] = useState<RosterPlayer[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [watchingNow, setWatchingNow] = useState(1);
   const [recapRatio, setRecapRatio] = useState<"portrait" | "landscape">("portrait");
   const [recapMode, setRecapMode] = useState<"simple" | "advanced">("simple");
+  const [copied, setCopied] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 1000);
@@ -192,7 +209,18 @@ export default function PublicMatchPage() {
       });
     }
 
-    const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }, { data: ss }] = await Promise.all([
+    // hero_picks_bans.player_id is always null for Liquipedia-sourced
+    // matches — the bracket picks/bans popup this scraper reads has no
+    // player-per-hero attribution at all (confirmed against the scraper's
+    // own selectors). The "Players" section below falls back to each
+    // team's full roster instead of trying to derive a per-game lineup
+    // from picks that were never going to have that data.
+    const rosterTeamIds = [
+      (matchData.team_a as unknown as { id: string } | null)?.id,
+      (matchData.team_b as unknown as { id: string } | null)?.id,
+    ].filter((id): id is string => Boolean(id));
+
+    const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }, { data: ss }, { data: rp }] = await Promise.all([
       supabase
         .from("hero_picks_bans")
         .select("id, game_id, team_id, player_id, hero_name, type, pick_order, player:players(ign, role), hero:heroes(icon_url)")
@@ -205,11 +233,14 @@ export default function PublicMatchPage() {
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
       supabase
         .from("key_moments")
-        .select("id, game_id, type, description, minute_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
+        .select("id, game_id, type, description, minute_mark, second_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
         .eq("match_id", matchId)
         .order("created_at", { ascending: false }),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
       supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
+      rosterTeamIds.length > 0
+        ? supabase.from("players").select("id, ign, role, team_id, photo_url").in("team_id", rosterTeamIds)
+        : Promise.resolve({ data: [] as RosterPlayer[] }),
     ]);
     setPickBans((pb as unknown as PickBan[]) ?? []);
     setStats((ps as unknown as PlayerStat[]) ?? []);
@@ -217,6 +248,7 @@ export default function PublicMatchPage() {
     setKeyMoments((km as unknown as KeyMoment[]) ?? []);
     setNetWorth((nw as NetWorthPoint[]) ?? []);
     setScreenshots((ss as Screenshot[]) ?? []);
+    setRoster((rp as RosterPlayer[]) ?? []);
   }, [matchId]);
 
   useEffect(() => {
@@ -296,6 +328,10 @@ export default function PublicMatchPage() {
 
   const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
   const embedUrl = youtubeEmbedUrl(videoUrl);
+  // Chat only makes sense against the actual live stream, not a per-game
+  // VOD link (a finished game's VOD has no live chat) — always the match's
+  // own youtube_url, regardless of which game/VOD is currently selected.
+  const chatEmbedUrl = youtubeChatEmbedUrl(match.youtube_url);
 
   const gamePickBans = pickBans.filter((p) => p.game_id === selectedGameId);
   const gameStats = stats.filter((s) => s.game_id === selectedGameId);
@@ -335,39 +371,98 @@ export default function PublicMatchPage() {
   const seriesWinnerName =
     seriesWinnerTeamId === teamAId ? match.team_a?.name : seriesWinnerTeamId === teamBId ? match.team_b?.name : null;
 
+  const gameNumberById = new Map(games.map((g) => [g.id, g.game_number]));
+  const recapKeyMomentLines = keyMoments
+    .filter((km) => km.type === "savage" || km.type === "maniac")
+    .map((km) => {
+      const label = km.type === "savage" ? "Savage" : "Maniac";
+      const gameNumber = gameNumberById.get(km.game_id);
+      const who = km.player?.ign ?? "A player";
+      return `${who} got a ${label}${gameNumber ? ` in Game ${gameNumber}` : ""}`;
+    });
+
+  // navigator.share() triggers the OS share sheet — the only way a browser
+  // reaches WhatsApp/Telegram/Threads/X/IG/FB/etc. directly, since there's
+  // no single API that posts to all of those. Falls back to copy-link for
+  // browsers/desktop that don't support it (also offered as its own
+  // explicit button, since some users on a supported browser still prefer
+  // a plain link over the share sheet).
+  async function handleShare() {
+    const shareData = {
+      title: `${match?.team_a?.name} vs ${match?.team_b?.name} — Livevival`,
+      text: seriesWinnerName ? `🏆 ${seriesWinnerName} wins ${Math.max(gamesWonByA, gamesWonByB)}–${Math.min(gamesWonByA, gamesWonByB)}` : "Match recap on Livevival",
+      url: window.location.href,
+    };
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch {
+        // User cancelled the share sheet — not an error worth surfacing.
+      }
+    } else {
+      await handleCopyLink();
+    }
+  }
+
+  async function handleCopyLink() {
+    await navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-5xl mx-auto space-y-8">
       <header className="space-y-1">
         <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="font-display font-light text-2xl sm:text-3xl tracking-tight flex items-center gap-2 flex-wrap">
-            {match.team_a?.logo_url && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={proxiedImageUrl(match.team_a.logo_url)}
-                alt=""
-                className={`w-8 h-8 rounded object-contain ${
-                  match.status === "finished" && seriesWinnerTeamId === teamAId ? "ring-2 ring-signal" : ""
+          <h1 className="flex items-end gap-3 sm:gap-4">
+            {/* Boxed background behind the logo so it never blends into the
+                dark page background, regardless of the logo's own colors —
+                name sits below instead of inline so the box can be sized
+                for the logo alone. */}
+            <div className="flex flex-col items-center gap-1.5 w-20 sm:w-24">
+              <div
+                className={`w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-white/10 border flex items-center justify-center p-2 ${
+                  match.status === "finished" && seriesWinnerTeamId === teamAId ? "border-signal ring-1 ring-signal" : "border-white/10"
                 }`}
-              />
-            )}
-            <span className={match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""}>
-              {match.team_a?.name}
-            </span>
-            <span className="text-white/30">vs</span>
-            <span className={match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""}>
-              {match.team_b?.name}
-            </span>
-            {match.team_b?.logo_url && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={proxiedImageUrl(match.team_b.logo_url)}
-                alt=""
-                className={`w-8 h-8 rounded object-contain ${
-                  match.status === "finished" && seriesWinnerTeamId === teamBId ? "ring-2 ring-signal" : ""
+              >
+                {match.team_a?.logo_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={proxiedImageUrl(match.team_a.logo_url)} alt="" className="w-full h-full object-contain" />
+                ) : (
+                  <span className="text-white/20 text-xs">?</span>
+                )}
+              </div>
+              <span
+                className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
+                  match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""
                 }`}
-              />
-            )}
+              >
+                {match.team_a?.name}
+              </span>
+            </div>
+            <span className="text-white/30 text-lg sm:text-xl mb-6 sm:mb-7">vs</span>
+            <div className="flex flex-col items-center gap-1.5 w-20 sm:w-24">
+              <div
+                className={`w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-white/10 border flex items-center justify-center p-2 ${
+                  match.status === "finished" && seriesWinnerTeamId === teamBId ? "border-signal ring-1 ring-signal" : "border-white/10"
+                }`}
+              >
+                {match.team_b?.logo_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={proxiedImageUrl(match.team_b.logo_url)} alt="" className="w-full h-full object-contain" />
+                ) : (
+                  <span className="text-white/20 text-xs">?</span>
+                )}
+              </div>
+              <span
+                className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
+                  match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""
+                }`}
+              >
+                {match.team_b?.name}
+              </span>
+            </div>
           </h1>
           <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
             {match.status}
@@ -419,87 +514,138 @@ export default function PublicMatchPage() {
         )}
       </header>
 
+      {/* Sticky "theater mode" — stays pinned to the top of the viewport
+          while everything below (moments, draft recap, stats, etc.)
+          scrolls underneath it, instead of scrolling the stream itself
+          out of view. A single-column sticky element does this on its
+          own (no grid split needed): it sticks in place once its natural
+          scroll position reaches `top`, and stays stuck because nothing
+          shorter constrains it — the rest of the page just keeps scrolling
+          past below. bg-ink covers the seam so nothing shows through. */}
+      <div className="sticky top-0 z-10 bg-ink pt-2 pb-3 space-y-2">
+        {games.length > 1 && (
+          <div className="flex gap-2 flex-wrap">
+            {games.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => setSelectedGameId(g.id)}
+                className={`text-xs px-3 py-1.5 rounded-md border transition-all duration-200 ${
+                  selectedGameId === g.id
+                    ? "bg-signal border-signal shadow-[0_0_16px_1px_rgba(232,72,58,0.4)]"
+                    : "border-white/10 hover:border-signal/40 hover:bg-white/5"
+                }`}
+              >
+                Game {g.game_number}
+                {g.winner_team_id && (
+                  <span className="ml-1 text-white/60">
+                    ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} won)
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {embedUrl ? (
+          <div className="lv-card-flush overflow-hidden">
+            <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
+          </div>
+        ) : (
+          videoUrl && (
+            <a href={videoUrl} target="_blank" className="lv-nav-link block">
+              Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
+            </a>
+          )
+        )}
+
+        {chatEmbedUrl && (
+          <div>
+            <button
+              onClick={() => setChatOpen((v) => !v)}
+              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70"
+            >
+              💬 {chatOpen ? "Hide chat" : "Show chat"}
+            </button>
+            {chatOpen && (
+              <iframe src={chatEmbedUrl} className="w-full h-72 mt-2 rounded border border-white/10" />
+            )}
+          </div>
+        )}
+      </div>
+
       {match.update_source === "local_ocr" && (
         <section>
-          <h2 className="lv-heading mb-2">Moment list</h2>
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <h2 className="lv-heading">Moment list</h2>
+            {/* Header badges above can wrap/scroll out of view on mobile —
+                repeating the live clock + phase here, bigger, means the
+                status is still visible without scrolling back up while
+                reading the moment feed. */}
+            {liveGameClockLabel && (
+              <span className="text-xl font-bold text-signal tabular-nums" title="Live in-game clock">
+                ⏱ {liveGameClockLabel}
+              </span>
+            )}
+            <span className="text-sm text-white/60">
+              {match.state === "CUSTOM" ? match.custom_state_label || "Custom" : PHASE_LABELS[match.state] ?? match.state}
+            </span>
+          </div>
           {/* Sized to show ~10 moments before scrolling — newest always on
               top (query is sorted created_at desc), older ones scroll into
               view instead of being cut off. */}
           <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-            {keyMoments.map((km) =>
-              km.is_key_moment ? (
-                <div key={km.id} className="lv-card-flush p-3 flex gap-3 items-start border border-signal/40 bg-signal/10">
-                  {km.screenshot_url && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={km.screenshot_url} alt={km.type} className="w-24 rounded-md border border-white/10 shrink-0" />
+            {keyMoments.map((km, i) => {
+              // Sorted newest-first, so a separator belongs above the first
+              // moment of each game (i.e. whenever the game changes from the
+              // previous — chronologically later — entry above it).
+              const showSeparator = games.length > 1 && (i === 0 || keyMoments[i - 1].game_id !== km.game_id);
+              const gameNumber = gameNumberById.get(km.game_id);
+              return (
+                <div key={km.id}>
+                  {showSeparator && gameNumber && (
+                    <p className="text-[10px] text-white/30 uppercase tracking-wide pt-1 pb-1 first:pt-0">— Game {gameNumber} —</p>
                   )}
-                  <div className="space-y-0.5">
-                    <p className="text-signal font-semibold text-sm">
-                      ⭐ {km.description ?? km.type.replace(/_/g, " ")}
-                      {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
-                    </p>
-                    <p className="text-[10px] text-white/40">
-                      {new Date(km.created_at).toLocaleTimeString()}
-                      {match.state === "GAME_STARTED" && km.minute_mark != null && ` · ${km.minute_mark}' in-game`}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div key={km.id} className="flex items-center gap-2 text-xs text-white/60">
-                  <span className="text-white/30 tabular-nums">{new Date(km.created_at).toLocaleTimeString()}</span>
-                  {match.state === "GAME_STARTED" && km.minute_mark != null && (
-                    <span className="text-white/30 tabular-nums">{km.minute_mark}&apos;</span>
+                  {km.is_key_moment ? (
+                    <div className="lv-card-flush p-3 flex gap-3 items-start border border-signal/40 bg-signal/10">
+                      {km.screenshot_url && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={km.screenshot_url} alt={km.type} className="w-24 rounded-md border border-white/10 shrink-0" />
+                      )}
+                      <div className="space-y-0.5">
+                        <p className="text-signal font-semibold text-sm">
+                          ⭐ {km.description ?? km.type.replace(/_/g, " ")}
+                          {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
+                        </p>
+                        <p className="text-[10px] text-white/40">
+                          {new Date(km.created_at).toLocaleTimeString()}
+                          {match.state === "GAME_STARTED" && km.minute_mark != null &&
+                            ` · ${formatMMSS(km.minute_mark * 60 + (km.second_mark ?? 0))} in-game`}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-white/60">
+                      <span className="text-white/30 tabular-nums">{new Date(km.created_at).toLocaleTimeString()}</span>
+                      {match.state === "GAME_STARTED" && km.minute_mark != null && (
+                        <span className="text-white/30 tabular-nums">{formatMMSS(km.minute_mark * 60 + (km.second_mark ?? 0))}</span>
+                      )}
+                      <span>
+                        {km.description ?? km.type.replace(/_/g, " ")}
+                        {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
+                      </span>
+                      {km.screenshot_url && <span>📸</span>}
+                    </div>
                   )}
-                  <span>
-                    {km.description ?? km.type.replace(/_/g, " ")}
-                    {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
-                  </span>
-                  {km.screenshot_url && <span>📸</span>}
                 </div>
-              )
-            )}
+              );
+            })}
             {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
           </div>
         </section>
       )}
 
-      {games.length > 1 && (
-        <div className="flex gap-2 flex-wrap">
-          {games.map((g) => (
-            <button
-              key={g.id}
-              onClick={() => setSelectedGameId(g.id)}
-              className={`text-xs px-3 py-1.5 rounded-md border transition-all duration-200 ${
-                selectedGameId === g.id
-                  ? "bg-signal border-signal shadow-[0_0_16px_1px_rgba(232,72,58,0.4)]"
-                  : "border-white/10 hover:border-signal/40 hover:bg-white/5"
-              }`}
-            >
-              Game {g.game_number}
-              {g.winner_team_id && (
-                <span className="ml-1 text-white/60">
-                  ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} won)
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-
       {selectedGame?.map && (
-        <p className="text-xs text-white/40">Map: <span className="text-white/60">{selectedGame.map}</span></p>
-      )}
-
-      {embedUrl ? (
-        <div className="lv-card-flush overflow-hidden">
-          <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
-        </div>
-      ) : (
-        videoUrl && (
-          <a href={videoUrl} target="_blank" className="lv-nav-link block">
-            Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
-          </a>
-        )
+        <p className="text-base text-white/50">Map: <span className="text-white/80 font-semibold">{selectedGame.map}</span></p>
       )}
 
       {chartData.length > 1 && (
@@ -557,25 +703,38 @@ export default function PublicMatchPage() {
 
       {match.update_source !== "local_ocr" && (
         <section>
-          <h2 className="lv-heading mb-2">Players {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+          <h2 className="lv-heading mb-2">Players</h2>
           <div className="grid grid-cols-2 gap-4 text-sm">
             {[
-              { name: match.team_a?.name, picks: teamAPicks },
-              { name: match.team_b?.name, picks: teamBPicks },
-            ].map((t, i) => (
-              <div key={i} className="lv-card-flush p-4 space-y-1">
-                <p className="text-white/70 font-semibold text-sm">{t.name}</p>
-                {t.picks.length === 0 && <p className="text-xs text-white/30">Lineup not logged yet.</p>}
-                {/* Dedupe by player_id — a fuzzy-match collision or a stray
-                    duplicate pick row shouldn't show the same player twice. */}
-                {[...new Map(t.picks.map((p) => [p.player_id ?? p.id, p])).values()].map((p) => (
-                  <p key={p.id} className="text-xs text-white/60">
-                    {p.player?.ign}
-                    {p.player?.role ? ` — ${p.player.role}` : ""}
-                  </p>
-                ))}
-              </div>
-            ))}
+              { name: match.team_a?.name, teamId: teamAId },
+              { name: match.team_b?.name, teamId: teamBId },
+            ].map((t, i) => {
+              // Not derived from hero_picks_bans — Liquipedia's picks/bans
+              // data has no player-per-hero attribution to draw a per-game
+              // lineup from, so this shows the team's full roster instead.
+              const teamRoster = roster
+                .filter((p) => p.team_id === t.teamId)
+                .sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
+              return (
+                <div key={i} className="lv-card-flush p-4 space-y-1.5">
+                  <p className="text-white/70 font-semibold text-sm">{t.name}</p>
+                  {teamRoster.length === 0 && <p className="text-xs text-white/30">Roster not added yet.</p>}
+                  {teamRoster.map((p) => (
+                    <p key={p.id} className="text-xs text-white/60 flex items-center gap-1.5">
+                      {p.photo_url ? (
+                        <img src={p.photo_url} alt="" className="w-5 h-5 rounded-full object-cover object-top" />
+                      ) : (
+                        <span className="w-5 h-5 rounded-full bg-white/10" />
+                      )}
+                      <span>
+                        {p.ign}
+                        {p.role ? ` — ${p.role}` : ""}
+                      </span>
+                    </p>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
@@ -709,13 +868,28 @@ export default function PublicMatchPage() {
                   </button>
                 ))}
               </div>
-              <a
-                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
-                download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
-                className="lv-btn-primary inline-block !text-xs !py-1.5"
-              >
-                Download
-              </a>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+                  download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
+                  className="lv-btn-primary inline-block !text-xs !py-1.5"
+                >
+                  Download
+                </a>
+                <button onClick={handleShare} className="lv-btn-primary inline-block !text-xs !py-1.5 !bg-white/10 !text-white">
+                  Share ↗
+                </button>
+                <button onClick={handleCopyLink} className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5">
+                  {copied ? "Copied!" : "Copy link"}
+                </button>
+              </div>
+              {recapMode === "advanced" && recapKeyMomentLines.length > 0 && (
+                <div className="space-y-0.5 pt-1">
+                  {recapKeyMomentLines.map((line, i) => (
+                    <p key={i} className="text-white/50">🔥 {line}</p>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </section>

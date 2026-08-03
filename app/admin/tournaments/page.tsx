@@ -259,13 +259,16 @@ export default function TournamentsAdminPage() {
           </select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Liquipedia slug</label>
+          <label className="text-xs text-white/50">Liquipedia slug (optional)</label>
           <input
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
-            placeholder="e.g. MSC/2026"
+            placeholder="e.g. MSC/2026 — leave blank for a custom/test tournament"
             className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
           />
+          <p className="text-[10px] text-white/30">
+            Leave blank for a test match or any tournament that isn&apos;t on Liquipedia — it just won&apos;t auto-sync.
+          </p>
         </div>
         <div className="space-y-1">
           <label className="text-xs text-white/50">Start date</label>
@@ -426,7 +429,7 @@ export default function TournamentsAdminPage() {
                           <input
                             value={editSlug}
                             onChange={(e) => setEditSlug(e.target.value)}
-                            placeholder="Liquipedia slug"
+                            placeholder="Liquipedia slug (blank = custom/test)"
                             className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
                           />
                           <input

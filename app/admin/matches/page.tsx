@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Option = { id: string; label: string };
+type Game = { id: string; game_number: number; vod_url: string | null; vod_url_source: "auto" | "manual" };
 type Match = {
   id: string;
   scheduled_at: string | null;
@@ -25,7 +26,7 @@ export default function MatchesPage() {
   const [tournaments, setTournaments] = useState<Option[]>([]);
   const [teams, setTeams] = useState<Option[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
-  const [streams, setStreams] = useState<{ id: string; url: string }[]>([]);
+  const [streams, setStreams] = useState<{ id: string; url: string; overlay_template: string }[]>([]);
   const [activeTab, setActiveTab] = useState<"scheduled" | "live" | "finished">("live");
   const [hasMoreFinished, setHasMoreFinished] = useState(false);
   const [searchFilter, setSearchFilter] = useState("");
@@ -94,7 +95,7 @@ export default function MatchesPage() {
     const [{ data: t }, { data: tm }, { data: st }] = await Promise.all([
       supabase.from("tournaments").select("id, name").order("name"),
       supabase.from("teams").select("id, name").order("name"),
-      supabase.from("streams").select("id, url").order("created_at", { ascending: false }),
+      supabase.from("streams").select("id, url, overlay_template").order("created_at", { ascending: false }),
     ]);
     setTournaments((t ?? []).map((r) => ({ id: r.id, label: r.name })));
     setTeams((tm ?? []).map((r) => ({ id: r.id, label: r.name })));
@@ -260,6 +261,35 @@ export default function MatchesPage() {
   const [editTeamBId, setEditTeamBId] = useState("");
   const [editFormat, setEditFormat] = useState("BO3");
   const [editScheduledAt, setEditScheduledAt] = useState("");
+
+  // ── Per-game VOD editing (finished matches only) ─────────────────────
+  const [expandedVodMatch, setExpandedVodMatch] = useState<string | null>(null);
+  const [gamesByMatch, setGamesByMatch] = useState<Record<string, Game[]>>({});
+
+  async function toggleVodEditor(matchId: string) {
+    if (expandedVodMatch === matchId) {
+      setExpandedVodMatch(null);
+      return;
+    }
+    setExpandedVodMatch(matchId);
+    if (!gamesByMatch[matchId]) {
+      const { data } = await supabase
+        .from("games")
+        .select("id, game_number, vod_url, vod_url_source")
+        .eq("match_id", matchId)
+        .order("game_number");
+      setGamesByMatch((prev) => ({ ...prev, [matchId]: (data as Game[]) ?? [] }));
+    }
+  }
+
+  async function updateGameVod(matchId: string, gameId: string, fields: Partial<Pick<Game, "vod_url" | "vod_url_source">>) {
+    setGamesByMatch((prev) => ({
+      ...prev,
+      [matchId]: (prev[matchId] ?? []).map((g) => (g.id === gameId ? { ...g, ...fields } : g)),
+    }));
+    const { error } = await supabase.from("games").update(fields).eq("id", gameId);
+    if (error) setError(error.message);
+  }
 
   function startEditMatch(m: Match) {
     setEditingId(m.id);
@@ -585,11 +615,17 @@ export default function MatchesPage() {
                   className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs max-w-[180px]"
                 >
                   <option value="">No stream linked</option>
-                  {streams.map((s) => (
-                    <option key={s.id} value={s.id} title={s.url}>
-                      {s.url.length > 28 ? s.url.slice(0, 28) + "…" : s.url}
-                    </option>
-                  ))}
+                  {streams.map((s) => {
+                    // Real title once set (see admin/streams' own backfill/
+                    // manual-edit pattern) — falls back to the raw URL for
+                    // any stream that still has the "default" placeholder.
+                    const label = s.overlay_template && s.overlay_template !== "default" ? s.overlay_template : s.url;
+                    return (
+                      <option key={s.id} value={s.id} title={s.url}>
+                        {label.length > 28 ? label.slice(0, 28) + "…" : label}
+                      </option>
+                    );
+                  })}
                 </select>
                 <select
                   value={m.update_source}
@@ -640,7 +676,56 @@ export default function MatchesPage() {
                 >
                   View public page ↗
                 </a>
+                {m.status === "finished" && (
+                  <button onClick={() => toggleVodEditor(m.id)} className="lv-btn-ghost">
+                    {expandedVodMatch === m.id ? "Hide" : "Edit"} per-game VODs
+                  </button>
+                )}
               </div>
+
+              {expandedVodMatch === m.id && (
+                <div className="space-y-2 border-t border-white/10 pt-3">
+                  {(gamesByMatch[m.id] ?? []).length === 0 && (
+                    <p className="text-xs text-white/30">No games recorded yet for this match.</p>
+                  )}
+                  {(gamesByMatch[m.id] ?? []).map((g) => (
+                    <div key={g.id} className="flex items-center gap-2">
+                      <span className="text-xs text-white/50 w-14 shrink-0">Game {g.game_number}</span>
+                      <input
+                        defaultValue={g.vod_url ?? ""}
+                        placeholder="VOD URL"
+                        onBlur={(e) => {
+                          if (e.target.value !== (g.vod_url ?? "")) {
+                            updateGameVod(m.id, g.id, { vod_url: e.target.value || null, vod_url_source: "manual" });
+                          }
+                        }}
+                        className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
+                      />
+                      <span
+                        className={`text-[10px] uppercase tracking-wide px-2 py-1 rounded ${
+                          g.vod_url_source === "manual" ? "bg-signal/15 text-signal" : "bg-emerald-500/15 text-emerald-400"
+                        }`}
+                        title={
+                          g.vod_url_source === "manual"
+                            ? "Manually set — Liquipedia sync will not overwrite this"
+                            : "Auto-synced from Liquipedia on every refresh"
+                        }
+                      >
+                        {g.vod_url_source === "manual" ? "Manual" : "Auto"}
+                      </span>
+                      {g.vod_url_source === "manual" && (
+                        <button
+                          onClick={() => updateGameVod(m.id, g.id, { vod_url_source: "auto" })}
+                          className="text-xs text-white/40 hover:text-white/70 whitespace-nowrap"
+                          title="Let the next Liquipedia sync fill this back in"
+                        >
+                          Reset to auto
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
           {filteredMatches.length === 0 && <p className="text-white/30 text-sm">No matches match.</p>}

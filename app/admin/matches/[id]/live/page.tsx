@@ -47,6 +47,7 @@ type FinishedGame = { id: string; game_number: number; status: string; map: stri
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
 type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number; deaths: number; assists: number; gold: number };
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null; created_at: string };
+type NetWorthSnapshot = { minute_mark: number; team_a_gold: number; team_b_gold: number };
 type KeyMoment = {
   id: string;
   type: string;
@@ -100,7 +101,13 @@ export default function LiveConsolePage() {
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
+  const [netWorth, setNetWorth] = useState<NetWorthSnapshot[]>([]);
   const [minute, setMinute] = useState(0);
+  // Companion to `minute` — kept separately rather than changing what
+  // `minute` means everywhere, since minute_mark (whole minutes) is still
+  // the right grain for most of this file's existing call sites. Only
+  // key_moments' new second_mark column needs the sub-minute precision.
+  const [secondOfMinute, setSecondOfMinute] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
@@ -160,18 +167,20 @@ export default function LiveConsolePage() {
 
     if (gameRow) {
       const gid = (gameRow as Game).id;
-      const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: ss }] = await Promise.all([
+      const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: ss }, { data: nw }] = await Promise.all([
         supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
         supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
         supabase.from("objectives").select("id, team_id, type, minute_mark, created_at").eq("game_id", gid).order("minute_mark"),
         supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark, is_key_moment, screenshot_url").eq("game_id", gid).order("minute_mark"),
         supabase.from("game_screenshots").select("id, image_url, in_game_time, note, created_at").eq("game_id", gid).order("created_at"),
+        supabase.from("net_worth_snapshots").select("minute_mark, team_a_gold, team_b_gold").eq("game_id", gid).order("minute_mark"),
       ]);
       setPickBans((pb as PickBan[]) ?? []);
       setStats((ps as PlayerStat[]) ?? []);
       setObjectives((obj as Objective[]) ?? []);
       setKeyMoments((km as KeyMoment[]) ?? []);
       setScreenshots((ss as Screenshot[]) ?? []);
+      setNetWorth((nw as NetWorthSnapshot[]) ?? []);
     }
   }, [matchId]);
 
@@ -282,9 +291,41 @@ export default function LiveConsolePage() {
   const [pbType, setPbType] = useState<"pick" | "ban">("ban");
   const [pbPlayer, setPbPlayer] = useState("");
   const [pbHero, setPbHero] = useState("");
+  // Shared by both the manual "Hero picks & bans" form and the OCR/AI-vision
+  // draft-detection push flow (commitDraftAction below) — every pick/ban,
+  // however it got logged, should show up in the Moment list without a
+  // separate manual step.
+  async function logPickBanMoment(type: "pick" | "ban", teamId: string, heroName: string, playerId?: string | null) {
+    if (!game || !match) return;
+    const teamName = teamId === match.team_a?.id ? match.team_a?.name : teamId === match.team_b?.id ? match.team_b?.name : "";
+    const playerName = playerId ? players.find((p) => p.id === playerId)?.ign : null;
+    await supabase.from("key_moments").insert({
+      game_id: game.id,
+      match_id: matchId,
+      type,
+      team_id: teamId,
+      player_id: playerId || null,
+      description: `${teamName} ${type === "pick" ? "picks" : "bans"} ${heroName}${playerName ? ` — ${playerName}` : ""}`,
+      minute_mark: minute,
+      second_mark: secondOfMinute,
+      source: "auto",
+    });
+  }
+
   async function logPickBan() {
     if (!pbTeam || !pbHero || !game) return;
     if (pbType === "pick" && !pbPlayer) return;
+    // Same-team hero uniqueness — two players on one team can't both be
+    // running the same hero in the same game.
+    if (pbType === "pick") {
+      const dupeHero = pickBans.some(
+        (pb) => pb.team_id === pbTeam && pb.type === "pick" && pb.hero_name.toLowerCase() === pbHero.toLowerCase()
+      );
+      if (dupeHero) {
+        setError(`${pbHero} is already picked by this team this game.`);
+        return;
+      }
+    }
     const { error } = await supabase.from("hero_picks_bans").insert({
       game_id: game.id,
       match_id: matchId,
@@ -299,6 +340,11 @@ export default function LiveConsolePage() {
       setError(error.message);
       return;
     }
+    await logPickBanMoment(pbType, pbTeam, pbHero, pbType === "pick" ? pbPlayer : null);
+    // A manual pick is the scoreboard's source of truth for that slot —
+    // sync it immediately instead of leaving the two to drift until
+    // someone edits K/D/A by hand.
+    if (pbType === "pick" && pbPlayer) await updateStat(pbPlayer, "hero_name", pbHero);
     setPbHero("");
     setPbPlayer("");
     loadAll();
@@ -337,6 +383,14 @@ export default function LiveConsolePage() {
   // fixing that shouldn't require leaving this page for /admin/players.
   const [editingScoreboardPlayerId, setEditingScoreboardPlayerId] = useState<string | null>(null);
   const [editingScoreboardIgn, setEditingScoreboardIgn] = useState("");
+  // Keyed by team_id — which roster player is selected in that team's
+  // "add player" dropdown (for a substitute the scoreboard didn't already
+  // pick up automatically).
+  const [addPlayerSelect, setAddPlayerSelect] = useState<Record<string, string>>({});
+  // Pop-out hero reference — all hero icons/names at a glance for fast
+  // pick/ban selection, since scrolling a plain <select> of 130+ heroes by
+  // name is slow mid-draft. Draft-phase only per its own purpose.
+  const [showHeroPicker, setShowHeroPicker] = useState(false);
   async function saveScoreboardPlayerEdit(playerId: string) {
     if (!editingScoreboardIgn.trim()) return;
     const { error } = await supabase.from("players").update({ ign: editingScoreboardIgn.trim() }).eq("id", playerId);
@@ -401,6 +455,34 @@ export default function LiveConsolePage() {
     const { error } = await supabase.from("objectives").delete().eq("id", mostRecent.id);
     if (error) setError(error.message);
     else loadAll();
+  }
+
+  // ── Net worth (OCR-fed, but directly editable) ───────────────────────
+  // "Latest" is just the highest minute_mark row for this game — snapshots
+  // are ordered ascending by loadAll's query.
+  const latestNetWorth = netWorth[netWorth.length - 1] ?? null;
+  async function updateNetWorthManual(teamAGold: number, teamBGold: number) {
+    if (!game || !match) return;
+    await supabase.from("net_worth_snapshots").insert({
+      game_id: game.id,
+      match_id: matchId,
+      minute_mark: minute,
+      team_a_gold: teamAGold,
+      team_b_gold: teamBGold,
+    });
+    // Every manual edit gets logged — net worth otherwise only ever moves
+    // via silent OCR ticks, so a manual correction should be visible/
+    // auditable in the same moment list everything else goes through.
+    await supabase.from("key_moments").insert({
+      game_id: game.id,
+      match_id: matchId,
+      type: "custom",
+      description: `Net worth manually set — ${match.team_a?.name}: ${teamAGold.toLocaleString()}, ${match.team_b?.name}: ${teamBGold.toLocaleString()}`,
+      minute_mark: minute,
+      second_mark: secondOfMinute,
+      source: "manual",
+    });
+    loadAll();
   }
 
   // ── Key moments (template-driven) ────────────────────────────────────
@@ -496,7 +578,7 @@ export default function LiveConsolePage() {
 
     const screenshotUrl = kmAttachScreenshot && captureActive ? await uploadMomentScreenshot() : null;
 
-    await supabase.from("key_moments").insert({
+    const { error: insertError } = await supabase.from("key_moments").insert({
       game_id: game.id,
       match_id: matchId,
       type: selectedTemplate.type,
@@ -504,10 +586,18 @@ export default function LiveConsolePage() {
       player_id: kmPlayer || null,
       team_id: kmTeam || null,
       minute_mark: minute,
+      second_mark: secondOfMinute,
       source: "manual",
       is_key_moment: isKeyMoment,
       screenshot_url: screenshotUrl,
     });
+    // Was previously unchecked — a rejected insert (e.g. a template type
+    // the key_moments type CHECK constraint didn't allow) failed with no
+    // feedback at all, which read as "the moment log button does nothing."
+    if (insertError) {
+      setError(insertError.message);
+      return;
+    }
     // Whether this auto-shares to Telegram is config-driven per template
     // (/admin/moment-templates), not tied to is_key_moment — everything else
     // (picks, bans, phase changes not configured to auto-post) stays manual
@@ -613,24 +703,6 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  // ── Net worth snapshot ──────────────────────────────────────────────
-  async function logNetWorthSnapshot() {
-    if (!game || !match || !match.team_a || !match.team_b) return;
-    const teamAGold = stats
-      .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id)
-      .reduce((sum, s) => sum + (s.gold ?? 0), 0);
-    const teamBGold = stats
-      .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b?.id)
-      .reduce((sum, s) => sum + (s.gold ?? 0), 0);
-
-    await supabase.from("net_worth_snapshots").insert({
-      game_id: game.id,
-      minute_mark: minute,
-      team_a_gold: teamAGold,
-      team_b_gold: teamBGold,
-    });
-  }
-
   // ── Local capture (admin PC) ─────────────────────────────────────────
   // Only meaningful when match.update_source === "local_ocr": deterministic,
   // local, free OCR on a screen-shared tab — no AI, no rate limits, no
@@ -654,11 +726,28 @@ export default function LiveConsolePage() {
     | "kills_right"
     | "networth_left"
     | "networth_right"
-    | "kda_left"
-    | "kda_right"
+    | "kda_left_1"
+    | "kda_left_2"
+    | "kda_left_3"
+    | "kda_left_4"
+    | "kda_left_5"
+    | "kda_right_1"
+    | "kda_right_2"
+    | "kda_right_3"
+    | "kda_right_4"
+    | "kda_right_5"
     | "kill_banner"
     | "victory_banner"
     | "pause_word";
+  // One region per player (5 per side) instead of one region for the whole
+  // team block — a team-block region asked OCR to read 5 lines out of one
+  // crop in a single pass, where any one player's row being slightly
+  // misaligned or a hero icon overlapping text could throw off the whole
+  // block. Individually-calibrated per-player regions are more reliable
+  // (recognize() on a small single-line crop) at the cost of 5x the
+  // calibration effort — same tradeoff already made for kills_left/right
+  // and objectives_left/right vs. one combined region.
+  const KDA_SLOT_LABELS = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
   const CAPTURE_FIELDS: { field: CaptureField; label: string }[] = [
     { field: "countdown", label: "Pre-game countdown" },
     { field: "draft_timer_a", label: "Draft timer — Team A" },
@@ -672,8 +761,14 @@ export default function LiveConsolePage() {
     { field: "kills_right", label: "Team kills — right" },
     { field: "networth_left", label: "Net worth — left" },
     { field: "networth_right", label: "Net worth — right" },
-    { field: "kda_left", label: "K/D/A — left (5 lines, one per player)" },
-    { field: "kda_right", label: "K/D/A — right (5 lines, one per player)" },
+    ...([1, 2, 3, 4, 5] as const).map((n) => ({
+      field: `kda_left_${n}` as CaptureField,
+      label: `K/D/A — left #${n} (${KDA_SLOT_LABELS[n - 1]})`,
+    })),
+    ...([1, 2, 3, 4, 5] as const).map((n) => ({
+      field: `kda_right_${n}` as CaptureField,
+      label: `K/D/A — right #${n} (${KDA_SLOT_LABELS[n - 1]})`,
+    })),
     { field: "kill_banner", label: "Kill banner (Savage/Maniac/etc.)" },
     { field: "victory_banner", label: "Victory/defeat banner" },
     { field: "pause_word", label: "Pause indicator" },
@@ -697,8 +792,16 @@ export default function LiveConsolePage() {
       "kills_right",
       "networth_left",
       "networth_right",
-      "kda_left",
-      "kda_right",
+      "kda_left_1",
+      "kda_left_2",
+      "kda_left_3",
+      "kda_left_4",
+      "kda_left_5",
+      "kda_right_1",
+      "kda_right_2",
+      "kda_right_3",
+      "kda_right_4",
+      "kda_right_5",
       "kill_banner",
     ],
     GAME_FINISHED: ["victory_banner"],
@@ -719,8 +822,16 @@ export default function LiveConsolePage() {
     kills_right: null,
     networth_left: null,
     networth_right: null,
-    kda_left: null,
-    kda_right: null,
+    kda_left_1: null,
+    kda_left_2: null,
+    kda_left_3: null,
+    kda_left_4: null,
+    kda_left_5: null,
+    kda_right_1: null,
+    kda_right_2: null,
+    kda_right_3: null,
+    kda_right_4: null,
+    kda_right_5: null,
     kill_banner: null,
     victory_banner: null,
     pause_word: null,
@@ -731,20 +842,57 @@ export default function LiveConsolePage() {
   const streamRef = useRef<MediaStream | null>(null);
   const workerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const dragStart = useRef<{ x: number; y: number } | null>(null);
+  // Corner-drag resize state for region calibration. dragMode covers a
+  // fresh draw, moving the whole box, or one of the 4 corner handles;
+  // dragStartPct/dragStartBox snapshot where the drag began so every
+  // subsequent mousemove computes a fresh box from the same origin
+  // instead of drifting from incremental deltas. Window-level listeners
+  // (not container-scoped) so a fast drag that briefly leaves the small
+  // preview area doesn't drop the interaction.
+  type DragMode = "draw" | "move" | "nw" | "ne" | "sw" | "se";
+  const dragMode = useRef<DragMode | null>(null);
+  const dragStartPct = useRef<{ x: number; y: number } | null>(null);
+  const dragStartBox = useRef<RegionBox | null>(null);
+  const cropRectRef = useRef<DOMRect | null>(null);
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
-  // Counts consecutive ticks where game_timer failed to parse a valid
-  // mm:ss while the match is GAME_STARTED — the one case reserved for
-  // "tracker went blank" inference (technical pause), since a blank timer
-  // alone can't otherwise distinguish a pause from a caster cutaway or the
-  // game actually ending (those have their own, better signals: the
+  // Tracks how long game_timer has failed to parse a valid mm:ss, in real
+  // elapsed time rather than a raw tick count — a plain "3 ticks" counter
+  // (at the 5s capture interval, 15s total) turned out to fire on brief,
+  // ordinary OCR misreads (a kill-cam or overlay transition briefly
+  // obscuring the timer), not just an actual pause, since tesseract isn't
+  // perfectly reliable frame-to-frame even mid-game. Widened to a real
+  // 30s-elapsed threshold instead, which also stays correct if a tick is
+  // ever delayed (a strict tick count would under-count real elapsed time
+  // in that case). The one case this is reserved for is "tracker went
+  // blank" inference (technical pause) — a blank timer alone can't
+  // otherwise distinguish a pause from a caster cutaway or the game
+  // actually ending (those have their own, better signals: the
   // victory-banner OCR and the deterministic win-count math below).
-  const unreadableTimerTicks = useRef(0);
+  const unreadableTimerSince = useRef<number | null>(null);
+  const pauseSuggested = useRef(false);
+  // Guards against overlapping ticks — GAME_STARTED scans up to 18 regions
+  // sequentially (10 of those are the per-player K/D/A slots; vs. 1-4 for
+  // every other phase), and each is a real tesseract.js recognize() call.
+  // On a slower machine/frame that easily exceeds the 5s interval between
+  // ticks; setInterval doesn't wait for its callback to finish, so without
+  // this a new tick started reading from the
+  // same Tesseract worker while the previous one was still mid-recognize —
+  // the worker serializes those internally, so ticks just piled up behind
+  // each other forever and the tracker looked stalled/dead once
+  // GAME_STARTED's much longer field list was reached.
+  const tickInFlight = useRef(false);
 
   const [captureActive, setCaptureActive] = useState(false);
   const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
+  // Live-editable draft of the region currently being calibrated — shown
+  // with a preview box + corner handles, not persisted to capture_regions
+  // until the admin explicitly locks it (see lockDraftBox). Starts from
+  // the field's existing saved region when there is one, so "Resize" is a
+  // real corner-drag adjustment instead of redrawing from scratch.
+  const [draftBox, setDraftBox] = useState<RegionBox | null>(null);
+  const [manualTimeInputs, setManualTimeInputs] = useState<Record<string, string>>({});
   const [regions, setRegions] = useState<Record<CaptureField, RegionBox | null>>({ ...EMPTY_CAPTURE_RECORD });
   const [readings, setReadings] = useState<Record<CaptureField, string>>({
     ...EMPTY_CAPTURE_RECORD,
@@ -760,8 +908,16 @@ export default function LiveConsolePage() {
     kills_right: "",
     networth_left: "",
     networth_right: "",
-    kda_left: "",
-    kda_right: "",
+    kda_left_1: "",
+    kda_left_2: "",
+    kda_left_3: "",
+    kda_left_4: "",
+    kda_left_5: "",
+    kda_right_1: "",
+    kda_right_2: "",
+    kda_right_3: "",
+    kda_right_4: "",
+    kda_right_5: "",
     kill_banner: "",
     victory_banner: "",
     pause_word: "",
@@ -874,6 +1030,7 @@ export default function LiveConsolePage() {
       },
       { onConflict: "game_id,team_id,hero_name,type" }
     );
+    await logPickBanMoment(action.type, teamId, action.hero_name);
   }
 
   async function pushStagedDraftActions() {
@@ -956,16 +1113,22 @@ export default function LiveConsolePage() {
         const now = Date.now();
         if (lastAutoKeyMoment.current.key !== key || now - lastAutoKeyMoment.current.at > 60000) {
           lastAutoKeyMoment.current = { key, at: now };
-          await supabase.from("key_moments").insert({
+          // source: "ai" was never a valid value — key_moments_source_check
+          // only allows 'manual'/'auto', so every AI-vision-detected key
+          // moment (Savage/Maniac/etc.) failed this insert silently, every
+          // time, since this call's error was never checked either.
+          const { error: kmInsertError } = await supabase.from("key_moments").insert({
             game_id: game.id,
             match_id: matchId,
             type: detection.key_moment_banner.toLowerCase(),
             player_id: playerId,
             minute_mark: minute,
-            source: "ai",
+            second_mark: secondOfMinute,
+            source: "auto",
             confidence: detection.confidence ?? null,
             is_key_moment: KEY_MOMENT_TYPES.includes(detection.key_moment_banner.toLowerCase()),
           });
+          if (kmInsertError) console.error("Failed to log AI-detected key moment:", kmInsertError.message);
         }
       }
     }
@@ -1203,7 +1366,11 @@ export default function LiveConsolePage() {
   useEffect(() => {
     if (!game) return;
     if (game.clock_source === "manual") {
-      const tick = () => setMinute(Math.floor(manualElapsedSeconds(game) / 60));
+      const tick = () => {
+        const s = manualElapsedSeconds(game);
+        setMinute(Math.floor(s / 60));
+        setSecondOfMinute(s % 60);
+      };
       tick();
       if (!game.manual_time_running) return;
       const id = setInterval(tick, 1000);
@@ -1212,7 +1379,9 @@ export default function LiveConsolePage() {
     if (captureActive) return; // captureTick() owns it while actively reading
     if (game.current_time_seconds == null || !game.current_time_updated_at) return;
     const elapsed = Math.floor((Date.now() - new Date(game.current_time_updated_at).getTime()) / 1000);
-    setMinute(Math.floor((game.current_time_seconds + elapsed) / 60));
+    const totalSeconds = game.current_time_seconds + elapsed;
+    setMinute(Math.floor(totalSeconds / 60));
+    setSecondOfMinute(totalSeconds % 60);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     game?.id,
@@ -1245,6 +1414,36 @@ export default function LiveConsolePage() {
   async function updateDraftTimer(side: "a" | "b", totalSeconds: number) {
     if (!match) return;
     if (totalSeconds === lastPersistedDraftTimers.current[side]) return;
+    lastPersistedDraftTimers.current[side] = totalSeconds;
+    const column = side === "a" ? "draft_timer_a_seconds" : "draft_timer_b_seconds";
+    await supabase
+      .from("matches")
+      .update({ [column]: totalSeconds, draft_timer_updated_at: new Date().toISOString() })
+      .eq("id", match.id);
+  }
+
+  // Manual fallback for countdown/draft-timer fields — both are one-way
+  // countdowns the public page already decays client-side from a single
+  // (value, updated_at) pair, so unlike the game clock these don't need a
+  // running/paused state machine, just a way to set the starting value
+  // when OCR hasn't been calibrated yet or the overlay text isn't legible.
+  function parseMmSs(input: string): number | null {
+    const m = input.trim().match(/^(\d{1,3}):(\d{2})$/);
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  }
+  async function setManualCountdown(input: string) {
+    const totalSeconds = parseMmSs(input);
+    if (totalSeconds == null) return;
+    lastPersistedCountdown.current = totalSeconds;
+    await supabase
+      .from("matches")
+      .update({ countdown_seconds: totalSeconds, countdown_updated_at: new Date().toISOString() })
+      .eq("id", match?.id);
+  }
+  async function setManualDraftTimer(side: "a" | "b", input: string) {
+    const totalSeconds = parseMmSs(input);
+    if (totalSeconds == null || !match) return;
     lastPersistedDraftTimers.current[side] = totalSeconds;
     const column = side === "a" ? "draft_timer_a_seconds" : "draft_timer_b_seconds";
     await supabase
@@ -1327,7 +1526,16 @@ export default function LiveConsolePage() {
     const video = previewRef.current;
     const worker = workerRef.current;
     if (!video || !worker || video.videoWidth === 0) return;
+    if (tickInFlight.current) return;
+    tickInFlight.current = true;
+    try {
+      await captureTickBody(video, worker);
+    } finally {
+      tickInFlight.current = false;
+    }
+  }
 
+  async function captureTickBody(video: HTMLVideoElement, worker: NonNullable<typeof workerRef.current>) {
     // Only scan the fields that matter for whatever phase the admin has
     // this match set to right now — this is what makes each phase's
     // tracker genuinely distinct instead of always reading the same trio
@@ -1362,16 +1570,20 @@ export default function LiveConsolePage() {
         }
         if (field === "game_timer") {
           if (mmss) {
-            unreadableTimerTicks.current = 0;
+            unreadableTimerSince.current = null;
+            pauseSuggested.current = false;
             setMinute(Number(mmss[1]));
+            setSecondOfMinute(Number(mmss[2]));
             updateGameClock(Number(mmss[1]), Number(mmss[2]));
             maybeAutoStartGame();
           } else if (match?.state === "GAME_STARTED") {
             // The one case reserved for "tracker went blank" inference — see
-            // the comment on unreadableTimerTicks above.
-            unreadableTimerTicks.current += 1;
-            if (unreadableTimerTicks.current === 3) {
-              setSuggestion({ type: "game_pause", raw: "Game timer unreadable for 3 consecutive ticks" });
+            // the comment on unreadableTimerSince above.
+            if (unreadableTimerSince.current === null) unreadableTimerSince.current = Date.now();
+            const unreadableForMs = Date.now() - unreadableTimerSince.current;
+            if (unreadableForMs >= 30000 && !pauseSuggested.current) {
+              pauseSuggested.current = true;
+              setSuggestion({ type: "game_pause", raw: "Game timer unreadable for 30+ seconds" });
             }
           }
         }
@@ -1413,8 +1625,13 @@ export default function LiveConsolePage() {
           const n = trimmed.match(/\d[\d,]*/);
           if (n) networthRight = Number(n[0].replace(/,/g, ""));
         }
-        if (field === "kda_left") kdaLeftParsed = parseKdaLines(trimmed, leftTeamId);
-        if (field === "kda_right") kdaRightParsed = parseKdaLines(trimmed, rightTeamId);
+        // One region per player now (not one region for the whole team
+        // block) — each field still goes through parseKdaLines since a
+        // single-line crop is just the degenerate case of the multi-line
+        // parser it already was, but results now accumulate across the 5
+        // per-side fields instead of being overwritten by the last one read.
+        if (field.startsWith("kda_left_")) kdaLeftParsed = [...kdaLeftParsed, ...parseKdaLines(trimmed, leftTeamId)];
+        if (field.startsWith("kda_right_")) kdaRightParsed = [...kdaRightParsed, ...parseKdaLines(trimmed, rightTeamId)];
         if (field === "victory_banner" && /victory|defeat|win/i.test(trimmed)) {
           const teamId = guessWinnerFromText(trimmed);
           if (teamId) setSuggestedWinner(teamId);
@@ -1427,9 +1644,10 @@ export default function LiveConsolePage() {
       }
     }
 
-    // Net worth: only worth a snapshot once we actually have both sides —
-    // feeds the same net_worth_snapshots table the manual "Snapshot net
-    // worth" button already writes to.
+    // Net worth: only worth a snapshot once we actually have both sides.
+    // No manual "Snapshot net worth" button anymore — this automatic OCR
+    // read (and applyAiDetection's equivalent for the AI-vision path) is
+    // the only writer to net_worth_snapshots now.
     if (networthLeft != null && networthRight != null && game && match) {
       const teamAGold = leftTeamId === match.team_a?.id ? networthLeft : networthRight;
       const teamBGold = leftTeamId === match.team_a?.id ? networthRight : networthLeft;
@@ -1537,28 +1755,108 @@ export default function LiveConsolePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.state]);
 
-  function handleCropMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    if (!calibratingField) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    dragStart.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  function clientToPct(clientX: number, clientY: number, rect: DOMRect) {
+    return {
+      x: Math.min(100, Math.max(0, ((clientX - rect.left) / rect.width) * 100)),
+      y: Math.min(100, Math.max(0, ((clientY - rect.top) / rect.height) * 100)),
+    };
   }
-  function handleCropMouseUp(e: React.MouseEvent<HTMLDivElement>) {
-    if (!calibratingField || !dragStart.current) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const endX = e.clientX - rect.left;
-    const endY = e.clientY - rect.top;
-    const x = Math.min(dragStart.current.x, endX);
-    const y = Math.min(dragStart.current.y, endY);
-    const w = Math.abs(endX - dragStart.current.x);
-    const h = Math.abs(endY - dragStart.current.y);
-    saveRegion(calibratingField, {
-      xPct: (x / rect.width) * 100,
-      yPct: (y / rect.height) * 100,
-      wPct: (w / rect.width) * 100,
-      hPct: (h / rect.height) * 100,
-    });
-    dragStart.current = null;
+
+  // Starts a drag: drawing a brand-new box (no draftBox yet), moving the
+  // whole box, or resizing from one corner. e.stopPropagation() keeps a
+  // handle's own mousedown from also bubbling to the container's
+  // "start a fresh draw" handler.
+  function startBoxDrag(mode: DragMode, e: React.MouseEvent) {
+    if (!calibratingField) return;
+    e.stopPropagation();
+    const container = e.currentTarget.closest("[data-crop-container]");
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    cropRectRef.current = rect;
+    dragMode.current = mode;
+    dragStartPct.current = clientToPct(e.clientX, e.clientY, rect);
+    dragStartBox.current = draftBox;
+  }
+
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const mode = dragMode.current;
+      const rect = cropRectRef.current;
+      const start = dragStartPct.current;
+      if (!mode || !rect || !start) return;
+      const pt = clientToPct(e.clientX, e.clientY, rect);
+
+      if (mode === "draw") {
+        setDraftBox({
+          xPct: Math.min(start.x, pt.x),
+          yPct: Math.min(start.y, pt.y),
+          wPct: Math.abs(pt.x - start.x),
+          hPct: Math.abs(pt.y - start.y),
+        });
+        return;
+      }
+      const startBox = dragStartBox.current;
+      if (!startBox) return;
+      if (mode === "move") {
+        const dx = pt.x - start.x;
+        const dy = pt.y - start.y;
+        setDraftBox({
+          ...startBox,
+          xPct: Math.min(100 - startBox.wPct, Math.max(0, startBox.xPct + dx)),
+          yPct: Math.min(100 - startBox.hPct, Math.max(0, startBox.yPct + dy)),
+        });
+        return;
+      }
+      // Corner handles — each recomputed from the box-at-drag-start plus
+      // the opposite (anchor) edge, not incremental deltas, so a fast or
+      // jittery drag can't accumulate drift.
+      const right = startBox.xPct + startBox.wPct;
+      const bottom = startBox.yPct + startBox.hPct;
+      let { xPct, yPct, wPct, hPct } = startBox;
+      const MIN = 1.5; // pct — a region under ~1.5% of the preview isn't usable for OCR anyway
+      if (mode.includes("w")) {
+        xPct = Math.min(pt.x, right - MIN);
+        wPct = right - xPct;
+      }
+      if (mode.includes("e")) {
+        wPct = Math.max(MIN, pt.x - startBox.xPct);
+      }
+      if (mode.includes("n")) {
+        yPct = Math.min(pt.y, bottom - MIN);
+        hPct = bottom - yPct;
+      }
+      if (mode.includes("s")) {
+        hPct = Math.max(MIN, pt.y - startBox.yPct);
+      }
+      setDraftBox({ xPct, yPct, wPct, hPct });
+    }
+    function onUp() {
+      dragMode.current = null;
+      dragStartPct.current = null;
+      dragStartBox.current = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  function lockDraftBox() {
+    if (!calibratingField || !draftBox) return;
+    if (draftBox.wPct < 1 || draftBox.hPct < 1) return; // too small to be a real region — ignore
+    saveRegion(calibratingField, draftBox);
+    setDraftBox(null);
     setCalibratingField(null);
+  }
+  function cancelDraftBox() {
+    setDraftBox(null);
+    setCalibratingField(null);
+  }
+  function startCalibrating(field: CaptureField) {
+    setCalibratingField(field);
+    setDraftBox(regions[field] ?? null);
   }
 
   async function confirmSuggestion() {
@@ -1568,6 +1866,7 @@ export default function LiveConsolePage() {
       match_id: matchId,
       type: suggestion.type,
       minute_mark: minute,
+      second_mark: secondOfMinute,
       source: "manual",
       is_key_moment: KEY_MOMENT_TYPES.includes(suggestion.type),
     });
@@ -1618,6 +1917,36 @@ export default function LiveConsolePage() {
           .eq("id", match.id);
     if (error) setError(error.message);
 
+    // Every game (and series) result gets its own moment-list entry, not
+    // just a Telegram post — the public Moment list is otherwise silent on
+    // exactly the two moments viewers care about most.
+    if (match.update_source === "local_ocr") {
+      const winnerName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+      await supabase.from("key_moments").insert({
+        game_id: game.id,
+        match_id: matchId,
+        type: "game_finish",
+        description: `${winnerName} wins Game ${game.game_number}`,
+        minute_mark: minute,
+        second_mark: secondOfMinute,
+        source: "manual",
+        is_key_moment: true,
+      });
+      if (seriesWinner) {
+        const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+        await supabase.from("key_moments").insert({
+          game_id: game.id,
+          match_id: matchId,
+          type: "match_finish",
+          description: `${seriesWinnerName} wins the series ${Math.max(aWins, bWins)}–${Math.min(aWins, bWins)}`,
+          minute_mark: minute,
+          second_mark: secondOfMinute,
+          source: "manual",
+          is_key_moment: true,
+        });
+      }
+    }
+
     // The worker posts this automatically for Liquipedia-sourced matches,
     // but never sees local_ocr matches at all — post it here instead so
     // those results still reach Telegram.
@@ -1636,6 +1965,132 @@ export default function LiveConsolePage() {
       }
     }
 
+    loadAll();
+  }
+
+  // Closes out the series from already-clinched game results (the phase
+  // dropdown's "Series finished" option), as opposed to declareGameWinner
+  // which closes out the CURRENT game and only promotes to series-finished
+  // as a side effect of that. Shares the same finalize/notify shape so a
+  // manual dropdown selection ends up in the same state as the button-
+  // driven path — final score set, Telegram sent, status set to finished.
+  async function finalizeSeriesFinished(seriesWinner: string, aWins: number, bWins: number) {
+    if (!match || !game) return;
+    const { error } = await supabase
+      .from("matches")
+      .update({ status: "finished", state: "SERIES_FINISHED", series_winner_team_id: seriesWinner })
+      .eq("id", match.id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    if (match.update_source === "local_ocr") {
+      const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+      await supabase.from("key_moments").insert({
+        game_id: game.id,
+        match_id: matchId,
+        type: "match_finish",
+        description: `${seriesWinnerName} wins the series ${Math.max(aWins, bWins)}–${Math.min(aWins, bWins)}`,
+        minute_mark: minute,
+        second_mark: secondOfMinute,
+        source: "manual",
+        is_key_moment: true,
+      });
+      await postToTelegram(
+        `🏆 <b>Match finished</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${seriesWinnerName}</b>\n${match.tournament?.name}`,
+        { entityType: "match", entityId: match.id, notificationType: "match_finished" }
+      );
+    }
+    loadAll();
+  }
+
+  const [forceWinnerPrompt, setForceWinnerPrompt] = useState(false);
+
+  // Single gatekeeper for every phase-dropdown selection — routes
+  // Game/Series finished through the same winner-declaration logic the
+  // buttons already use instead of letting the dropdown set those states
+  // directly with no winner attached, and enforces the technical-pause
+  // and series-finished-lock rules below.
+  async function handlePhaseChange(newState: string) {
+    if (!match || !game) return;
+    const currentState = match.state;
+    if (currentState === newState) return;
+
+    if (currentState === "SERIES_FINISHED") {
+      setError("This match is finished — use Reset if you need to change its phase.");
+      return;
+    }
+
+    if (newState === "GAME_FINISHED") {
+      setForceWinnerPrompt(true);
+      return;
+    }
+
+    if (newState === "SERIES_FINISHED") {
+      const allGames = [...pastGames, game];
+      const winsFor = (id: string) => allGames.filter((g) => g.winner_team_id === id).length;
+      const required = SERIES_WINS_REQUIRED[match.format ?? "BO3"] ?? 2;
+      const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
+      const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
+      const seriesWinner = aWins >= required ? match.team_a?.id : bWins >= required ? match.team_b?.id : null;
+      if (!seriesWinner) {
+        setError(`Series finished can't be set yet — no team has reached ${required} game win(s) for ${match.format ?? "BO3"}.`);
+        return;
+      }
+      await finalizeSeriesFinished(seriesWinner, aWins, bWins);
+      return;
+    }
+
+    if (newState === "TECHNICAL_PAUSE" && currentState !== "GAME_STARTED") {
+      setError("Technical pause can only be triggered from Game ongoing.");
+      return;
+    }
+    if (currentState === "TECHNICAL_PAUSE" && newState !== "GAME_STARTED") {
+      setError("Technical pause can only return to Game ongoing.");
+      return;
+    }
+
+    // Pause/resume the manual stopwatch across a technical pause — the OCR
+    // clock needs no equivalent handling, since a genuinely paused game's
+    // on-screen timer just stops changing, which OCR reads as-is.
+    if (newState === "TECHNICAL_PAUSE" && game.clock_source === "manual" && game.manual_time_running) {
+      await pauseManualClock();
+    }
+    if (currentState === "TECHNICAL_PAUSE" && newState === "GAME_STARTED" && game.clock_source === "manual" && !game.manual_time_running) {
+      await startManualClock();
+    }
+
+    await setMatchPhase(newState);
+  }
+
+  // Direct correction for a game's winner (current or a past one), for
+  // fixing a wrong call after the fact — distinct from declareGameWinner,
+  // which is for FIRST closing out a game and advances current_game_number/
+  // posts Telegram as a new event. This only touches the one games row and
+  // silently recomputes the series winner from the corrected results,
+  // without re-sending any notifications for what is a correction, not a
+  // new result.
+  async function correctGameWinner(gameId: string, teamId: string) {
+    if (!match) return;
+    const { error } = await supabase
+      .from("games")
+      .update({ winner_team_id: teamId, status: "finished", state: "GAME_FINISHED" })
+      .eq("id", gameId);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    const allWinners: (string | null)[] = pastGames.map((g) => (g.id === gameId ? teamId : g.winner_team_id));
+    if (game) allWinners.push(game.id === gameId ? teamId : game.winner_team_id);
+    const winsFor = (id: string) => allWinners.filter((w) => w === id).length;
+    const required = SERIES_WINS_REQUIRED[match.format ?? "BO3"] ?? 2;
+    const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
+    const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
+    const seriesWinner = aWins >= required ? match.team_a?.id : bWins >= required ? match.team_b?.id : null;
+    await supabase
+      .from("matches")
+      .update({ series_winner_team_id: seriesWinner, state: seriesWinner ? "SERIES_FINISHED" : match.state, status: seriesWinner ? "finished" : match.status })
+      .eq("id", match.id);
     loadAll();
   }
 
@@ -1712,6 +2167,7 @@ export default function LiveConsolePage() {
         type: "phase_change",
         description: `Phase changed to ${newState.replace(/_/g, " ")}`,
         minute_mark: minute,
+        second_mark: secondOfMinute,
         source: "manual",
       });
 
@@ -1782,20 +2238,27 @@ export default function LiveConsolePage() {
   // whole roster (which included bench/subs never playing this game —
   // the source of "mistakenly taking other data than players"). Falls
   // back to the full roster, sorted the same way, until picks are logged
-  // so the admin has someone to pick from. Both always sort left-to-right
-  // by role: exp lane, jungler, mid laner, gold laner, roamer.
+  // so the admin has someone to pick from. Also always includes anyone
+  // with a player_stats row for this game even without a pick — this is
+  // what makes the "add player" button below actually work for a
+  // substitute who came in without a hero pick ever being logged for
+  // them. Both always sort left-to-right by role: exp lane, jungler, mid
+  // laner, gold laner, roamer.
   function activeFive(teamId: string | undefined) {
     if (!teamId) return [];
-    const picked = pickBans
-      .filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id)
-      .map((pb) => players.find((p) => p.id === pb.player_id))
-      .filter((p): p is Player => Boolean(p));
-    const base = picked.length > 0 ? picked : players.filter((p) => p.team_id === teamId);
+    const pickedIds = new Set(pickBans.filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id).map((pb) => pb.player_id));
+    const statIds = new Set(stats.map((s) => s.player_id));
+    const included = players.filter((p) => p.team_id === teamId && (pickedIds.has(p.id) || statIds.has(p.id)));
+    const base = included.length > 0 ? included : players.filter((p) => p.team_id === teamId);
     return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
   }
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
+  async function addScoreboardPlayer(playerId: string) {
+    await ensureStatRow(playerId);
+    loadAll();
+  }
 
   return (
     <div className="text-white space-y-8 max-w-6xl">
@@ -1807,12 +2270,19 @@ export default function LiveConsolePage() {
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
           <select
             value={match.state}
-            onChange={(e) => setMatchPhase(e.target.value)}
+            onChange={(e) => handlePhaseChange(e.target.value)}
             title="Manual phase override — useful for technical pauses or anything OCR/Liquipedia sync can't reflect on its own"
-            className="lv-badge bg-white/10 text-white/60 border-none"
+            // A semi-transparent bg (bg-white/10) on a <select> only tints
+            // the CLOSED control — most browsers still render the opened
+            // option list with their default light native chrome regardless
+            // of surrounding CSS, which is why this read as a barely-visible
+            // white dropdown. A solid dark background plus color-scheme:
+            // dark fixes both the closed control and the native popup list.
+            style={{ colorScheme: "dark" }}
+            className="lv-badge bg-white/10 text-white border border-white/20"
           >
             {MATCH_PHASES.map((s) => (
-              <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+              <option key={s} value={s} className="bg-ink text-white">{s.replace(/_/g, " ")}</option>
             ))}
           </select>
           {match.state === "CUSTOM" && (
@@ -1842,25 +2312,51 @@ export default function LiveConsolePage() {
           <button onClick={shareFullMatchInfo} className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10">
             📢 Share everything to Telegram
           </button>
-          {match.update_source !== "local_ocr" && (
-            <button
-              onClick={resetMatch}
-              disabled={!isEditable}
-              title={
-                isEditable
-                  ? "Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
-                  : "Not available while the match is scheduled — nothing to reset yet"
-              }
-              className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10 disabled:opacity-40"
-            >
-              ⟲ Reset match
-            </button>
-          )}
+          <button
+            onClick={resetMatch}
+            disabled={!isEditable}
+            title={
+              isEditable
+                ? "Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
+                : "Not available while the match is scheduled — nothing to reset yet"
+            }
+            className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10 disabled:opacity-40"
+          >
+            ⟲ Reset match
+          </button>
         </div>
         {match.state === "SERIES_FINISHED" && (
           <p className="text-sm text-emerald-400 mt-2">
             Series finished — winner: {match.series_winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
           </p>
+        )}
+        {forceWinnerPrompt && match.team_a && match.team_b && (
+          <div className="mt-3 border border-signal/40 bg-signal/10 rounded p-3 space-y-2">
+            <p className="text-sm text-signal font-semibold">Which team won Game {game.game_number}?</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  declareGameWinner(match.team_a!.id);
+                  setForceWinnerPrompt(false);
+                }}
+                className="lv-btn-ghost !px-3 !py-1.5"
+              >
+                {match.team_a.name}
+              </button>
+              <button
+                onClick={() => {
+                  declareGameWinner(match.team_b!.id);
+                  setForceWinnerPrompt(false);
+                }}
+                className="lv-btn-ghost !px-3 !py-1.5"
+              >
+                {match.team_b.name}
+              </button>
+              <button onClick={() => setForceWinnerPrompt(false)} className="text-xs text-white/40 hover:text-white/70">
+                Cancel
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -1878,10 +2374,29 @@ export default function LiveConsolePage() {
           <h2 className="font-bold text-sm text-white/60">Previous games</h2>
           <div className="flex flex-wrap gap-2 text-xs">
             {pastGames.map((g) => (
-              <span key={g.id} className="px-3 py-1.5 rounded bg-white/5 border border-white/10">
+              <span key={g.id} className="px-3 py-1.5 rounded bg-white/5 border border-white/10 inline-flex items-center gap-1.5">
                 Game {g.game_number}
                 {g.map && <span className="text-white/40"> · {g.map}</span>} —{" "}
                 <strong>{g.winner_team_id === match.team_a?.id ? match.team_a?.name : g.winner_team_id === match.team_b?.id ? match.team_b?.name : "no winner set"}</strong>
+                {/* Correcting a past result after the fact — distinct from
+                    declareGameWinner, which is for closing out a game the
+                    first time and posts a new Telegram/moment event. */}
+                {isEditable && match.team_a && match.team_b && (
+                  <span className="flex gap-1 ml-1">
+                    {[match.team_a, match.team_b].map((t) =>
+                      t.id === g.winner_team_id ? null : (
+                        <button
+                          key={t.id}
+                          onClick={() => correctGameWinner(g.id, t.id)}
+                          className="text-white/30 hover:text-signal normal-case"
+                          title={`Correct: ${t.name} actually won Game ${g.game_number}`}
+                        >
+                          → {t.name}
+                        </button>
+                      )
+                    )}
+                  </span>
+                )}
               </span>
             ))}
           </div>
@@ -1920,9 +2435,29 @@ export default function LiveConsolePage() {
           </div>
         )}
         {game.status === "finished" && (
-          <span className="lv-badge bg-emerald-500/15 text-emerald-400">
-            Game {game.game_number} winner: {game.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="lv-badge bg-emerald-500/15 text-emerald-400">
+              Game {game.game_number} winner: {game.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
+            </span>
+            {/* Not hard-locked after finished — a wrong call can still be
+                corrected via the same direct-update path as past games. */}
+            {isEditable && match.team_a && match.team_b && (
+              <span className="flex gap-1">
+                {[match.team_a, match.team_b].map((t) =>
+                  t.id === game.winner_team_id ? null : (
+                    <button
+                      key={t.id}
+                      onClick={() => correctGameWinner(game.id, t.id)}
+                      className="text-xs text-white/30 hover:text-signal"
+                      title={`Correct: ${t.name} actually won Game ${game.game_number}`}
+                    >
+                      → {t.name}
+                    </button>
+                  )
+                )}
+              </span>
+            )}
+          </div>
         )}
       </section>
 
@@ -1942,13 +2477,6 @@ export default function LiveConsolePage() {
               Current minute mark (used for every log action below): <span className="font-bold text-white text-sm tabular-nums">{minute}&apos;</span>
               {" "}— follows whichever clock source is selected, no manual entry needed.
             </p>
-            <button
-              onClick={logNetWorthSnapshot}
-              className="text-xs border border-white/10 rounded px-3 py-2 hover:bg-white/10"
-            >
-              📸 Snapshot net worth
-            </button>
-
             <label className="text-xs text-white/50 block pt-2">Public clock source</label>
             <div className="flex gap-1">
               {(["ocr", "manual"] as const).map((src) => (
@@ -1984,13 +2512,14 @@ export default function LiveConsolePage() {
                 +1m
               </button>
               <input
-                type="number"
-                placeholder="Set min"
+                type="text"
+                placeholder="MM:SS"
+                title="Set the clock directly, e.g. 12:30"
                 className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
                 onBlur={(e) => {
                   if (e.target.value === "") return;
-                  const mins = Number(e.target.value);
-                  if (!Number.isNaN(mins)) setManualClockSeconds(mins * 60);
+                  const m = e.target.value.trim().match(/^(\d{1,3}):(\d{2})$/);
+                  if (m) setManualClockSeconds(Number(m[1]) * 60 + Number(m[2]));
                   e.target.value = "";
                 }}
               />
@@ -2007,18 +2536,69 @@ export default function LiveConsolePage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Hero picks & bans</h2>
-          <button
-            onClick={() =>
-              postToTelegram(
-                `📋 <b>Draft complete — Game ${game.game_number}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
-                { entityType: "game", entityId: game.id, notificationType: "draft_result" }
-              )
-            }
-            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-          >
-            📢 Announce draft
-          </button>
+          <div className="flex gap-2">
+            {DRAFT_PHASES.includes(match.state) && (
+              <button
+                onClick={() => setShowHeroPicker(true)}
+                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+              >
+                🖼 Hero reference
+              </button>
+            )}
+            <button
+              onClick={() =>
+                postToTelegram(
+                  `📋 <b>Draft complete — Game ${game.game_number}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
+                  { entityType: "game", entityId: game.id, notificationType: "draft_result" }
+                )
+              }
+              className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+            >
+              📢 Announce draft
+            </button>
+          </div>
         </div>
+
+        {showHeroPicker && (
+          <div
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6"
+            onClick={() => setShowHeroPicker(false)}
+          >
+            <div
+              className="bg-ink border border-white/10 rounded-lg p-4 max-w-3xl w-full max-h-[80vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-sm">Hero reference — click to select</h3>
+                <button onClick={() => setShowHeroPicker(false)} className="text-white/40 hover:text-white/70 text-sm">✕</button>
+              </div>
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
+                {heroes.map((h) => (
+                  <button
+                    key={h.id}
+                    onClick={() => {
+                      setPbHero(h.name);
+                      setShowHeroPicker(false);
+                    }}
+                    className="flex flex-col items-center gap-1 group"
+                  >
+                    {h.icon_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={h.icon_url}
+                        alt=""
+                        className="w-12 h-12 rounded-full object-cover border border-white/10 transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal"
+                      />
+                    ) : (
+                      <span className="w-12 h-12 rounded-full bg-white/10 transition-transform duration-150 group-hover:-translate-y-1" />
+                    )}
+                    <span className="text-[10px] text-white/60 group-hover:text-white text-center leading-tight">{h.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="flex gap-2 items-end flex-wrap">
           <select
             value={pbTeam}
@@ -2048,9 +2628,11 @@ export default function LiveConsolePage() {
             >
               <option value="">Player</option>
               {pbTeam &&
-                rosterFor(pbTeam).map((p) => (
-                  <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
-                ))}
+                rosterFor(pbTeam)
+                  .filter((p) => !pickBans.some((pb) => pb.player_id === p.id && pb.type === "pick"))
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                  ))}
             </select>
           )}
           <div className="flex items-center gap-1.5">
@@ -2167,6 +2749,38 @@ export default function LiveConsolePage() {
         </div>
       </section>
 
+      {/* Net worth — OCR-fed each tick, but directly editable too */}
+      <section className="space-y-2">
+        <h2 className="font-bold">Net worth</h2>
+        <div className="flex gap-4 items-end">
+          {[
+            { team: match.team_a, key: "team_a_gold" as const, other: latestNetWorth?.team_b_gold ?? 0 },
+            { team: match.team_b, key: "team_b_gold" as const, other: latestNetWorth?.team_a_gold ?? 0 },
+          ].map(({ team, key, other }, idx) =>
+            team ? (
+              <div key={team.id} className="space-y-1">
+                <p className="text-xs text-white/50">{team.name}</p>
+                <input
+                  type="number"
+                  defaultValue={latestNetWorth?.[key] ?? ""}
+                  disabled={!isEditable}
+                  placeholder="Gold"
+                  className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+                  onBlur={(e) => {
+                    const value = Number(e.target.value);
+                    if (Number.isNaN(value)) return;
+                    if (value === (latestNetWorth?.[key] ?? null)) return;
+                    updateNetWorthManual(idx === 0 ? value : other, idx === 0 ? other : value);
+                  }}
+                />
+              </div>
+            ) : (
+              <span key={idx} />
+            )
+          )}
+        </div>
+      </section>
+
       {/* Scoreboard */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
@@ -2275,6 +2889,47 @@ export default function LiveConsolePage() {
                 </div>
               );
             })}
+            {/* For a substitute the scoreboard didn't already pick up
+                automatically (no hero pick logged for them this game) —
+                adding them here creates their player_stats row, which
+                activeFive() above now also treats as "in the game". */}
+            {isEditable && (
+              <div className="flex items-center gap-2 pl-8 pt-1">
+                {(() => {
+                  const teamId = idx === 0 ? match.team_a?.id : match.team_b?.id;
+                  if (!teamId) return null;
+                  const shownIds = new Set(teamPlayers.map((p) => p.id));
+                  const available = rosterFor(teamId).filter((p) => !shownIds.has(p.id));
+                  if (available.length === 0) return null;
+                  return (
+                    <>
+                      <select
+                        value={addPlayerSelect[teamId] ?? ""}
+                        onChange={(e) => setAddPlayerSelect((prev) => ({ ...prev, [teamId]: e.target.value }))}
+                        className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                      >
+                        <option value="">Add player...</option>
+                        {available.map((p) => (
+                          <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => {
+                          const playerId = addPlayerSelect[teamId];
+                          if (!playerId) return;
+                          addScoreboardPlayer(playerId);
+                          setAddPlayerSelect((prev) => ({ ...prev, [teamId]: "" }));
+                        }}
+                        disabled={!addPlayerSelect[teamId]}
+                        className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+                      >
+                        + Add
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         ))}
       </section>
@@ -2537,31 +3192,94 @@ export default function LiveConsolePage() {
             {captureActive && (
               <div className="space-y-3">
                 <div
-                  className="relative w-full max-w-md border border-white/10 rounded overflow-hidden"
-                  onMouseDown={captureMode === "manual" ? handleCropMouseDown : undefined}
-                  onMouseUp={captureMode === "manual" ? handleCropMouseUp : undefined}
+                  data-crop-container
+                  className="relative w-full max-w-md border border-white/10 rounded overflow-hidden select-none"
+                  onMouseDown={(e) => {
+                    // Only starts a brand-new box — once draftBox exists,
+                    // dragging happens via its own body/handle mousedown
+                    // (startBoxDrag), which stops propagation before this
+                    // ever fires.
+                    if (captureMode === "manual" && calibratingField && !draftBox) startBoxDrag("draw", e);
+                  }}
                 >
                   <video ref={previewRef} muted className="w-full block" />
                   {captureMode === "manual" &&
-                    activeCaptureFields.map(({ field }) => {
-                      const box = regions[field];
-                      if (!box) return null;
-                      return (
+                    activeCaptureFields
+                      .filter(({ field }) => field !== calibratingField)
+                      .map(({ field }) => {
+                        const box = regions[field];
+                        if (!box) return null;
+                        return (
+                          <div
+                            key={field}
+                            className="absolute border-2 border-white/40 pointer-events-none"
+                            style={{
+                              left: `${box.xPct}%`,
+                              top: `${box.yPct}%`,
+                              width: `${box.wPct}%`,
+                              height: `${box.hPct}%`,
+                            }}
+                          />
+                        );
+                      })}
+                  {/* The region currently being calibrated — live preview,
+                      draggable body (move) and 4 corner handles (resize).
+                      Nothing here persists until "Lock" is clicked. */}
+                  {captureMode === "manual" && calibratingField && draftBox && (
+                    <div
+                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                      style={{
+                        left: `${draftBox.xPct}%`,
+                        top: `${draftBox.yPct}%`,
+                        width: `${draftBox.wPct}%`,
+                        height: `${draftBox.hPct}%`,
+                      }}
+                      onMouseDown={(e) => startBoxDrag("move", e)}
+                    >
+                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
                         <div
-                          key={field}
-                          className={`absolute border-2 pointer-events-none ${
-                            calibratingField === field ? "border-signal" : "border-white/40"
-                          }`}
+                          key={corner}
+                          onMouseDown={(e) => startBoxDrag(corner, e)}
+                          // 20x20px hit target centered exactly on the
+                          // corner via translate, regardless of box size —
+                          // "edge sensitivity" before this was just the
+                          // 2px border itself, easy to miss on a small
+                          // region. The visible dot inside stays small.
+                          className="absolute w-5 h-5 flex items-center justify-center"
                           style={{
-                            left: `${box.xPct}%`,
-                            top: `${box.yPct}%`,
-                            width: `${box.wPct}%`,
-                            height: `${box.hPct}%`,
+                            left: corner.includes("w") ? 0 : "100%",
+                            top: corner.includes("n") ? 0 : "100%",
+                            transform: "translate(-50%, -50%)",
+                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
                           }}
-                        />
-                      );
-                    })}
+                        >
+                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Not yet drawn at all — a one-line hint since the empty
+                      container gives no other cue to click-drag. */}
+                  {captureMode === "manual" && calibratingField && !draftBox && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
+                    </div>
+                  )}
                 </div>
+                {captureMode === "manual" && calibratingField && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={lockDraftBox}
+                      disabled={!draftBox}
+                      className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
+                    >
+                      🔒 Lock {CAPTURE_FIELDS.find((f) => f.field === calibratingField)?.label}
+                    </button>
+                    <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                      Cancel
+                    </button>
+                  </div>
+                )}
 
                 {captureMode === "manual" && activeCaptureFields.length === 0 && (
                   <p className="text-xs text-white/40 border border-white/10 rounded p-3">
@@ -2578,14 +3296,18 @@ export default function LiveConsolePage() {
                         <p className="text-[10px] text-white/50">{label}</p>
                         <div className="flex gap-1">
                           <button
-                            onClick={() => setCalibratingField(field)}
-                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1"
+                            onClick={() => startCalibrating(field)}
+                            disabled={calibratingField === field}
+                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1 disabled:opacity-40"
                           >
-                            {calibratingField === field ? "Drag the area now..." : regions[field] ? "Resize" : "Calibrate"}
+                            {calibratingField === field ? "Adjusting above..." : regions[field] ? "Resize" : "Calibrate"}
                           </button>
                           {regions[field] && (
                             <button
-                              onClick={() => clearRegion(field)}
+                              onClick={() => {
+                                clearRegion(field);
+                                if (calibratingField === field) setDraftBox(null);
+                              }}
                               title="Clear this region"
                               className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
                             >
@@ -2605,6 +3327,27 @@ export default function LiveConsolePage() {
                         <p className="text-xs text-white/70 truncate" title={readings[field]}>
                           {readings[field] || "—"}
                         </p>
+                        {(field === "countdown" || field === "draft_timer_a" || field === "draft_timer_b") && (
+                          <div className="flex gap-1">
+                            <input
+                              value={manualTimeInputs[field] ?? ""}
+                              onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [field]: e.target.value }))}
+                              placeholder="MM:SS"
+                              className="w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+                            />
+                            <button
+                              onClick={() => {
+                                const value = manualTimeInputs[field] ?? "";
+                                if (field === "countdown") setManualCountdown(value);
+                                else setManualDraftTimer(field === "draft_timer_a" ? "a" : "b", value);
+                              }}
+                              title="Set this directly instead of waiting on OCR — useful if the region isn't calibrated yet or the overlay text isn't readable"
+                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1"
+                            >
+                              Set manually
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

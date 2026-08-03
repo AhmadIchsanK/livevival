@@ -164,6 +164,22 @@ async function findMatch(tournamentId, leftName, rightName) {
   return { ...data, leftId, rightId };
 }
 
+// Liquipedia's bracket picks/bans popup only ever exposes a hero NAME per
+// slot (see heroesIn() above — reads a[title], nothing else), never a
+// player attribution, so hero_id is the only extra thing recoverable here.
+// hero_name is already the exact Liquipedia page title (same source
+// import-liquipedia-heroes.mjs uses for heroes.name), confirmed against
+// production data to match heroes.name by plain equality with zero misses
+// — no fuzzy/normalize matching needed.
+let heroIdByName = null;
+async function heroIdFor(heroName) {
+  if (!heroIdByName) {
+    const { data } = await supabase.from("heroes").select("id, name");
+    heroIdByName = new Map((data ?? []).map((h) => [h.name, h.id]));
+  }
+  return heroIdByName.get(heroName) ?? null;
+}
+
 async function insertPicksAndBans(gameId, side, teamId, matchId) {
   const insertAll = async (heroes, type) => {
     for (const heroName of heroes ?? []) {
@@ -172,6 +188,7 @@ async function insertPicksAndBans(gameId, side, teamId, matchId) {
         match_id: matchId,
         team_id: teamId,
         hero_name: heroName,
+        hero_id: await heroIdFor(heroName),
         type,
       });
       if (error && !error.message.includes("duplicate key")) {
@@ -203,6 +220,19 @@ async function importMatchDetail(tournamentId, m) {
     // assumed from the series winner — correctly handles reverse sweeps.
     const gameWinnerTeamId = g.left?.won ? match.leftId : g.right?.won ? match.rightId : null;
 
+    // Only include vod_url in the upsert when this game hasn't been
+    // manually overridden — PostgREST's upsert only touches the columns
+    // present in the payload, so omitting vod_url here leaves an admin's
+    // manual link alone instead of clobbering it with whatever (or
+    // nothing) Liquipedia currently shows for this game.
+    const { data: existingGame } = await supabase
+      .from("games")
+      .select("vod_url_source")
+      .eq("match_id", match.id)
+      .eq("game_number", g.gameNumber)
+      .maybeSingle();
+    const isManualVod = existingGame?.vod_url_source === "manual";
+
     const { data: gameRow, error } = await supabase
       .from("games")
       .upsert(
@@ -211,7 +241,7 @@ async function importMatchDetail(tournamentId, m) {
           game_number: g.gameNumber,
           state: "GAME_FINISHED",
           winner_team_id: gameWinnerTeamId,
-          vod_url: m.vods[g.gameNumber] ?? null,
+          ...(isManualVod ? {} : { vod_url: m.vods[g.gameNumber] ?? null }),
         },
         { onConflict: "match_id,game_number" }
       )

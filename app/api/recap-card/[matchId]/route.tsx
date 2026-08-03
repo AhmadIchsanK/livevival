@@ -42,6 +42,7 @@ function renderCard({
   games,
   heroPicks,
   mvpLine,
+  keyMomentLines,
   ratio,
   mode,
   logoUrl,
@@ -50,6 +51,7 @@ function renderCard({
   games: CardGame[];
   heroPicks: CardHeroPick[];
   mvpLine: string | null;
+  keyMomentLines: string[];
   ratio: Ratio;
   mode: Mode;
   logoUrl: string;
@@ -100,12 +102,29 @@ function renderCard({
           </span>
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 14 * scale, flex: 1 }}>
-              {teamA?.logo_url && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={teamA.logo_url} alt="" width={48 * scale} height={48 * scale} style={{ objectFit: "contain" }} />
-              )}
-              <span style={{ fontSize: 44 * scale, fontWeight: 700, color: winnerName === teamA?.name ? SIGNAL : "#ffffff" }}>
+            {/* Boxed background behind each logo so it never blends into
+                the card's own dark background regardless of the logo's
+                colors — name sits below the box instead of beside it. */}
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, flex: 1 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 84 * scale,
+                  height: 84 * scale,
+                  borderRadius: 18 * scale,
+                  background: "#ffffff1a",
+                  border: `${winnerName === teamA?.name ? 3 : 1}px solid ${winnerName === teamA?.name ? SIGNAL : "#ffffff22"}`,
+                  padding: 10 * scale,
+                }}
+              >
+                {teamA?.logo_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={teamA.logo_url} alt="" width={64 * scale} height={64 * scale} style={{ objectFit: "contain" }} />
+                )}
+              </div>
+              <span style={{ fontSize: 34 * scale, fontWeight: 700, color: winnerName === teamA?.name ? SIGNAL : "#ffffff", textAlign: "center" }}>
                 {teamA?.name ?? "TBD"}
               </span>
             </div>
@@ -114,14 +133,28 @@ function renderCard({
               <span style={{ color: "#ffffff55" }}>–</span>
               <span>{bWins}</span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 14 * scale, flex: 1, justifyContent: "flex-end" }}>
-              <span style={{ fontSize: 44 * scale, fontWeight: 700, color: winnerName === teamB?.name ? SIGNAL : "#ffffff" }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, flex: 1 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 84 * scale,
+                  height: 84 * scale,
+                  borderRadius: 18 * scale,
+                  background: "#ffffff1a",
+                  border: `${winnerName === teamB?.name ? 3 : 1}px solid ${winnerName === teamB?.name ? SIGNAL : "#ffffff22"}`,
+                  padding: 10 * scale,
+                }}
+              >
+                {teamB?.logo_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={teamB.logo_url} alt="" width={64 * scale} height={64 * scale} style={{ objectFit: "contain" }} />
+                )}
+              </div>
+              <span style={{ fontSize: 34 * scale, fontWeight: 700, color: winnerName === teamB?.name ? SIGNAL : "#ffffff", textAlign: "center" }}>
                 {teamB?.name ?? "TBD"}
               </span>
-              {teamB?.logo_url && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={teamB.logo_url} alt="" width={48 * scale} height={48 * scale} style={{ objectFit: "contain" }} />
-              )}
             </div>
           </div>
 
@@ -159,6 +192,17 @@ function renderCard({
                 Top performer
               </span>
               <span style={{ fontSize: 22 * scale, color: "#ffffffcc" }}>{mvpLine}</span>
+            </div>
+          )}
+
+          {mode === "advanced" && keyMomentLines.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 * scale, marginTop: 8 * scale }}>
+              <span style={{ fontSize: 18 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 1 }}>
+                Key moments
+              </span>
+              {keyMomentLines.map((line, i) => (
+                <span key={i} style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>🔥 {line}</span>
+              ))}
             </div>
           )}
         </div>
@@ -209,6 +253,22 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
 
   let heroPicks: CardHeroPick[] = [];
   let mvpLine: string | null = null;
+  let keyMomentLines: string[] = [];
+
+  if (mode === "advanced") {
+    const { data: keyMoments } = await supabase
+      .from("key_moments")
+      .select("type, game:games(game_number), player:players(ign)")
+      .eq("match_id", params.matchId)
+      .in("type", ["savage", "maniac"]);
+    keyMomentLines = (keyMoments ?? []).map((km) => {
+      const game = Array.isArray(km.game) ? km.game[0] : km.game;
+      const player = Array.isArray(km.player) ? km.player[0] : km.player;
+      const label = km.type === "savage" ? "Savage" : "Maniac";
+      const who = player?.ign ?? "A player";
+      return `${who} got a ${label}${game?.game_number ? ` in Game ${game.game_number}` : ""}`;
+    });
+  }
 
   if (mode === "advanced" && games && games.length > 0) {
     const lastGameId = games[games.length - 1].id;
@@ -238,6 +298,7 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     games: games ?? [],
     heroPicks,
     mvpLine,
+    keyMomentLines,
     ratio,
     mode,
     logoUrl,

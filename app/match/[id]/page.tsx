@@ -126,6 +126,7 @@ export default function PublicMatchPage() {
   const [watchingNow, setWatchingNow] = useState(1);
   const [recapRatio, setRecapRatio] = useState<"portrait" | "landscape">("portrait");
   const [recapMode, setRecapMode] = useState<"simple" | "advanced">("simple");
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 1000);
@@ -352,39 +353,98 @@ export default function PublicMatchPage() {
   const seriesWinnerName =
     seriesWinnerTeamId === teamAId ? match.team_a?.name : seriesWinnerTeamId === teamBId ? match.team_b?.name : null;
 
+  const gameNumberById = new Map(games.map((g) => [g.id, g.game_number]));
+  const recapKeyMomentLines = keyMoments
+    .filter((km) => km.type === "savage" || km.type === "maniac")
+    .map((km) => {
+      const label = km.type === "savage" ? "Savage" : "Maniac";
+      const gameNumber = gameNumberById.get(km.game_id);
+      const who = km.player?.ign ?? "A player";
+      return `${who} got a ${label}${gameNumber ? ` in Game ${gameNumber}` : ""}`;
+    });
+
+  // navigator.share() triggers the OS share sheet — the only way a browser
+  // reaches WhatsApp/Telegram/Threads/X/IG/FB/etc. directly, since there's
+  // no single API that posts to all of those. Falls back to copy-link for
+  // browsers/desktop that don't support it (also offered as its own
+  // explicit button, since some users on a supported browser still prefer
+  // a plain link over the share sheet).
+  async function handleShare() {
+    const shareData = {
+      title: `${match?.team_a?.name} vs ${match?.team_b?.name} — Livevival`,
+      text: seriesWinnerName ? `🏆 ${seriesWinnerName} wins ${Math.max(gamesWonByA, gamesWonByB)}–${Math.min(gamesWonByA, gamesWonByB)}` : "Match recap on Livevival",
+      url: window.location.href,
+    };
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch {
+        // User cancelled the share sheet — not an error worth surfacing.
+      }
+    } else {
+      await handleCopyLink();
+    }
+  }
+
+  async function handleCopyLink() {
+    await navigator.clipboard.writeText(window.location.href);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-5xl mx-auto space-y-8">
       <header className="space-y-1">
         <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="font-display font-light text-2xl sm:text-3xl tracking-tight flex items-center gap-2 flex-wrap">
-            {match.team_a?.logo_url && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={proxiedImageUrl(match.team_a.logo_url)}
-                alt=""
-                className={`w-8 h-8 rounded object-contain ${
-                  match.status === "finished" && seriesWinnerTeamId === teamAId ? "ring-2 ring-signal" : ""
+          <h1 className="flex items-end gap-3 sm:gap-4">
+            {/* Boxed background behind the logo so it never blends into the
+                dark page background, regardless of the logo's own colors —
+                name sits below instead of inline so the box can be sized
+                for the logo alone. */}
+            <div className="flex flex-col items-center gap-1.5 w-20 sm:w-24">
+              <div
+                className={`w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-white/10 border flex items-center justify-center p-2 ${
+                  match.status === "finished" && seriesWinnerTeamId === teamAId ? "border-signal ring-1 ring-signal" : "border-white/10"
                 }`}
-              />
-            )}
-            <span className={match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""}>
-              {match.team_a?.name}
-            </span>
-            <span className="text-white/30">vs</span>
-            <span className={match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""}>
-              {match.team_b?.name}
-            </span>
-            {match.team_b?.logo_url && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={proxiedImageUrl(match.team_b.logo_url)}
-                alt=""
-                className={`w-8 h-8 rounded object-contain ${
-                  match.status === "finished" && seriesWinnerTeamId === teamBId ? "ring-2 ring-signal" : ""
+              >
+                {match.team_a?.logo_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={proxiedImageUrl(match.team_a.logo_url)} alt="" className="w-full h-full object-contain" />
+                ) : (
+                  <span className="text-white/20 text-xs">?</span>
+                )}
+              </div>
+              <span
+                className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
+                  match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""
                 }`}
-              />
-            )}
+              >
+                {match.team_a?.name}
+              </span>
+            </div>
+            <span className="text-white/30 text-lg sm:text-xl mb-6 sm:mb-7">vs</span>
+            <div className="flex flex-col items-center gap-1.5 w-20 sm:w-24">
+              <div
+                className={`w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-white/10 border flex items-center justify-center p-2 ${
+                  match.status === "finished" && seriesWinnerTeamId === teamBId ? "border-signal ring-1 ring-signal" : "border-white/10"
+                }`}
+              >
+                {match.team_b?.logo_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={proxiedImageUrl(match.team_b.logo_url)} alt="" className="w-full h-full object-contain" />
+                ) : (
+                  <span className="text-white/20 text-xs">?</span>
+                )}
+              </div>
+              <span
+                className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
+                  match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""
+                }`}
+              >
+                {match.team_b?.name}
+              </span>
+            </div>
           </h1>
           <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
             {match.status}
@@ -739,13 +799,28 @@ export default function PublicMatchPage() {
                   </button>
                 ))}
               </div>
-              <a
-                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
-                download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
-                className="lv-btn-primary inline-block !text-xs !py-1.5"
-              >
-                Download
-              </a>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+                  download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
+                  className="lv-btn-primary inline-block !text-xs !py-1.5"
+                >
+                  Download
+                </a>
+                <button onClick={handleShare} className="lv-btn-primary inline-block !text-xs !py-1.5 !bg-white/10 !text-white">
+                  Share ↗
+                </button>
+                <button onClick={handleCopyLink} className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5">
+                  {copied ? "Copied!" : "Copy link"}
+                </button>
+              </div>
+              {recapMode === "advanced" && recapKeyMomentLines.length > 0 && (
+                <div className="space-y-0.5 pt-1">
+                  {recapKeyMomentLines.map((line, i) => (
+                    <p key={i} className="text-white/50">🔥 {line}</p>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </section>

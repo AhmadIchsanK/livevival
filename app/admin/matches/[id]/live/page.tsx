@@ -215,6 +215,12 @@ export default function LiveConsolePage() {
   // finished), and anything on a local_ocr match, which the worker skips
   // entirely since the admin's local capture session owns it.
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
+  const [feedUrlCopied, setFeedUrlCopied] = useState(false);
+  async function copyTelegramFeedUrl() {
+    await navigator.clipboard.writeText(`${window.location.origin}/api/telegram-feed/${matchId}`);
+    setFeedUrlCopied(true);
+    setTimeout(() => setFeedUrlCopied(false), 2000);
+  }
   async function postToTelegram(message: string, meta?: { entityType: string; entityId: string; notificationType: string }) {
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
@@ -228,7 +234,7 @@ export default function LiveConsolePage() {
     const res = await fetch("/api/telegram/notify", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ message: fullMessage, ...meta }),
+      body: JSON.stringify({ message: fullMessage, matchId, ...meta }),
     });
     const data = await res.json();
     setTelegramStatus(res.ok ? "Posted to Telegram." : data.error ?? "Failed to post.");
@@ -2864,6 +2870,13 @@ export default function LiveConsolePage() {
           </button>
           <button onClick={shareFullMatchInfo} className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10">
             📢 Share everything to Telegram
+          </button>
+          <button
+            onClick={copyTelegramFeedUrl}
+            title="A public, read-only URL that lists every Telegram notification sent for this match — for the Rashid Slack integration"
+            className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10"
+          >
+            {feedUrlCopied ? "✓ Copied" : "🔗 Copy Telegram feed URL"}
           </button>
           <button
             onClick={resetMatch}

@@ -61,12 +61,20 @@ export async function POST(req: NextRequest) {
   // entityType/entityId/notificationType are optional — only passed when
   // the caller wants this specific post logged against
   // telegram_notifications (e.g. to gray out a "posted" button); a
-  // free-form manual announcement can skip them.
-  const { entityType, entityId, notificationType } = body ?? {};
-  if (entityType && entityId && notificationType) {
-    await supabase
-      .from("telegram_notifications")
-      .insert({ entity_type: entityType, entity_id: entityId, notification_type: notificationType });
+  // free-form manual announcement can skip them. matchId is logged
+  // whenever present regardless of the other three, since it's what the
+  // public per-match Telegram-feed endpoint (for the Rashid Slack
+  // integration) keys off — entity_id alone isn't enough there since it's
+  // polymorphic (sometimes a match id, sometimes a game/key_moment id).
+  const { entityType, entityId, notificationType, matchId } = body ?? {};
+  if (matchId || (entityType && entityId && notificationType)) {
+    await supabase.from("telegram_notifications").insert({
+      entity_type: entityType ?? null,
+      entity_id: entityId ?? null,
+      notification_type: notificationType ?? null,
+      match_id: matchId ?? null,
+      message,
+    });
   }
 
   return NextResponse.json({ ok: true });

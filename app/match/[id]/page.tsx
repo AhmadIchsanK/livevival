@@ -619,7 +619,7 @@ export default function PublicMatchPage() {
               <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
               <table className="w-full text-xs">
                 <thead className="text-white/40 text-left uppercase tracking-wide">
-                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K/D/A</th><th className="pb-1.5">Gold</th></tr>
+                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K</th><th className="pb-1.5">D</th><th className="pb-1.5">A</th></tr>
                 </thead>
                 <tbody>
                   {t.list.map((s) => (
@@ -629,12 +629,13 @@ export default function PublicMatchPage() {
                         {s.hero?.icon_url && <img src={proxiedImageUrl(s.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
                         {s.hero_name}
                       </td>
-                      <td className="tabular-nums">{s.kills}/{s.deaths}/{s.assists}</td>
-                      <td className="tabular-nums">{s.gold?.toLocaleString()}</td>
+                      <td className="tabular-nums">{s.kills}</td>
+                      <td className="tabular-nums">{s.deaths}</td>
+                      <td className="tabular-nums">{s.assists}</td>
                     </tr>
                   ))}
                   {t.list.length === 0 && (
-                    <tr><td colSpan={4} className="py-2 text-white/30">No stats yet.</td></tr>
+                    <tr><td colSpan={5} className="py-2 text-white/30">No stats yet.</td></tr>
                   )}
                 </tbody>
               </table>

@@ -18,6 +18,7 @@ type Match = {
   youtube_url: string | null;
   format: string | null;
   current_game_number: number;
+  status: string;
   state: string;
   custom_state_label: string | null;
   update_source: "liquipedia" | "local_ocr";
@@ -104,7 +105,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number, state, custom_state_label, update_source, series_winner_team_id, tournament_id, ocr_left_team_id,
+        `id, youtube_url, format, current_game_number, status, state, custom_state_label, update_source, series_winner_team_id, tournament_id, ocr_left_team_id,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(id, name),
          team_b:teams!matches_team_b_id_fkey(id, name)`
@@ -195,10 +196,13 @@ export default function LiveConsolePage() {
       setTelegramStatus("Not signed in.");
       return;
     }
+    // Every Telegram post sent while the game is actually ongoing gets the
+    // current timestamp appended — not just the one dedicated template.
+    const fullMessage = match?.state === "GAME_STARTED" ? `${message}\n⏱ ${minute}'` : message;
     const res = await fetch("/api/telegram/notify", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ message, ...meta }),
+      body: JSON.stringify({ message: fullMessage, ...meta }),
     });
     const data = await res.json();
     setTelegramStatus(res.ok ? "Posted to Telegram." : data.error ?? "Failed to post.");
@@ -281,9 +285,11 @@ export default function LiveConsolePage() {
     if (pbType === "pick" && !pbPlayer) return;
     const { error } = await supabase.from("hero_picks_bans").insert({
       game_id: game.id,
+      match_id: matchId,
       team_id: pbTeam,
       player_id: pbType === "pick" ? pbPlayer : null,
       hero_name: pbHero,
+      hero_id: heroes.find((h) => h.name === pbHero)?.id ?? null,
       type: pbType,
       pick_order: pickBans.length + 1,
     });
@@ -323,6 +329,46 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  // ── Live scoreboard: edit/delete player directly ─────────────────────
+  // The roster shown here often surfaces real data-quality problems (a
+  // nationality mistakenly imported as a player, a stale/duplicate row) —
+  // fixing that shouldn't require leaving this page for /admin/players.
+  const [editingScoreboardPlayerId, setEditingScoreboardPlayerId] = useState<string | null>(null);
+  const [editingScoreboardIgn, setEditingScoreboardIgn] = useState("");
+  async function saveScoreboardPlayerEdit(playerId: string) {
+    if (!editingScoreboardIgn.trim()) return;
+    const { error } = await supabase.from("players").update({ ign: editingScoreboardIgn.trim() }).eq("id", playerId);
+    if (error) setError(error.message);
+    else {
+      setEditingScoreboardPlayerId(null);
+      loadAll();
+    }
+  }
+  async function deleteScoreboardPlayer(playerId: string, ign: string) {
+    if (!confirm(`Delete player "${ign}"? This can't be undone.`)) return;
+    const { error } = await supabase.from("players").delete().eq("id", playerId);
+    if (error) {
+      setError(
+        error.message.includes("violates foreign key")
+          ? `Can't delete "${ign}" — still referenced by pick/ban or stat rows in another match.`
+          : error.message
+      );
+      return;
+    }
+    loadAll();
+  }
+  function buildLiveScoreboardMessage(): string {
+    const lines = [match?.team_a, match?.team_b].map((team) => {
+      if (!team) return "";
+      const teamStats = stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === team.id);
+      const rows = teamStats
+        .map((s) => `${players.find((p) => p.id === s.player_id)?.ign ?? "?"} (${s.hero_name ?? "?"}): ${s.kills}/${s.deaths}/${s.assists}`)
+        .join("\n");
+      return rows ? `<b>${team.name}</b>\n${rows}` : "";
+    });
+    return [`📊 <b>Live scoreboard</b>`, `${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`, ...lines.filter(Boolean)].join("\n\n");
+  }
+
   // ── Objectives (counters) ────────────────────────────────────────────
   // Stays an event-log table under the hood (one row per tower/lord/turtle
   // taken) — a counter UI is just "+" inserts a row, "−" removes the most
@@ -331,6 +377,14 @@ export default function LiveConsolePage() {
   const OBJECTIVE_TYPES = ["tower", "lord", "turtle"] as const;
   function objectiveCount(teamId: string, type: string) {
     return objectives.filter((o) => o.team_id === teamId && o.type === type).length;
+  }
+  function buildObjectivesMessage(): string {
+    const lines = [match?.team_a, match?.team_b].map((team) => {
+      if (!team) return "";
+      const counts = OBJECTIVE_TYPES.map((type) => `${type}: ${objectiveCount(team.id, type)}`).join(" · ");
+      return `<b>${team.name}</b>\n${counts}`;
+    });
+    return [`🏰 <b>Objectives</b>`, `${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`, ...lines.filter(Boolean)].join("\n\n");
   }
   async function incrementObjective(teamId: string, type: string) {
     if (!game) return;
@@ -432,7 +486,8 @@ export default function LiveConsolePage() {
         : selectedTemplate.label_template
             .replace("{team}", teamName)
             .replace("{hero}", heroName)
-            .replace("{player}", playerName);
+            .replace("{player}", playerName)
+            .replace("{timestamp}", String(minute));
     // Savage/maniac/etc. are always key moments; a custom entry can be
     // explicitly flagged as one too (e.g. an admin's own big-play call).
     const isKeyMoment = KEY_MOMENT_TYPES.includes(selectedTemplate.type) || (selectedTemplate.type === "custom" && kmMarkAsKey);
@@ -457,7 +512,7 @@ export default function LiveConsolePage() {
     // via the 📢 button per moment.
     if (selectedTemplate.telegram_enabled) {
       const message = selectedTemplate.telegram_message_template
-        ? fillTelegramTemplate(selectedTemplate.telegram_message_template, { team: teamName, hero: heroName, player: playerName })
+        ? fillTelegramTemplate(selectedTemplate.telegram_message_template, { team: teamName, hero: heroName, player: playerName, timestamp: String(minute) })
         : `🔥 <b>${description}</b>\n${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`;
       postToTelegram(message, {
         entityType: "key_moment",
@@ -737,7 +792,7 @@ export default function LiveConsolePage() {
   // deleted) since applyAiDetection/captureFrameAndAnalyze still exist and
   // will need it again once AI is re-enabled.
   const [captureMode, setCaptureMode] = useState<"ai" | "manual">("manual");
-  const [heroes, setHeroes] = useState<{ id: string; name: string }[]>([]);
+  const [heroes, setHeroes] = useState<{ id: string; name: string; icon_url: string | null }[]>([]);
   const [overlayHint, setOverlayHint] = useState("");
   const [aiDetection, setAiDetection] = useState<AiDetection | null>(null);
   const [aiStatus, setAiStatus] = useState<string | null>(null);
@@ -746,8 +801,8 @@ export default function LiveConsolePage() {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from("heroes").select("id, name");
-      setHeroes((data as { id: string; name: string }[]) ?? []);
+      const { data } = await supabase.from("heroes").select("id, name, icon_url").order("name");
+      setHeroes((data as { id: string; name: string; icon_url: string | null }[]) ?? []);
     })();
   }, []);
 
@@ -1134,6 +1189,20 @@ export default function LiveConsolePage() {
     await supabase.from("games").update({ clock_source: source }).eq("id", game.id);
     loadAll();
   }
+
+  // Keeps `minute` (used for minute_mark on every logged action) following
+  // the manual stopwatch while it's the active public clock source — the
+  // OCR path already keeps it in sync via setMinute() in captureTick, this
+  // is the manual-clock equivalent, replacing the old manual number input.
+  useEffect(() => {
+    if (!game || game.clock_source !== "manual") return;
+    const tick = () => setMinute(Math.floor(manualElapsedSeconds(game) / 60));
+    tick();
+    if (!game.manual_time_running) return;
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game?.id, game?.clock_source, game?.manual_time_running, game?.manual_time_seconds, game?.manual_time_started_at]);
 
   // Same pattern as updateGameClock but for the two other phase-scoped
   // clocks — Waiting's pre-game countdown and Draft's per-team pick timer —
@@ -1642,7 +1711,12 @@ export default function LiveConsolePage() {
         };
         if (noticeTemplate?.telegram_enabled) {
           const message = noticeTemplate.telegram_message_template
-            ? fillTelegramTemplate(noticeTemplate.telegram_message_template, { team_a: match.team_a?.name ?? "", team_b: match.team_b?.name ?? "", tournament: match.tournament?.name ?? "" })
+            ? fillTelegramTemplate(noticeTemplate.telegram_message_template, {
+                team_a: match.team_a?.name ?? "",
+                team_b: match.team_b?.name ?? "",
+                tournament: match.tournament?.name ?? "",
+                timestamp: String(minute),
+              })
             : DEFAULT_PHASE_MESSAGES[newState];
           if (message) {
             await postToTelegram(message, {
@@ -1664,6 +1738,21 @@ export default function LiveConsolePage() {
 
   if (error) return <p className="text-red-400 text-sm">{error}</p>;
   if (!match || !game) return <p className="text-white/50 text-sm">Loading match...</p>;
+
+  // Editing (result, game result, draft/picks-bans, moment log, OCR) is
+  // only allowed once a match is actually live or finished — a scheduled
+  // match has nothing real to record yet. The one deliberate exception is
+  // the Live Scoreboard's edit/delete-player controls just above, which
+  // stay usable even while scheduled so roster mistakes can be fixed
+  // before a match goes live.
+  const isEditable = match.status !== "scheduled";
+  // Phase floors: neither of these made any sense before draft's done
+  // (hero picks aren't final) or before the game's actually started
+  // (nothing to count yet) — previously clickable in every phase.
+  const SCOREBOARD_EDITABLE_PHASES = new Set(["DRAFT_COMPLETE", "GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM"]);
+  const OBJECTIVES_EDITABLE_PHASES = new Set(["GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM"]);
+  const scoreboardEditable = isEditable && SCOREBOARD_EDITABLE_PHASES.has(match.state);
+  const objectivesEditable = isEditable && OBJECTIVES_EDITABLE_PHASES.has(match.state);
 
   const embedUrl = youtubeEmbedUrl(match.youtube_url);
   const activeCaptureFields = CAPTURE_FIELDS.filter((f) => (PHASE_CAPTURE_FIELDS[match.state] ?? []).includes(f.field));
@@ -1735,8 +1824,13 @@ export default function LiveConsolePage() {
           {match.update_source !== "local_ocr" && (
             <button
               onClick={resetMatch}
-              title="Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
-              className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10"
+              disabled={!isEditable}
+              title={
+                isEditable
+                  ? "Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
+                  : "Not available while the match is scheduled — nothing to reset yet"
+              }
+              className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10 disabled:opacity-40"
             >
               ⟲ Reset match
             </button>
@@ -1748,6 +1842,14 @@ export default function LiveConsolePage() {
           </p>
         )}
       </div>
+
+      {!isEditable && (
+        <p className="text-xs text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded px-3 py-2">
+          This match is scheduled — result, game result, draft/picks-bans, moment log, and OCR capture are locked
+          until it&apos;s set live (needs a stream link on the Matches page) or marked finished. The roster fixes in
+          Live scoreboard above stay available.
+        </p>
+      )}
 
       {/* Game history — the per-game results that previously showed nowhere in this console */}
       {pastGames.length > 0 && (
@@ -1772,7 +1874,8 @@ export default function LiveConsolePage() {
           <select
             value={game.map ?? ""}
             onChange={(e) => setGameMap(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+            disabled={!isEditable}
+            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
           >
             <option value="">Not set</option>
             {MAPS.map((m) => (
@@ -1784,12 +1887,12 @@ export default function LiveConsolePage() {
           <div className="flex items-center gap-2">
             <label className="text-xs text-white/50">Declare game {game.game_number} winner</label>
             {match.team_a && (
-              <button onClick={() => declareGameWinner(match.team_a!.id)} className="lv-btn-ghost !px-3 !py-1.5">
+              <button onClick={() => declareGameWinner(match.team_a!.id)} disabled={!isEditable} className="lv-btn-ghost !px-3 !py-1.5 disabled:opacity-40">
                 {match.team_a.name}
               </button>
             )}
             {match.team_b && (
-              <button onClick={() => declareGameWinner(match.team_b!.id)} className="lv-btn-ghost !px-3 !py-1.5">
+              <button onClick={() => declareGameWinner(match.team_b!.id)} disabled={!isEditable} className="lv-btn-ghost !px-3 !py-1.5 disabled:opacity-40">
                 {match.team_b.name}
               </button>
             )}
@@ -1814,24 +1917,16 @@ export default function LiveConsolePage() {
 
         {match.update_source === "local_ocr" && (
           <div className="space-y-2">
-            <label className="text-xs text-white/50">Game clock (minutes) — update this as you watch</label>
-            <div className="flex gap-2 items-center">
-              <input
-                type="number"
-                value={minute}
-                onChange={(e) => setMinute(Number(e.target.value))}
-                className="w-32 bg-black/30 border border-white/10 rounded px-3 py-2 text-lg font-bold"
-              />
-              <button
-                onClick={logNetWorthSnapshot}
-                className="text-xs border border-white/10 rounded px-3 py-2 hover:bg-white/10"
-              >
-                📸 Snapshot net worth
-              </button>
-            </div>
-            <p className="text-[10px] text-white/40">
-              Tap this every minute or two — it's what powers the live gold-difference graph on the public page.
+            <p className="text-xs text-white/50">
+              Current minute mark (used for every log action below): <span className="font-bold text-white text-sm tabular-nums">{minute}&apos;</span>
+              {" "}— follows whichever clock source is selected, no manual entry needed.
             </p>
+            <button
+              onClick={logNetWorthSnapshot}
+              className="text-xs border border-white/10 rounded px-3 py-2 hover:bg-white/10"
+            >
+              📸 Snapshot net worth
+            </button>
 
             <label className="text-xs text-white/50 block pt-2">Public clock source</label>
             <div className="flex gap-1">
@@ -1937,13 +2032,23 @@ export default function LiveConsolePage() {
                 ))}
             </select>
           )}
-          <input
-            placeholder="Hero name"
-            value={pbHero}
-            onChange={(e) => setPbHero(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
-          />
-          <button onClick={logPickBan} className="lv-btn-ghost">
+          <div className="flex items-center gap-1.5">
+            {heroes.find((h) => h.name === pbHero)?.icon_url && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={heroes.find((h) => h.name === pbHero)!.icon_url!} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
+            )}
+            <select
+              value={pbHero}
+              onChange={(e) => setPbHero(e.target.value)}
+              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            >
+              <option value="">Hero</option>
+              {heroes.map((h) => (
+                <option key={h.id} value={h.name}>{h.name}</option>
+              ))}
+            </select>
+          </div>
+          <button onClick={logPickBan} disabled={!isEditable} className="lv-btn-ghost disabled:opacity-40">
             Log
           </button>
         </div>
@@ -1994,7 +2099,17 @@ export default function LiveConsolePage() {
         <>
       {/* Objectives (counters) */}
       <section className="space-y-3">
-        <h2 className="font-bold">Objectives</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Objectives</h2>
+          <button
+            onClick={() =>
+              postToTelegram(buildObjectivesMessage(), { entityType: "match", entityId: match.id, notificationType: "objectives_share" })
+            }
+            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+          >
+            📢 Share to Telegram
+          </button>
+        </div>
         <div className="flex gap-8">
           {[match.team_a, match.team_b].map((team, idx) =>
             team ? (
@@ -2005,7 +2120,8 @@ export default function LiveConsolePage() {
                     <div key={type} className="flex items-center gap-1.5">
                       <button
                         onClick={() => decrementObjective(team.id, type)}
-                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10"
+                        disabled={!objectivesEditable}
+                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
                       >
                         −
                       </button>
@@ -2014,7 +2130,8 @@ export default function LiveConsolePage() {
                       </span>
                       <button
                         onClick={() => incrementObjective(team.id, type)}
-                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10"
+                        disabled={!objectivesEditable}
+                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
                       >
                         +
                       </button>
@@ -2031,12 +2148,34 @@ export default function LiveConsolePage() {
 
       {/* Scoreboard */}
       <section className="space-y-3">
-        <h2 className="font-bold">Live scoreboard</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Live scoreboard</h2>
+          <button
+            onClick={() =>
+              postToTelegram(buildLiveScoreboardMessage(), {
+                entityType: "match",
+                entityId: match.id,
+                notificationType: "scoreboard_share",
+              })
+            }
+            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+          >
+            📢 Share to Telegram
+          </button>
+        </div>
         {[teamAPlayers, teamBPlayers].map((teamPlayers, idx) => (
-          <div key={idx} className="space-y-2">
+          <div key={idx} className="space-y-1">
             <p className="text-xs text-white/50">{idx === 0 ? match.team_a?.name : match.team_b?.name}</p>
+            <div className="flex gap-2 items-center text-[10px] text-white/40 pl-8">
+              <span className="w-24">Player</span>
+              <span className="w-24">Hero</span>
+              <span className="w-14">K</span>
+              <span className="w-14">D</span>
+              <span className="w-14">A</span>
+            </div>
             {teamPlayers.map((p) => {
               const stat = stats.find((s) => s.player_id === p.id);
+              const isEditingRoster = editingScoreboardPlayerId === p.id;
               return (
                 <div key={p.id} className="flex gap-2 items-center text-sm">
                   {p.photo_url ? (
@@ -2045,11 +2184,29 @@ export default function LiveConsolePage() {
                   ) : (
                     <span className="w-6 h-6 rounded-full bg-white/10 shrink-0" />
                   )}
-                  <span className="w-24 truncate">{p.ign}</span>
+                  {isEditingRoster ? (
+                    <input
+                      value={editingScoreboardIgn}
+                      onChange={(e) => setEditingScoreboardIgn(e.target.value)}
+                      className="w-24 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-xs"
+                      autoFocus
+                    />
+                  ) : (
+                    <span className="w-24 truncate">{p.ign}</span>
+                  )}
+                  {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={heroes.find((h) => h.name === stat?.hero_name)!.icon_url!}
+                      alt=""
+                      className="w-5 h-5 rounded-full object-cover -mr-1"
+                    />
+                  )}
                   <select
                     value={stat?.hero_name ?? ""}
                     onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
-                    className="w-24 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                    disabled={!scoreboardEditable}
+                    className="w-24 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
                   >
                     <option value="">Hero</option>
                     {heroes.map((h) => (
@@ -2060,19 +2217,40 @@ export default function LiveConsolePage() {
                     <input
                       key={field}
                       type="number"
-                      placeholder={field}
                       defaultValue={stat?.[field] ?? 0}
                       onBlur={(e) => updateStat(p.id, field, Number(e.target.value))}
-                      className="w-14 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                      disabled={!scoreboardEditable}
+                      className="w-14 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
                     />
                   ))}
-                  <input
-                    type="number"
-                    placeholder="gold"
-                    defaultValue={stat?.gold ?? 0}
-                    onBlur={(e) => updateStat(p.id, "gold", Number(e.target.value))}
-                    className="w-20 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
-                  />
+                  <div className="flex gap-1.5 ml-auto">
+                    {isEditingRoster ? (
+                      <>
+                        <button onClick={() => saveScoreboardPlayerEdit(p.id)} className="text-white/50 hover:text-emerald-400 text-xs">✓</button>
+                        <button onClick={() => setEditingScoreboardPlayerId(null)} className="text-white/30 hover:text-red-400 text-xs">✕</button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => {
+                            setEditingScoreboardPlayerId(p.id);
+                            setEditingScoreboardIgn(p.ign);
+                          }}
+                          title="Edit player"
+                          className="text-white/30 hover:text-white/70 text-xs"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          onClick={() => deleteScoreboardPlayer(p.id, p.ign)}
+                          title="Delete player"
+                          className="text-white/30 hover:text-red-400 text-xs"
+                        >
+                          🗑
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -2172,7 +2350,7 @@ export default function LiveConsolePage() {
               className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
             />
           )}
-          <button onClick={logKeyMoment} disabled={!selectedTemplate} className="lv-btn-ghost disabled:opacity-40">
+          <button onClick={logKeyMoment} disabled={!selectedTemplate || !isEditable} className="lv-btn-ghost disabled:opacity-40">
             Log moment
           </button>
         </div>
@@ -2268,7 +2446,9 @@ export default function LiveConsolePage() {
           {match.update_source === "local_ocr" && (
             <button
               onClick={captureActive ? stopCapture : startCapture}
-              className={`text-xs rounded px-3 py-1.5 ${
+              disabled={!captureActive && !isEditable}
+              title={!isEditable && !captureActive ? "Not available while the match is scheduled" : undefined}
+              className={`text-xs rounded px-3 py-1.5 disabled:opacity-40 ${
                 captureActive ? "bg-red-500/20 text-red-300" : "border border-white/10 hover:bg-white/10"
               }`}
             >

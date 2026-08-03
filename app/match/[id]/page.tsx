@@ -81,6 +81,7 @@ type PlayerStat = {
   player: { ign: string; team_id: string } | null;
 };
 type Objective = { id: string; game_id: string; team_id: string; type: string; minute_mark: number | null };
+const OBJECTIVE_ICONS: Record<string, string> = { tower: "🗼", lord: "👑", turtle: "🐢" };
 type KeyMoment = {
   id: string;
   game_id: string;
@@ -381,9 +382,13 @@ export default function PublicMatchPage() {
     .filter((p) => p.team_id === teamBId && p.type === "pick")
     .sort((a, b) => roleIndex(a.player?.role) - roleIndex(b.player?.role));
 
+  // Each team's own gold total plotted directly (not a difference line) —
+  // "positive/negative" was ambiguous about which side that even meant;
+  // two labeled lines just show who's ahead at a glance.
   const chartData = gameNetWorth.map((n) => ({
     minute: n.minute_mark,
-    diff: n.team_a_gold - n.team_b_gold,
+    teamA: n.team_a_gold,
+    teamB: n.team_b_gold,
   }));
 
   const mvp =
@@ -713,15 +718,19 @@ export default function PublicMatchPage() {
 
       {chartData.length > 1 && (
         <section>
-          <h2 className="lv-heading mb-2">Net worth difference</h2>
-          <p className="text-xs text-white/50 mb-2">Positive = {match.team_a?.name} ahead. Negative = {match.team_b?.name} ahead.</p>
+          <h2 className="lv-heading mb-2">Net worth</h2>
+          <div className="flex items-center gap-4 text-xs text-white/50 mb-2">
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-signal inline-block" /> {match.team_a?.name}</span>
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-white/60 inline-block" /> {match.team_b?.name}</span>
+          </div>
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#ffffff15" />
               <XAxis dataKey="minute" stroke="#ffffff60" tick={{ fontSize: 12 }} label={{ value: "minute", position: "insideBottom", fill: "#ffffff60", fontSize: 11, dy: 10 }} />
               <YAxis stroke="#ffffff60" tick={{ fontSize: 12 }} />
               <Tooltip contentStyle={{ background: "#0A0A0A", border: "1px solid #ffffff20" }} />
-              <Line type="monotone" dataKey="diff" stroke="#E31E2A" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="teamA" name={match.team_a?.name ?? "Team A"} stroke="#E31E2A" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="teamB" name={match.team_b?.name ?? "Team B"} stroke="#ffffff99" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </section>
@@ -854,7 +863,8 @@ export default function PublicMatchPage() {
               <div className="flex gap-3 text-xs">
                 {(["tower", "lord", "turtle"] as const).map((type) => (
                   <span key={type} className="capitalize text-white/70">
-                    {type} <span className="font-bold tabular-nums text-white">{gameObjectives.filter((o) => o.team_id === t.teamId && o.type === type).length}</span>
+                    {OBJECTIVE_ICONS[type]} {type}{" "}
+                    <span className="font-bold tabular-nums text-white">{gameObjectives.filter((o) => o.team_id === t.teamId && o.type === type).length}</span>
                   </span>
                 ))}
               </div>
@@ -867,11 +877,11 @@ export default function PublicMatchPage() {
         <div className="flex items-center justify-between mb-2">
           <h2 className="lv-heading">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
           {gameStats.length > 0 && (
-            <p className="text-sm tabular-nums">
-              <span className={teamAKills > teamBKills ? "text-signal font-semibold" : "text-white/60"}>{teamAKills}</span>
+            <p className="text-2xl font-bold tabular-nums">
+              <span className={teamAKills > teamBKills ? "text-signal" : "text-white/70"}>{teamAKills}</span>
               <span className="text-white/30"> — </span>
-              <span className={teamBKills > teamAKills ? "text-signal font-semibold" : "text-white/60"}>{teamBKills}</span>
-              <span className="text-white/40 text-xs"> kills</span>
+              <span className={teamBKills > teamAKills ? "text-signal" : "text-white/70"}>{teamBKills}</span>
+              <span className="text-white/40 text-xs font-normal"> kills</span>
             </p>
           )}
         </div>

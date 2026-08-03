@@ -463,9 +463,27 @@ export default function LiveConsolePage() {
     });
     return [`🏰 <b>Objectives</b>`, `${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`, ...lines.filter(Boolean)].join("\n\n");
   }
+  const OBJECTIVE_ICONS: Record<string, string> = { tower: "🗼", lord: "👑", turtle: "🐢" };
   async function incrementObjective(teamId: string, type: string) {
-    if (!game) return;
+    if (!game || !match) return;
     await supabase.from("objectives").insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute });
+    // A one-click objective button is otherwise silent on the public Moment
+    // list — it only ever showed up in the Objectives tab's running count.
+    // "objective" isn't one of key_moments_type_check's allowed values —
+    // "custom" (already used for other manual admin-logged entries, e.g.
+    // net worth corrections) is, and the Moment list already renders
+    // `description` regardless of type.
+    const teamName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+    await supabase.from("key_moments").insert({
+      game_id: game.id,
+      match_id: matchId,
+      type: "custom",
+      team_id: teamId,
+      description: `${teamName} takes ${OBJECTIVE_ICONS[type] ?? ""} ${type}`,
+      minute_mark: minute,
+      second_mark: secondOfMinute,
+      source: "manual",
+    });
     loadAll();
   }
   async function decrementObjective(teamId: string, type: string) {
@@ -1807,28 +1825,32 @@ export default function LiveConsolePage() {
     return heroes.find((h) => n.includes(normalize(h.name))) ?? null;
   }
   // Broadcast overlays show net worth either as a raw digit count
-  // ("23456") or already abbreviated ("23.4K") depending on the
-  // tournament — accept both, always resolving to the same raw-gold
-  // number for storage (display-side formatting re-abbreviates it, see
-  // formatGold below).
+  // ("23456") or already abbreviated ("23.4K", exactly one decimal digit)
+  // depending on the tournament — accept both, always resolving to the
+  // same raw-gold number for storage (display-side formatting
+  // re-abbreviates it, see formatGold below). Pre-cleaned to digits plus
+  // only the punctuation the number itself needs (".", "," as a thousands
+  // separator, "k"/"K") — any other OCR noise is stripped before matching
+  // rather than risking it corrupting the parsed value.
   function parseGoldText(text: string): number | null {
-    const abbreviated = text.match(/(\d+(?:\.\d+)?)\s*[kK]/);
+    const cleaned = text.replace(/[^0-9.,kK]/g, "");
+    const abbreviated = cleaned.match(/(\d+\.\d)k/i);
     if (abbreviated) return Math.round(Number(abbreviated[1]) * 1000);
-    const raw = text.match(/\d[\d,]*/);
+    const raw = cleaned.match(/\d[\d,]*/);
     return raw ? Number(raw[0].replace(/,/g, "")) : null;
   }
   function formatGold(n: number): string {
     return `${(n / 1000).toFixed(1)}K`;
   }
-  // Prefers a slash-separated "K/D/A" (what the request explicitly calls
-  // out, and what most broadcast overlays actually show) but still accepts
-  // any other single-character separator as a fallback for a tournament
-  // whose overlay uses a different glyph between the three numbers.
+  // Only a slash-separated "K/D/A" counts now — the previous "any other
+  // single-character separator" fallback was exactly the kind of
+  // non-numeric-character tolerance that risked misreads; "/" is the only
+  // punctuation this shape is allowed. Cleaned to digits + "/" first.
   function parseKda(text: string): { kills: number; deaths: number; assists: number } | null {
-    const slash = text.match(/(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/);
-    const loose = slash ?? text.match(/(\d+)\D+(\d+)\D+(\d+)/);
-    if (!loose) return null;
-    return { kills: Number(loose[1]), deaths: Number(loose[2]), assists: Number(loose[3]) };
+    const cleaned = text.replace(/[^0-9/]/g, "");
+    const slash = cleaned.match(/(\d+)\/(\d+)\/(\d+)/);
+    if (!slash) return null;
+    return { kills: Number(slash[1]), deaths: Number(slash[2]), assists: Number(slash[3]) };
   }
   async function applySingleObjectiveReading(teamId: string, type: string, text: string) {
     const n = text.match(/\d+/);
@@ -1878,8 +1900,13 @@ export default function LiveConsolePage() {
         const { data: { text } } = await worker.recognize(canvas);
         const trimmed = text.trim();
         setReadings((prev) => ({ ...prev, [tracker.field]: trimmed }));
-        const mmss = trimmed.match(/(\d{1,2}):(\d{2})/);
-        const secondsOnly = trimmed.match(/^(\d{1,3})$/);
+        // Numeric tracking only ever needs digits plus whichever single
+        // punctuation character disambiguates the number itself (":" for a
+        // clock) — everything else OCR picked up (stray glyphs, overlay
+        // chrome) is noise that would otherwise corrupt the match.
+        const numericOnly = trimmed.replace(/[^0-9:]/g, "");
+        const mmss = numericOnly.match(/(\d{1,2}):(\d{2})/);
+        const secondsOnly = numericOnly.match(/^(\d{1,3})$/);
 
         switch (tracker.category) {
           case "kill_banner": {
@@ -3402,22 +3429,26 @@ export default function LiveConsolePage() {
                 <div className="flex gap-4">
                   {OBJECTIVE_TYPES.map((type) => (
                     <div key={type} className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => decrementObjective(team.id, type)}
-                        disabled={!objectivesEditable}
-                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
-                      >
-                        −
-                      </button>
-                      <span className="text-xs w-12 text-center capitalize">
-                        {type} <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
-                      </span>
+                      {/* One-click "+" is the primary action (also logs a
+                          Moment list entry, per spec) — "−" stays for
+                          correcting a misclick, same underlying counter. */}
                       <button
                         onClick={() => incrementObjective(team.id, type)}
                         disabled={!objectivesEditable}
+                        title={`${team.name} takes a ${type}`}
+                        className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
+                      >
+                        <span>{OBJECTIVE_ICONS[type]}</span>
+                        <span className="capitalize">{type}</span>
+                        <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
+                      </button>
+                      <button
+                        onClick={() => decrementObjective(team.id, type)}
+                        disabled={!objectivesEditable}
+                        title="Undo last"
                         className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
                       >
-                        +
+                        −
                       </button>
                     </div>
                   ))}
@@ -3433,7 +3464,7 @@ export default function LiveConsolePage() {
       {/* Team kills — derived from K/D/A, same as the public page */}
       <section className="space-y-2">
         <h2 className="font-bold">Team kills</h2>
-        <div className="flex gap-6 text-lg font-bold tabular-nums">
+        <div className="flex gap-8 text-3xl font-bold tabular-nums">
           <span className={teamAKillsTotal > teamBKillsTotal ? "text-signal" : "text-white"}>
             {match.team_a?.name}: {teamAKillsTotal}
           </span>

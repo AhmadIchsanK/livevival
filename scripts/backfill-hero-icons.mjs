@@ -31,18 +31,36 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// A sustained Liquipedia throttle window (as opposed to one transient 429)
+// showed up in real job logs: with the shared client's default 6-retry/
+// ~7-minute-per-call budget, a single hero stuck under sustained
+// rate-limiting could burn the script's *entire* 60-minute job timeout
+// (confirmed: the run got stuck retrying one hero — "Miya" — for the full
+// hour and never reached the rest of the M-Z range). This script is safe
+// to re-run indefinitely (it only ever touches rows still missing
+// icon_url), so trading "guaranteed complete in one run" for "always makes
+// a full pass over every remaining hero, resilient to a sustained
+// throttle" is the right tradeoff — a small per-call retry budget here
+// (not touched for any other script) caps the worst case per hero at
+// under a minute instead of ~14.
+const BACKFILL_MAX_RETRIES = 2; // worst case per apiQuery/fetchRenderedPage call: 20s + 40s = 60s
+
 // Identical to import-liquipedia-heroes.mjs's fetchHeroSmallIcon /
 // fetchHeroInfoboxPortrait / fetchHeroIcon — kept as a literal copy rather
 // than a shared import so this one-time script has zero coupling to that
 // recurring script's own control flow (main()'s categorymembers call).
 async function fetchHeroSmallIcon(heroName) {
   const filename = `ML_icon_${heroName.replace(/ /g, "_")}.png`;
-  const data = await apiQuery({
-    action: "query",
-    titles: `File:${filename}`,
-    prop: "imageinfo",
-    iiprop: "url",
-  });
+  const data = await apiQuery(
+    {
+      action: "query",
+      titles: `File:${filename}`,
+      prop: "imageinfo",
+      iiprop: "url",
+    },
+    1,
+    BACKFILL_MAX_RETRIES
+  );
   const pages = data.query?.pages ?? {};
   const page = Object.values(pages)[0];
   if (!page || page.missing !== undefined) return null;
@@ -50,7 +68,7 @@ async function fetchHeroSmallIcon(heroName) {
 }
 
 async function fetchHeroInfoboxPortrait(title) {
-  const html = await fetchRenderedPage(title);
+  const html = await fetchRenderedPage(title, 1, BACKFILL_MAX_RETRIES);
   const $ = cheerio.load(html);
   let src = $(".infobox-image.lightmode img").first().attr("src");
   if (!src) src = $(".infobox-image img").first().attr("src");

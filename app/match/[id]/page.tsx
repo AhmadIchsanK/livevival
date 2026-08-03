@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { BrandLockup } from "@/components/Brand";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 type Match = {
@@ -81,6 +82,7 @@ type PlayerStat = {
   player: { ign: string; team_id: string } | null;
 };
 type Objective = { id: string; game_id: string; team_id: string; type: string; minute_mark: number | null };
+const OBJECTIVE_ICONS: Record<string, string> = { tower: "🗼", lord: "👑", turtle: "🐢" };
 type KeyMoment = {
   id: string;
   game_id: string;
@@ -121,6 +123,19 @@ function youtubeEmbedUrl(url: string | null) {
   if (!idMatch) return null;
   const startMatch = url.match(/[?&](?:t|start)=(\d+)/);
   return `https://www.youtube.com/embed/${idMatch[1]}${startMatch ? `?start=${startMatch[1]}` : ""}`;
+}
+
+// Facebook's own embed plugin just wants the original video/live URL
+// URL-encoded as `href` — no video-ID extraction needed the way YouTube's
+// embed player requires. Closes most of the "stream doesn't embed" gap:
+// streams.platform already distinguishes youtube/facebook/other, but
+// nothing branched on it before this — a Facebook Live link always fell
+// through to the plain "not embeddable" link even though Facebook's own
+// plugin can embed it just fine.
+function facebookEmbedUrl(url: string | null) {
+  if (!url) return null;
+  if (!/facebook\.com|fb\.watch/i.test(url)) return null;
+  return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false`;
 }
 
 // YouTube's live chat has its own dedicated embed (separate iframe from the
@@ -354,7 +369,7 @@ export default function PublicMatchPage() {
     match.state === "DRAFT_STARTED" && match.draft_timer_b_seconds != null ? formatMMSS(match.draft_timer_b_seconds - draftElapsed) : null;
 
   const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
-  const embedUrl = youtubeEmbedUrl(videoUrl);
+  const embedUrl = youtubeEmbedUrl(videoUrl) ?? facebookEmbedUrl(videoUrl);
   // Chat only makes sense against the actual live stream, not a per-game
   // VOD link (a finished game's VOD has no live chat) — always the match's
   // own youtube_url, regardless of which game/VOD is currently selected.
@@ -381,9 +396,13 @@ export default function PublicMatchPage() {
     .filter((p) => p.team_id === teamBId && p.type === "pick")
     .sort((a, b) => roleIndex(a.player?.role) - roleIndex(b.player?.role));
 
+  // Each team's own gold total plotted directly (not a difference line) —
+  // "positive/negative" was ambiguous about which side that even meant;
+  // two labeled lines just show who's ahead at a glance.
   const chartData = gameNetWorth.map((n) => ({
     minute: n.minute_mark,
-    diff: n.team_a_gold - n.team_b_gold,
+    teamA: n.team_a_gold,
+    teamB: n.team_b_gold,
   }));
 
   const mvp =
@@ -465,14 +484,24 @@ export default function PublicMatchPage() {
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-5xl mx-auto space-y-8">
       <header className="space-y-1">
+        {/* A shared link, arriving straight on this page (e.g. from a
+            Telegram share), previously had no way back to the match list
+            at all — the only existing home link only ever rendered in the
+            load-error state above, never here in the normal render path. */}
         <div className="flex items-center justify-between">
-          <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
+          <BrandLockup imgClassName="h-6 w-auto" />
           <ThemeToggle />
         </div>
+        <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="flex items-end gap-4 sm:gap-6">
             <div className="flex flex-col items-center gap-2 w-24 sm:w-32">
-              <TeamLogo url={match.team_a?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
+              <div className="relative">
+                <TeamLogo url={match.team_a?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
+                {match.status === "finished" && seriesWinnerTeamId === teamAId && (
+                  <span className="absolute -top-2 -right-2 text-xl sm:text-2xl drop-shadow" title="Series winner">👑</span>
+                )}
+              </div>
               <span
                 className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
                   match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""
@@ -496,7 +525,12 @@ export default function PublicMatchPage() {
               )}
             </span>
             <div className="flex flex-col items-center gap-2 w-24 sm:w-32">
-              <TeamLogo url={match.team_b?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamBId} />
+              <div className="relative">
+                <TeamLogo url={match.team_b?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamBId} />
+                {match.status === "finished" && seriesWinnerTeamId === teamBId && (
+                  <span className="absolute -top-2 -right-2 text-xl sm:text-2xl drop-shadow" title="Series winner">👑</span>
+                )}
+              </div>
               <span
                 className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
                   match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""
@@ -551,11 +585,6 @@ export default function PublicMatchPage() {
           )}
         </div>
 
-        {match.status === "finished" && seriesWinnerName && (
-          <p className="text-sm font-semibold text-signal">
-            🏆 {seriesWinnerName} wins {Math.max(gamesWonByA, gamesWonByB)}–{Math.min(gamesWonByA, gamesWonByB)}
-          </p>
-        )}
         {mvp && (
           <p className="text-sm text-white/70">
             Game {selectedGame?.game_number} MVP: {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills}/{mvp.deaths}/{mvp.assists}
@@ -713,15 +742,19 @@ export default function PublicMatchPage() {
 
       {chartData.length > 1 && (
         <section>
-          <h2 className="lv-heading mb-2">Net worth difference</h2>
-          <p className="text-xs text-white/50 mb-2">Positive = {match.team_a?.name} ahead. Negative = {match.team_b?.name} ahead.</p>
+          <h2 className="lv-heading mb-2">Net worth</h2>
+          <div className="flex items-center gap-4 text-xs text-white/50 mb-2">
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-signal inline-block" /> {match.team_a?.name}</span>
+            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-white/60 inline-block" /> {match.team_b?.name}</span>
+          </div>
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#ffffff15" />
               <XAxis dataKey="minute" stroke="#ffffff60" tick={{ fontSize: 12 }} label={{ value: "minute", position: "insideBottom", fill: "#ffffff60", fontSize: 11, dy: 10 }} />
               <YAxis stroke="#ffffff60" tick={{ fontSize: 12 }} />
               <Tooltip contentStyle={{ background: "#0A0A0A", border: "1px solid #ffffff20" }} />
-              <Line type="monotone" dataKey="diff" stroke="#E31E2A" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="teamA" name={match.team_a?.name ?? "Team A"} stroke="#E31E2A" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="teamB" name={match.team_b?.name ?? "Team B"} stroke="#ffffff99" strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>
         </section>
@@ -854,7 +887,8 @@ export default function PublicMatchPage() {
               <div className="flex gap-3 text-xs">
                 {(["tower", "lord", "turtle"] as const).map((type) => (
                   <span key={type} className="capitalize text-white/70">
-                    {type} <span className="font-bold tabular-nums text-white">{gameObjectives.filter((o) => o.team_id === t.teamId && o.type === type).length}</span>
+                    {OBJECTIVE_ICONS[type]} {type}{" "}
+                    <span className="font-bold tabular-nums text-white">{gameObjectives.filter((o) => o.team_id === t.teamId && o.type === type).length}</span>
                   </span>
                 ))}
               </div>
@@ -867,11 +901,11 @@ export default function PublicMatchPage() {
         <div className="flex items-center justify-between mb-2">
           <h2 className="lv-heading">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
           {gameStats.length > 0 && (
-            <p className="text-sm tabular-nums">
-              <span className={teamAKills > teamBKills ? "text-signal font-semibold" : "text-white/60"}>{teamAKills}</span>
+            <p className="text-2xl font-bold tabular-nums">
+              <span className={teamAKills > teamBKills ? "text-signal" : "text-white/70"}>{teamAKills}</span>
               <span className="text-white/30"> — </span>
-              <span className={teamBKills > teamAKills ? "text-signal font-semibold" : "text-white/60"}>{teamBKills}</span>
-              <span className="text-white/40 text-xs"> kills</span>
+              <span className={teamBKills > teamAKills ? "text-signal" : "text-white/70"}>{teamBKills}</span>
+              <span className="text-white/40 text-xs font-normal"> kills</span>
             </p>
           )}
         </div>
@@ -914,13 +948,20 @@ export default function PublicMatchPage() {
         <div className="flex flex-wrap gap-3">
           {gameScreenshots.map((s) => (
             <div key={s.id} className="w-48 space-y-1 lv-card-flush p-2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
-              <p className="text-[10px] text-white/40">
-                {s.in_game_time ? `${s.in_game_time} in-game` : ""}
-                {s.in_game_time && " · "}
-                {new Date(s.created_at).toLocaleString()}
-              </p>
+              <a href={s.image_url} target="_blank" rel="noopener noreferrer">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
+              </a>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] text-white/40">
+                  {s.in_game_time ? `${s.in_game_time} in-game` : ""}
+                  {s.in_game_time && " · "}
+                  {new Date(s.created_at).toLocaleString()}
+                </p>
+                <a href={s.image_url} download className="text-[10px] text-white/50 hover:text-signal shrink-0">
+                  ⬇ Download
+                </a>
+              </div>
               {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
             </div>
           ))}

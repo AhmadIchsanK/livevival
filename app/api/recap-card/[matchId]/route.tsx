@@ -82,43 +82,47 @@ function renderCard({
   // doesn't show" — the fetch used to be skipped entirely outside advanced
   // mode); only the hero NAME text is advanced-only, per spec ("simple:
   // only team logo, score and hero icon" / "advanced: both icon and name").
+  // Bigger portraits than before (56px, up from 30) — a hero icon is the
+  // one piece of art in an otherwise all-text/logo card, so it's the
+  // highest-leverage place to add visual weight and cut down on empty
+  // space, in both simple mode (icon-only) and advanced (icon + name).
   const heroPickRow = (name: string | undefined, picks: CardHeroPick[]) => (
-    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 * scale }}>
-      {mode === "advanced" && <span style={{ fontSize: 18 * scale, color: "#ffffffcc" }}>{name}:</span>}
-      {picks.length === 0 && <span style={{ fontSize: 18 * scale, color: "#ffffff55" }}>—</span>}
+    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 12 * scale }}>
+      {mode === "advanced" && <span style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>{name}:</span>}
+      {picks.length === 0 && <span style={{ fontSize: 20 * scale, color: "#ffffff55" }}>—</span>}
       {picks.map((p, j) => (
-        <div key={j} style={{ display: "flex", alignItems: "center", gap: 4 * scale }}>
+        <div key={j} style={{ display: "flex", alignItems: "center", gap: 6 * scale }}>
           {p.icon_url && (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={p.icon_url} alt="" width={30 * scale} height={30 * scale} style={{ borderRadius: 999, objectFit: "cover", border: `1px solid #ffffff33` }} />
+            <img src={p.icon_url} alt="" width={56 * scale} height={56 * scale} style={{ borderRadius: 999, objectFit: "cover", border: `2px solid #ffffff33` }} />
           )}
-          {mode === "advanced" && <span style={{ fontSize: 18 * scale, color: "#ffffffcc" }}>{p.hero_name}</span>}
+          {mode === "advanced" && <span style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>{p.hero_name}</span>}
         </div>
       ))}
     </div>
   );
 
   const teamBlock = (team: CardMatch["team_a"], wins: number, isWinner: boolean) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, flex: 1 }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale, flex: 1 }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 84 * scale,
-          height: 84 * scale,
-          borderRadius: 18 * scale,
+          width: 140 * scale,
+          height: 140 * scale,
+          borderRadius: 28 * scale,
           background: "#ffffff1a",
-          border: `${isWinner ? 3 : 1}px solid ${isWinner ? SIGNAL : "#ffffff22"}`,
-          padding: 10 * scale,
+          border: `${isWinner ? 4 : 1}px solid ${isWinner ? SIGNAL : "#ffffff22"}`,
+          padding: 16 * scale,
         }}
       >
         {team?.logo_url && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={team.logo_url} alt="" width={64 * scale} height={64 * scale} style={{ objectFit: "contain" }} />
+          <img src={team.logo_url} alt="" width={104 * scale} height={104 * scale} style={{ objectFit: "contain" }} />
         )}
       </div>
-      <span style={{ fontSize: 34 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
+      <span style={{ fontSize: 38 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
         {team?.name ?? "TBD"}
       </span>
     </div>
@@ -131,7 +135,7 @@ function renderCard({
       </span>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         {teamBlock(teamA, aWins, winnerName === teamA?.name)}
-        <div style={{ display: "flex", alignItems: "center", gap: 16 * scale, fontSize: 72 * scale, fontWeight: 700 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 20 * scale, fontSize: 96 * scale, fontWeight: 700 }}>
           <span>{aWins}</span>
           <span style={{ color: "#ffffff55" }}>–</span>
           <span>{bWins}</span>
@@ -254,7 +258,10 @@ function renderCard({
           {isLandscape ? (
             <div style={{ display: "flex", flexGrow: 1, alignItems: "center", gap: 56 * scale, marginTop: 24 * scale }}>
               <div style={{ display: "flex", flex: 1 }}>{scoreHeader}</div>
-              <div style={{ display: "flex", flexDirection: "column", flex: 1, gap: 20 * scale }}>
+              {/* Centered, not top-aligned — in simple mode this column is
+                  only heroPicksBlock (mvp/keyMoments are advanced-only), so
+                  top-aligning it left a big empty lower half of the frame. */}
+              <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", flex: 1, height: "100%", gap: 28 * scale }}>
                 {heroPicksBlock}
                 {mvpBlock}
                 {keyMomentsBlock}

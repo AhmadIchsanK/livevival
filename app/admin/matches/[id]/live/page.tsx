@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
@@ -30,7 +31,7 @@ type Match = {
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
 };
-type Player = { id: string; team_id: string; ign: string; role: string | null; photo_url: string | null };
+type Player = { id: string; team_id: string; ign: string; role: string | null; photo_url: string | null; is_active_roster: boolean };
 type Game = {
   id: string;
   game_number: number;
@@ -91,6 +92,14 @@ function youtubeEmbedUrl(url: string | null) {
   if (!url) return null;
   const idMatch = url.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
   return idMatch ? `https://www.youtube.com/embed/${idMatch[1]}` : null;
+}
+// Same Facebook embed-plugin fallback as the public match page — the
+// admin's own preview iframe was silently blank for a Facebook-hosted
+// stream even though the public page (before this) had the exact same gap.
+function facebookEmbedUrl(url: string | null) {
+  if (!url) return null;
+  if (!/facebook\.com|fb\.watch/i.test(url)) return null;
+  return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false`;
 }
 
 export default function LiveConsolePage() {
@@ -167,7 +176,7 @@ export default function LiveConsolePage() {
     const teamIds = [m.team_a?.id, m.team_b?.id].filter(Boolean) as string[];
     const { data: playerRows } = await supabase
       .from("players")
-      .select("id, team_id, ign, role, photo_url")
+      .select("id, team_id, ign, role, photo_url, is_active_roster")
       .in("team_id", teamIds);
     setPlayers((playerRows as Player[]) ?? []);
 
@@ -411,6 +420,10 @@ export default function LiveConsolePage() {
   // pick/ban selection, since scrolling a plain <select> of 130+ heroes by
   // name is slow mid-draft. Draft-phase only per its own purpose.
   const [showHeroPicker, setShowHeroPicker] = useState(false);
+  const [editingFinishedGame, setEditingFinishedGame] = useState(false);
+  useEffect(() => {
+    setEditingFinishedGame(false);
+  }, [game?.id]);
   async function saveScoreboardPlayerEdit(playerId: string) {
     if (!editingScoreboardIgn.trim()) return;
     const { error } = await supabase.from("players").update({ ign: editingScoreboardIgn.trim() }).eq("id", playerId);
@@ -462,9 +475,27 @@ export default function LiveConsolePage() {
     });
     return [`🏰 <b>Objectives</b>`, `${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`, ...lines.filter(Boolean)].join("\n\n");
   }
+  const OBJECTIVE_ICONS: Record<string, string> = { tower: "🗼", lord: "👑", turtle: "🐢" };
   async function incrementObjective(teamId: string, type: string) {
-    if (!game) return;
+    if (!game || !match) return;
     await supabase.from("objectives").insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute });
+    // A one-click objective button is otherwise silent on the public Moment
+    // list — it only ever showed up in the Objectives tab's running count.
+    // "objective" isn't one of key_moments_type_check's allowed values —
+    // "custom" (already used for other manual admin-logged entries, e.g.
+    // net worth corrections) is, and the Moment list already renders
+    // `description` regardless of type.
+    const teamName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+    await supabase.from("key_moments").insert({
+      game_id: game.id,
+      match_id: matchId,
+      type: "custom",
+      team_id: teamId,
+      description: `${teamName} takes ${OBJECTIVE_ICONS[type] ?? ""} ${type}`,
+      minute_mark: minute,
+      second_mark: secondOfMinute,
+      source: "manual",
+    });
     loadAll();
   }
   async function decrementObjective(teamId: string, type: string) {
@@ -795,13 +826,20 @@ export default function LiveConsolePage() {
     }
   }
 
-  function captureScreenshotFromPreview(noteOverride?: string) {
+  async function captureScreenshotFromPreview(noteOverride?: string) {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
-    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    // Same Livevival watermark as the moment-attach capture path
+    // (captureFrameBlob/drawWatermark) — this "Game screenshots" button was
+    // the one capture path that skipped it, so a screenshot from here had
+    // no branding at all.
+    await drawWatermark(ctx, canvas.width, canvas.height);
     canvas.toBlob((blob) => {
       if (blob) uploadScreenshot(blob, noteOverride);
     }, "image/jpeg", 0.85);
@@ -950,6 +988,12 @@ export default function LiveConsolePage() {
   const dragStartPct = useRef<{ x: number; y: number } | null>(null);
   const dragStartBox = useRef<RegionBox | null>(null);
   const cropRectRef = useRef<DOMRect | null>(null);
+  // Which state a drag gesture writes into — "draftBox" is the existing
+  // pick-tracker-then-draw flow (inline view, and full-screen edit mode);
+  // "pendingFsBox" is full-screen's draw-then-pick flow, where a box can
+  // exist with no tracker assigned yet. Read by the shared mousemove/mouseup
+  // effect below so both flows can share one drag implementation.
+  const dragTarget = useRef<"draftBox" | "pendingFsBox">("draftBox");
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
@@ -1000,6 +1044,26 @@ export default function LiveConsolePage() {
   const [readings, setReadings] = useState<Record<string, string>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
   const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
+
+  // ── Full-screen tracker placement ─────────────────────────────────────
+  // A second, bigger editor over the SAME capture_regions rows as the
+  // small inline calibration view above — not a parallel data model. The
+  // inline view's flow is "pick a tracker, then draw its box"; full-screen
+  // reverses that ("draw a box, then pick which tracker it's for") since a
+  // full viewport makes free-hand placement much easier to see, so it
+  // needs its own draft box (pendingFsBox) that can exist with no tracker
+  // assigned yet — draftBox/calibratingField stay reserved for "editing a
+  // tracker that's already been chosen" (used by both views).
+  const [fullscreenPlacementOpen, setFullscreenPlacementOpen] = useState(false);
+  const [fsPhaseFilter, setFsPhaseFilter] = useState<string>("");
+  const [fsEditMode, setFsEditMode] = useState(false);
+  const [pendingFsBox, setPendingFsBox] = useState<RegionBox | null>(null);
+  const [fsPickerPhase, setFsPickerPhase] = useState<string>("");
+  const [fsPickerField, setFsPickerField] = useState<string>("");
+  useEffect(() => {
+    if (pendingFsBox && !fsPickerPhase) setFsPickerPhase(fsPhaseFilter || match?.state || "MATCH_NOT_STARTED");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFsBox]);
 
   // ── Full-frame AI capture (no calibration) ───────────────────────────
   // Alternative to the manual crop-region OCR above: sends the whole
@@ -1077,140 +1141,118 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  // Draft phases (DRAFT_STARTED/DRAFT_COMPLETE) never auto-write detected
-  // picks/bans straight to the DB — a misread hero name during a fast draft
-  // is much costlier to have gone live already than a stat glitch that
-  // gets overwritten next tick. Detections surface as a pop-out (see
-  // draftPickPopup below) instead of a passive bottom banner, so a fresh
-  // pick actually interrupts the admin rather than waiting to be noticed.
   const DRAFT_PHASES = ["DRAFT_STARTED", "DRAFT_COMPLETE"];
-  type StagedDraftAction = { type: "pick" | "ban"; team_name: string; hero_name: string; player_id?: string; player_name?: string };
-  const [stagedDraftActions, setStagedDraftActions] = useState<StagedDraftAction[]>([]);
-  // A dismissed detection shouldn't immediately pop back up on the very
-  // next tick reading the exact same (still-uncommitted) crop — keyed by
-  // player+hero so a genuine correction (OCR later reads a DIFFERENT hero
-  // for that slot) still surfaces as a new suggestion.
-  const dismissedDraftKeys = useRef<Set<string>>(new Set());
-  const draftPickPopup = stagedDraftActions[0] ?? null;
 
-  async function commitDraftAction(action: StagedDraftAction) {
-    const teamId = matchTeamId(action.team_name);
-    if (!teamId || !action.hero_name || !game) return;
-    const alreadyLogged = pickBans.some(
-      (pb) => pb.team_id === teamId && pb.hero_name.toLowerCase() === action.hero_name.toLowerCase() && pb.type === action.type
-    );
-    if (alreadyLogged) return;
-    await supabase.from("hero_picks_bans").upsert(
-      {
-        game_id: game.id,
-        match_id: matchId,
-        team_id: teamId,
-        player_id: action.player_id ?? null,
-        hero_name: action.hero_name,
-        hero_id: matchHeroId(action.hero_name),
-        type: action.type,
-        pick_order: pickBans.length + 1,
-      },
-      { onConflict: "game_id,team_id,hero_name,type" }
-    );
-    await logPickBanMoment(action.type, teamId, action.hero_name, action.player_id);
-    // A deterministic per-slot pick already knows exactly which player it
-    // is — no reason to make the admin also go update Live Scoreboard by
-    // hand for something OCR already resolved with certainty.
-    if (action.player_id) await updateStat(action.player_id, "hero_name", action.hero_name);
+  // ── Draft: manual ban/pick simulation ─────────────────────────────────
+  // Replaces OCR/AI-vision draft detection entirely. Bans show no text on
+  // screen (only an icon) so deterministic OCR was never reliable there,
+  // and hero-pick detection during a fast-moving draft was the single
+  // riskiest OCR surface in the console. The admin instead logs each pick
+  // and ban by hand from a searchable hero grid, in the exact fixed order
+  // a real tournament draft follows — modeled as one flat array of atomic
+  // {side, type} actions rather than named "steps" (some of which cover
+  // two heroes for the same team back-to-back), since a flat array turns
+  // every "double step" into just two consecutive same-side entries with
+  // no special-casing anywhere in the advance logic.
+  type DraftSide = "blue" | "red";
+  type DraftAtomicAction = { side: DraftSide; type: "ban" | "pick" };
+  function buildDraftSequence(): DraftAtomicAction[] {
+    const seq: DraftAtomicAction[] = [];
+    const ban = (side: DraftSide, n = 1) => { for (let i = 0; i < n; i++) seq.push({ side, type: "ban" }); };
+    const pick = (side: DraftSide, n = 1) => { for (let i = 0; i < n; i++) seq.push({ side, type: "pick" }); };
+    ban("blue"); ban("red"); ban("blue"); ban("red"); ban("blue"); ban("red"); // Ban 1: B1,R1,B2,R2,B3,R3
+    pick("blue"); pick("red", 2); pick("blue", 2);                            // Pick 1: Blue P1, Red P1+P2, Blue P2+P3
+    ban("red"); ban("blue"); ban("red"); ban("blue");                        // Ban 2: R4,B4,R5,B5
+    pick("red"); pick("blue", 2); pick("red", 2);                            // Pick 2: Red P3, Blue P4+P5, Red P4+P5
+    return seq; // 12 bans + 10 picks
+  }
+  const DRAFT_SEQUENCE = buildDraftSequence();
+
+  type DraftSimState = {
+    blueTeamId: string;
+    redTeamId: string;
+    stepIndex: number;
+    committed: { teamId: string; type: "ban" | "pick"; heroName: string }[];
+  };
+  const [draftSim, setDraftSim] = useState<DraftSimState | null>(null);
+  const [simHeroSearch, setSimHeroSearch] = useState("");
+
+  // "Ban 2" / "Pick 3" — counts same-side-same-type entries up to and
+  // including this step, so the turn banner reads naturally regardless of
+  // whether the step before it belonged to the same team or not.
+  function draftStepLabel(stepIndex: number): string {
+    const step = DRAFT_SEQUENCE[stepIndex];
+    const n = DRAFT_SEQUENCE.slice(0, stepIndex + 1).filter((s) => s.side === step.side && s.type === step.type).length;
+    return `${step.type === "ban" ? "Ban" : "Pick"} ${n}`;
   }
 
-  function draftKeyFor(action: Pick<StagedDraftAction, "player_id" | "hero_name">) {
-    return `${action.player_id ?? ""}:${action.hero_name.toLowerCase()}`;
-  }
-  async function pushDraftPickPopup() {
-    if (!draftPickPopup) return;
-    await commitDraftAction(draftPickPopup);
-    setStagedDraftActions((prev) => prev.slice(1));
+  async function startDraftSimulation(blueTeamId: string) {
+    if (!game || !match?.team_a || !match?.team_b) return;
+    const redTeamId = blueTeamId === match.team_a.id ? match.team_b.id : match.team_a.id;
+    if (!confirm("Start draft simulation? This clears any existing picks/bans for this game.")) return;
+    await supabase.from("hero_picks_bans").delete().eq("game_id", game.id);
+    setDraftSim({ blueTeamId, redTeamId, stepIndex: 0, committed: [] });
+    setSimHeroSearch("");
     loadAll();
   }
-  function dismissDraftPickPopup() {
-    if (!draftPickPopup) return;
-    dismissedDraftKeys.current.add(draftKeyFor(draftPickPopup));
-    setStagedDraftActions((prev) => prev.slice(1));
+  // Soft — only abandons the in-memory turn tracker. Whatever's already
+  // been logged to hero_picks_bans for completed steps stays; "Reset"
+  // below is the destructive one that also deletes those rows.
+  function stopDraftSimulation() {
+    setDraftSim(null);
+    setSimHeroSearch("");
+  }
+  async function resetDraftSimulation() {
+    if (!game) return;
+    if (!confirm("Reset the draft? This deletes every pick/ban logged so far for this game.")) return;
+    await supabase.from("hero_picks_bans").delete().eq("game_id", game.id);
+    setDraftSim(null);
+    setSimHeroSearch("");
+    loadAll();
+  }
+  async function logSimulationStep(heroName: string) {
+    if (!draftSim || !game || !match) return;
+    const step = DRAFT_SEQUENCE[draftSim.stepIndex];
+    const teamId = step.side === "blue" ? draftSim.blueTeamId : draftSim.redTeamId;
+    const { error } = await supabase.from("hero_picks_bans").insert({
+      game_id: game.id,
+      match_id: matchId,
+      team_id: teamId,
+      player_id: null, // no hero-to-player assignment during the simulation itself
+      hero_name: heroName,
+      hero_id: heroes.find((h) => h.name === heroName)?.id ?? null,
+      type: step.type,
+      pick_order: draftSim.committed.length + 1,
+    });
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    await logPickBanMoment(step.type, teamId, heroName, null);
+    const nextIndex = draftSim.stepIndex + 1;
+    setDraftSim({ ...draftSim, stepIndex: nextIndex, committed: [...draftSim.committed, { teamId, type: step.type, heroName }] });
+    setSimHeroSearch("");
+    if (nextIndex >= DRAFT_SEQUENCE.length) {
+      setDraftSim(null);
+      await setMatchPhase("DRAFT_COMPLETE");
+    }
+    loadAll();
   }
 
-  const [retakingDraft, setRetakingDraft] = useState(false);
-  // Picks staged mid-draft can go stale by the time the draft actually
-  // locks in (a last-second swap, a misread corrected by the caster) —
-  // this does one fresh OCR pass over every per-player draft_hero_pick
-  // tracker and corrects hero_picks_bans per player instead of leaving
-  // whatever was captured earlier standing. Only meaningful once
-  // DRAFT_COMPLETE, with capture still running so there's a live frame to
-  // read. Each tracker's slot number deterministically identifies which
-  // roster player it belongs to (teamPlayers sorted by role, same order
-  // KDA_SLOT_LABELS uses) — the crop only ever needs to contain a hero
-  // name, not a player name too, since position already answers "who."
-  const [retakeIncomplete, setRetakeIncomplete] = useState<number | null>(null);
-  async function retakeDraftPicks() {
-    const video = previewRef.current;
-    const worker = workerRef.current;
-    if (!game || !match || !video || !worker) return;
-    setRetakingDraft(true);
-    setRetakeIncomplete(null);
-    try {
-      // Read every tracker first and buffer the results — only once every
-      // slot that has a calibrated region has actually resolved a hero do
-      // any of them get written, instead of writing player-by-player as
-      // each OCR pass completes (which could leave hero_picks_bans/live
-      // score in an inconsistent half-updated state if the pass is
-      // interrupted partway through).
-      const draftHeroPickTrackers = trackers.filter((t) => t.category === "draft_hero_pick");
-      const resolved: { teamId: string; playerRow: Player; hero: { id: string; name: string } }[] = [];
-      let attempted = 0;
-      for (const tracker of draftHeroPickTrackers) {
-        const { side, slot } = fieldParts(tracker.field);
-        if (!side || !slot) continue;
-        const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
-        const box = regions[tracker.field];
-        if (!teamId || !box) continue;
-        attempted++;
-        const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
-        const playerRow = teamPlayers[slot - 1];
-        if (!playerRow) continue;
-        const canvas = cropCanvasFor(video, box);
-        if (!canvas) continue;
-        const { data: { text } } = await worker.recognize(canvas);
-        const n = normalize(text);
-        const hero = heroes.find((h) => n.includes(normalize(h.name)));
-        if (!hero) continue;
-        resolved.push({ teamId, playerRow, hero });
-      }
-      if (attempted > 0 && resolved.length < attempted) {
-        // Partial read — surfaced, not silently applied, since committing
-        // half a draft's worth of picks is exactly the "wrong write that's
-        // costlier than waiting a tick" this whole staged/buffered
-        // approach exists to avoid. Retrying (recapture usually clears a
-        // transient misread) is the expected next step.
-        setRetakeIncomplete(resolved.length);
-        return;
-      }
-      for (const { teamId, playerRow, hero } of resolved) {
-        // Replace this player's existing pick (if any) rather than
-        // appending — a retake is a correction, not a second pick.
-        await supabase.from("hero_picks_bans").delete().eq("game_id", game.id).eq("player_id", playerRow.id).eq("type", "pick");
-        await supabase.from("hero_picks_bans").insert({
-          game_id: game.id,
-          match_id: matchId,
-          team_id: teamId,
-          player_id: playerRow.id,
-          hero_name: hero.name,
-          hero_id: hero.id,
-          type: "pick",
-          pick_order: pickBans.length + 1,
-        });
-        await logPickBanMoment("pick", teamId, hero.name, playerRow.id);
-        await updateStat(playerRow.id, "hero_name", hero.name);
-      }
-    } finally {
-      setRetakingDraft(false);
-      loadAll();
+  // Post-simulation, pre-Finish: the simulation logs picks with no player_id
+  // (no hero-to-player assignment happens during it), so once it's done the
+  // admin assigns each picked hero to whichever roster player is actually
+  // playing it — writes straight onto that pick's own row (not a new one)
+  // and syncs the Live Scoreboard's hero column the same way a manual pick
+  // already does.
+  async function assignHeroToPlayer(pickBanId: string, playerId: string, heroName: string) {
+    const { error } = await supabase.from("hero_picks_bans").update({ player_id: playerId }).eq("id", pickBanId);
+    if (error) {
+      setError(error.message);
+      return;
     }
+    await updateStat(playerId, "hero_name", heroName);
+    loadAll();
   }
 
   async function applyAiDetection(detection: AiDetection) {
@@ -1223,21 +1265,10 @@ export default function LiveConsolePage() {
     }
     if (detection.phase === "IN_GAME") maybeAutoStartGame();
 
-    if (DRAFT_PHASES.includes(match.state)) {
-      setStagedDraftActions((prev) => {
-        const next = [...prev];
-        for (const action of detection.draft_actions ?? []) {
-          if (!action.hero_name) continue;
-          const dupe = next.some(
-            (a) => a.type === action.type && a.team_name === action.team_name && a.hero_name.toLowerCase() === action.hero_name.toLowerCase()
-          );
-          if (!dupe) next.push(action);
-        }
-        return next;
-      });
-    } else {
-      for (const action of detection.draft_actions ?? []) await commitDraftAction(action);
-    }
+    // Draft is a manual ban/pick simulation now (see draftSim below) — no
+    // more OCR/AI-vision draft detection, so detection.draft_actions (still
+    // present on the API response, still shown in the raw AI-status debug
+    // panel below) is intentionally not applied to hero_picks_bans here.
 
     // Game-ongoing's tracker area — stats, net worth, moment banners — only
     // applies while the admin actually has this phase selected, same
@@ -1501,6 +1532,48 @@ export default function LiveConsolePage() {
     const tracker = trackers.find((t) => t.field === field);
     if (!tracker) return;
     await supabase.from("capture_regions").update({ x_pct: null, y_pct: null, w_pct: null, h_pct: null }).eq("id", tracker.id);
+  }
+
+  // Full-screen's draw-then-pick flow needs one round trip, not two —
+  // inserting the tracker row WITH its coordinates already set, instead of
+  // addTracker() followed by a separate saveRegion() call that would read
+  // back from `trackers` state before the just-added row has landed there.
+  async function addTrackerWithRegion(phase: string, category: TrackerCategory, field: string, label: string, box: RegionBox) {
+    const { data, error } = await supabase
+      .from("capture_regions")
+      .insert({ match_id: matchId, phase, category, field, label, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct })
+      .select("id")
+      .single();
+    if (error || !data) {
+      setError(error?.message.includes("duplicate key") ? `"${label}" is already tracked for this phase.` : error?.message ?? "Failed to add tracker");
+      return;
+    }
+    setTrackers((prev) => [...prev, { id: data.id, phase, category, field, label }]);
+    setRegions((prev) => ({ ...prev, [field]: box }));
+  }
+
+  // Same "already tracked" filter as trackerCatalogOptions, just
+  // parameterized by the full-screen picker's own phase pick instead of
+  // the inline Add-tracker row's phase state — the two panels are
+  // independent UI, same underlying catalog.
+  const fsPickerOptions = catalogForPhase(fsPickerPhase).filter(
+    (opt) => !trackers.some((t) => t.phase === fsPickerPhase && t.field === opt.field)
+  );
+  async function savePendingFsBox() {
+    if (!pendingFsBox) return;
+    const opt = fsPickerOptions.find((o) => o.field === fsPickerField);
+    if (!opt) return;
+    const existing = trackers.find((t) => t.phase === fsPickerPhase && t.field === opt.field);
+    if (existing) await saveRegion(opt.field, pendingFsBox);
+    else await addTrackerWithRegion(fsPickerPhase, opt.category, opt.field, opt.label, pendingFsBox);
+    setPendingFsBox(null);
+    setFsPickerPhase("");
+    setFsPickerField("");
+  }
+  function cancelPendingFsBox() {
+    setPendingFsBox(null);
+    setFsPickerPhase("");
+    setFsPickerField("");
   }
 
   const [savedDefaultField, setSavedDefaultField] = useState<string | null>(null);
@@ -1771,28 +1844,32 @@ export default function LiveConsolePage() {
     return heroes.find((h) => n.includes(normalize(h.name))) ?? null;
   }
   // Broadcast overlays show net worth either as a raw digit count
-  // ("23456") or already abbreviated ("23.4K") depending on the
-  // tournament — accept both, always resolving to the same raw-gold
-  // number for storage (display-side formatting re-abbreviates it, see
-  // formatGold below).
+  // ("23456") or already abbreviated ("23.4K", exactly one decimal digit)
+  // depending on the tournament — accept both, always resolving to the
+  // same raw-gold number for storage (display-side formatting
+  // re-abbreviates it, see formatGold below). Pre-cleaned to digits plus
+  // only the punctuation the number itself needs (".", "," as a thousands
+  // separator, "k"/"K") — any other OCR noise is stripped before matching
+  // rather than risking it corrupting the parsed value.
   function parseGoldText(text: string): number | null {
-    const abbreviated = text.match(/(\d+(?:\.\d+)?)\s*[kK]/);
+    const cleaned = text.replace(/[^0-9.,kK]/g, "");
+    const abbreviated = cleaned.match(/(\d+\.\d)k/i);
     if (abbreviated) return Math.round(Number(abbreviated[1]) * 1000);
-    const raw = text.match(/\d[\d,]*/);
+    const raw = cleaned.match(/\d[\d,]*/);
     return raw ? Number(raw[0].replace(/,/g, "")) : null;
   }
   function formatGold(n: number): string {
     return `${(n / 1000).toFixed(1)}K`;
   }
-  // Prefers a slash-separated "K/D/A" (what the request explicitly calls
-  // out, and what most broadcast overlays actually show) but still accepts
-  // any other single-character separator as a fallback for a tournament
-  // whose overlay uses a different glyph between the three numbers.
+  // Only a slash-separated "K/D/A" counts now — the previous "any other
+  // single-character separator" fallback was exactly the kind of
+  // non-numeric-character tolerance that risked misreads; "/" is the only
+  // punctuation this shape is allowed. Cleaned to digits + "/" first.
   function parseKda(text: string): { kills: number; deaths: number; assists: number } | null {
-    const slash = text.match(/(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/);
-    const loose = slash ?? text.match(/(\d+)\D+(\d+)\D+(\d+)/);
-    if (!loose) return null;
-    return { kills: Number(loose[1]), deaths: Number(loose[2]), assists: Number(loose[3]) };
+    const cleaned = text.replace(/[^0-9/]/g, "");
+    const slash = cleaned.match(/(\d+)\/(\d+)\/(\d+)/);
+    if (!slash) return null;
+    return { kills: Number(slash[1]), deaths: Number(slash[2]), assists: Number(slash[3]) };
   }
   async function applySingleObjectiveReading(teamId: string, type: string, text: string) {
     const n = text.match(/\d+/);
@@ -1842,8 +1919,13 @@ export default function LiveConsolePage() {
         const { data: { text } } = await worker.recognize(canvas);
         const trimmed = text.trim();
         setReadings((prev) => ({ ...prev, [tracker.field]: trimmed }));
-        const mmss = trimmed.match(/(\d{1,2}):(\d{2})/);
-        const secondsOnly = trimmed.match(/^(\d{1,3})$/);
+        // Numeric tracking only ever needs digits plus whichever single
+        // punctuation character disambiguates the number itself (":" for a
+        // clock) — everything else OCR picked up (stray glyphs, overlay
+        // chrome) is noise that would otherwise corrupt the match.
+        const numericOnly = trimmed.replace(/[^0-9:]/g, "");
+        const mmss = numericOnly.match(/(\d{1,2}):(\d{2})/);
+        const secondsOnly = numericOnly.match(/^(\d{1,3})$/);
 
         switch (tracker.category) {
           case "kill_banner": {
@@ -1882,32 +1964,6 @@ export default function LiveConsolePage() {
             if (!teamLetter) break;
             if (mmss) updateDraftTimer(teamLetter, Number(mmss[1]) * 60 + Number(mmss[2]));
             else if (secondsOnly) updateDraftTimer(teamLetter, Number(secondsOnly[1]));
-            break;
-          }
-          case "draft_hero_pick": {
-            // Slot position already answers "which player" — the crop only
-            // needs a legible hero name, not a player name too. Staged (not
-            // auto-committed) same as before: a misread hero during a fast
-            // draft is costlier to have gone live already than a stat
-            // glitch a later tick corrects.
-            if (!side || !slot) break;
-            const teamId = side === "left" ? leftTeamId : rightTeamId;
-            const teamName = teamId === match?.team_a?.id ? match?.team_a?.name : match?.team_b?.name;
-            const playerRow = slotPlayer(side, slot);
-            const hero = findHeroInText(trimmed);
-            const alreadyCommitted = playerRow && pickBans.some((pb) => pb.player_id === playerRow.id && pb.type === "pick");
-            const wasDismissed = playerRow && hero && dismissedDraftKeys.current.has(draftKeyFor({ player_id: playerRow.id, hero_name: hero.name }));
-            if (teamName && hero && playerRow && !alreadyCommitted && !wasDismissed) {
-              setStagedDraftActions((prev) => {
-                const dupe = prev.some((a) => a.player_id === playerRow.id && a.hero_name.toLowerCase() === hero.name.toLowerCase());
-                if (dupe) return prev;
-                // A previous (likely wrong) staged pick for this same
-                // player gets replaced rather than piling up — only one
-                // pick per player can ever be real.
-                const withoutThisPlayer = prev.filter((a) => a.player_id !== playerRow.id);
-                return [...withoutThisPlayer, { type: "pick", team_name: teamName, hero_name: hero.name, player_id: playerRow.id, player_name: playerRow.ign }];
-              });
-            }
             break;
           }
           case "team_kills": {
@@ -2055,7 +2111,12 @@ export default function LiveConsolePage() {
 
   // Runs after captureActive flips true and React has actually mounted the
   // <video> element — this is what attaches the shared stream, not
-  // startCapture() itself (see the comment there).
+  // startCapture() itself (see the comment there). Also re-runs on
+  // fullscreenPlacementOpen: toggling full-screen conditionally mounts a
+  // DIFFERENT <video> element (inline view vs. the full-screen portal),
+  // and srcObject doesn't carry over across that swap — previewRef always
+  // points at whichever one is currently mounted, so re-attaching here
+  // keeps the live stream showing in whichever view is visible.
   useEffect(() => {
     if (!captureActive || !streamRef.current || !previewRef.current) return;
     const video = previewRef.current;
@@ -2074,7 +2135,7 @@ export default function LiveConsolePage() {
     else video.addEventListener("loadedmetadata", fireFirstFrame, { once: true });
     return () => video.removeEventListener("loadedmetadata", fireFirstFrame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [captureActive]);
+  }, [captureActive, fullscreenPlacementOpen]);
 
   useEffect(() => {
     return () => stopCapture();
@@ -2101,7 +2162,7 @@ export default function LiveConsolePage() {
   }, [captureActive]);
 
   useEffect(() => {
-    if (!match || !DRAFT_PHASES.includes(match.state)) setStagedDraftActions([]);
+    if (!match || !DRAFT_PHASES.includes(match.state)) setDraftSim(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.state]);
 
@@ -2115,17 +2176,21 @@ export default function LiveConsolePage() {
   // Starts a drag: drawing a brand-new box (no draftBox yet), moving the
   // whole box, or resizing from one corner. e.stopPropagation() keeps a
   // handle's own mousedown from also bubbling to the container's
-  // "start a fresh draw" handler.
-  function startBoxDrag(mode: DragMode, e: React.MouseEvent) {
-    if (!calibratingField) return;
+  // "start a fresh draw" handler. `target` picks which state the drag
+  // writes into — defaults to the existing pick-tracker-then-draw flow
+  // (draftBox); full-screen's draw-then-pick flow passes "pendingFsBox"
+  // instead, since that box exists before any tracker is chosen.
+  function startBoxDrag(mode: DragMode, e: React.MouseEvent, target: "draftBox" | "pendingFsBox" = "draftBox") {
+    if (target === "draftBox" && !calibratingField) return;
     e.stopPropagation();
     const container = e.currentTarget.closest("[data-crop-container]");
     if (!container) return;
     const rect = container.getBoundingClientRect();
     cropRectRef.current = rect;
     dragMode.current = mode;
+    dragTarget.current = target;
     dragStartPct.current = clientToPct(e.clientX, e.clientY, rect);
-    dragStartBox.current = draftBox;
+    dragStartBox.current = target === "pendingFsBox" ? pendingFsBox : draftBox;
   }
 
   useEffect(() => {
@@ -2135,9 +2200,10 @@ export default function LiveConsolePage() {
       const start = dragStartPct.current;
       if (!mode || !rect || !start) return;
       const pt = clientToPct(e.clientX, e.clientY, rect);
+      const setBox = dragTarget.current === "pendingFsBox" ? setPendingFsBox : setDraftBox;
 
       if (mode === "draw") {
-        setDraftBox({
+        setBox({
           xPct: Math.min(start.x, pt.x),
           yPct: Math.min(start.y, pt.y),
           wPct: Math.abs(pt.x - start.x),
@@ -2150,7 +2216,7 @@ export default function LiveConsolePage() {
       if (mode === "move") {
         const dx = pt.x - start.x;
         const dy = pt.y - start.y;
-        setDraftBox({
+        setBox({
           ...startBox,
           xPct: Math.min(100 - startBox.wPct, Math.max(0, startBox.xPct + dx)),
           yPct: Math.min(100 - startBox.hPct, Math.max(0, startBox.yPct + dy)),
@@ -2178,7 +2244,7 @@ export default function LiveConsolePage() {
       if (mode.includes("s")) {
         hPct = Math.max(MIN, pt.y - startBox.yPct);
       }
-      setDraftBox({ xPct, yPct, wPct, hPct });
+      setBox({ xPct, yPct, wPct, hPct });
     }
     function onUp() {
       dragMode.current = null;
@@ -2410,6 +2476,15 @@ export default function LiveConsolePage() {
       return;
     }
 
+    if (newState === "DRAFT_STARTED" && match.team_a && match.team_b) {
+      const aActive = players.filter((p) => p.team_id === match.team_a!.id && p.is_active_roster).length;
+      const bActive = players.filter((p) => p.team_id === match.team_b!.id && p.is_active_roster).length;
+      if (aActive !== 5 || bActive !== 5) {
+        setError(`Both teams need exactly 5 active roster players before draft can start (currently ${aActive}/${bActive}).`);
+        return;
+      }
+    }
+
     if (newState === "TECHNICAL_PAUSE" && currentState !== "GAME_STARTED") {
       setError("Technical pause can only be triggered from Game ongoing.");
       return;
@@ -2634,10 +2709,21 @@ export default function LiveConsolePage() {
   // (nothing to count yet) — previously clickable in every phase.
   const SCOREBOARD_EDITABLE_PHASES = new Set(["DRAFT_COMPLETE", "GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM"]);
   const OBJECTIVES_EDITABLE_PHASES = new Set(["GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM"]);
-  const scoreboardEditable = isEditable && SCOREBOARD_EDITABLE_PHASES.has(match.state);
-  const objectivesEditable = isEditable && OBJECTIVES_EDITABLE_PHASES.has(match.state);
+  // A finished game/series needs one extra explicit click before its
+  // result data (scoreboard, objectives, hero picks/bans) opens back up
+  // for editing — guards against an accidental click quietly altering a
+  // result that's already public, without removing the ability to fix a
+  // genuine mistake after the fact. Resets whenever the selected game
+  // changes so re-opening one finished game doesn't leave another one
+  // unlocked too.
+  const gameFinished = game?.status === "finished";
+  const finishedEditUnlocked = gameFinished && editingFinishedGame;
+  const scoreboardEditable = isEditable && SCOREBOARD_EDITABLE_PHASES.has(match.state) && (!gameFinished || finishedEditUnlocked);
+  const objectivesEditable = isEditable && OBJECTIVES_EDITABLE_PHASES.has(match.state) && (!gameFinished || finishedEditUnlocked);
+  const pickBanEditable = isEditable && (!gameFinished || finishedEditUnlocked);
+  const netWorthEditable = isEditable && (!gameFinished || finishedEditUnlocked);
 
-  const embedUrl = youtubeEmbedUrl(match.youtube_url);
+  const embedUrl = youtubeEmbedUrl(match.youtube_url) ?? facebookEmbedUrl(match.youtube_url);
   const activeTrackers = trackers.filter((t) => t.phase === match.state);
 
   // The starting five for this game = whoever has a logged pick, not the
@@ -2661,6 +2747,14 @@ export default function LiveConsolePage() {
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
+  async function toggleActiveRoster(playerId: string, next: boolean) {
+    const { error } = await supabase.from("players").update({ is_active_roster: next }).eq("id", playerId);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setPlayers((prev) => prev.map((p) => (p.id === playerId ? { ...p, is_active_roster: next } : p)));
+  }
   // A direct "team_kills" OCR tracker (see captureTickBody) overrides this
   // once it's read anything — falls back to summing player_stats.kills
   // (the only source before that tracker existed, and still the only
@@ -2678,7 +2772,10 @@ export default function LiveConsolePage() {
 
   return (
     <div className="text-white space-y-8 max-w-6xl">
-      <div>
+      {/* Sticky — phase changes and the stream link are the two things an
+          admin needs reachable no matter how far down the page they've
+          scrolled (moment log, scoreboard, calibration UI are all long). */}
+      <div className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
         <h1 className="lv-heading text-lg flex items-center gap-2.5">
           <TeamLogo url={match.team_a?.logo_url} size="sm" />
           {match.team_a?.name} vs {match.team_b?.name}
@@ -2686,6 +2783,18 @@ export default function LiveConsolePage() {
         </h1>
         <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
+          <input
+            defaultValue={match.youtube_url ?? ""}
+            onBlur={async (e) => {
+              const url = e.target.value.trim();
+              if (url === (match.youtube_url ?? "")) return;
+              const { error } = await supabase.from("matches").update({ youtube_url: url || null }).eq("id", match.id);
+              if (error) setError(error.message);
+              else loadAll();
+            }}
+            placeholder="Livestream URL (YouTube or Facebook)"
+            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs w-56"
+          />
           <select
             value={match.state}
             onChange={(e) => handlePhaseChange(e.target.value)}
@@ -3011,23 +3120,6 @@ export default function LiveConsolePage() {
                 🖼 Hero reference
               </button>
             )}
-            {match.state === "DRAFT_COMPLETE" && (
-              <span className="inline-flex items-center gap-1.5">
-                <button
-                  onClick={retakeDraftPicks}
-                  disabled={!captureActive || retakingDraft}
-                  title={captureActive ? "Re-reads every per-player draft-pick region; only writes once all of them resolve a hero" : "Start capture first"}
-                  className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
-                >
-                  {retakingDraft ? "Retaking..." : "🔄 Retake draft picks"}
-                </button>
-                {retakeIncomplete != null && (
-                  <span className="text-[10px] text-yellow-300" title="Nothing was written — retry once the overlay text is legible for every slot">
-                    Only {retakeIncomplete} of the calibrated slots read a hero — not written, retry
-                  </span>
-                )}
-              </span>
-            )}
             <button
               onClick={() =>
                 postToTelegram(
@@ -3041,6 +3133,184 @@ export default function LiveConsolePage() {
             </button>
           </div>
         </div>
+
+        {/* Active roster (main lineup) — editable up through Draft complete
+            (not locked the instant the draft starts, per spec). Draft can't
+            start unless both teams have exactly 5 checked here; gated in
+            handlePhaseChange, not just visually here. */}
+        {(match.state === "MATCH_NOT_STARTED" || DRAFT_PHASES.includes(match.state)) && (
+          <div className="border border-white/10 rounded-lg p-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[match.team_a, match.team_b].map((team, idx) => {
+              if (!team) return <span key={idx} />;
+              const teamRoster = rosterFor(team.id);
+              const activeCount = teamRoster.filter((p) => p.is_active_roster).length;
+              return (
+                <div key={team.id} className="space-y-1.5">
+                  <p className="text-xs text-white/50">
+                    {team.name} — active roster{" "}
+                    <span className={activeCount === 5 ? "text-emerald-400" : "text-yellow-300"}>{activeCount}/5</span>
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {teamRoster.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => toggleActiveRoster(p.id, !p.is_active_roster)}
+                        className={`text-[10px] rounded px-2 py-1 border ${
+                          p.is_active_roster
+                            ? "border-signal/40 bg-signal/10 text-white"
+                            : "border-white/10 text-white/40 hover:border-white/30"
+                        }`}
+                        title={p.is_active_roster ? "Active — click to bench" : "Bench — click to activate"}
+                      >
+                        {p.is_active_roster ? "✓ " : ""}
+                        {p.ign}
+                        {p.role ? ` (${p.role})` : ""}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Draft ban/pick simulation — replaces OCR/AI hero-pick detection
+            entirely. Bans show no on-screen text (only an icon), so this
+            was always the riskiest OCR surface; the admin now logs each
+            step by hand from a searchable hero grid, in the exact fixed
+            order a tournament draft follows. */}
+        {DRAFT_PHASES.includes(match.state) && (
+          <div className="border border-white/10 rounded-lg p-3 space-y-3">
+            {!draftSim ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-white/50">Draft simulation — pick Blue side (first pick, first ban):</span>
+                {match.team_a && (
+                  <button onClick={() => startDraftSimulation(match.team_a!.id)} className="lv-btn-ghost !text-xs">
+                    {match.team_a.name} is Blue
+                  </button>
+                )}
+                {match.team_b && (
+                  <button onClick={() => startDraftSimulation(match.team_b!.id)} className="lv-btn-ghost !text-xs">
+                    {match.team_b.name} is Blue
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <p className="text-sm font-semibold">
+                    {DRAFT_SEQUENCE[draftSim.stepIndex].side === "blue"
+                      ? draftSim.blueTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name
+                      : draftSim.redTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
+                    {" — "}
+                    <span className={DRAFT_SEQUENCE[draftSim.stepIndex].type === "ban" ? "text-red-400" : "text-emerald-400"}>
+                      {draftStepLabel(draftSim.stepIndex)}
+                    </span>
+                    <span className="text-white/30 text-xs"> ({draftSim.stepIndex + 1}/{DRAFT_SEQUENCE.length})</span>
+                  </p>
+                  <div className="flex gap-2">
+                    <button onClick={stopDraftSimulation} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                      Stop
+                    </button>
+                    <button onClick={resetDraftSimulation} className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10">
+                      Reset draft
+                    </button>
+                  </div>
+                </div>
+                <input
+                  value={simHeroSearch}
+                  onChange={(e) => setSimHeroSearch(e.target.value)}
+                  placeholder="Search heroes..."
+                  className="w-full bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
+                />
+                <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-2 max-h-64 overflow-y-auto">
+                  {heroes
+                    .filter((h) => h.name.toLowerCase().includes(simHeroSearch.toLowerCase()))
+                    .map((h) => {
+                      const taken = draftSim.committed.some((c) => c.heroName.toLowerCase() === h.name.toLowerCase());
+                      return (
+                        <button
+                          key={h.id}
+                          onClick={() => logSimulationStep(h.name)}
+                          disabled={taken}
+                          title={h.name}
+                          className={`flex flex-col items-center gap-1 group ${taken ? "opacity-30 cursor-not-allowed" : ""}`}
+                        >
+                          {h.icon_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={h.icon_url}
+                              alt=""
+                              className={`w-10 h-10 rounded-full object-cover border border-white/10 ${
+                                !taken ? "transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal" : ""
+                              }`}
+                            />
+                          ) : (
+                            <span className="w-10 h-10 rounded-full bg-white/10 block" />
+                          )}
+                          <span className="text-[9px] text-white/60 group-hover:text-white text-center leading-tight truncate w-full">
+                            {h.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Player -> hero assignment — post-simulation, pre-Finish. Each
+            dropdown only ever lists this team's picks that don't have a
+            player yet, so it shrinks as assignments land instead of
+            needing its own "already assigned" filter logic. */}
+        {match.state === "DRAFT_COMPLETE" &&
+          [match.team_a, match.team_b].some(
+            (team) => team && pickBans.some((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id)
+          ) && (
+            <div className="border border-white/10 rounded-lg p-3 space-y-3">
+              <p className="text-xs text-white/50">Assign each picked hero to the player actually playing it:</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {[match.team_a, match.team_b].map((team, idx) => {
+                  if (!team) return <span key={idx} />;
+                  const unassigned = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id);
+                  if (unassigned.length === 0) return <span key={team.id} />;
+                  const activeRoster = rosterFor(team.id).filter((p) => p.is_active_roster);
+                  return (
+                    <div key={team.id} className="space-y-2">
+                      <p className="text-xs text-white/50">{team.name}</p>
+                      {unassigned.map((pb) => {
+                        const hero = heroes.find((h) => h.name === pb.hero_name);
+                        return (
+                          <div key={pb.id} className="flex items-center gap-2">
+                            {hero?.icon_url ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={hero.icon_url} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
+                            ) : (
+                              <span className="w-6 h-6 rounded-full bg-white/10 block" />
+                            )}
+                            <span className="text-xs w-24 truncate">{pb.hero_name}</span>
+                            <select
+                              defaultValue=""
+                              onChange={(e) => e.target.value && assignHeroToPlayer(pb.id, e.target.value, pb.hero_name)}
+                              className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                            >
+                              <option value="">Assign player...</option>
+                              {activeRoster
+                                .filter((p) => !pickBans.some((other) => other.player_id === p.id && other.type === "pick"))
+                                .map((p) => (
+                                  <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                                ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
         {showHeroPicker && (
           <div
@@ -3134,7 +3404,7 @@ export default function LiveConsolePage() {
               ))}
             </select>
           </div>
-          <button onClick={logPickBan} disabled={!isEditable} className="lv-btn-ghost disabled:opacity-40">
+          <button onClick={logPickBan} disabled={!pickBanEditable} className="lv-btn-ghost disabled:opacity-40">
             Log
           </button>
         </div>
@@ -3153,7 +3423,9 @@ export default function LiveConsolePage() {
                       <span key={pb.id} className="px-2 py-1 rounded bg-emerald-500/20 flex items-center gap-1.5">
                         ✅ {pb.hero_name}
                         {player && <span className="text-white/50">({player.ign}{player.role ? ` · ${player.role}` : ""})</span>}
-                        <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                        {pickBanEditable && (
+                          <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                        )}
                       </span>
                     );
                   })}
@@ -3163,7 +3435,9 @@ export default function LiveConsolePage() {
                   .map((pb) => (
                     <span key={pb.id} className="px-2 py-1 rounded bg-red-500/20 flex items-center gap-1.5">
                       🚫 {pb.hero_name}
-                      <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                      {pickBanEditable && (
+                        <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                      )}
                     </span>
                   ))}
               </div>
@@ -3204,22 +3478,26 @@ export default function LiveConsolePage() {
                 <div className="flex gap-4">
                   {OBJECTIVE_TYPES.map((type) => (
                     <div key={type} className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => decrementObjective(team.id, type)}
-                        disabled={!objectivesEditable}
-                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
-                      >
-                        −
-                      </button>
-                      <span className="text-xs w-12 text-center capitalize">
-                        {type} <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
-                      </span>
+                      {/* One-click "+" is the primary action (also logs a
+                          Moment list entry, per spec) — "−" stays for
+                          correcting a misclick, same underlying counter. */}
                       <button
                         onClick={() => incrementObjective(team.id, type)}
                         disabled={!objectivesEditable}
+                        title={`${team.name} takes a ${type}`}
+                        className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
+                      >
+                        <span>{OBJECTIVE_ICONS[type]}</span>
+                        <span className="capitalize">{type}</span>
+                        <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
+                      </button>
+                      <button
+                        onClick={() => decrementObjective(team.id, type)}
+                        disabled={!objectivesEditable}
+                        title="Undo last"
                         className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
                       >
-                        +
+                        −
                       </button>
                     </div>
                   ))}
@@ -3235,7 +3513,7 @@ export default function LiveConsolePage() {
       {/* Team kills — derived from K/D/A, same as the public page */}
       <section className="space-y-2">
         <h2 className="font-bold">Team kills</h2>
-        <div className="flex gap-6 text-lg font-bold tabular-nums">
+        <div className="flex gap-8 text-3xl font-bold tabular-nums">
           <span className={teamAKillsTotal > teamBKillsTotal ? "text-signal" : "text-white"}>
             {match.team_a?.name}: {teamAKillsTotal}
           </span>
@@ -3260,7 +3538,7 @@ export default function LiveConsolePage() {
                   <input
                     type="number"
                     defaultValue={latestNetWorth?.[key] ?? ""}
-                    disabled={!isEditable}
+                    disabled={!netWorthEditable}
                     placeholder="Gold"
                     className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
                     onBlur={(e) => {
@@ -3284,18 +3562,31 @@ export default function LiveConsolePage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Live scoreboard</h2>
-          <button
-            onClick={() =>
-              postToTelegram(buildLiveScoreboardMessage(), {
-                entityType: "match",
-                entityId: match.id,
-                notificationType: "scoreboard_share",
-              })
-            }
-            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-          >
-            📢 Share to Telegram
-          </button>
+          <div className="flex items-center gap-2">
+            {gameFinished && (
+              <button
+                onClick={() => setEditingFinishedGame((v) => !v)}
+                title="This game is finished — result data (scoreboard, objectives, net worth, hero picks/bans) is read-only until unlocked"
+                className={`text-xs rounded px-2 py-1 border ${
+                  editingFinishedGame ? "border-signal/50 text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
+                }`}
+              >
+                {editingFinishedGame ? "🔓 Editing finished game — click to lock" : "🔒 Unlock to edit"}
+              </button>
+            )}
+            <button
+              onClick={() =>
+                postToTelegram(buildLiveScoreboardMessage(), {
+                  entityType: "match",
+                  entityId: match.id,
+                  notificationType: "scoreboard_share",
+                })
+              }
+              className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+            >
+              📢 Share to Telegram
+            </button>
+          </div>
         </div>
         {[teamAPlayers, teamBPlayers].map((teamPlayers, idx) => (
           <div key={idx} className="space-y-1">
@@ -3717,6 +4008,17 @@ export default function LiveConsolePage() {
 
             {captureActive && (
               <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-white/40">
+                    Any tracker, any phase, is editable from here regardless of the match's current live phase.
+                  </span>
+                  <button
+                    onClick={() => setFullscreenPlacementOpen(true)}
+                    className="text-xs border border-white/10 rounded px-3 py-1.5 hover:border-signal/50 hover:bg-signal/10 whitespace-nowrap"
+                  >
+                    ⛶ Full-screen placement
+                  </button>
+                </div>
                 <div
                   data-crop-container
                   // Fixed at half the viewport width instead of free-drag
@@ -3738,9 +4040,23 @@ export default function LiveConsolePage() {
                     if (captureMode === "manual" && calibratingField && !draftBox) startBoxDrag("draw", e);
                   }}
                 >
-                  <video ref={previewRef} muted className="w-full block" />
+                  {/* Full-screen mode reuses this SAME <video> element (via a
+                      portal) rather than mounting a second one bound to the
+                      same MediaStream — two live decodes of one stream risk
+                      drifting a frame apart, which would matter since OCR
+                      reads from whichever one is actually mounted. Only one
+                      of these two conditional branches is ever in the DOM at
+                      once, so previewRef always resolves to the visible one
+                      (the srcObject-attach effect re-runs on this toggle). */}
+                  {!fullscreenPlacementOpen ? (
+                    <video ref={previewRef} muted className="w-full block" />
+                  ) : (
+                    <div className="w-full aspect-video bg-black flex items-center justify-center text-white/30 text-xs">
+                      Preview open in full-screen mode
+                    </div>
+                  )}
                   {captureMode === "manual" &&
-                    activeTrackers
+                    trackers
                       .filter(({ field }) => field !== calibratingField)
                       .map(({ field, label }) => {
                         const box = regions[field];
@@ -3813,6 +4129,251 @@ export default function LiveConsolePage() {
                     </div>
                   )}
                 </div>
+
+                {/* Full-screen tracker placement — a bigger editor over the
+                    SAME capture_regions rows, not a parallel system. Portals
+                    to document.body so it renders above everything else
+                    regardless of where this component sits in the tree. */}
+                {fullscreenPlacementOpen &&
+                  createPortal(
+                    <div className="fixed inset-0 z-[100] bg-black flex flex-col">
+                      <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-white/10 bg-ink/95">
+                        <span className="text-xs text-white/50 uppercase tracking-wider whitespace-nowrap">
+                          Full-screen tracker placement
+                        </span>
+                        <select
+                          value={fsPhaseFilter}
+                          onChange={(e) => setFsPhaseFilter(e.target.value)}
+                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                          title="Only show existing regions for this phase, to reduce clutter while placing new ones"
+                        >
+                          <option value="">All phases</option>
+                          {MATCH_PHASES.map((p) => (
+                            <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => setFsEditMode((v) => !v)}
+                          className={`text-xs border rounded px-2 py-1.5 whitespace-nowrap ${
+                            fsEditMode ? "border-signal text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
+                          }`}
+                        >
+                          {fsEditMode ? "🖊 Edit existing: ON" : "🖊 Edit existing: OFF"}
+                        </button>
+                        <span className="text-[10px] text-white/40 hidden sm:inline">
+                          {fsEditMode ? "Click an existing region to move/resize it." : "Drag on the video to place a new tracker."}
+                        </span>
+                        <div className="flex-1" />
+                        <button
+                          onClick={() => {
+                            setFullscreenPlacementOpen(false);
+                            setPendingFsBox(null);
+                            setFsPickerPhase("");
+                            setFsPickerField("");
+                          }}
+                          className="lv-btn-ghost !text-xs"
+                        >
+                          Exit full-screen ✕
+                        </button>
+                      </div>
+
+                      <div className="flex-1 flex items-center justify-center overflow-hidden p-6">
+                        <div
+                          data-crop-container
+                          // Shrink-wraps exactly to the video's own rendered
+                          // box (inline-flex + the video's own max-w/max-h +
+                          // auto sizing below) instead of a full-viewport box
+                          // the video is stretched/letterboxed inside — this
+                          // is what makes a percentage saved here land in the
+                          // exact same spot in the small inline view: both
+                          // views' data-crop-container element IS the
+                          // video's content box, never a larger box with
+                          // transparent bars baked in, so there's no
+                          // separate letterbox offset to compute or drift
+                          // between the two.
+                          style={{ display: "inline-flex", position: "relative", maxWidth: "100%", maxHeight: "100%" }}
+                          onMouseDown={(e) => {
+                            if (fsEditMode) return; // existing-region buttons below handle their own click-to-edit
+                            if (calibratingField) {
+                              if (!draftBox) startBoxDrag("draw", e, "draftBox");
+                            } else if (!pendingFsBox) {
+                              startBoxDrag("draw", e, "pendingFsBox");
+                            }
+                          }}
+                        >
+                          <video
+                            ref={previewRef}
+                            muted
+                            style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", display: "block" }}
+                          />
+
+                          {/* Existing regions for the filtered phase — inert
+                              dim reference outlines while placing new ones
+                              (fsEditMode off), or clickable/draggable exactly
+                              like the inline view's overlays once on. */}
+                          {trackers
+                            .filter((t) => (fsPhaseFilter ? t.phase === fsPhaseFilter : true))
+                            .filter(({ field }) => field !== calibratingField)
+                            .map(({ field, label }) => {
+                              const box = regions[field];
+                              if (!box) return null;
+                              if (!fsEditMode) {
+                                return (
+                                  <div
+                                    key={field}
+                                    className="absolute border border-white/25 pointer-events-none"
+                                    style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, width: `${box.wPct}%`, height: `${box.hPct}%` }}
+                                  />
+                                );
+                              }
+                              return (
+                                <button
+                                  key={field}
+                                  type="button"
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    startCalibrating(field);
+                                  }}
+                                  title={`Click to edit: ${label}`}
+                                  className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
+                                  style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, width: `${box.wPct}%`, height: `${box.hPct}%` }}
+                                />
+                              );
+                            })}
+
+                          {/* Editing an existing tracker — same move/resize
+                              handles as the inline view. */}
+                          {calibratingField && draftBox && (
+                            <div
+                              className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                              style={{
+                                left: `${draftBox.xPct}%`,
+                                top: `${draftBox.yPct}%`,
+                                width: `${draftBox.wPct}%`,
+                                height: `${draftBox.hPct}%`,
+                              }}
+                              onMouseDown={(e) => startBoxDrag("move", e, "draftBox")}
+                            >
+                              {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                                <div
+                                  key={corner}
+                                  onMouseDown={(e) => startBoxDrag(corner, e, "draftBox")}
+                                  className="absolute w-6 h-6 flex items-center justify-center"
+                                  style={{
+                                    left: corner.includes("w") ? 0 : "100%",
+                                    top: corner.includes("n") ? 0 : "100%",
+                                    transform: "translate(-50%, -50%)",
+                                    cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                                  }}
+                                >
+                                  <span className="w-3 h-3 bg-signal rounded-full border border-white block" />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* A brand-new box, drawn but not yet assigned to a
+                              tracker — full-screen's draw-then-pick flow. */}
+                          {pendingFsBox && (
+                            <div
+                              className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                              style={{
+                                left: `${pendingFsBox.xPct}%`,
+                                top: `${pendingFsBox.yPct}%`,
+                                width: `${pendingFsBox.wPct}%`,
+                                height: `${pendingFsBox.hPct}%`,
+                              }}
+                              onMouseDown={(e) => startBoxDrag("move", e, "pendingFsBox")}
+                            >
+                              {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                                <div
+                                  key={corner}
+                                  onMouseDown={(e) => startBoxDrag(corner, e, "pendingFsBox")}
+                                  className="absolute w-6 h-6 flex items-center justify-center"
+                                  style={{
+                                    left: corner.includes("w") ? 0 : "100%",
+                                    top: corner.includes("n") ? 0 : "100%",
+                                    transform: "translate(-50%, -50%)",
+                                    cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                                  }}
+                                >
+                                  <span className="w-3 h-3 bg-signal rounded-full border border-white block" />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {calibratingField && !draftBox && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                              <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
+                            </div>
+                          )}
+                          {!calibratingField && !pendingFsBox && !fsEditMode && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                              <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to place a new tracker</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {calibratingField && (
+                        <div className="flex gap-2 justify-center px-4 py-3 border-t border-white/10 bg-ink/95">
+                          <button
+                            onClick={lockDraftBox}
+                            disabled={!draftBox}
+                            className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
+                          >
+                            🔒 Lock {trackers.find((t) => t.field === calibratingField)?.label}
+                          </button>
+                          <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+
+                      {pendingFsBox && (
+                        <div className="flex flex-wrap items-center gap-2 justify-center px-4 py-3 border-t border-white/10 bg-ink/95">
+                          <select
+                            value={fsPickerPhase}
+                            onChange={(e) => {
+                              setFsPickerPhase(e.target.value);
+                              setFsPickerField("");
+                            }}
+                            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                          >
+                            {MATCH_PHASES.map((p) => (
+                              <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={fsPickerField}
+                            onChange={(e) => setFsPickerField(e.target.value)}
+                            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
+                          >
+                            <option value="">
+                              {fsPickerOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
+                            </option>
+                            {fsPickerOptions.map((opt) => (
+                              <option key={opt.field} value={opt.field}>{opt.label}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={savePendingFsBox}
+                            disabled={!fsPickerField}
+                            className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
+                          >
+                            Save
+                          </button>
+                          <button onClick={cancelPendingFsBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </div>,
+                    document.body
+                  )}
+
                 {captureMode === "manual" && calibratingField && (
                   <div className="flex gap-2">
                     <button
@@ -4027,34 +4588,6 @@ export default function LiveConsolePage() {
                         </div>
                       </>
                     )}
-                  </div>
-                )}
-
-                {/* Pop-out per detection instead of a passive bottom
-                    banner — a fresh hero-pick read interrupts the admin
-                    directly rather than waiting to be noticed among other
-                    UI. Only the front of the queue shows; Push/Dismiss
-                    advances to the next one if more than one came in. */}
-                {match && DRAFT_PHASES.includes(match.state) && draftPickPopup && (
-                  <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
-                    <div className="bg-ink border border-signal/40 rounded-lg p-5 max-w-sm w-full space-y-3">
-                      <p className="text-xs text-white/40 uppercase tracking-wide">Hero pick detected</p>
-                      <p className="text-lg font-semibold">
-                        {draftPickPopup.player_name ?? "Player"} <span className="text-white/40">picks</span> {draftPickPopup.hero_name}
-                      </p>
-                      <p className="text-xs text-white/50">{draftPickPopup.team_name}</p>
-                      {stagedDraftActions.length > 1 && (
-                        <p className="text-[10px] text-white/30">+{stagedDraftActions.length - 1} more waiting</p>
-                      )}
-                      <div className="flex gap-2 pt-1">
-                        <button onClick={pushDraftPickPopup} className="lv-btn-primary !text-xs !py-1.5 flex-1">
-                          ✓ Push
-                        </button>
-                        <button onClick={dismissDraftPickPopup} className="lv-btn-ghost !text-xs !py-1.5">
-                          Dismiss
-                        </button>
-                      </div>
-                    </div>
                   </div>
                 )}
 

@@ -3224,13 +3224,17 @@ export default function LiveConsolePage() {
             )}
           </div>
         )}
-        <div className="flex flex-wrap gap-2 text-xs">
-          {keyMoments.map((km) => {
+        {/* Vertical, not a wrapping row of chips — sized to show ~10
+            moments before scrolling, newest first (the query orders by
+            minute_mark ascending, so this reverses it for display), same
+            pattern as the public page's own Moment list. */}
+        <div className="flex flex-col gap-1.5 text-xs max-h-[420px] overflow-y-auto pr-1">
+          {[...keyMoments].reverse().map((km) => {
             const player = players.find((p) => p.id === km.player_id);
             const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
             if (editingMomentId === km.id) {
               return (
-                <span key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5">
+                <div key={km.id} className="px-3 py-2 rounded bg-signal/20 flex items-center gap-1.5">
                   <input
                     value={editingMomentText}
                     onChange={(e) => setEditingMomentText(e.target.value)}
@@ -3239,25 +3243,27 @@ export default function LiveConsolePage() {
                   />
                   <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
                   <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-                </span>
+                </div>
               );
             }
             return (
-              <span
+              <div
                 key={km.id}
-                className={`px-2 py-1 rounded flex items-center gap-1.5 ${
+                className={`px-3 py-2 rounded flex items-center gap-1.5 ${
                   km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
                 }`}
               >
-                {km.is_key_moment && "⭐ "}
-                {km.minute_mark}&apos; {label}
-                {km.screenshot_url && " 📸"}
+                <span className="flex-1 min-w-0 truncate">
+                  {km.is_key_moment && "⭐ "}
+                  {km.minute_mark}&apos; {label}
+                  {km.screenshot_url && " 📸"}
+                </span>
                 <button
                   onClick={() => {
                     setEditingMomentId(km.id);
                     setEditingMomentText(label);
                   }}
-                  className="text-white/30 hover:text-white/70 normal-case"
+                  className="text-white/30 hover:text-white/70 normal-case shrink-0"
                   title="Edit"
                 >
                   ✎
@@ -3269,15 +3275,16 @@ export default function LiveConsolePage() {
                       { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" }
                     )
                   }
-                  className="text-white/30 hover:text-signal normal-case"
+                  className="text-white/30 hover:text-signal normal-case shrink-0"
                   title="Post to Telegram"
                 >
                   📢
                 </button>
-                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-              </span>
+                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case shrink-0">✕</button>
+              </div>
             );
           })}
+          {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
         </div>
       </section>
 

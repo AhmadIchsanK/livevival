@@ -93,6 +93,14 @@ function youtubeEmbedUrl(url: string | null) {
   const idMatch = url.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
   return idMatch ? `https://www.youtube.com/embed/${idMatch[1]}` : null;
 }
+// Same Facebook embed-plugin fallback as the public match page — the
+// admin's own preview iframe was silently blank for a Facebook-hosted
+// stream even though the public page (before this) had the exact same gap.
+function facebookEmbedUrl(url: string | null) {
+  if (!url) return null;
+  if (!/facebook\.com|fb\.watch/i.test(url)) return null;
+  return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false`;
+}
 
 export default function LiveConsolePage() {
   const params = useParams();
@@ -412,6 +420,10 @@ export default function LiveConsolePage() {
   // pick/ban selection, since scrolling a plain <select> of 130+ heroes by
   // name is slow mid-draft. Draft-phase only per its own purpose.
   const [showHeroPicker, setShowHeroPicker] = useState(false);
+  const [editingFinishedGame, setEditingFinishedGame] = useState(false);
+  useEffect(() => {
+    setEditingFinishedGame(false);
+  }, [game?.id]);
   async function saveScoreboardPlayerEdit(playerId: string) {
     if (!editingScoreboardIgn.trim()) return;
     const { error } = await supabase.from("players").update({ ign: editingScoreboardIgn.trim() }).eq("id", playerId);
@@ -2690,10 +2702,21 @@ export default function LiveConsolePage() {
   // (nothing to count yet) — previously clickable in every phase.
   const SCOREBOARD_EDITABLE_PHASES = new Set(["DRAFT_COMPLETE", "GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM"]);
   const OBJECTIVES_EDITABLE_PHASES = new Set(["GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM"]);
-  const scoreboardEditable = isEditable && SCOREBOARD_EDITABLE_PHASES.has(match.state);
-  const objectivesEditable = isEditable && OBJECTIVES_EDITABLE_PHASES.has(match.state);
+  // A finished game/series needs one extra explicit click before its
+  // result data (scoreboard, objectives, hero picks/bans) opens back up
+  // for editing — guards against an accidental click quietly altering a
+  // result that's already public, without removing the ability to fix a
+  // genuine mistake after the fact. Resets whenever the selected game
+  // changes so re-opening one finished game doesn't leave another one
+  // unlocked too.
+  const gameFinished = game?.status === "finished";
+  const finishedEditUnlocked = gameFinished && editingFinishedGame;
+  const scoreboardEditable = isEditable && SCOREBOARD_EDITABLE_PHASES.has(match.state) && (!gameFinished || finishedEditUnlocked);
+  const objectivesEditable = isEditable && OBJECTIVES_EDITABLE_PHASES.has(match.state) && (!gameFinished || finishedEditUnlocked);
+  const pickBanEditable = isEditable && (!gameFinished || finishedEditUnlocked);
+  const netWorthEditable = isEditable && (!gameFinished || finishedEditUnlocked);
 
-  const embedUrl = youtubeEmbedUrl(match.youtube_url);
+  const embedUrl = youtubeEmbedUrl(match.youtube_url) ?? facebookEmbedUrl(match.youtube_url);
   const activeTrackers = trackers.filter((t) => t.phase === match.state);
 
   // The starting five for this game = whoever has a logged pick, not the
@@ -2742,7 +2765,10 @@ export default function LiveConsolePage() {
 
   return (
     <div className="text-white space-y-8 max-w-6xl">
-      <div>
+      {/* Sticky — phase changes and the stream link are the two things an
+          admin needs reachable no matter how far down the page they've
+          scrolled (moment log, scoreboard, calibration UI are all long). */}
+      <div className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
         <h1 className="lv-heading text-lg flex items-center gap-2.5">
           <TeamLogo url={match.team_a?.logo_url} size="sm" />
           {match.team_a?.name} vs {match.team_b?.name}
@@ -2750,6 +2776,18 @@ export default function LiveConsolePage() {
         </h1>
         <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
+          <input
+            defaultValue={match.youtube_url ?? ""}
+            onBlur={async (e) => {
+              const url = e.target.value.trim();
+              if (url === (match.youtube_url ?? "")) return;
+              const { error } = await supabase.from("matches").update({ youtube_url: url || null }).eq("id", match.id);
+              if (error) setError(error.message);
+              else loadAll();
+            }}
+            placeholder="Livestream URL (YouTube or Facebook)"
+            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs w-56"
+          />
           <select
             value={match.state}
             onChange={(e) => handlePhaseChange(e.target.value)}
@@ -3359,7 +3397,7 @@ export default function LiveConsolePage() {
               ))}
             </select>
           </div>
-          <button onClick={logPickBan} disabled={!isEditable} className="lv-btn-ghost disabled:opacity-40">
+          <button onClick={logPickBan} disabled={!pickBanEditable} className="lv-btn-ghost disabled:opacity-40">
             Log
           </button>
         </div>
@@ -3378,7 +3416,9 @@ export default function LiveConsolePage() {
                       <span key={pb.id} className="px-2 py-1 rounded bg-emerald-500/20 flex items-center gap-1.5">
                         ✅ {pb.hero_name}
                         {player && <span className="text-white/50">({player.ign}{player.role ? ` · ${player.role}` : ""})</span>}
-                        <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                        {pickBanEditable && (
+                          <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                        )}
                       </span>
                     );
                   })}
@@ -3388,7 +3428,9 @@ export default function LiveConsolePage() {
                   .map((pb) => (
                     <span key={pb.id} className="px-2 py-1 rounded bg-red-500/20 flex items-center gap-1.5">
                       🚫 {pb.hero_name}
-                      <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                      {pickBanEditable && (
+                        <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                      )}
                     </span>
                   ))}
               </div>
@@ -3489,7 +3531,7 @@ export default function LiveConsolePage() {
                   <input
                     type="number"
                     defaultValue={latestNetWorth?.[key] ?? ""}
-                    disabled={!isEditable}
+                    disabled={!netWorthEditable}
                     placeholder="Gold"
                     className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
                     onBlur={(e) => {
@@ -3513,18 +3555,31 @@ export default function LiveConsolePage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Live scoreboard</h2>
-          <button
-            onClick={() =>
-              postToTelegram(buildLiveScoreboardMessage(), {
-                entityType: "match",
-                entityId: match.id,
-                notificationType: "scoreboard_share",
-              })
-            }
-            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-          >
-            📢 Share to Telegram
-          </button>
+          <div className="flex items-center gap-2">
+            {gameFinished && (
+              <button
+                onClick={() => setEditingFinishedGame((v) => !v)}
+                title="This game is finished — result data (scoreboard, objectives, net worth, hero picks/bans) is read-only until unlocked"
+                className={`text-xs rounded px-2 py-1 border ${
+                  editingFinishedGame ? "border-signal/50 text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
+                }`}
+              >
+                {editingFinishedGame ? "🔓 Editing finished game — click to lock" : "🔒 Unlock to edit"}
+              </button>
+            )}
+            <button
+              onClick={() =>
+                postToTelegram(buildLiveScoreboardMessage(), {
+                  entityType: "match",
+                  entityId: match.id,
+                  notificationType: "scoreboard_share",
+                })
+              }
+              className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+            >
+              📢 Share to Telegram
+            </button>
+          </div>
         </div>
         {[teamAPlayers, teamBPlayers].map((teamPlayers, idx) => (
           <div key={idx} className="space-y-1">

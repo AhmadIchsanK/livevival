@@ -124,6 +124,19 @@ function youtubeEmbedUrl(url: string | null) {
   return `https://www.youtube.com/embed/${idMatch[1]}${startMatch ? `?start=${startMatch[1]}` : ""}`;
 }
 
+// Facebook's own embed plugin just wants the original video/live URL
+// URL-encoded as `href` — no video-ID extraction needed the way YouTube's
+// embed player requires. Closes most of the "stream doesn't embed" gap:
+// streams.platform already distinguishes youtube/facebook/other, but
+// nothing branched on it before this — a Facebook Live link always fell
+// through to the plain "not embeddable" link even though Facebook's own
+// plugin can embed it just fine.
+function facebookEmbedUrl(url: string | null) {
+  if (!url) return null;
+  if (!/facebook\.com|fb\.watch/i.test(url)) return null;
+  return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false`;
+}
+
 // YouTube's live chat has its own dedicated embed (separate iframe from the
 // player) — only available for YouTube, which is the only platform this
 // page actually embeds a player for (see youtubeEmbedUrl above / the
@@ -355,7 +368,7 @@ export default function PublicMatchPage() {
     match.state === "DRAFT_STARTED" && match.draft_timer_b_seconds != null ? formatMMSS(match.draft_timer_b_seconds - draftElapsed) : null;
 
   const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
-  const embedUrl = youtubeEmbedUrl(videoUrl);
+  const embedUrl = youtubeEmbedUrl(videoUrl) ?? facebookEmbedUrl(videoUrl);
   // Chat only makes sense against the actual live stream, not a per-game
   // VOD link (a finished game's VOD has no live chat) — always the match's
   // own youtube_url, regardless of which game/VOD is currently selected.

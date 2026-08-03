@@ -10,8 +10,16 @@ const config: Config = {
     extend: {
       colors: {
         // Livevival brand palette — see Livevival_Brand_Guide.pdf ("Color Palette").
-        ink: "#0A0A0A", // Signal Black — page background, header/footer
-        paper: "#FFFFFF", // Pure White — primary text on black, wordmark
+        // ink/paper/white are CSS-variable triples (defined in globals.css,
+        // flipped by the `.light` class next-themes toggles on <html>) so
+        // every existing bg-ink/text-paper/bg-white/NN/border-white/NN
+        // className across the whole app becomes theme-aware for free —
+        // no per-file dark:/light: rewrites needed. signal and every other
+        // color stay literal: the brand red/black identity itself doesn't
+        // change between themes, only which one is the "background" side.
+        ink: "rgb(var(--color-ink) / <alpha-value>)",
+        paper: "rgb(var(--color-paper) / <alpha-value>)",
+        white: "rgb(var(--color-white) / <alpha-value>)",
         signal: "#E31E2A", // Brand Red — logo, live badges, CTAs, links
         "signal-dim": "#E31E2A33",
         "signal-dark": "#B3131D", // hover / pressed states

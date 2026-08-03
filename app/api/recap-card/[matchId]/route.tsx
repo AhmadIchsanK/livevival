@@ -170,58 +170,107 @@ function renderCard({
     (
       <div
         style={{
+          position: "relative",
           width: "100%",
           height: "100%",
           display: "flex",
-          flexDirection: "column",
           background: `linear-gradient(160deg, ${INK} 0%, #1a0a0a 100%)`,
           color: "#ffffff",
           fontFamily: "sans-serif",
-          padding: `${64 * scale}px`,
         }}
       >
-        {/* Brand accent bar — an angular sliver of signal red across the
-            top, echoing the site's own .lv-clip-corner mark motif, so the
-            card reads as Livevival-branded even cropped to a thumbnail. */}
+        {/* Procedural "arena glow" — layered radial gradients standing in
+            for a blurred stadium/map photo (no licensed asset to source
+            here). Absolutely positioned + explicit z-index so they sit
+            behind the content regardless of paint order. */}
         <div
           style={{
-            display: "flex",
-            width: 120 * scale,
-            height: 8 * scale,
-            background: SIGNAL,
-            borderRadius: 4 * scale,
-            marginBottom: 28 * scale,
+            position: "absolute",
+            zIndex: 0,
+            top: `-${20 * scale}%`,
+            left: `-${15 * scale}%`,
+            width: "70%",
+            height: "60%",
+            background: `radial-gradient(closest-side, ${SIGNAL}33, transparent 70%)`,
           }}
         />
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          {/* Real width/height needed — Satori doesn't do intrinsic image
-              sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={logoUrl} alt="Livevival" width={(isLandscape ? 168 : 142) * scale} height={(isLandscape ? 48 : 40) * scale} />
-        </div>
+        <div
+          style={{
+            position: "absolute",
+            zIndex: 0,
+            bottom: `-${25 * scale}%`,
+            right: `-${20 * scale}%`,
+            width: "80%",
+            height: "70%",
+            background: `radial-gradient(closest-side, ${SIGNAL}26, transparent 70%)`,
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            zIndex: 0,
+            top: "35%",
+            left: "50%",
+            width: "60%",
+            height: "50%",
+            background: `radial-gradient(closest-side, ${SIGNAL}1a, transparent 75%)`,
+          }}
+        />
 
-        {/* Landscape gets a genuine two-column recomposition (score left,
-            picks/MVP/moments right) instead of the portrait stack scaled
-            up uniformly — the latter left the wide frame looking sparse. */}
-        {isLandscape ? (
-          <div style={{ display: "flex", flexGrow: 1, alignItems: "center", gap: 56 * scale, marginTop: 24 * scale }}>
-            <div style={{ display: "flex", flex: 1 }}>{scoreHeader}</div>
-            <div style={{ display: "flex", flexDirection: "column", flex: 1, gap: 20 * scale }}>
+        <div
+          style={{
+            position: "relative",
+            zIndex: 1,
+            width: "100%",
+            height: "100%",
+            display: "flex",
+            flexDirection: "column",
+            padding: `${64 * scale}px`,
+          }}
+        >
+          {/* Brand accent bar — an angular sliver of signal red across the
+              top, echoing the site's own .lv-clip-corner mark motif, so the
+              card reads as Livevival-branded even cropped to a thumbnail. */}
+          <div
+            style={{
+              display: "flex",
+              width: 120 * scale,
+              height: 8 * scale,
+              background: SIGNAL,
+              borderRadius: 4 * scale,
+              marginBottom: 28 * scale,
+            }}
+          />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            {/* Real width/height needed — Satori doesn't do intrinsic image
+                sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={logoUrl} alt="Livevival" width={(isLandscape ? 168 : 142) * scale} height={(isLandscape ? 48 : 40) * scale} />
+          </div>
+
+          {/* Landscape gets a genuine two-column recomposition (score left,
+              picks/MVP/moments right) instead of the portrait stack scaled
+              up uniformly — the latter left the wide frame looking sparse. */}
+          {isLandscape ? (
+            <div style={{ display: "flex", flexGrow: 1, alignItems: "center", gap: 56 * scale, marginTop: 24 * scale }}>
+              <div style={{ display: "flex", flex: 1 }}>{scoreHeader}</div>
+              <div style={{ display: "flex", flexDirection: "column", flex: 1, gap: 20 * scale }}>
+                {heroPicksBlock}
+                {mvpBlock}
+                {keyMomentsBlock}
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: "center", gap: 24 * scale }}>
+              {scoreHeader}
               {heroPicksBlock}
               {mvpBlock}
               {keyMomentsBlock}
             </div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: "center", gap: 24 * scale }}>
-            {scoreHeader}
-            {heroPicksBlock}
-            {mvpBlock}
-            {keyMomentsBlock}
-          </div>
-        )}
+          )}
 
-        <div style={{ display: "flex", fontSize: 18 * scale, color: "#ffffff55" }}>livevival-sigma.vercel.app</div>
+          <div style={{ display: "flex", fontSize: 18 * scale, color: "#ffffff55" }}>livevival-sigma.vercel.app</div>
+        </div>
       </div>
     ),
     { width, height }

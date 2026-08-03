@@ -64,6 +64,7 @@ const SIZE_CLASSES = {
   sm: "w-10 h-10 p-1.5",
   md: "w-14 h-14 sm:w-16 sm:h-16 p-2",
   lg: "w-20 h-20 sm:w-24 sm:h-24 p-2.5",
+  xl: "w-24 h-24 sm:w-32 sm:h-32 p-3",
 };
 
 export function TeamLogo({
@@ -71,28 +72,38 @@ export function TeamLogo({
   alt = "",
   size = "md",
   highlight = false,
+  glow = false,
   className = "",
 }: {
   url: string | null | undefined;
   alt?: string;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "md" | "lg" | "xl";
   highlight?: boolean;
+  // Soft ambient glow behind the logo — the hero-header treatment for the
+  // public match page. Signal red only (brand colors stay fixed; no
+  // per-team accent-color extraction from the source logo).
+  glow?: boolean;
   className?: string;
 }) {
   const proxied = proxiedImageUrl(url);
   const isDark = useIsDarkLogo(proxied);
   return (
-    <div
-      className={`${SIZE_CLASSES[size]} rounded-xl border flex items-center justify-center shrink-0 ${
-        highlight ? "border-signal ring-1 ring-signal" : "border-white/10"
-      } ${isDark ? "bg-white" : "bg-white/10"} ${className}`}
-    >
-      {proxied ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={proxied} alt={alt} className="w-full h-full object-contain" />
-      ) : (
-        <span className="text-white/20 text-xs">?</span>
+    <div className={`relative flex items-center justify-center shrink-0 ${glow ? "" : className}`}>
+      {glow && (
+        <div className="absolute inset-0 -z-10 rounded-full bg-signal/30 blur-2xl scale-125" aria-hidden="true" />
       )}
+      <div
+        className={`${SIZE_CLASSES[size]} rounded-xl border flex items-center justify-center shrink-0 ${
+          highlight ? "border-signal ring-1 ring-signal" : "border-white/10"
+        } ${isDark ? "bg-white" : "bg-white/10"} ${glow ? className : ""}`}
+      >
+        {proxied ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={proxied} alt={alt} className="w-full h-full object-contain" />
+        ) : (
+          <span className="text-white/20 text-xs">?</span>
+        )}
+      </div>
     </div>
   );
 }

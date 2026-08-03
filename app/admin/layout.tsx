@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandMark } from "@/components/Brand";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 type AdminInfo = { email: string; role: "super_admin" | "moderator" };
 
@@ -106,6 +107,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <span className="text-xs text-white/40 hidden md:inline">
             {admin.email} · <span className="text-white/25">{admin.role}</span>
           </span>
+          <ThemeToggle />
           <button onClick={handleLogout} className="lv-btn-ghost">
             Sign out
           </button>

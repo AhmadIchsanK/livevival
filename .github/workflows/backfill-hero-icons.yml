@@ -1,0 +1,26 @@
+name: Backfill hero icons (one-time)
+
+# Manual-only, no schedule — this is a one-time cleanup for the ~80 heroes
+# stuck without an icon because import-liquipedia-heroes.mjs's own first
+# request (categorymembers) was hitting a sustained 429 and crashing
+# before fetching anything (see scripts/backfill-hero-icons.mjs for the
+# full root cause, confirmed via job logs). This script never calls
+# categorymembers, so it isn't subject to that same failure. Safe to
+# re-run; it only ever touches rows still missing an icon.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/backfill-hero-icons.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

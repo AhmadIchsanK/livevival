@@ -553,7 +553,15 @@ export default function PublicMatchPage() {
         </div>
         <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="flex items-end gap-4 sm:gap-6">
+          {/* items-start (not items-end) — the logo is always the first
+              thing in each team's column, so top-aligning the row is what
+              keeps both logo squares level regardless of how many lines
+              the team name below wraps to (a long name like "TEAM FALCONS
+              PH" wrapping to 2 lines used to push that logo upward relative
+              to a 1-line name like "TEAM SPIRIT" under items-end). The
+              score gets a top margin instead of the old bottom margin to
+              re-center it against the now top-anchored logos. */}
+          <h1 className="flex items-start gap-4 sm:gap-6">
             <div className="flex flex-col items-center gap-2 w-24 sm:w-32">
               <div className="relative">
                 <TeamLogo url={match.team_a?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
@@ -572,7 +580,7 @@ export default function PublicMatchPage() {
             {/* The series score is the single most-scanned number on this
                 page — it now dwarfs "vs" and every other header element
                 instead of being buried in the finished-only winner line. */}
-            <span className="lv-score flex items-center gap-2 sm:gap-3 text-4xl sm:text-6xl mb-8 sm:mb-10">
+            <span className="lv-score flex items-center gap-2 sm:gap-3 text-4xl sm:text-6xl mt-8 sm:mt-10">
               {games.length > 0 ? (
                 <>
                   <span className={gamesWonByA > gamesWonByB ? "text-signal" : "text-paper"}>{gamesWonByA}</span>

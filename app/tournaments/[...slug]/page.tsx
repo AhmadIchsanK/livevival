@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
+import { TeamLogo } from "@/components/TeamLogo";
 
 type Tournament = {
   id: string;
@@ -47,35 +48,42 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
   return (
     <a
       href={`/match/${m.id}`}
-      className="lv-card flex items-center justify-between px-4 py-3"
+      className="lv-card flex flex-col items-center gap-2 px-4 py-3"
     >
-      <div>
-        <p className="font-semibold text-sm flex items-center gap-1.5">
+      {/* Same centered layout as the home page's Recent results: two equal
+          columns either side of the score/status badge, so it sits
+          dead-center and both team groups stay level regardless of name
+          length. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 w-full">
+        <div className="flex items-center justify-end gap-1.5 min-w-0">
+          <span className="font-semibold text-sm truncate">{m.team_a?.name ?? "TBD"}</span>
           {m.team_a?.logo_url ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={proxiedImageUrl(m.team_a.logo_url)} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
           ) : null}
-          {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
+        </div>
+        {scoreLabel ? (
+          <span className="lv-score text-lg shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1.5">{scoreLabel}</span>
+        ) : (
+          <span
+            className={
+              m.status === "live" ? "lv-badge-live" : m.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"
+            }
+          >
+            {m.status}
+          </span>
+        )}
+        <div className="flex items-center justify-start gap-1.5 min-w-0">
           {m.team_b?.logo_url ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={proxiedImageUrl(m.team_b.logo_url)} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
           ) : null}
-        </p>
-        <p className="text-xs text-white/40">
-          {m.format}{m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
-        </p>
+          <span className="font-semibold text-sm truncate">{m.team_b?.name ?? "TBD"}</span>
+        </div>
       </div>
-      {scoreLabel ? (
-        <span className="lv-score text-lg shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1.5">{scoreLabel}</span>
-      ) : (
-        <span
-          className={
-            m.status === "live" ? "lv-badge-live" : m.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"
-          }
-        >
-          {m.status}
-        </span>
-      )}
+      <p className="text-xs text-white/40 text-center">
+        {m.format}{m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
+      </p>
     </a>
   );
 }
@@ -241,10 +249,7 @@ export default function TournamentPage() {
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-3xl mx-auto space-y-8">
       <a href="/tournaments" className="lv-nav-link">&larr; All tournaments</a>
       <header className="flex items-start gap-4">
-        {tournament.logo_url && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={proxiedImageUrl(tournament.logo_url)} alt="" className="w-14 h-14 rounded object-contain shrink-0" />
-        )}
+        {tournament.logo_url && <TeamLogo url={tournament.logo_url} size="md" />}
         <div>
           <span className="lv-badge bg-white/10 text-white/60">{tournament.tier}-Tier</span>
           <h1 className="font-display font-light text-3xl tracking-tight mt-2">{tournament.name}</h1>

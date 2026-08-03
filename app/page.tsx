@@ -194,15 +194,19 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
         <p className="lv-badge-live">Live</p>
         <HotBadge updateSource={m.update_source} />
       </div>
-      {/* Logo/name directly adjacent to the score on both sides — was
-          previously logo+name pinned to the outer edges with the score
-          floating alone in the middle, a full card-width away from either. */}
-      <div className="flex items-center justify-center gap-3">
-        <TeamLogo url={m.team_a?.logo_url} size="sm" />
-        <p className="font-semibold text-sm truncate max-w-[35%]">{m.team_a?.name ?? "TBD"}</p>
+      {/* Grid with two equal 1fr columns — keeps the score dead-center
+          regardless of the two team names' relative length, instead of a
+          flex row where a short name lets the score drift off-center. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <div className="flex items-center justify-end gap-2 min-w-0">
+          <p className="font-semibold text-sm truncate">{m.team_a?.name ?? "TBD"}</p>
+          <TeamLogo url={m.team_a?.logo_url} size="sm" />
+        </div>
         <p className="lv-score text-3xl shrink-0 px-1">{seriesScoreLabel(score) ?? "vs"}</p>
-        <p className="font-semibold text-sm truncate max-w-[35%] text-right">{m.team_b?.name ?? "TBD"}</p>
-        <TeamLogo url={m.team_b?.logo_url} size="sm" />
+        <div className="flex items-center justify-start gap-2 min-w-0">
+          <TeamLogo url={m.team_b?.logo_url} size="sm" />
+          <p className="font-semibold text-sm truncate">{m.team_b?.name ?? "TBD"}</p>
+        </div>
       </div>
       <p className="text-xs text-white/40 mt-2 truncate text-center">
         {m.tournament?.name} · {m.tournament?.tier}-Tier · {m.format}
@@ -375,17 +379,21 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
               {/* Score sits directly between the two logo/name groups
                   instead of floating alone on the far right edge of the
                   card, a full width away from either team. */}
-              <div className="flex items-center justify-center gap-3">
-                <TeamLogo url={m.team_a?.logo_url} size="sm" highlight={!!aWon} />
-                <span className={`font-semibold text-sm truncate max-w-[30%] ${aWon ? "text-signal" : ""}`}>{m.team_a?.name ?? "TBD"}</span>
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                <div className="flex items-center justify-end gap-2 min-w-0">
+                  <span className={`font-semibold text-sm truncate ${aWon ? "text-signal" : ""}`}>{m.team_a?.name ?? "TBD"}</span>
+                  <TeamLogo url={m.team_a?.logo_url} size="sm" highlight={!!aWon} />
+                </div>
                 <span className="lv-score text-xl shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1">
                   {seriesScoreLabel(score) ?? "—"}
                 </span>
-                <span className={`font-semibold text-sm truncate max-w-[30%] text-right ${bWon ? "text-signal" : ""}`}>{m.team_b?.name ?? "TBD"}</span>
-                <TeamLogo url={m.team_b?.logo_url} size="sm" highlight={!!bWon} />
+                <div className="flex items-center justify-start gap-2 min-w-0">
+                  <TeamLogo url={m.team_b?.logo_url} size="sm" highlight={!!bWon} />
+                  <span className={`font-semibold text-sm truncate ${bWon ? "text-signal" : ""}`}>{m.team_b?.name ?? "TBD"}</span>
+                </div>
               </div>
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs text-white/40 truncate">
+              <div className="flex flex-col items-center gap-1 text-center">
+                <p className="text-xs text-white/40 truncate max-w-full">
                   {m.tournament?.liquipedia_slug ? (
                     <a
                       href={`/tournaments/${m.tournament.liquipedia_slug}`}

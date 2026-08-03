@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useTheme } from "next-themes";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 // A team logo that's black/near-black (or just close to this site's own
@@ -87,6 +88,21 @@ export function TeamLogo({
 }) {
   const proxied = proxiedImageUrl(url);
   const isDark = useIsDarkLogo(proxied);
+  // Dark mode's rule is "a dark logo gets a solid white backing" (light
+  // logos already read fine on the default translucent-white box, since
+  // the page behind it is dark). Light mode needs the opposite pairing:
+  // the page itself is light now, so a dark logo already reads fine on
+  // the default translucent box, while a light logo is the one that
+  // needs a solid (dark) backing to stay visible. Defaults to the
+  // dark-mode pairing before mount/theme resolution to avoid a layout
+  // jump on first paint.
+  const { resolvedTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const isLightTheme = mounted && resolvedTheme === "light";
+  const wantsSolidBacking = isLightTheme ? !isDark : isDark;
+  const solidBg = isLightTheme ? "bg-ink" : "bg-white";
+  const translucentBg = isLightTheme ? "bg-black/10" : "bg-white/10";
   return (
     <div className={`relative flex items-center justify-center shrink-0 ${glow ? "" : className}`}>
       {glow && (
@@ -95,7 +111,7 @@ export function TeamLogo({
       <div
         className={`${SIZE_CLASSES[size]} rounded-xl border flex items-center justify-center shrink-0 ${
           highlight ? "border-signal ring-1 ring-signal" : "border-white/10"
-        } ${isDark ? "bg-white" : "bg-white/10"} ${glow ? className : ""}`}
+        } ${wantsSolidBacking ? solidBg : translucentBg} ${glow ? className : ""}`}
       >
         {proxied ? (
           // eslint-disable-next-line @next/next/no-img-element

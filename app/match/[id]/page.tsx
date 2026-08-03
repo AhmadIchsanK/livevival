@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { BrandLockup } from "@/components/Brand";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 type Match = {
@@ -483,14 +484,24 @@ export default function PublicMatchPage() {
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-5xl mx-auto space-y-8">
       <header className="space-y-1">
+        {/* A shared link, arriving straight on this page (e.g. from a
+            Telegram share), previously had no way back to the match list
+            at all — the only existing home link only ever rendered in the
+            load-error state above, never here in the normal render path. */}
         <div className="flex items-center justify-between">
-          <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
+          <BrandLockup imgClassName="h-6 w-auto" />
           <ThemeToggle />
         </div>
+        <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="flex items-end gap-4 sm:gap-6">
             <div className="flex flex-col items-center gap-2 w-24 sm:w-32">
-              <TeamLogo url={match.team_a?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
+              <div className="relative">
+                <TeamLogo url={match.team_a?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
+                {match.status === "finished" && seriesWinnerTeamId === teamAId && (
+                  <span className="absolute -top-2 -right-2 text-xl sm:text-2xl drop-shadow" title="Series winner">👑</span>
+                )}
+              </div>
               <span
                 className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
                   match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""
@@ -514,7 +525,12 @@ export default function PublicMatchPage() {
               )}
             </span>
             <div className="flex flex-col items-center gap-2 w-24 sm:w-32">
-              <TeamLogo url={match.team_b?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamBId} />
+              <div className="relative">
+                <TeamLogo url={match.team_b?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamBId} />
+                {match.status === "finished" && seriesWinnerTeamId === teamBId && (
+                  <span className="absolute -top-2 -right-2 text-xl sm:text-2xl drop-shadow" title="Series winner">👑</span>
+                )}
+              </div>
               <span
                 className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
                   match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""
@@ -569,11 +585,6 @@ export default function PublicMatchPage() {
           )}
         </div>
 
-        {match.status === "finished" && seriesWinnerName && (
-          <p className="text-sm font-semibold text-signal">
-            🏆 {seriesWinnerName} wins {Math.max(gamesWonByA, gamesWonByB)}–{Math.min(gamesWonByA, gamesWonByB)}
-          </p>
-        )}
         {mvp && (
           <p className="text-sm text-white/70">
             Game {selectedGame?.game_number} MVP: {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills}/{mvp.deaths}/{mvp.assists}

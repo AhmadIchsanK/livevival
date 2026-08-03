@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
+import { TeamLogo } from "@/components/TeamLogo";
 
 type MatchRow = {
   id: string;
@@ -12,7 +12,7 @@ type MatchRow = {
   scheduled_at: string | null;
   format: string | null;
   update_source: "liquipedia" | "local_ocr";
-  tournament: { name: string; tier: string; liquipedia_slug: string | null } | null;
+  tournament: { name: string; tier: string; liquipedia_slug: string | null; logo_url: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
 };
@@ -23,7 +23,7 @@ const UPCOMING_DAYS_RANGE = 30;
 const FINISHED_FETCH_CAP = 300; // generous, but bounded — see note below
 
 const MATCH_SELECT = `id, status, scheduled_at, format, update_source,
-  tournament:tournaments(name, tier, liquipedia_slug),
+  tournament:tournaments(name, tier, liquipedia_slug, logo_url),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
 
@@ -37,12 +37,6 @@ function HotBadge({ updateSource }: { updateSource: "liquipedia" | "local_ocr" }
       🔥 HOT
     </span>
   );
-}
-
-function TeamLogo({ url, className = "w-5 h-5" }: { url: string | null | undefined; className?: string }) {
-  if (!url) return <div className={`${className} shrink-0 rounded bg-white/5`} />;
-  // eslint-disable-next-line @next/next/no-img-element
-  return <img src={proxiedImageUrl(url)} alt="" className={`${className} shrink-0 rounded object-contain`} />;
 }
 
 function dateKey(iso: string) {
@@ -200,18 +194,17 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
         <p className="lv-badge-live">Live</p>
         <HotBadge updateSource={m.update_source} />
       </div>
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <TeamLogo url={m.team_a?.logo_url} className="w-6 h-6" />
-          <p className="font-semibold text-base truncate">{m.team_a?.name ?? "TBD"}</p>
-        </div>
-        <p className="lv-score text-3xl shrink-0">{seriesScoreLabel(score) ?? "vs"}</p>
-        <div className="flex items-center gap-2 min-w-0 flex-row-reverse">
-          <TeamLogo url={m.team_b?.logo_url} className="w-6 h-6" />
-          <p className="font-semibold text-base truncate text-right">{m.team_b?.name ?? "TBD"}</p>
-        </div>
+      {/* Logo/name directly adjacent to the score on both sides — was
+          previously logo+name pinned to the outer edges with the score
+          floating alone in the middle, a full card-width away from either. */}
+      <div className="flex items-center justify-center gap-3">
+        <TeamLogo url={m.team_a?.logo_url} size="sm" />
+        <p className="font-semibold text-sm truncate max-w-[35%]">{m.team_a?.name ?? "TBD"}</p>
+        <p className="lv-score text-3xl shrink-0 px-1">{seriesScoreLabel(score) ?? "vs"}</p>
+        <p className="font-semibold text-sm truncate max-w-[35%] text-right">{m.team_b?.name ?? "TBD"}</p>
+        <TeamLogo url={m.team_b?.logo_url} size="sm" />
       </div>
-      <p className="text-xs text-white/40 mt-2 truncate">
+      <p className="text-xs text-white/40 mt-2 truncate text-center">
         {m.tournament?.name} · {m.tournament?.tier}-Tier · {m.format}
       </p>
     </a>
@@ -341,9 +334,9 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                     className="lv-card block px-3 py-2"
                   >
                     <p className="font-semibold text-xs flex items-center gap-1.5">
-                      <TeamLogo url={m.team_a?.logo_url} className="w-4 h-4" />
+                      <TeamLogo url={m.team_a?.logo_url} size="sm" />
                       {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
-                      <TeamLogo url={m.team_b?.logo_url} className="w-4 h-4" />
+                      <TeamLogo url={m.team_b?.logo_url} size="sm" />
                     </p>
                     <p className="text-[11px] text-white/40 truncate">
                       {m.tournament?.name} · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -377,17 +370,22 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
             <a
               key={m.id}
               href={`/match/${m.id}`}
-              className="lv-card flex items-center justify-between px-4 py-3"
+              className="lv-card block px-4 py-3 space-y-2"
             >
-              <div>
-                <p className="font-semibold text-sm flex items-center gap-1.5">
-                  <TeamLogo url={m.team_a?.logo_url} className={`w-4 h-4 ${aWon ? "ring-2 ring-signal rounded" : ""}`} />
-                  <span className={aWon ? "text-signal" : ""}>{m.team_a?.name ?? "TBD"}</span>
-                  <span className="text-white/30">vs</span>
-                  <span className={bWon ? "text-signal" : ""}>{m.team_b?.name ?? "TBD"}</span>
-                  <TeamLogo url={m.team_b?.logo_url} className={`w-4 h-4 ${bWon ? "ring-2 ring-signal rounded" : ""}`} />
-                </p>
-                <p className="text-xs text-white/40">
+              {/* Score sits directly between the two logo/name groups
+                  instead of floating alone on the far right edge of the
+                  card, a full width away from either team. */}
+              <div className="flex items-center justify-center gap-3">
+                <TeamLogo url={m.team_a?.logo_url} size="sm" highlight={!!aWon} />
+                <span className={`font-semibold text-sm truncate max-w-[30%] ${aWon ? "text-signal" : ""}`}>{m.team_a?.name ?? "TBD"}</span>
+                <span className="lv-score text-xl shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1">
+                  {seriesScoreLabel(score) ?? "—"}
+                </span>
+                <span className={`font-semibold text-sm truncate max-w-[30%] text-right ${bWon ? "text-signal" : ""}`}>{m.team_b?.name ?? "TBD"}</span>
+                <TeamLogo url={m.team_b?.logo_url} size="sm" highlight={!!bWon} />
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-white/40 truncate">
                   {m.tournament?.liquipedia_slug ? (
                     <a
                       href={`/tournaments/${m.tournament.liquipedia_slug}`}
@@ -402,13 +400,8 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   · {m.tournament?.tier}-Tier · {m.format}
                   {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
                 </p>
-              </div>
-              <span className="flex items-center gap-2 shrink-0">
                 <HotBadge updateSource={m.update_source} />
-                <span className="lv-score text-xl bg-white/5 border border-white/10 rounded-md px-3 py-1.5">
-                  {seriesScoreLabel(score) ?? "—"}
-                </span>
-              </span>
+              </div>
             </a>
           );
         })}

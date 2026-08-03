@@ -107,6 +107,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <span className="text-xs text-white/40 hidden md:inline">
             {admin.email} · <span className="text-white/25">{admin.role}</span>
           </span>
+          {/* The admin header only ever linked back to /admin itself —
+              no way back to the public site without editing the URL bar. */}
+          <a href="/" className="lv-nav-link" target="_blank" rel="noopener noreferrer">
+            View site ↗
+          </a>
           <ThemeToggle />
           <button onClick={handleLogout} className="lv-btn-ghost">
             Sign out

@@ -1431,7 +1431,15 @@ export default function LiveConsolePage() {
     const crop = document.createElement("canvas");
     crop.width = cw;
     crop.height = ch;
-    crop.getContext("2d")?.drawImage(full, cx, cy, cw, ch, 0, 0, cw, ch);
+    const cropCtx = crop.getContext("2d");
+    // Grayscale before Tesseract sees it — broadcast overlays are almost
+    // always light text on a dark translucent panel (or vice versa); color
+    // noise (team colors bleeding through the panel, chroma compression
+    // artifacts) doesn't carry any digit/letter information and Tesseract's
+    // own internal binarization does better starting from a flat luminance
+    // image than from full color.
+    if (cropCtx) cropCtx.filter = "grayscale(1)";
+    cropCtx?.drawImage(full, cx, cy, cw, ch, 0, 0, cw, ch);
     return crop;
   }
 
@@ -2319,6 +2327,20 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  const [statusSaving, setStatusSaving] = useState(false);
+  async function updateMatchStatus(status: "scheduled" | "live" | "finished") {
+    if (!match || status === match.status) return;
+    if (status === "live" && !match.youtube_url) return;
+    setStatusSaving(true);
+    const { error } = await supabase.from("matches").update({ status }).eq("id", match.id);
+    setStatusSaving(false);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    loadAll();
+  }
+
   // Full reset for a Normal match gone wrong (bad sync, wrong teams matched,
   // etc.) — every child table keyed by match_id, then the games themselves,
   // then the match row back to its pre-anything state so the next sync (or
@@ -2539,6 +2561,32 @@ export default function LiveConsolePage() {
               <button onClick={saveCustomLabel} className="lv-btn-ghost !px-2 !py-1 text-xs">Save</button>
             </span>
           )}
+          {/* Match status — previously only settable from the admin/matches
+              list, so an admin already deep in the live console had to leave
+              it to flip status, and everything below stayed locked
+              (isEditable) until they did. Same "Live needs a stream link"
+              rule as the matches list. */}
+          <div className="flex items-center gap-1" title="Match status — controls whether this console is locked (see the notice below the phase row)">
+            {(["scheduled", "live", "finished"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => updateMatchStatus(s)}
+                disabled={statusSaving || match.status === s || (s === "live" && !match.youtube_url)}
+                title={s === "live" && !match.youtube_url ? "Add a stream link first — a match can't go live without one" : undefined}
+                className={`text-[10px] px-2 py-0.5 rounded border uppercase tracking-wide disabled:opacity-40 ${
+                  match.status === s
+                    ? s === "live"
+                      ? "border-signal bg-signal/20 text-signal"
+                      : s === "finished"
+                      ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-400"
+                      : "border-white/30 bg-white/10 text-white"
+                    : "border-white/10 text-white/40 hover:bg-white/10 hover:text-white/70"
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
           <button
             onClick={toggleUpdateSource}
             title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
@@ -3508,13 +3556,17 @@ export default function LiveConsolePage() {
               <div className="space-y-3">
                 <div
                   data-crop-container
-                  // Bigger default (was max-w-md/448px) and genuinely
-                  // resizable via the native browser corner-drag handle —
-                  // `resize` needs overflow non-visible to work, which
-                  // overflow-auto already gives it. All the crop-box math
-                  // reads getBoundingClientRect() live at drag time, so a
-                  // resized container needs no other code changes.
-                  className="relative w-full max-w-3xl min-w-[320px] border border-white/10 rounded resize overflow-auto select-none"
+                  // Fixed at half the viewport width instead of free-drag
+                  // resizable — a freely resizable preview meant the exact
+                  // pixel dimensions OCR was reading varied session to
+                  // session with no consistent baseline to tune region
+                  // calibration or Tesseract accuracy against. Half-viewport
+                  // is "as big as possible without going fullscreen," which
+                  // keeps the rest of the console (moment log, scoreboard)
+                  // visible alongside it. All the crop-box math reads
+                  // getBoundingClientRect() live at drag time, so a fixed
+                  // size needs no other code changes.
+                  className="relative w-[50vw] min-w-[480px] max-w-[1400px] border border-white/10 rounded overflow-hidden select-none"
                   onMouseDown={(e) => {
                     // Only starts a brand-new box — once draftBox exists,
                     // dragging happens via its own body/handle mousedown

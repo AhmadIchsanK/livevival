@@ -504,10 +504,17 @@ export default function PublicMatchPage() {
               ⏱ {liveGameClockLabel}
             </span>
           )}
-          {liveCountdownLabel && (
+          {liveCountdownLabel ? (
             <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Starts in">
               ⏳ Starts in {liveCountdownLabel}
             </span>
+          ) : (
+            match.state === "MATCH_NOT_STARTED" &&
+            match.status === "live" && (
+              <span className="lv-badge bg-white/10 text-white/60" title="No countdown detected — likely a caster segment or TVC between matches">
+                🎙️ Caster / TVC intermission
+              </span>
+            )
           )}
           {(liveDraftTimerA || liveDraftTimerB) && (
             <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Draft pick timer">

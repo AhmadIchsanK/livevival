@@ -244,6 +244,20 @@ export default function LiveConsolePage() {
       .join("\n\n");
   }
 
+  // "All 10 players have a hero decided" — each side's starting five
+  // (same deterministic role-ordered slots the draft_hero_pick trackers
+  // resolve against) must have a logged pick for this game, regardless of
+  // whether that pick came from OCR, AI vision, or a manual edit.
+  function draftFullyResolved(): boolean {
+    if (!match?.team_a || !match?.team_b) return false;
+    for (const teamId of [match.team_a.id, match.team_b.id]) {
+      const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
+      if (teamPlayers.length < 5) return false;
+      if (teamPlayers.some((p) => !pickBans.some((pb) => pb.player_id === p.id && pb.type === "pick"))) return false;
+    }
+    return true;
+  }
+
   // Dumps everything currently on this page in one message — score so far,
   // this game's draft, KDA, and moment list — for whenever the admin wants
   // to share an update that doesn't fit one of the automatic triggers.
@@ -1065,11 +1079,18 @@ export default function LiveConsolePage() {
   // Draft phases (DRAFT_STARTED/DRAFT_COMPLETE) never auto-write detected
   // picks/bans straight to the DB — a misread hero name during a fast draft
   // is much costlier to have gone live already than a stat glitch that
-  // gets overwritten next tick. Detections pile up here for the admin to
-  // review and explicitly push instead.
+  // gets overwritten next tick. Detections surface as a pop-out (see
+  // draftPickPopup below) instead of a passive bottom banner, so a fresh
+  // pick actually interrupts the admin rather than waiting to be noticed.
   const DRAFT_PHASES = ["DRAFT_STARTED", "DRAFT_COMPLETE"];
   type StagedDraftAction = { type: "pick" | "ban"; team_name: string; hero_name: string; player_id?: string; player_name?: string };
   const [stagedDraftActions, setStagedDraftActions] = useState<StagedDraftAction[]>([]);
+  // A dismissed detection shouldn't immediately pop back up on the very
+  // next tick reading the exact same (still-uncommitted) crop — keyed by
+  // player+hero so a genuine correction (OCR later reads a DIFFERENT hero
+  // for that slot) still surfaces as a new suggestion.
+  const dismissedDraftKeys = useRef<Set<string>>(new Set());
+  const draftPickPopup = stagedDraftActions[0] ?? null;
 
   async function commitDraftAction(action: StagedDraftAction) {
     const teamId = matchTeamId(action.team_name);
@@ -1098,10 +1119,19 @@ export default function LiveConsolePage() {
     if (action.player_id) await updateStat(action.player_id, "hero_name", action.hero_name);
   }
 
-  async function pushStagedDraftActions() {
-    for (const action of stagedDraftActions) await commitDraftAction(action);
-    setStagedDraftActions([]);
+  function draftKeyFor(action: Pick<StagedDraftAction, "player_id" | "hero_name">) {
+    return `${action.player_id ?? ""}:${action.hero_name.toLowerCase()}`;
+  }
+  async function pushDraftPickPopup() {
+    if (!draftPickPopup) return;
+    await commitDraftAction(draftPickPopup);
+    setStagedDraftActions((prev) => prev.slice(1));
     loadAll();
+  }
+  function dismissDraftPickPopup() {
+    if (!draftPickPopup) return;
+    dismissedDraftKeys.current.add(draftKeyFor(draftPickPopup));
+    setStagedDraftActions((prev) => prev.slice(1));
   }
 
   const [retakingDraft, setRetakingDraft] = useState(false);
@@ -1115,19 +1145,30 @@ export default function LiveConsolePage() {
   // roster player it belongs to (teamPlayers sorted by role, same order
   // KDA_SLOT_LABELS uses) — the crop only ever needs to contain a hero
   // name, not a player name too, since position already answers "who."
+  const [retakeIncomplete, setRetakeIncomplete] = useState<number | null>(null);
   async function retakeDraftPicks() {
     const video = previewRef.current;
     const worker = workerRef.current;
     if (!game || !match || !video || !worker) return;
     setRetakingDraft(true);
+    setRetakeIncomplete(null);
     try {
+      // Read every tracker first and buffer the results — only once every
+      // slot that has a calibrated region has actually resolved a hero do
+      // any of them get written, instead of writing player-by-player as
+      // each OCR pass completes (which could leave hero_picks_bans/live
+      // score in an inconsistent half-updated state if the pass is
+      // interrupted partway through).
       const draftHeroPickTrackers = trackers.filter((t) => t.category === "draft_hero_pick");
+      const resolved: { teamId: string; playerRow: Player; hero: { id: string; name: string } }[] = [];
+      let attempted = 0;
       for (const tracker of draftHeroPickTrackers) {
         const { side, slot } = fieldParts(tracker.field);
         if (!side || !slot) continue;
         const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
         const box = regions[tracker.field];
         if (!teamId || !box) continue;
+        attempted++;
         const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
         const playerRow = teamPlayers[slot - 1];
         if (!playerRow) continue;
@@ -1137,6 +1178,18 @@ export default function LiveConsolePage() {
         const n = normalize(text);
         const hero = heroes.find((h) => n.includes(normalize(h.name)));
         if (!hero) continue;
+        resolved.push({ teamId, playerRow, hero });
+      }
+      if (attempted > 0 && resolved.length < attempted) {
+        // Partial read — surfaced, not silently applied, since committing
+        // half a draft's worth of picks is exactly the "wrong write that's
+        // costlier than waiting a tick" this whole staged/buffered
+        // approach exists to avoid. Retrying (recapture usually clears a
+        // transient misread) is the expected next step.
+        setRetakeIncomplete(resolved.length);
+        return;
+      }
+      for (const { teamId, playerRow, hero } of resolved) {
         // Replace this player's existing pick (if any) rather than
         // appending — a retake is a correction, not a second pick.
         await supabase.from("hero_picks_bans").delete().eq("game_id", game.id).eq("player_id", playerRow.id).eq("type", "pick");
@@ -1157,10 +1210,6 @@ export default function LiveConsolePage() {
       setRetakingDraft(false);
       loadAll();
     }
-  }
-
-  function discardStagedDraftAction(index: number) {
-    setStagedDraftActions((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function applyAiDetection(detection: AiDetection) {
@@ -1845,7 +1894,9 @@ export default function LiveConsolePage() {
             const teamName = teamId === match?.team_a?.id ? match?.team_a?.name : match?.team_b?.name;
             const playerRow = slotPlayer(side, slot);
             const hero = findHeroInText(trimmed);
-            if (teamName && hero && playerRow) {
+            const alreadyCommitted = playerRow && pickBans.some((pb) => pb.player_id === playerRow.id && pb.type === "pick");
+            const wasDismissed = playerRow && hero && dismissedDraftKeys.current.has(draftKeyFor({ player_id: playerRow.id, hero_name: hero.name }));
+            if (teamName && hero && playerRow && !alreadyCommitted && !wasDismissed) {
               setStagedDraftActions((prev) => {
                 const dupe = prev.some((a) => a.player_id === playerRow.id && a.hero_name.toLowerCase() === hero.name.toLowerCase());
                 if (dupe) return prev;
@@ -2519,7 +2570,15 @@ export default function LiveConsolePage() {
           TECHNICAL_PAUSE: `⏸️ <b>Technical pause</b>\n${header}`,
           STREAM_ENDED: `📴 <b>Stream ended</b>\n${header}`,
         };
-        if (noticeTemplate?.telegram_enabled) {
+        // Draft-complete specifically must not announce a recap that's
+        // still missing picks — a phase transition can happen (manually,
+        // or once OCR/AI infers it) before all 10 players actually have a
+        // hero resolved, whether that resolution came from OCR auto-detect
+        // or a manual edit. The "📢 Announce draft" button stays a manual
+        // override with no such gate — clicking it IS the "or manually"
+        // case this is meant to allow.
+        const blockedByIncompleteDraft = newState === "DRAFT_COMPLETE" && !draftFullyResolved();
+        if (noticeTemplate?.telegram_enabled && !blockedByIncompleteDraft) {
           const message = noticeTemplate.telegram_message_template
             ? fillTelegramTemplate(noticeTemplate.telegram_message_template, {
                 team_a: match.team_a?.name ?? "",
@@ -2950,14 +3009,21 @@ export default function LiveConsolePage() {
               </button>
             )}
             {match.state === "DRAFT_COMPLETE" && (
-              <button
-                onClick={retakeDraftPicks}
-                disabled={!captureActive || retakingDraft}
-                title={captureActive ? "Re-reads both draft-picks regions and corrects any player's pick to match" : "Start capture first"}
-                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
-              >
-                {retakingDraft ? "Retaking..." : "🔄 Retake draft picks"}
-              </button>
+              <span className="inline-flex items-center gap-1.5">
+                <button
+                  onClick={retakeDraftPicks}
+                  disabled={!captureActive || retakingDraft}
+                  title={captureActive ? "Re-reads every per-player draft-pick region; only writes once all of them resolve a hero" : "Start capture first"}
+                  className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+                >
+                  {retakingDraft ? "Retaking..." : "🔄 Retake draft picks"}
+                </button>
+                {retakeIncomplete != null && (
+                  <span className="text-[10px] text-yellow-300" title="Nothing was written — retry once the overlay text is legible for every slot">
+                    Only {retakeIncomplete} of the calibrated slots read a hero — not written, retry
+                  </span>
+                )}
+              </span>
             )}
             <button
               onClick={() =>
@@ -3961,22 +4027,31 @@ export default function LiveConsolePage() {
                   </div>
                 )}
 
-                {match && DRAFT_PHASES.includes(match.state) && stagedDraftActions.length > 0 && (
-                  <div className="border border-yellow-500/30 bg-yellow-500/10 rounded p-3 space-y-2 text-xs">
-                    <p className="text-yellow-300 font-semibold">
-                      {stagedDraftActions.length} draft action{stagedDraftActions.length === 1 ? "" : "s"} detected — review before pushing
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {stagedDraftActions.map((a, i) => (
-                        <span key={i} className="lv-badge bg-white/10 text-white/70 capitalize inline-flex items-center gap-1">
-                          {a.type} {a.hero_name} ({a.team_name})
-                          <button onClick={() => discardStagedDraftAction(i)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-                        </span>
-                      ))}
+                {/* Pop-out per detection instead of a passive bottom
+                    banner — a fresh hero-pick read interrupts the admin
+                    directly rather than waiting to be noticed among other
+                    UI. Only the front of the queue shows; Push/Dismiss
+                    advances to the next one if more than one came in. */}
+                {match && DRAFT_PHASES.includes(match.state) && draftPickPopup && (
+                  <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+                    <div className="bg-ink border border-signal/40 rounded-lg p-5 max-w-sm w-full space-y-3">
+                      <p className="text-xs text-white/40 uppercase tracking-wide">Hero pick detected</p>
+                      <p className="text-lg font-semibold">
+                        {draftPickPopup.player_name ?? "Player"} <span className="text-white/40">picks</span> {draftPickPopup.hero_name}
+                      </p>
+                      <p className="text-xs text-white/50">{draftPickPopup.team_name}</p>
+                      {stagedDraftActions.length > 1 && (
+                        <p className="text-[10px] text-white/30">+{stagedDraftActions.length - 1} more waiting</p>
+                      )}
+                      <div className="flex gap-2 pt-1">
+                        <button onClick={pushDraftPickPopup} className="lv-btn-primary !text-xs !py-1.5 flex-1">
+                          ✓ Push
+                        </button>
+                        <button onClick={dismissDraftPickPopup} className="lv-btn-ghost !text-xs !py-1.5">
+                          Dismiss
+                        </button>
+                      </div>
                     </div>
-                    <button onClick={pushStagedDraftActions} className="lv-btn-primary !text-xs !py-1.5">
-                      Push draft update
-                    </button>
                   </div>
                 )}
 

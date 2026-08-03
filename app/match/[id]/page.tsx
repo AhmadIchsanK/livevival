@@ -108,6 +108,18 @@ function youtubeEmbedUrl(url: string | null) {
   return idMatch ? `https://www.youtube.com/embed/${idMatch[1]}` : null;
 }
 
+// YouTube's live chat has its own dedicated embed (separate iframe from the
+// player) — only available for YouTube, which is the only platform this
+// page actually embeds a player for (see youtubeEmbedUrl above / the
+// "link not embeddable" fallback for anything else).
+function youtubeChatEmbedUrl(url: string | null) {
+  if (!url) return null;
+  const idMatch = url.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
+  if (!idMatch) return null;
+  const domain = typeof window !== "undefined" ? window.location.hostname : "livevival-sigma.vercel.app";
+  return `https://www.youtube.com/live_chat?v=${idMatch[1]}&embed_domain=${domain}`;
+}
+
 export default function PublicMatchPage() {
   const params = useParams();
   const matchId = params.id as string;
@@ -128,6 +140,7 @@ export default function PublicMatchPage() {
   const [recapRatio, setRecapRatio] = useState<"portrait" | "landscape">("portrait");
   const [recapMode, setRecapMode] = useState<"simple" | "advanced">("simple");
   const [copied, setCopied] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 1000);
@@ -315,6 +328,10 @@ export default function PublicMatchPage() {
 
   const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
   const embedUrl = youtubeEmbedUrl(videoUrl);
+  // Chat only makes sense against the actual live stream, not a per-game
+  // VOD link (a finished game's VOD has no live chat) — always the match's
+  // own youtube_url, regardless of which game/VOD is currently selected.
+  const chatEmbedUrl = youtubeChatEmbedUrl(match.youtube_url);
 
   const gamePickBans = pickBans.filter((p) => p.game_id === selectedGameId);
   const gameStats = stats.filter((s) => s.game_id === selectedGameId);
@@ -497,6 +514,65 @@ export default function PublicMatchPage() {
         )}
       </header>
 
+      {/* Sticky "theater mode" — stays pinned to the top of the viewport
+          while everything below (moments, draft recap, stats, etc.)
+          scrolls underneath it, instead of scrolling the stream itself
+          out of view. A single-column sticky element does this on its
+          own (no grid split needed): it sticks in place once its natural
+          scroll position reaches `top`, and stays stuck because nothing
+          shorter constrains it — the rest of the page just keeps scrolling
+          past below. bg-ink covers the seam so nothing shows through. */}
+      <div className="sticky top-0 z-10 bg-ink pt-2 pb-3 space-y-2">
+        {games.length > 1 && (
+          <div className="flex gap-2 flex-wrap">
+            {games.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => setSelectedGameId(g.id)}
+                className={`text-xs px-3 py-1.5 rounded-md border transition-all duration-200 ${
+                  selectedGameId === g.id
+                    ? "bg-signal border-signal shadow-[0_0_16px_1px_rgba(232,72,58,0.4)]"
+                    : "border-white/10 hover:border-signal/40 hover:bg-white/5"
+                }`}
+              >
+                Game {g.game_number}
+                {g.winner_team_id && (
+                  <span className="ml-1 text-white/60">
+                    ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} won)
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {embedUrl ? (
+          <div className="lv-card-flush overflow-hidden">
+            <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
+          </div>
+        ) : (
+          videoUrl && (
+            <a href={videoUrl} target="_blank" className="lv-nav-link block">
+              Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
+            </a>
+          )
+        )}
+
+        {chatEmbedUrl && (
+          <div>
+            <button
+              onClick={() => setChatOpen((v) => !v)}
+              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70"
+            >
+              💬 {chatOpen ? "Hide chat" : "Show chat"}
+            </button>
+            {chatOpen && (
+              <iframe src={chatEmbedUrl} className="w-full h-72 mt-2 rounded border border-white/10" />
+            )}
+          </div>
+        )}
+      </div>
+
       {match.update_source === "local_ocr" && (
         <section>
           <div className="flex items-center gap-3 mb-2 flex-wrap">
@@ -568,43 +644,8 @@ export default function PublicMatchPage() {
         </section>
       )}
 
-      {games.length > 1 && (
-        <div className="flex gap-2 flex-wrap">
-          {games.map((g) => (
-            <button
-              key={g.id}
-              onClick={() => setSelectedGameId(g.id)}
-              className={`text-xs px-3 py-1.5 rounded-md border transition-all duration-200 ${
-                selectedGameId === g.id
-                  ? "bg-signal border-signal shadow-[0_0_16px_1px_rgba(232,72,58,0.4)]"
-                  : "border-white/10 hover:border-signal/40 hover:bg-white/5"
-              }`}
-            >
-              Game {g.game_number}
-              {g.winner_team_id && (
-                <span className="ml-1 text-white/60">
-                  ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} won)
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-
       {selectedGame?.map && (
-        <p className="text-xs text-white/40">Map: <span className="text-white/60">{selectedGame.map}</span></p>
-      )}
-
-      {embedUrl ? (
-        <div className="lv-card-flush overflow-hidden">
-          <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
-        </div>
-      ) : (
-        videoUrl && (
-          <a href={videoUrl} target="_blank" className="lv-nav-link block">
-            Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
-          </a>
-        )
+        <p className="text-base text-white/50">Map: <span className="text-white/80 font-semibold">{selectedGame.map}</span></p>
       )}
 
       {chartData.length > 1 && (

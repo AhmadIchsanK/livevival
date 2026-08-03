@@ -383,6 +383,14 @@ export default function LiveConsolePage() {
   // fixing that shouldn't require leaving this page for /admin/players.
   const [editingScoreboardPlayerId, setEditingScoreboardPlayerId] = useState<string | null>(null);
   const [editingScoreboardIgn, setEditingScoreboardIgn] = useState("");
+  // Keyed by team_id — which roster player is selected in that team's
+  // "add player" dropdown (for a substitute the scoreboard didn't already
+  // pick up automatically).
+  const [addPlayerSelect, setAddPlayerSelect] = useState<Record<string, string>>({});
+  // Pop-out hero reference — all hero icons/names at a glance for fast
+  // pick/ban selection, since scrolling a plain <select> of 130+ heroes by
+  // name is slow mid-draft. Draft-phase only per its own purpose.
+  const [showHeroPicker, setShowHeroPicker] = useState(false);
   async function saveScoreboardPlayerEdit(playerId: string) {
     if (!editingScoreboardIgn.trim()) return;
     const { error } = await supabase.from("players").update({ ign: editingScoreboardIgn.trim() }).eq("id", playerId);
@@ -834,7 +842,18 @@ export default function LiveConsolePage() {
   const streamRef = useRef<MediaStream | null>(null);
   const workerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const dragStart = useRef<{ x: number; y: number } | null>(null);
+  // Corner-drag resize state for region calibration. dragMode covers a
+  // fresh draw, moving the whole box, or one of the 4 corner handles;
+  // dragStartPct/dragStartBox snapshot where the drag began so every
+  // subsequent mousemove computes a fresh box from the same origin
+  // instead of drifting from incremental deltas. Window-level listeners
+  // (not container-scoped) so a fast drag that briefly leaves the small
+  // preview area doesn't drop the interaction.
+  type DragMode = "draw" | "move" | "nw" | "ne" | "sw" | "se";
+  const dragMode = useRef<DragMode | null>(null);
+  const dragStartPct = useRef<{ x: number; y: number } | null>(null);
+  const dragStartBox = useRef<RegionBox | null>(null);
+  const cropRectRef = useRef<DOMRect | null>(null);
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
@@ -867,6 +886,12 @@ export default function LiveConsolePage() {
 
   const [captureActive, setCaptureActive] = useState(false);
   const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
+  // Live-editable draft of the region currently being calibrated — shown
+  // with a preview box + corner handles, not persisted to capture_regions
+  // until the admin explicitly locks it (see lockDraftBox). Starts from
+  // the field's existing saved region when there is one, so "Resize" is a
+  // real corner-drag adjustment instead of redrawing from scratch.
+  const [draftBox, setDraftBox] = useState<RegionBox | null>(null);
   const [manualTimeInputs, setManualTimeInputs] = useState<Record<string, string>>({});
   const [regions, setRegions] = useState<Record<CaptureField, RegionBox | null>>({ ...EMPTY_CAPTURE_RECORD });
   const [readings, setReadings] = useState<Record<CaptureField, string>>({
@@ -1730,28 +1755,108 @@ export default function LiveConsolePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.state]);
 
-  function handleCropMouseDown(e: React.MouseEvent<HTMLDivElement>) {
-    if (!calibratingField) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    dragStart.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  function clientToPct(clientX: number, clientY: number, rect: DOMRect) {
+    return {
+      x: Math.min(100, Math.max(0, ((clientX - rect.left) / rect.width) * 100)),
+      y: Math.min(100, Math.max(0, ((clientY - rect.top) / rect.height) * 100)),
+    };
   }
-  function handleCropMouseUp(e: React.MouseEvent<HTMLDivElement>) {
-    if (!calibratingField || !dragStart.current) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const endX = e.clientX - rect.left;
-    const endY = e.clientY - rect.top;
-    const x = Math.min(dragStart.current.x, endX);
-    const y = Math.min(dragStart.current.y, endY);
-    const w = Math.abs(endX - dragStart.current.x);
-    const h = Math.abs(endY - dragStart.current.y);
-    saveRegion(calibratingField, {
-      xPct: (x / rect.width) * 100,
-      yPct: (y / rect.height) * 100,
-      wPct: (w / rect.width) * 100,
-      hPct: (h / rect.height) * 100,
-    });
-    dragStart.current = null;
+
+  // Starts a drag: drawing a brand-new box (no draftBox yet), moving the
+  // whole box, or resizing from one corner. e.stopPropagation() keeps a
+  // handle's own mousedown from also bubbling to the container's
+  // "start a fresh draw" handler.
+  function startBoxDrag(mode: DragMode, e: React.MouseEvent) {
+    if (!calibratingField) return;
+    e.stopPropagation();
+    const container = e.currentTarget.closest("[data-crop-container]");
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    cropRectRef.current = rect;
+    dragMode.current = mode;
+    dragStartPct.current = clientToPct(e.clientX, e.clientY, rect);
+    dragStartBox.current = draftBox;
+  }
+
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const mode = dragMode.current;
+      const rect = cropRectRef.current;
+      const start = dragStartPct.current;
+      if (!mode || !rect || !start) return;
+      const pt = clientToPct(e.clientX, e.clientY, rect);
+
+      if (mode === "draw") {
+        setDraftBox({
+          xPct: Math.min(start.x, pt.x),
+          yPct: Math.min(start.y, pt.y),
+          wPct: Math.abs(pt.x - start.x),
+          hPct: Math.abs(pt.y - start.y),
+        });
+        return;
+      }
+      const startBox = dragStartBox.current;
+      if (!startBox) return;
+      if (mode === "move") {
+        const dx = pt.x - start.x;
+        const dy = pt.y - start.y;
+        setDraftBox({
+          ...startBox,
+          xPct: Math.min(100 - startBox.wPct, Math.max(0, startBox.xPct + dx)),
+          yPct: Math.min(100 - startBox.hPct, Math.max(0, startBox.yPct + dy)),
+        });
+        return;
+      }
+      // Corner handles — each recomputed from the box-at-drag-start plus
+      // the opposite (anchor) edge, not incremental deltas, so a fast or
+      // jittery drag can't accumulate drift.
+      const right = startBox.xPct + startBox.wPct;
+      const bottom = startBox.yPct + startBox.hPct;
+      let { xPct, yPct, wPct, hPct } = startBox;
+      const MIN = 1.5; // pct — a region under ~1.5% of the preview isn't usable for OCR anyway
+      if (mode.includes("w")) {
+        xPct = Math.min(pt.x, right - MIN);
+        wPct = right - xPct;
+      }
+      if (mode.includes("e")) {
+        wPct = Math.max(MIN, pt.x - startBox.xPct);
+      }
+      if (mode.includes("n")) {
+        yPct = Math.min(pt.y, bottom - MIN);
+        hPct = bottom - yPct;
+      }
+      if (mode.includes("s")) {
+        hPct = Math.max(MIN, pt.y - startBox.yPct);
+      }
+      setDraftBox({ xPct, yPct, wPct, hPct });
+    }
+    function onUp() {
+      dragMode.current = null;
+      dragStartPct.current = null;
+      dragStartBox.current = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  function lockDraftBox() {
+    if (!calibratingField || !draftBox) return;
+    if (draftBox.wPct < 1 || draftBox.hPct < 1) return; // too small to be a real region — ignore
+    saveRegion(calibratingField, draftBox);
+    setDraftBox(null);
     setCalibratingField(null);
+  }
+  function cancelDraftBox() {
+    setDraftBox(null);
+    setCalibratingField(null);
+  }
+  function startCalibrating(field: CaptureField) {
+    setCalibratingField(field);
+    setDraftBox(regions[field] ?? null);
   }
 
   async function confirmSuggestion() {
@@ -2133,20 +2238,27 @@ export default function LiveConsolePage() {
   // whole roster (which included bench/subs never playing this game —
   // the source of "mistakenly taking other data than players"). Falls
   // back to the full roster, sorted the same way, until picks are logged
-  // so the admin has someone to pick from. Both always sort left-to-right
-  // by role: exp lane, jungler, mid laner, gold laner, roamer.
+  // so the admin has someone to pick from. Also always includes anyone
+  // with a player_stats row for this game even without a pick — this is
+  // what makes the "add player" button below actually work for a
+  // substitute who came in without a hero pick ever being logged for
+  // them. Both always sort left-to-right by role: exp lane, jungler, mid
+  // laner, gold laner, roamer.
   function activeFive(teamId: string | undefined) {
     if (!teamId) return [];
-    const picked = pickBans
-      .filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id)
-      .map((pb) => players.find((p) => p.id === pb.player_id))
-      .filter((p): p is Player => Boolean(p));
-    const base = picked.length > 0 ? picked : players.filter((p) => p.team_id === teamId);
+    const pickedIds = new Set(pickBans.filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id).map((pb) => pb.player_id));
+    const statIds = new Set(stats.map((s) => s.player_id));
+    const included = players.filter((p) => p.team_id === teamId && (pickedIds.has(p.id) || statIds.has(p.id)));
+    const base = included.length > 0 ? included : players.filter((p) => p.team_id === teamId);
     return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
   }
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
+  async function addScoreboardPlayer(playerId: string) {
+    await ensureStatRow(playerId);
+    loadAll();
+  }
 
   return (
     <div className="text-white space-y-8 max-w-6xl">
@@ -2424,18 +2536,69 @@ export default function LiveConsolePage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Hero picks & bans</h2>
-          <button
-            onClick={() =>
-              postToTelegram(
-                `📋 <b>Draft complete — Game ${game.game_number}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
-                { entityType: "game", entityId: game.id, notificationType: "draft_result" }
-              )
-            }
-            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-          >
-            📢 Announce draft
-          </button>
+          <div className="flex gap-2">
+            {DRAFT_PHASES.includes(match.state) && (
+              <button
+                onClick={() => setShowHeroPicker(true)}
+                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+              >
+                🖼 Hero reference
+              </button>
+            )}
+            <button
+              onClick={() =>
+                postToTelegram(
+                  `📋 <b>Draft complete — Game ${game.game_number}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
+                  { entityType: "game", entityId: game.id, notificationType: "draft_result" }
+                )
+              }
+              className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+            >
+              📢 Announce draft
+            </button>
+          </div>
         </div>
+
+        {showHeroPicker && (
+          <div
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6"
+            onClick={() => setShowHeroPicker(false)}
+          >
+            <div
+              className="bg-ink border border-white/10 rounded-lg p-4 max-w-3xl w-full max-h-[80vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-sm">Hero reference — click to select</h3>
+                <button onClick={() => setShowHeroPicker(false)} className="text-white/40 hover:text-white/70 text-sm">✕</button>
+              </div>
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
+                {heroes.map((h) => (
+                  <button
+                    key={h.id}
+                    onClick={() => {
+                      setPbHero(h.name);
+                      setShowHeroPicker(false);
+                    }}
+                    className="flex flex-col items-center gap-1 group"
+                  >
+                    {h.icon_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={h.icon_url}
+                        alt=""
+                        className="w-12 h-12 rounded-full object-cover border border-white/10 transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal"
+                      />
+                    ) : (
+                      <span className="w-12 h-12 rounded-full bg-white/10 transition-transform duration-150 group-hover:-translate-y-1" />
+                    )}
+                    <span className="text-[10px] text-white/60 group-hover:text-white text-center leading-tight">{h.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="flex gap-2 items-end flex-wrap">
           <select
             value={pbTeam}
@@ -2726,6 +2889,47 @@ export default function LiveConsolePage() {
                 </div>
               );
             })}
+            {/* For a substitute the scoreboard didn't already pick up
+                automatically (no hero pick logged for them this game) —
+                adding them here creates their player_stats row, which
+                activeFive() above now also treats as "in the game". */}
+            {isEditable && (
+              <div className="flex items-center gap-2 pl-8 pt-1">
+                {(() => {
+                  const teamId = idx === 0 ? match.team_a?.id : match.team_b?.id;
+                  if (!teamId) return null;
+                  const shownIds = new Set(teamPlayers.map((p) => p.id));
+                  const available = rosterFor(teamId).filter((p) => !shownIds.has(p.id));
+                  if (available.length === 0) return null;
+                  return (
+                    <>
+                      <select
+                        value={addPlayerSelect[teamId] ?? ""}
+                        onChange={(e) => setAddPlayerSelect((prev) => ({ ...prev, [teamId]: e.target.value }))}
+                        className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                      >
+                        <option value="">Add player...</option>
+                        {available.map((p) => (
+                          <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={() => {
+                          const playerId = addPlayerSelect[teamId];
+                          if (!playerId) return;
+                          addScoreboardPlayer(playerId);
+                          setAddPlayerSelect((prev) => ({ ...prev, [teamId]: "" }));
+                        }}
+                        disabled={!addPlayerSelect[teamId]}
+                        className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+                      >
+                        + Add
+                      </button>
+                    </>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         ))}
       </section>
@@ -2988,31 +3192,94 @@ export default function LiveConsolePage() {
             {captureActive && (
               <div className="space-y-3">
                 <div
-                  className="relative w-full max-w-md border border-white/10 rounded overflow-hidden"
-                  onMouseDown={captureMode === "manual" ? handleCropMouseDown : undefined}
-                  onMouseUp={captureMode === "manual" ? handleCropMouseUp : undefined}
+                  data-crop-container
+                  className="relative w-full max-w-md border border-white/10 rounded overflow-hidden select-none"
+                  onMouseDown={(e) => {
+                    // Only starts a brand-new box — once draftBox exists,
+                    // dragging happens via its own body/handle mousedown
+                    // (startBoxDrag), which stops propagation before this
+                    // ever fires.
+                    if (captureMode === "manual" && calibratingField && !draftBox) startBoxDrag("draw", e);
+                  }}
                 >
                   <video ref={previewRef} muted className="w-full block" />
                   {captureMode === "manual" &&
-                    activeCaptureFields.map(({ field }) => {
-                      const box = regions[field];
-                      if (!box) return null;
-                      return (
+                    activeCaptureFields
+                      .filter(({ field }) => field !== calibratingField)
+                      .map(({ field }) => {
+                        const box = regions[field];
+                        if (!box) return null;
+                        return (
+                          <div
+                            key={field}
+                            className="absolute border-2 border-white/40 pointer-events-none"
+                            style={{
+                              left: `${box.xPct}%`,
+                              top: `${box.yPct}%`,
+                              width: `${box.wPct}%`,
+                              height: `${box.hPct}%`,
+                            }}
+                          />
+                        );
+                      })}
+                  {/* The region currently being calibrated — live preview,
+                      draggable body (move) and 4 corner handles (resize).
+                      Nothing here persists until "Lock" is clicked. */}
+                  {captureMode === "manual" && calibratingField && draftBox && (
+                    <div
+                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                      style={{
+                        left: `${draftBox.xPct}%`,
+                        top: `${draftBox.yPct}%`,
+                        width: `${draftBox.wPct}%`,
+                        height: `${draftBox.hPct}%`,
+                      }}
+                      onMouseDown={(e) => startBoxDrag("move", e)}
+                    >
+                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
                         <div
-                          key={field}
-                          className={`absolute border-2 pointer-events-none ${
-                            calibratingField === field ? "border-signal" : "border-white/40"
-                          }`}
+                          key={corner}
+                          onMouseDown={(e) => startBoxDrag(corner, e)}
+                          // 20x20px hit target centered exactly on the
+                          // corner via translate, regardless of box size —
+                          // "edge sensitivity" before this was just the
+                          // 2px border itself, easy to miss on a small
+                          // region. The visible dot inside stays small.
+                          className="absolute w-5 h-5 flex items-center justify-center"
                           style={{
-                            left: `${box.xPct}%`,
-                            top: `${box.yPct}%`,
-                            width: `${box.wPct}%`,
-                            height: `${box.hPct}%`,
+                            left: corner.includes("w") ? 0 : "100%",
+                            top: corner.includes("n") ? 0 : "100%",
+                            transform: "translate(-50%, -50%)",
+                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
                           }}
-                        />
-                      );
-                    })}
+                        >
+                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Not yet drawn at all — a one-line hint since the empty
+                      container gives no other cue to click-drag. */}
+                  {captureMode === "manual" && calibratingField && !draftBox && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
+                    </div>
+                  )}
                 </div>
+                {captureMode === "manual" && calibratingField && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={lockDraftBox}
+                      disabled={!draftBox}
+                      className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
+                    >
+                      🔒 Lock {CAPTURE_FIELDS.find((f) => f.field === calibratingField)?.label}
+                    </button>
+                    <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                      Cancel
+                    </button>
+                  </div>
+                )}
 
                 {captureMode === "manual" && activeCaptureFields.length === 0 && (
                   <p className="text-xs text-white/40 border border-white/10 rounded p-3">
@@ -3029,14 +3296,18 @@ export default function LiveConsolePage() {
                         <p className="text-[10px] text-white/50">{label}</p>
                         <div className="flex gap-1">
                           <button
-                            onClick={() => setCalibratingField(field)}
-                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1"
+                            onClick={() => startCalibrating(field)}
+                            disabled={calibratingField === field}
+                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1 disabled:opacity-40"
                           >
-                            {calibratingField === field ? "Drag the area now..." : regions[field] ? "Resize" : "Calibrate"}
+                            {calibratingField === field ? "Adjusting above..." : regions[field] ? "Resize" : "Calibrate"}
                           </button>
                           {regions[field] && (
                             <button
-                              onClick={() => clearRegion(field)}
+                              onClick={() => {
+                                clearRegion(field);
+                                if (calibratingField === field) setDraftBox(null);
+                              }}
                               title="Clear this region"
                               className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
                             >

@@ -217,7 +217,12 @@ export default function LiveConsolePage() {
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
   const [feedUrlCopied, setFeedUrlCopied] = useState(false);
   async function copyTelegramFeedUrl() {
-    await navigator.clipboard.writeText(`${window.location.origin}/api/telegram-feed/${matchId}`);
+    // The human-readable page (not the raw JSON API route) — this is what
+    // actually unfurls with the notification text when pasted into Slack/
+    // Discord, and reads cleanly if opened directly in a browser. The JSON
+    // route still exists for anything that wants to consume it
+    // programmatically.
+    await navigator.clipboard.writeText(`${window.location.origin}/telegram-feed/${matchId}`);
     setFeedUrlCopied(true);
     setTimeout(() => setFeedUrlCopied(false), 2000);
   }

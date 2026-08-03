@@ -85,7 +85,13 @@ function extractActiveRoster($) {
   table.find("tr.table2__row--body").each((_, row) => {
     const $row = $(row);
     const cells = $row.find("td");
-    const ign = $(cells[0]).find(".inline-player a[title]").first().attr("title");
+    // Prefer the anchor's visible text over its title attribute — for a
+    // red-linked (missing) player page, MediaWiki auto-fills title with its
+    // own tooltip text "PlayerName (page does not exist)", which was
+    // silently getting stored as the player's actual name. The link text
+    // itself is always just the clean name.
+    const $link = $(cells[0]).find(".inline-player a[title]").first();
+    const ign = $link.text().trim() || $link.attr("title")?.replace(/\s*\(page does not exist\)\s*$/i, "").trim();
     if (!ign) return;
     const roleRaw = $(cells[positionIdx]).text().trim();
     players.push({ ign, role: normalizeRole(roleRaw) });

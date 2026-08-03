@@ -503,38 +503,50 @@ export default function PublicMatchPage() {
               top (query is sorted created_at desc), older ones scroll into
               view instead of being cut off. */}
           <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-            {keyMoments.map((km) =>
-              km.is_key_moment ? (
-                <div key={km.id} className="lv-card-flush p-3 flex gap-3 items-start border border-signal/40 bg-signal/10">
-                  {km.screenshot_url && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={km.screenshot_url} alt={km.type} className="w-24 rounded-md border border-white/10 shrink-0" />
+            {keyMoments.map((km, i) => {
+              // Sorted newest-first, so a separator belongs above the first
+              // moment of each game (i.e. whenever the game changes from the
+              // previous — chronologically later — entry above it).
+              const showSeparator = games.length > 1 && (i === 0 || keyMoments[i - 1].game_id !== km.game_id);
+              const gameNumber = gameNumberById.get(km.game_id);
+              return (
+                <div key={km.id}>
+                  {showSeparator && gameNumber && (
+                    <p className="text-[10px] text-white/30 uppercase tracking-wide pt-1 pb-1 first:pt-0">— Game {gameNumber} —</p>
                   )}
-                  <div className="space-y-0.5">
-                    <p className="text-signal font-semibold text-sm">
-                      ⭐ {km.description ?? km.type.replace(/_/g, " ")}
-                      {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
-                    </p>
-                    <p className="text-[10px] text-white/40">
-                      {new Date(km.created_at).toLocaleTimeString()}
-                      {match.state === "GAME_STARTED" && km.minute_mark != null && ` · ${km.minute_mark}' in-game`}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div key={km.id} className="flex items-center gap-2 text-xs text-white/60">
-                  <span className="text-white/30 tabular-nums">{new Date(km.created_at).toLocaleTimeString()}</span>
-                  {match.state === "GAME_STARTED" && km.minute_mark != null && (
-                    <span className="text-white/30 tabular-nums">{km.minute_mark}&apos;</span>
+                  {km.is_key_moment ? (
+                    <div className="lv-card-flush p-3 flex gap-3 items-start border border-signal/40 bg-signal/10">
+                      {km.screenshot_url && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={km.screenshot_url} alt={km.type} className="w-24 rounded-md border border-white/10 shrink-0" />
+                      )}
+                      <div className="space-y-0.5">
+                        <p className="text-signal font-semibold text-sm">
+                          ⭐ {km.description ?? km.type.replace(/_/g, " ")}
+                          {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
+                        </p>
+                        <p className="text-[10px] text-white/40">
+                          {new Date(km.created_at).toLocaleTimeString()}
+                          {match.state === "GAME_STARTED" && km.minute_mark != null && ` · ${km.minute_mark}' in-game`}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 text-xs text-white/60">
+                      <span className="text-white/30 tabular-nums">{new Date(km.created_at).toLocaleTimeString()}</span>
+                      {match.state === "GAME_STARTED" && km.minute_mark != null && (
+                        <span className="text-white/30 tabular-nums">{km.minute_mark}&apos;</span>
+                      )}
+                      <span>
+                        {km.description ?? km.type.replace(/_/g, " ")}
+                        {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
+                      </span>
+                      {km.screenshot_url && <span>📸</span>}
+                    </div>
                   )}
-                  <span>
-                    {km.description ?? km.type.replace(/_/g, " ")}
-                    {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
-                  </span>
-                  {km.screenshot_url && <span>📸</span>}
                 </div>
-              )
-            )}
+              );
+            })}
             {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
           </div>
         </section>

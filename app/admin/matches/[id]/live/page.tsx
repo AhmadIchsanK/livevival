@@ -496,7 +496,7 @@ export default function LiveConsolePage() {
 
     const screenshotUrl = kmAttachScreenshot && captureActive ? await uploadMomentScreenshot() : null;
 
-    await supabase.from("key_moments").insert({
+    const { error: insertError } = await supabase.from("key_moments").insert({
       game_id: game.id,
       match_id: matchId,
       type: selectedTemplate.type,
@@ -508,6 +508,13 @@ export default function LiveConsolePage() {
       is_key_moment: isKeyMoment,
       screenshot_url: screenshotUrl,
     });
+    // Was previously unchecked — a rejected insert (e.g. a template type
+    // the key_moments type CHECK constraint didn't allow) failed with no
+    // feedback at all, which read as "the moment log button does nothing."
+    if (insertError) {
+      setError(insertError.message);
+      return;
+    }
     // Whether this auto-shares to Telegram is config-driven per template
     // (/admin/moment-templates), not tied to is_key_moment — everything else
     // (picks, bans, phase changes not configured to auto-post) stays manual
@@ -611,24 +618,6 @@ export default function LiveConsolePage() {
     const path = imageUrl.split("/key-moment-screenshots/")[1];
     if (path) await supabase.storage.from("key-moment-screenshots").remove([path]);
     loadAll();
-  }
-
-  // ── Net worth snapshot ──────────────────────────────────────────────
-  async function logNetWorthSnapshot() {
-    if (!game || !match || !match.team_a || !match.team_b) return;
-    const teamAGold = stats
-      .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id)
-      .reduce((sum, s) => sum + (s.gold ?? 0), 0);
-    const teamBGold = stats
-      .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b?.id)
-      .reduce((sum, s) => sum + (s.gold ?? 0), 0);
-
-    await supabase.from("net_worth_snapshots").insert({
-      game_id: game.id,
-      minute_mark: minute,
-      team_a_gold: teamAGold,
-      team_b_gold: teamBGold,
-    });
   }
 
   // ── Local capture (admin PC) ─────────────────────────────────────────
@@ -735,16 +724,25 @@ export default function LiveConsolePage() {
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
-  // Counts consecutive ticks where game_timer failed to parse a valid
-  // mm:ss while the match is GAME_STARTED — the one case reserved for
-  // "tracker went blank" inference (technical pause), since a blank timer
-  // alone can't otherwise distinguish a pause from a caster cutaway or the
-  // game actually ending (those have their own, better signals: the
+  // Tracks how long game_timer has failed to parse a valid mm:ss, in real
+  // elapsed time rather than a raw tick count — a plain "3 ticks" counter
+  // (at the 5s capture interval, 15s total) turned out to fire on brief,
+  // ordinary OCR misreads (a kill-cam or overlay transition briefly
+  // obscuring the timer), not just an actual pause, since tesseract isn't
+  // perfectly reliable frame-to-frame even mid-game. Widened to a real
+  // 30s-elapsed threshold instead, which also stays correct if a tick is
+  // ever delayed (a strict tick count would under-count real elapsed time
+  // in that case). The one case this is reserved for is "tracker went
+  // blank" inference (technical pause) — a blank timer alone can't
+  // otherwise distinguish a pause from a caster cutaway or the game
+  // actually ending (those have their own, better signals: the
   // victory-banner OCR and the deterministic win-count math below).
-  const unreadableTimerTicks = useRef(0);
+  const unreadableTimerSince = useRef<number | null>(null);
+  const pauseSuggested = useRef(false);
 
   const [captureActive, setCaptureActive] = useState(false);
   const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
+  const [manualTimeInputs, setManualTimeInputs] = useState<Record<string, string>>({});
   const [regions, setRegions] = useState<Record<CaptureField, RegionBox | null>>({ ...EMPTY_CAPTURE_RECORD });
   const [readings, setReadings] = useState<Record<CaptureField, string>>({
     ...EMPTY_CAPTURE_RECORD,
@@ -1253,6 +1251,36 @@ export default function LiveConsolePage() {
       .eq("id", match.id);
   }
 
+  // Manual fallback for countdown/draft-timer fields — both are one-way
+  // countdowns the public page already decays client-side from a single
+  // (value, updated_at) pair, so unlike the game clock these don't need a
+  // running/paused state machine, just a way to set the starting value
+  // when OCR hasn't been calibrated yet or the overlay text isn't legible.
+  function parseMmSs(input: string): number | null {
+    const m = input.trim().match(/^(\d{1,3}):(\d{2})$/);
+    if (!m) return null;
+    return Number(m[1]) * 60 + Number(m[2]);
+  }
+  async function setManualCountdown(input: string) {
+    const totalSeconds = parseMmSs(input);
+    if (totalSeconds == null) return;
+    lastPersistedCountdown.current = totalSeconds;
+    await supabase
+      .from("matches")
+      .update({ countdown_seconds: totalSeconds, countdown_updated_at: new Date().toISOString() })
+      .eq("id", match?.id);
+  }
+  async function setManualDraftTimer(side: "a" | "b", input: string) {
+    const totalSeconds = parseMmSs(input);
+    if (totalSeconds == null || !match) return;
+    lastPersistedDraftTimers.current[side] = totalSeconds;
+    const column = side === "a" ? "draft_timer_a_seconds" : "draft_timer_b_seconds";
+    await supabase
+      .from("matches")
+      .update({ [column]: totalSeconds, draft_timer_updated_at: new Date().toISOString() })
+      .eq("id", match.id);
+  }
+
   function guessWinnerFromText(text: string): string | null {
     const n = normalize(text);
     if (match?.team_a && n.includes(normalize(match.team_a.name))) return match.team_a.id;
@@ -1362,16 +1390,19 @@ export default function LiveConsolePage() {
         }
         if (field === "game_timer") {
           if (mmss) {
-            unreadableTimerTicks.current = 0;
+            unreadableTimerSince.current = null;
+            pauseSuggested.current = false;
             setMinute(Number(mmss[1]));
             updateGameClock(Number(mmss[1]), Number(mmss[2]));
             maybeAutoStartGame();
           } else if (match?.state === "GAME_STARTED") {
             // The one case reserved for "tracker went blank" inference — see
-            // the comment on unreadableTimerTicks above.
-            unreadableTimerTicks.current += 1;
-            if (unreadableTimerTicks.current === 3) {
-              setSuggestion({ type: "game_pause", raw: "Game timer unreadable for 3 consecutive ticks" });
+            // the comment on unreadableTimerSince above.
+            if (unreadableTimerSince.current === null) unreadableTimerSince.current = Date.now();
+            const unreadableForMs = Date.now() - unreadableTimerSince.current;
+            if (unreadableForMs >= 30000 && !pauseSuggested.current) {
+              pauseSuggested.current = true;
+              setSuggestion({ type: "game_pause", raw: "Game timer unreadable for 30+ seconds" });
             }
           }
         }
@@ -1427,9 +1458,10 @@ export default function LiveConsolePage() {
       }
     }
 
-    // Net worth: only worth a snapshot once we actually have both sides —
-    // feeds the same net_worth_snapshots table the manual "Snapshot net
-    // worth" button already writes to.
+    // Net worth: only worth a snapshot once we actually have both sides.
+    // No manual "Snapshot net worth" button anymore — this automatic OCR
+    // read (and applyAiDetection's equivalent for the AI-vision path) is
+    // the only writer to net_worth_snapshots now.
     if (networthLeft != null && networthRight != null && game && match) {
       const teamAGold = leftTeamId === match.team_a?.id ? networthLeft : networthRight;
       const teamBGold = leftTeamId === match.team_a?.id ? networthRight : networthLeft;
@@ -1809,10 +1841,17 @@ export default function LiveConsolePage() {
             value={match.state}
             onChange={(e) => setMatchPhase(e.target.value)}
             title="Manual phase override — useful for technical pauses or anything OCR/Liquipedia sync can't reflect on its own"
-            className="lv-badge bg-white/10 text-white/60 border-none"
+            // A semi-transparent bg (bg-white/10) on a <select> only tints
+            // the CLOSED control — most browsers still render the opened
+            // option list with their default light native chrome regardless
+            // of surrounding CSS, which is why this read as a barely-visible
+            // white dropdown. A solid dark background plus color-scheme:
+            // dark fixes both the closed control and the native popup list.
+            style={{ colorScheme: "dark" }}
+            className="lv-badge bg-white/10 text-white border border-white/20"
           >
             {MATCH_PHASES.map((s) => (
-              <option key={s} value={s}>{s.replace(/_/g, " ")}</option>
+              <option key={s} value={s} className="bg-ink text-white">{s.replace(/_/g, " ")}</option>
             ))}
           </select>
           {match.state === "CUSTOM" && (
@@ -1942,13 +1981,6 @@ export default function LiveConsolePage() {
               Current minute mark (used for every log action below): <span className="font-bold text-white text-sm tabular-nums">{minute}&apos;</span>
               {" "}— follows whichever clock source is selected, no manual entry needed.
             </p>
-            <button
-              onClick={logNetWorthSnapshot}
-              className="text-xs border border-white/10 rounded px-3 py-2 hover:bg-white/10"
-            >
-              📸 Snapshot net worth
-            </button>
-
             <label className="text-xs text-white/50 block pt-2">Public clock source</label>
             <div className="flex gap-1">
               {(["ocr", "manual"] as const).map((src) => (
@@ -2605,6 +2637,27 @@ export default function LiveConsolePage() {
                         <p className="text-xs text-white/70 truncate" title={readings[field]}>
                           {readings[field] || "—"}
                         </p>
+                        {(field === "countdown" || field === "draft_timer_a" || field === "draft_timer_b") && (
+                          <div className="flex gap-1">
+                            <input
+                              value={manualTimeInputs[field] ?? ""}
+                              onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [field]: e.target.value }))}
+                              placeholder="MM:SS"
+                              className="w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+                            />
+                            <button
+                              onClick={() => {
+                                const value = manualTimeInputs[field] ?? "";
+                                if (field === "countdown") setManualCountdown(value);
+                                else setManualDraftTimer(field === "draft_timer_a" ? "a" : "b", value);
+                              }}
+                              title="Set this directly instead of waiting on OCR — useful if the region isn't calibrated yet or the overlay text isn't readable"
+                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1"
+                            >
+                              Set manually
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>

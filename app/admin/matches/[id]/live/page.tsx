@@ -47,6 +47,7 @@ type FinishedGame = { id: string; game_number: number; status: string; map: stri
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
 type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number; deaths: number; assists: number; gold: number };
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null; created_at: string };
+type NetWorthSnapshot = { minute_mark: number; team_a_gold: number; team_b_gold: number };
 type KeyMoment = {
   id: string;
   type: string;
@@ -100,7 +101,13 @@ export default function LiveConsolePage() {
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
+  const [netWorth, setNetWorth] = useState<NetWorthSnapshot[]>([]);
   const [minute, setMinute] = useState(0);
+  // Companion to `minute` — kept separately rather than changing what
+  // `minute` means everywhere, since minute_mark (whole minutes) is still
+  // the right grain for most of this file's existing call sites. Only
+  // key_moments' new second_mark column needs the sub-minute precision.
+  const [secondOfMinute, setSecondOfMinute] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
@@ -160,18 +167,20 @@ export default function LiveConsolePage() {
 
     if (gameRow) {
       const gid = (gameRow as Game).id;
-      const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: ss }] = await Promise.all([
+      const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: ss }, { data: nw }] = await Promise.all([
         supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
         supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
         supabase.from("objectives").select("id, team_id, type, minute_mark, created_at").eq("game_id", gid).order("minute_mark"),
         supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark, is_key_moment, screenshot_url").eq("game_id", gid).order("minute_mark"),
         supabase.from("game_screenshots").select("id, image_url, in_game_time, note, created_at").eq("game_id", gid).order("created_at"),
+        supabase.from("net_worth_snapshots").select("minute_mark, team_a_gold, team_b_gold").eq("game_id", gid).order("minute_mark"),
       ]);
       setPickBans((pb as PickBan[]) ?? []);
       setStats((ps as PlayerStat[]) ?? []);
       setObjectives((obj as Objective[]) ?? []);
       setKeyMoments((km as KeyMoment[]) ?? []);
       setScreenshots((ss as Screenshot[]) ?? []);
+      setNetWorth((nw as NetWorthSnapshot[]) ?? []);
     }
   }, [matchId]);
 
@@ -298,6 +307,7 @@ export default function LiveConsolePage() {
       player_id: playerId || null,
       description: `${teamName} ${type === "pick" ? "picks" : "bans"} ${heroName}${playerName ? ` — ${playerName}` : ""}`,
       minute_mark: minute,
+      second_mark: secondOfMinute,
       source: "auto",
     });
   }
@@ -439,6 +449,34 @@ export default function LiveConsolePage() {
     else loadAll();
   }
 
+  // ── Net worth (OCR-fed, but directly editable) ───────────────────────
+  // "Latest" is just the highest minute_mark row for this game — snapshots
+  // are ordered ascending by loadAll's query.
+  const latestNetWorth = netWorth[netWorth.length - 1] ?? null;
+  async function updateNetWorthManual(teamAGold: number, teamBGold: number) {
+    if (!game || !match) return;
+    await supabase.from("net_worth_snapshots").insert({
+      game_id: game.id,
+      match_id: matchId,
+      minute_mark: minute,
+      team_a_gold: teamAGold,
+      team_b_gold: teamBGold,
+    });
+    // Every manual edit gets logged — net worth otherwise only ever moves
+    // via silent OCR ticks, so a manual correction should be visible/
+    // auditable in the same moment list everything else goes through.
+    await supabase.from("key_moments").insert({
+      game_id: game.id,
+      match_id: matchId,
+      type: "custom",
+      description: `Net worth manually set — ${match.team_a?.name}: ${teamAGold.toLocaleString()}, ${match.team_b?.name}: ${teamBGold.toLocaleString()}`,
+      minute_mark: minute,
+      second_mark: secondOfMinute,
+      source: "manual",
+    });
+    loadAll();
+  }
+
   // ── Key moments (template-driven) ────────────────────────────────────
   // Replaces free-typed moment logging with admin-managed prefilled
   // templates (/admin/moment-templates) — "Team {team} picks {hero}"
@@ -540,6 +578,7 @@ export default function LiveConsolePage() {
       player_id: kmPlayer || null,
       team_id: kmTeam || null,
       minute_mark: minute,
+      second_mark: secondOfMinute,
       source: "manual",
       is_key_moment: isKeyMoment,
       screenshot_url: screenshotUrl,
@@ -679,11 +718,28 @@ export default function LiveConsolePage() {
     | "kills_right"
     | "networth_left"
     | "networth_right"
-    | "kda_left"
-    | "kda_right"
+    | "kda_left_1"
+    | "kda_left_2"
+    | "kda_left_3"
+    | "kda_left_4"
+    | "kda_left_5"
+    | "kda_right_1"
+    | "kda_right_2"
+    | "kda_right_3"
+    | "kda_right_4"
+    | "kda_right_5"
     | "kill_banner"
     | "victory_banner"
     | "pause_word";
+  // One region per player (5 per side) instead of one region for the whole
+  // team block — a team-block region asked OCR to read 5 lines out of one
+  // crop in a single pass, where any one player's row being slightly
+  // misaligned or a hero icon overlapping text could throw off the whole
+  // block. Individually-calibrated per-player regions are more reliable
+  // (recognize() on a small single-line crop) at the cost of 5x the
+  // calibration effort — same tradeoff already made for kills_left/right
+  // and objectives_left/right vs. one combined region.
+  const KDA_SLOT_LABELS = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
   const CAPTURE_FIELDS: { field: CaptureField; label: string }[] = [
     { field: "countdown", label: "Pre-game countdown" },
     { field: "draft_timer_a", label: "Draft timer — Team A" },
@@ -697,8 +753,14 @@ export default function LiveConsolePage() {
     { field: "kills_right", label: "Team kills — right" },
     { field: "networth_left", label: "Net worth — left" },
     { field: "networth_right", label: "Net worth — right" },
-    { field: "kda_left", label: "K/D/A — left (5 lines, one per player)" },
-    { field: "kda_right", label: "K/D/A — right (5 lines, one per player)" },
+    ...([1, 2, 3, 4, 5] as const).map((n) => ({
+      field: `kda_left_${n}` as CaptureField,
+      label: `K/D/A — left #${n} (${KDA_SLOT_LABELS[n - 1]})`,
+    })),
+    ...([1, 2, 3, 4, 5] as const).map((n) => ({
+      field: `kda_right_${n}` as CaptureField,
+      label: `K/D/A — right #${n} (${KDA_SLOT_LABELS[n - 1]})`,
+    })),
     { field: "kill_banner", label: "Kill banner (Savage/Maniac/etc.)" },
     { field: "victory_banner", label: "Victory/defeat banner" },
     { field: "pause_word", label: "Pause indicator" },
@@ -722,8 +784,16 @@ export default function LiveConsolePage() {
       "kills_right",
       "networth_left",
       "networth_right",
-      "kda_left",
-      "kda_right",
+      "kda_left_1",
+      "kda_left_2",
+      "kda_left_3",
+      "kda_left_4",
+      "kda_left_5",
+      "kda_right_1",
+      "kda_right_2",
+      "kda_right_3",
+      "kda_right_4",
+      "kda_right_5",
       "kill_banner",
     ],
     GAME_FINISHED: ["victory_banner"],
@@ -744,8 +814,16 @@ export default function LiveConsolePage() {
     kills_right: null,
     networth_left: null,
     networth_right: null,
-    kda_left: null,
-    kda_right: null,
+    kda_left_1: null,
+    kda_left_2: null,
+    kda_left_3: null,
+    kda_left_4: null,
+    kda_left_5: null,
+    kda_right_1: null,
+    kda_right_2: null,
+    kda_right_3: null,
+    kda_right_4: null,
+    kda_right_5: null,
     kill_banner: null,
     victory_banner: null,
     pause_word: null,
@@ -775,6 +853,17 @@ export default function LiveConsolePage() {
   // victory-banner OCR and the deterministic win-count math below).
   const unreadableTimerSince = useRef<number | null>(null);
   const pauseSuggested = useRef(false);
+  // Guards against overlapping ticks — GAME_STARTED scans up to 18 regions
+  // sequentially (10 of those are the per-player K/D/A slots; vs. 1-4 for
+  // every other phase), and each is a real tesseract.js recognize() call.
+  // On a slower machine/frame that easily exceeds the 5s interval between
+  // ticks; setInterval doesn't wait for its callback to finish, so without
+  // this a new tick started reading from the
+  // same Tesseract worker while the previous one was still mid-recognize —
+  // the worker serializes those internally, so ticks just piled up behind
+  // each other forever and the tracker looked stalled/dead once
+  // GAME_STARTED's much longer field list was reached.
+  const tickInFlight = useRef(false);
 
   const [captureActive, setCaptureActive] = useState(false);
   const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
@@ -794,8 +883,16 @@ export default function LiveConsolePage() {
     kills_right: "",
     networth_left: "",
     networth_right: "",
-    kda_left: "",
-    kda_right: "",
+    kda_left_1: "",
+    kda_left_2: "",
+    kda_left_3: "",
+    kda_left_4: "",
+    kda_left_5: "",
+    kda_right_1: "",
+    kda_right_2: "",
+    kda_right_3: "",
+    kda_right_4: "",
+    kda_right_5: "",
     kill_banner: "",
     victory_banner: "",
     pause_word: "",
@@ -991,16 +1088,22 @@ export default function LiveConsolePage() {
         const now = Date.now();
         if (lastAutoKeyMoment.current.key !== key || now - lastAutoKeyMoment.current.at > 60000) {
           lastAutoKeyMoment.current = { key, at: now };
-          await supabase.from("key_moments").insert({
+          // source: "ai" was never a valid value — key_moments_source_check
+          // only allows 'manual'/'auto', so every AI-vision-detected key
+          // moment (Savage/Maniac/etc.) failed this insert silently, every
+          // time, since this call's error was never checked either.
+          const { error: kmInsertError } = await supabase.from("key_moments").insert({
             game_id: game.id,
             match_id: matchId,
             type: detection.key_moment_banner.toLowerCase(),
             player_id: playerId,
             minute_mark: minute,
-            source: "ai",
+            second_mark: secondOfMinute,
+            source: "auto",
             confidence: detection.confidence ?? null,
             is_key_moment: KEY_MOMENT_TYPES.includes(detection.key_moment_banner.toLowerCase()),
           });
+          if (kmInsertError) console.error("Failed to log AI-detected key moment:", kmInsertError.message);
         }
       }
     }
@@ -1238,7 +1341,11 @@ export default function LiveConsolePage() {
   useEffect(() => {
     if (!game) return;
     if (game.clock_source === "manual") {
-      const tick = () => setMinute(Math.floor(manualElapsedSeconds(game) / 60));
+      const tick = () => {
+        const s = manualElapsedSeconds(game);
+        setMinute(Math.floor(s / 60));
+        setSecondOfMinute(s % 60);
+      };
       tick();
       if (!game.manual_time_running) return;
       const id = setInterval(tick, 1000);
@@ -1247,7 +1354,9 @@ export default function LiveConsolePage() {
     if (captureActive) return; // captureTick() owns it while actively reading
     if (game.current_time_seconds == null || !game.current_time_updated_at) return;
     const elapsed = Math.floor((Date.now() - new Date(game.current_time_updated_at).getTime()) / 1000);
-    setMinute(Math.floor((game.current_time_seconds + elapsed) / 60));
+    const totalSeconds = game.current_time_seconds + elapsed;
+    setMinute(Math.floor(totalSeconds / 60));
+    setSecondOfMinute(totalSeconds % 60);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     game?.id,
@@ -1392,7 +1501,16 @@ export default function LiveConsolePage() {
     const video = previewRef.current;
     const worker = workerRef.current;
     if (!video || !worker || video.videoWidth === 0) return;
+    if (tickInFlight.current) return;
+    tickInFlight.current = true;
+    try {
+      await captureTickBody(video, worker);
+    } finally {
+      tickInFlight.current = false;
+    }
+  }
 
+  async function captureTickBody(video: HTMLVideoElement, worker: NonNullable<typeof workerRef.current>) {
     // Only scan the fields that matter for whatever phase the admin has
     // this match set to right now — this is what makes each phase's
     // tracker genuinely distinct instead of always reading the same trio
@@ -1430,6 +1548,7 @@ export default function LiveConsolePage() {
             unreadableTimerSince.current = null;
             pauseSuggested.current = false;
             setMinute(Number(mmss[1]));
+            setSecondOfMinute(Number(mmss[2]));
             updateGameClock(Number(mmss[1]), Number(mmss[2]));
             maybeAutoStartGame();
           } else if (match?.state === "GAME_STARTED") {
@@ -1481,8 +1600,13 @@ export default function LiveConsolePage() {
           const n = trimmed.match(/\d[\d,]*/);
           if (n) networthRight = Number(n[0].replace(/,/g, ""));
         }
-        if (field === "kda_left") kdaLeftParsed = parseKdaLines(trimmed, leftTeamId);
-        if (field === "kda_right") kdaRightParsed = parseKdaLines(trimmed, rightTeamId);
+        // One region per player now (not one region for the whole team
+        // block) — each field still goes through parseKdaLines since a
+        // single-line crop is just the degenerate case of the multi-line
+        // parser it already was, but results now accumulate across the 5
+        // per-side fields instead of being overwritten by the last one read.
+        if (field.startsWith("kda_left_")) kdaLeftParsed = [...kdaLeftParsed, ...parseKdaLines(trimmed, leftTeamId)];
+        if (field.startsWith("kda_right_")) kdaRightParsed = [...kdaRightParsed, ...parseKdaLines(trimmed, rightTeamId)];
         if (field === "victory_banner" && /victory|defeat|win/i.test(trimmed)) {
           const teamId = guessWinnerFromText(trimmed);
           if (teamId) setSuggestedWinner(teamId);
@@ -1637,6 +1761,7 @@ export default function LiveConsolePage() {
       match_id: matchId,
       type: suggestion.type,
       minute_mark: minute,
+      second_mark: secondOfMinute,
       source: "manual",
       is_key_moment: KEY_MOMENT_TYPES.includes(suggestion.type),
     });
@@ -1781,6 +1906,7 @@ export default function LiveConsolePage() {
         type: "phase_change",
         description: `Phase changed to ${newState.replace(/_/g, " ")}`,
         minute_mark: minute,
+        second_mark: secondOfMinute,
         source: "manual",
       });
 
@@ -2053,13 +2179,14 @@ export default function LiveConsolePage() {
                 +1m
               </button>
               <input
-                type="number"
-                placeholder="Set min"
+                type="text"
+                placeholder="MM:SS"
+                title="Set the clock directly, e.g. 12:30"
                 className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
                 onBlur={(e) => {
                   if (e.target.value === "") return;
-                  const mins = Number(e.target.value);
-                  if (!Number.isNaN(mins)) setManualClockSeconds(mins * 60);
+                  const m = e.target.value.trim().match(/^(\d{1,3}):(\d{2})$/);
+                  if (m) setManualClockSeconds(Number(m[1]) * 60 + Number(m[2]));
                   e.target.value = "";
                 }}
               />
@@ -2230,6 +2357,38 @@ export default function LiveConsolePage() {
                     </div>
                   ))}
                 </div>
+              </div>
+            ) : (
+              <span key={idx} />
+            )
+          )}
+        </div>
+      </section>
+
+      {/* Net worth — OCR-fed each tick, but directly editable too */}
+      <section className="space-y-2">
+        <h2 className="font-bold">Net worth</h2>
+        <div className="flex gap-4 items-end">
+          {[
+            { team: match.team_a, key: "team_a_gold" as const, other: latestNetWorth?.team_b_gold ?? 0 },
+            { team: match.team_b, key: "team_b_gold" as const, other: latestNetWorth?.team_a_gold ?? 0 },
+          ].map(({ team, key, other }, idx) =>
+            team ? (
+              <div key={team.id} className="space-y-1">
+                <p className="text-xs text-white/50">{team.name}</p>
+                <input
+                  type="number"
+                  defaultValue={latestNetWorth?.[key] ?? ""}
+                  disabled={!isEditable}
+                  placeholder="Gold"
+                  className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+                  onBlur={(e) => {
+                    const value = Number(e.target.value);
+                    if (Number.isNaN(value)) return;
+                    if (value === (latestNetWorth?.[key] ?? null)) return;
+                    updateNetWorthManual(idx === 0 ? value : other, idx === 0 ? other : value);
+                  }}
+                />
               </div>
             ) : (
               <span key={idx} />

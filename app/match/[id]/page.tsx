@@ -83,6 +83,7 @@ type KeyMoment = {
   type: string;
   description: string | null;
   minute_mark: number | null;
+  second_mark: number | null;
   created_at: string;
   player: { ign: string } | null;
   screenshot_url: string | null;
@@ -219,7 +220,7 @@ export default function PublicMatchPage() {
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
       supabase
         .from("key_moments")
-        .select("id, game_id, type, description, minute_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
+        .select("id, game_id, type, description, minute_mark, second_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
         .eq("match_id", matchId)
         .order("created_at", { ascending: false }),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
@@ -498,7 +499,21 @@ export default function PublicMatchPage() {
 
       {match.update_source === "local_ocr" && (
         <section>
-          <h2 className="lv-heading mb-2">Moment list</h2>
+          <div className="flex items-center gap-3 mb-2 flex-wrap">
+            <h2 className="lv-heading">Moment list</h2>
+            {/* Header badges above can wrap/scroll out of view on mobile —
+                repeating the live clock + phase here, bigger, means the
+                status is still visible without scrolling back up while
+                reading the moment feed. */}
+            {liveGameClockLabel && (
+              <span className="text-xl font-bold text-signal tabular-nums" title="Live in-game clock">
+                ⏱ {liveGameClockLabel}
+              </span>
+            )}
+            <span className="text-sm text-white/60">
+              {match.state === "CUSTOM" ? match.custom_state_label || "Custom" : PHASE_LABELS[match.state] ?? match.state}
+            </span>
+          </div>
           {/* Sized to show ~10 moments before scrolling — newest always on
               top (query is sorted created_at desc), older ones scroll into
               view instead of being cut off. */}
@@ -527,7 +542,8 @@ export default function PublicMatchPage() {
                         </p>
                         <p className="text-[10px] text-white/40">
                           {new Date(km.created_at).toLocaleTimeString()}
-                          {match.state === "GAME_STARTED" && km.minute_mark != null && ` · ${km.minute_mark}' in-game`}
+                          {match.state === "GAME_STARTED" && km.minute_mark != null &&
+                            ` · ${formatMMSS(km.minute_mark * 60 + (km.second_mark ?? 0))} in-game`}
                         </p>
                       </div>
                     </div>
@@ -535,7 +551,7 @@ export default function PublicMatchPage() {
                     <div className="flex items-center gap-2 text-xs text-white/60">
                       <span className="text-white/30 tabular-nums">{new Date(km.created_at).toLocaleTimeString()}</span>
                       {match.state === "GAME_STARTED" && km.minute_mark != null && (
-                        <span className="text-white/30 tabular-nums">{km.minute_mark}&apos;</span>
+                        <span className="text-white/30 tabular-nums">{formatMMSS(km.minute_mark * 60 + (km.second_mark ?? 0))}</span>
                       )}
                       <span>
                         {km.description ?? km.type.replace(/_/g, " ")}

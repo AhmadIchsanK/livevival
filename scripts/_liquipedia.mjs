@@ -30,7 +30,7 @@ export function sleep(ms) {
 
 const REQUEST_TIMEOUT_MS = 20000;
 
-async function requestJson(url, label, attempt) {
+async function requestJson(url, label, attempt, maxRetries) {
   let res;
   try {
     res = await fetch(url, {
@@ -43,18 +43,18 @@ async function requestJson(url, label, attempt) {
     // the rest of its run, as opposed to a clean 429 which at least gets a
     // response to retry on. Treat a timeout/network error the same as a
     // retryable rate limit so one flaky request doesn't sink the run.
-    if (attempt <= MAX_RETRIES) {
+    if (attempt <= maxRetries) {
       const waitMs = RETRY_BASE_MS * attempt;
-      console.warn(`Request stalled/failed on ${label} (${err.message}), waiting ${waitMs / 1000}s before retry ${attempt}/${MAX_RETRIES}...`);
+      console.warn(`Request stalled/failed on ${label} (${err.message}), waiting ${waitMs / 1000}s before retry ${attempt}/${maxRetries}...`);
       await sleep(waitMs);
       return null; // caller retries
     }
     throw new Error(`Liquipedia request failed for ${label}: ${err.message}`);
   }
 
-  if (res.status === 429 && attempt <= MAX_RETRIES) {
+  if (res.status === 429 && attempt <= maxRetries) {
     const waitMs = RETRY_BASE_MS * attempt;
-    console.warn(`Rate limited on ${label}, waiting ${waitMs / 1000}s before retry ${attempt}/${MAX_RETRIES}...`);
+    console.warn(`Rate limited on ${label}, waiting ${waitMs / 1000}s before retry ${attempt}/${maxRetries}...`);
     await sleep(waitMs);
     return null; // caller retries
   }
@@ -72,8 +72,15 @@ async function requestJson(url, label, attempt) {
  * was confirmed as the fetch pattern to use for team pages
  * (import-team-details.mjs); applying it here too since every script
  * using this shared client can silently hit the same redirect gap.
+ *
+ * maxRetries defaults to the shared 6-retry/~7-minute-per-call budget, but
+ * a caller that's designed to be safely re-run many times (e.g. a one-time
+ * backfill over "whatever's still missing") can pass a smaller budget so a
+ * *sustained* throttle window doesn't let one page eat the script's whole
+ * time budget — it gives up on that page faster and makes steady partial
+ * progress across the full list instead, to be mopped up on a later run.
  */
-export async function fetchRenderedPage(pageTitle, attempt = 1) {
+export async function fetchRenderedPage(pageTitle, attempt = 1, maxRetries = MAX_RETRIES) {
   const url = new URL(WIKI_API);
   url.searchParams.set("action", "parse");
   url.searchParams.set("page", pageTitle);
@@ -81,19 +88,19 @@ export async function fetchRenderedPage(pageTitle, attempt = 1) {
   url.searchParams.set("redirects", "1");
   url.searchParams.set("format", "json");
 
-  const data = await requestJson(url, pageTitle, attempt);
-  if (data === null) return fetchRenderedPage(pageTitle, attempt + 1);
+  const data = await requestJson(url, pageTitle, attempt, maxRetries);
+  if (data === null) return fetchRenderedPage(pageTitle, attempt + 1, maxRetries);
   return data.parse?.text?.["*"] ?? "";
 }
 
-/** Generic action=query helper (categorymembers, pageimages, allcategories, ...). */
-export async function apiQuery(params, attempt = 1) {
+/** Generic action=query helper (categorymembers, pageimages, allcategories, ...). See fetchRenderedPage's maxRetries note. */
+export async function apiQuery(params, attempt = 1, maxRetries = MAX_RETRIES) {
   const url = new URL(WIKI_API);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   url.searchParams.set("format", "json");
 
   const label = JSON.stringify(params);
-  const data = await requestJson(url, label, attempt);
-  if (data === null) return apiQuery(params, attempt + 1);
+  const data = await requestJson(url, label, attempt, maxRetries);
+  if (data === null) return apiQuery(params, attempt + 1, maxRetries);
   return data;
 }

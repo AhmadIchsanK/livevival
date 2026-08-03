@@ -1812,6 +1812,36 @@ export default function LiveConsolePage() {
           .eq("id", match.id);
     if (error) setError(error.message);
 
+    // Every game (and series) result gets its own moment-list entry, not
+    // just a Telegram post — the public Moment list is otherwise silent on
+    // exactly the two moments viewers care about most.
+    if (match.update_source === "local_ocr") {
+      const winnerName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+      await supabase.from("key_moments").insert({
+        game_id: game.id,
+        match_id: matchId,
+        type: "game_finish",
+        description: `${winnerName} wins Game ${game.game_number}`,
+        minute_mark: minute,
+        second_mark: secondOfMinute,
+        source: "manual",
+        is_key_moment: true,
+      });
+      if (seriesWinner) {
+        const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+        await supabase.from("key_moments").insert({
+          game_id: game.id,
+          match_id: matchId,
+          type: "match_finish",
+          description: `${seriesWinnerName} wins the series ${Math.max(aWins, bWins)}–${Math.min(aWins, bWins)}`,
+          minute_mark: minute,
+          second_mark: secondOfMinute,
+          source: "manual",
+          is_key_moment: true,
+        });
+      }
+    }
+
     // The worker posts this automatically for Liquipedia-sourced matches,
     // but never sees local_ocr matches at all — post it here instead so
     // those results still reach Telegram.
@@ -1830,6 +1860,132 @@ export default function LiveConsolePage() {
       }
     }
 
+    loadAll();
+  }
+
+  // Closes out the series from already-clinched game results (the phase
+  // dropdown's "Series finished" option), as opposed to declareGameWinner
+  // which closes out the CURRENT game and only promotes to series-finished
+  // as a side effect of that. Shares the same finalize/notify shape so a
+  // manual dropdown selection ends up in the same state as the button-
+  // driven path — final score set, Telegram sent, status set to finished.
+  async function finalizeSeriesFinished(seriesWinner: string, aWins: number, bWins: number) {
+    if (!match || !game) return;
+    const { error } = await supabase
+      .from("matches")
+      .update({ status: "finished", state: "SERIES_FINISHED", series_winner_team_id: seriesWinner })
+      .eq("id", match.id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    if (match.update_source === "local_ocr") {
+      const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+      await supabase.from("key_moments").insert({
+        game_id: game.id,
+        match_id: matchId,
+        type: "match_finish",
+        description: `${seriesWinnerName} wins the series ${Math.max(aWins, bWins)}–${Math.min(aWins, bWins)}`,
+        minute_mark: minute,
+        second_mark: secondOfMinute,
+        source: "manual",
+        is_key_moment: true,
+      });
+      await postToTelegram(
+        `🏆 <b>Match finished</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${seriesWinnerName}</b>\n${match.tournament?.name}`,
+        { entityType: "match", entityId: match.id, notificationType: "match_finished" }
+      );
+    }
+    loadAll();
+  }
+
+  const [forceWinnerPrompt, setForceWinnerPrompt] = useState(false);
+
+  // Single gatekeeper for every phase-dropdown selection — routes
+  // Game/Series finished through the same winner-declaration logic the
+  // buttons already use instead of letting the dropdown set those states
+  // directly with no winner attached, and enforces the technical-pause
+  // and series-finished-lock rules below.
+  async function handlePhaseChange(newState: string) {
+    if (!match || !game) return;
+    const currentState = match.state;
+    if (currentState === newState) return;
+
+    if (currentState === "SERIES_FINISHED") {
+      setError("This match is finished — use Reset if you need to change its phase.");
+      return;
+    }
+
+    if (newState === "GAME_FINISHED") {
+      setForceWinnerPrompt(true);
+      return;
+    }
+
+    if (newState === "SERIES_FINISHED") {
+      const allGames = [...pastGames, game];
+      const winsFor = (id: string) => allGames.filter((g) => g.winner_team_id === id).length;
+      const required = SERIES_WINS_REQUIRED[match.format ?? "BO3"] ?? 2;
+      const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
+      const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
+      const seriesWinner = aWins >= required ? match.team_a?.id : bWins >= required ? match.team_b?.id : null;
+      if (!seriesWinner) {
+        setError(`Series finished can't be set yet — no team has reached ${required} game win(s) for ${match.format ?? "BO3"}.`);
+        return;
+      }
+      await finalizeSeriesFinished(seriesWinner, aWins, bWins);
+      return;
+    }
+
+    if (newState === "TECHNICAL_PAUSE" && currentState !== "GAME_STARTED") {
+      setError("Technical pause can only be triggered from Game ongoing.");
+      return;
+    }
+    if (currentState === "TECHNICAL_PAUSE" && newState !== "GAME_STARTED") {
+      setError("Technical pause can only return to Game ongoing.");
+      return;
+    }
+
+    // Pause/resume the manual stopwatch across a technical pause — the OCR
+    // clock needs no equivalent handling, since a genuinely paused game's
+    // on-screen timer just stops changing, which OCR reads as-is.
+    if (newState === "TECHNICAL_PAUSE" && game.clock_source === "manual" && game.manual_time_running) {
+      await pauseManualClock();
+    }
+    if (currentState === "TECHNICAL_PAUSE" && newState === "GAME_STARTED" && game.clock_source === "manual" && !game.manual_time_running) {
+      await startManualClock();
+    }
+
+    await setMatchPhase(newState);
+  }
+
+  // Direct correction for a game's winner (current or a past one), for
+  // fixing a wrong call after the fact — distinct from declareGameWinner,
+  // which is for FIRST closing out a game and advances current_game_number/
+  // posts Telegram as a new event. This only touches the one games row and
+  // silently recomputes the series winner from the corrected results,
+  // without re-sending any notifications for what is a correction, not a
+  // new result.
+  async function correctGameWinner(gameId: string, teamId: string) {
+    if (!match) return;
+    const { error } = await supabase
+      .from("games")
+      .update({ winner_team_id: teamId, status: "finished", state: "GAME_FINISHED" })
+      .eq("id", gameId);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    const allWinners: (string | null)[] = pastGames.map((g) => (g.id === gameId ? teamId : g.winner_team_id));
+    if (game) allWinners.push(game.id === gameId ? teamId : game.winner_team_id);
+    const winsFor = (id: string) => allWinners.filter((w) => w === id).length;
+    const required = SERIES_WINS_REQUIRED[match.format ?? "BO3"] ?? 2;
+    const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
+    const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
+    const seriesWinner = aWins >= required ? match.team_a?.id : bWins >= required ? match.team_b?.id : null;
+    await supabase
+      .from("matches")
+      .update({ series_winner_team_id: seriesWinner, state: seriesWinner ? "SERIES_FINISHED" : match.state, status: seriesWinner ? "finished" : match.status })
+      .eq("id", match.id);
     loadAll();
   }
 
@@ -2002,7 +2158,7 @@ export default function LiveConsolePage() {
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
           <select
             value={match.state}
-            onChange={(e) => setMatchPhase(e.target.value)}
+            onChange={(e) => handlePhaseChange(e.target.value)}
             title="Manual phase override — useful for technical pauses or anything OCR/Liquipedia sync can't reflect on its own"
             // A semi-transparent bg (bg-white/10) on a <select> only tints
             // the CLOSED control — most browsers still render the opened
@@ -2044,25 +2200,51 @@ export default function LiveConsolePage() {
           <button onClick={shareFullMatchInfo} className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10">
             📢 Share everything to Telegram
           </button>
-          {match.update_source !== "local_ocr" && (
-            <button
-              onClick={resetMatch}
-              disabled={!isEditable}
-              title={
-                isEditable
-                  ? "Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
-                  : "Not available while the match is scheduled — nothing to reset yet"
-              }
-              className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10 disabled:opacity-40"
-            >
-              ⟲ Reset match
-            </button>
-          )}
+          <button
+            onClick={resetMatch}
+            disabled={!isEditable}
+            title={
+              isEditable
+                ? "Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
+                : "Not available while the match is scheduled — nothing to reset yet"
+            }
+            className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10 disabled:opacity-40"
+          >
+            ⟲ Reset match
+          </button>
         </div>
         {match.state === "SERIES_FINISHED" && (
           <p className="text-sm text-emerald-400 mt-2">
             Series finished — winner: {match.series_winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
           </p>
+        )}
+        {forceWinnerPrompt && match.team_a && match.team_b && (
+          <div className="mt-3 border border-signal/40 bg-signal/10 rounded p-3 space-y-2">
+            <p className="text-sm text-signal font-semibold">Which team won Game {game.game_number}?</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  declareGameWinner(match.team_a!.id);
+                  setForceWinnerPrompt(false);
+                }}
+                className="lv-btn-ghost !px-3 !py-1.5"
+              >
+                {match.team_a.name}
+              </button>
+              <button
+                onClick={() => {
+                  declareGameWinner(match.team_b!.id);
+                  setForceWinnerPrompt(false);
+                }}
+                className="lv-btn-ghost !px-3 !py-1.5"
+              >
+                {match.team_b.name}
+              </button>
+              <button onClick={() => setForceWinnerPrompt(false)} className="text-xs text-white/40 hover:text-white/70">
+                Cancel
+              </button>
+            </div>
+          </div>
         )}
       </div>
 
@@ -2080,10 +2262,29 @@ export default function LiveConsolePage() {
           <h2 className="font-bold text-sm text-white/60">Previous games</h2>
           <div className="flex flex-wrap gap-2 text-xs">
             {pastGames.map((g) => (
-              <span key={g.id} className="px-3 py-1.5 rounded bg-white/5 border border-white/10">
+              <span key={g.id} className="px-3 py-1.5 rounded bg-white/5 border border-white/10 inline-flex items-center gap-1.5">
                 Game {g.game_number}
                 {g.map && <span className="text-white/40"> · {g.map}</span>} —{" "}
                 <strong>{g.winner_team_id === match.team_a?.id ? match.team_a?.name : g.winner_team_id === match.team_b?.id ? match.team_b?.name : "no winner set"}</strong>
+                {/* Correcting a past result after the fact — distinct from
+                    declareGameWinner, which is for closing out a game the
+                    first time and posts a new Telegram/moment event. */}
+                {isEditable && match.team_a && match.team_b && (
+                  <span className="flex gap-1 ml-1">
+                    {[match.team_a, match.team_b].map((t) =>
+                      t.id === g.winner_team_id ? null : (
+                        <button
+                          key={t.id}
+                          onClick={() => correctGameWinner(g.id, t.id)}
+                          className="text-white/30 hover:text-signal normal-case"
+                          title={`Correct: ${t.name} actually won Game ${g.game_number}`}
+                        >
+                          → {t.name}
+                        </button>
+                      )
+                    )}
+                  </span>
+                )}
               </span>
             ))}
           </div>
@@ -2122,9 +2323,29 @@ export default function LiveConsolePage() {
           </div>
         )}
         {game.status === "finished" && (
-          <span className="lv-badge bg-emerald-500/15 text-emerald-400">
-            Game {game.game_number} winner: {game.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="lv-badge bg-emerald-500/15 text-emerald-400">
+              Game {game.game_number} winner: {game.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
+            </span>
+            {/* Not hard-locked after finished — a wrong call can still be
+                corrected via the same direct-update path as past games. */}
+            {isEditable && match.team_a && match.team_b && (
+              <span className="flex gap-1">
+                {[match.team_a, match.team_b].map((t) =>
+                  t.id === game.winner_team_id ? null : (
+                    <button
+                      key={t.id}
+                      onClick={() => correctGameWinner(game.id, t.id)}
+                      className="text-xs text-white/30 hover:text-signal"
+                      title={`Correct: ${t.name} actually won Game ${game.game_number}`}
+                    >
+                      → {t.name}
+                    </button>
+                  )
+                )}
+              </span>
+            )}
+          </div>
         )}
       </section>
 

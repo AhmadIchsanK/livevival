@@ -34,7 +34,15 @@ function extractTournaments(html) {
     const href = link.attr("href");
     if (!name || !href) return;
 
-    const slug = href.replace(/^\/mobilelegends\//, "");
+    // href comes straight from Liquipedia's own markup, which percent-
+    // encodes punctuation like an apostrophe (e.g. "Women%27s") — decoding
+    // it here is what makes liquipedia_slug match what Next.js's dynamic
+    // route params give back (the framework decodes the URL path segment
+    // before the page ever sees it), instead of storing the raw encoded
+    // form and never matching a lookup again (confirmed against a real
+    // "No tournament found" case: MLBB_Women%27s_International/2026 in the
+    // DB vs the decoded "MLBB_Women's_International/2026" the route saw).
+    const slug = decodeURIComponent(href.replace(/^\/mobilelegends\//, ""));
     const dateDisplay = $row.find("td.column__tournament").next().text().trim();
 
     tournaments.push({ name, slug, dateDisplay });

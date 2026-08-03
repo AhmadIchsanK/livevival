@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { NavMenu } from "@/components/NavMenu";
 import { TeamLogo } from "@/components/TeamLogo";
+import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 
 type MatchRow = {
   id: string;
@@ -134,9 +136,7 @@ export default function Home() {
         <BrandLockup />
         <div className="flex items-center gap-2">
           <ThemeToggle />
-          <a href="/tournaments" className="lv-btn-ghost">
-            Tournaments
-          </a>
+          <NavMenu />
         </div>
       </header>
 
@@ -199,13 +199,13 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
           flex row where a short name lets the score drift off-center. */}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
         <div className="flex items-center justify-end gap-2 min-w-0">
-          <p className="font-semibold text-sm truncate">{m.team_a?.name ?? "TBD"}</p>
+          <p className="font-semibold text-sm text-right leading-tight">{m.team_a?.name ?? "TBD"}</p>
           <TeamLogo url={m.team_a?.logo_url} size="sm" />
         </div>
         <p className="lv-score text-3xl shrink-0 px-1">{seriesScoreLabel(score) ?? "vs"}</p>
         <div className="flex items-center justify-start gap-2 min-w-0">
           <TeamLogo url={m.team_b?.logo_url} size="sm" />
-          <p className="font-semibold text-sm truncate">{m.team_b?.name ?? "TBD"}</p>
+          <p className="font-semibold text-sm leading-tight">{m.team_b?.name ?? "TBD"}</p>
         </div>
       </div>
       <p className="text-xs text-white/40 mt-2 truncate text-center">
@@ -242,17 +242,17 @@ function MonthCalendar({
   return (
     <div className="lv-card-flush p-3 w-full max-w-[260px]">
       <div className="flex items-center justify-between mb-2">
-        <button onClick={() => setMonthOffset((v) => v - 1)} className="text-xs text-white/40 hover:text-signal px-2 transition-colors">
+        <button onClick={() => setMonthOffset((v) => v - 1)} className="text-xs text-white/50 hover:text-signal px-2 py-1 rounded hover:bg-white/10 transition-colors">
           ←
         </button>
         <p className="text-xs font-semibold uppercase tracking-wide">
           {viewMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
         </p>
-        <button onClick={() => setMonthOffset((v) => v + 1)} className="text-xs text-white/40 hover:text-signal px-2 transition-colors">
+        <button onClick={() => setMonthOffset((v) => v + 1)} className="text-xs text-white/50 hover:text-signal px-2 py-1 rounded hover:bg-white/10 transition-colors">
           →
         </button>
       </div>
-      <div className="grid grid-cols-7 gap-1 text-[10px] text-white/30 mb-1">
+      <div className="grid grid-cols-7 gap-1 text-[10px] text-white/40 mb-1">
         {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
           <div key={i} className="text-center">{d}</div>
         ))}
@@ -270,7 +270,7 @@ function MonthCalendar({
               disabled={!hasMatch}
               className={`aspect-square rounded text-[11px] flex flex-col items-center justify-center gap-0.5 transition ${
                 isSelected ? "bg-win text-black" : isToday ? "border border-signal/50" : ""
-              } ${hasMatch ? "hover:bg-white/10 cursor-pointer" : "text-white/20 cursor-default"}`}
+              } ${hasMatch ? "hover:bg-white/10 cursor-pointer" : "text-white/35 cursor-default"}`}
             >
               <span>{Number(key.slice(-2))}</span>
               {hasMatch && <span className={`w-1 h-1 rounded-full ${isSelected ? "bg-black" : "bg-win"}`} />}
@@ -278,35 +278,23 @@ function MonthCalendar({
           );
         })}
       </div>
-      <p className="text-[10px] text-white/30 mt-2">Green = at least one match that day.</p>
+      <p className="text-[10px] text-white/40 mt-2">Green = at least one match that day.</p>
     </div>
   );
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-// HH:MM:SS, uncapped hours (a match ~23h away shows "23:59:59", not a
-// truncated/wrapped value) — matches the plain digital-countdown look
-// asked for, not a "Xd Yh" style breakdown.
-function formatCountdown(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const h = Math.floor(totalSeconds / 3600);
-  const m = Math.floor((totalSeconds % 3600) / 60);
-  const s = totalSeconds % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-}
-
 // Bottom-right corner badge, only for matches starting within 24h — `now`
 // is a single shared ticking clock from the parent (one setInterval for
-// the whole slider, not one per card). Deliberately muted (white/40, the
-// theme-aware token) so it reads as a small utility readout, not a second
-// competing headline next to the team names.
+// the whole slider, not one per card). Signal-tinted chip (not just bare
+// text) so it actually stands out against the card instead of blending
+// into it — the plain white/40 text tried first read as barely visible
+// against .lv-card's own translucent background in both themes.
 function MatchCountdown({ scheduledAt, now }: { scheduledAt: string; now: number }) {
   const diff = new Date(scheduledAt).getTime() - now;
-  if (diff <= 0 || diff > DAY_MS) return null;
+  if (diff <= 0 || diff > COUNTDOWN_WINDOW_MS) return null;
   return (
-    <span className="absolute bottom-1.5 right-2.5 text-[10px] font-mono tabular-nums text-white/40 tracking-wide">
-      {formatCountdown(diff)}
+    <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 text-[10px] font-mono font-semibold tabular-nums text-signal bg-signal/15 border border-signal/40 rounded px-1.5 py-0.5 tracking-wide">
+      ⏳ {formatCountdown(diff)}
     </span>
   );
 }
@@ -329,7 +317,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
   const hasImminentMatch = matches.some((m) => {
     if (!m.scheduled_at) return false;
     const diff = new Date(m.scheduled_at).getTime() - Date.now();
-    return diff > 0 && diff <= DAY_MS;
+    return diff > 0 && diff <= COUNTDOWN_WINDOW_MS;
   });
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -385,7 +373,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                         so it stays centered regardless of name length. */}
                     <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
                       <div className="flex items-center justify-end gap-1.5 min-w-0">
-                        <span className="font-semibold text-xs truncate">{m.team_a?.name ?? "TBD"}</span>
+                        <span className="font-semibold text-xs text-right leading-tight">{m.team_a?.name ?? "TBD"}</span>
                         <TeamLogo url={m.team_a?.logo_url} size="sm" />
                       </div>
                       <span className="lv-score text-sm shrink-0 bg-white/5 border border-white/10 rounded-md px-2 py-1 uppercase tracking-wide">
@@ -393,7 +381,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                       </span>
                       <div className="flex items-center justify-start gap-1.5 min-w-0">
                         <TeamLogo url={m.team_b?.logo_url} size="sm" />
-                        <span className="font-semibold text-xs truncate">{m.team_b?.name ?? "TBD"}</span>
+                        <span className="font-semibold text-xs leading-tight">{m.team_b?.name ?? "TBD"}</span>
                       </div>
                     </div>
                     <p className="text-[11px] text-white/40 truncate text-center">
@@ -436,7 +424,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   card, a full width away from either team. */}
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
                 <div className="flex items-center justify-end gap-2 min-w-0">
-                  <span className={`font-semibold text-sm truncate ${aWon ? "text-signal" : ""}`}>{m.team_a?.name ?? "TBD"}</span>
+                  <span className={`font-semibold text-sm text-right leading-tight ${aWon ? "text-signal" : ""}`}>{m.team_a?.name ?? "TBD"}</span>
                   <TeamLogo url={m.team_a?.logo_url} size="sm" highlight={!!aWon} />
                 </div>
                 <span className="lv-score text-xl shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1">
@@ -444,7 +432,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                 </span>
                 <div className="flex items-center justify-start gap-2 min-w-0">
                   <TeamLogo url={m.team_b?.logo_url} size="sm" highlight={!!bWon} />
-                  <span className={`font-semibold text-sm truncate ${bWon ? "text-signal" : ""}`}>{m.team_b?.name ?? "TBD"}</span>
+                  <span className={`font-semibold text-sm leading-tight ${bWon ? "text-signal" : ""}`}>{m.team_b?.name ?? "TBD"}</span>
                 </div>
               </div>
               <div className="flex flex-col items-center gap-1 text-center">

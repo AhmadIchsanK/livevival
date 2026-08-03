@@ -6,7 +6,9 @@ import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { NavMenu } from "@/components/NavMenu";
 import { BrandLockup } from "@/components/Brand";
+import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 type Match = {
@@ -18,6 +20,7 @@ type Match = {
   youtube_url: string | null;
   series_winner_team_id: string | null;
   update_source: "liquipedia" | "local_ocr";
+  scheduled_at: string | null;
   countdown_seconds: number | null;
   countdown_updated_at: string | null;
   draft_timer_a_seconds: number | null;
@@ -203,7 +206,7 @@ export default function PublicMatchPage() {
     const { data: matchData, error: matchError } = await supabase
       .from("matches")
       .select(
-        `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source,
+        `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source, scheduled_at,
          countdown_seconds, countdown_updated_at, draft_timer_a_seconds, draft_timer_b_seconds, draft_timer_updated_at,
          tournament:tournaments(name, tier),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
@@ -354,6 +357,16 @@ export default function PublicMatchPage() {
     const clamped = Math.max(0, totalSeconds);
     return `${String(Math.floor(clamped / 60)).padStart(2, "0")}:${String(clamped % 60).padStart(2, "0")}`;
   }
+
+  // Same 24h-out countdown as the home page's Upcoming cards, keyed off
+  // the match's own scheduled_at rather than an OCR-read value — this
+  // works for any scheduled match regardless of update_source, not just
+  // Hot matches with a live countdown tracker.
+  const scheduledCountdownMs = match.scheduled_at ? new Date(match.scheduled_at).getTime() - nowMs : null;
+  const scheduledCountdownLabel =
+    match.status === "scheduled" && scheduledCountdownMs != null && scheduledCountdownMs > 0 && scheduledCountdownMs <= COUNTDOWN_WINDOW_MS
+      ? formatCountdown(scheduledCountdownMs)
+      : null;
 
   // Waiting phase: counts DOWN client-side from the last OCR read. No
   // countdown detected at all (the field stays null) usually means a
@@ -549,7 +562,10 @@ export default function PublicMatchPage() {
             load-error state above, never here in the normal render path. */}
         <div className="flex items-center justify-between">
           <BrandLockup imgClassName="h-6 w-auto" />
-          <ThemeToggle />
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <NavMenu />
+          </div>
         </div>
         <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
@@ -610,6 +626,14 @@ export default function PublicMatchPage() {
           <span className={match.status === "live" ? "lv-badge-live" : match.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"}>
             {match.status}
           </span>
+          {scheduledCountdownLabel && (
+            <span
+              className="lv-badge font-mono tabular-nums text-signal bg-signal/15 border border-signal/40"
+              title="Time until this match starts"
+            >
+              ⏳ {scheduledCountdownLabel}
+            </span>
+          )}
           {match.status === "live" && (
             <span className="lv-badge bg-white/10 text-white/70">
               {match.state === "CUSTOM" ? match.custom_state_label || "Custom" : PHASE_LABELS[match.state] ?? match.state}

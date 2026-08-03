@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type MatchRow = {
@@ -137,9 +138,12 @@ export default function Home() {
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">
       <header className="flex items-center justify-between">
         <BrandLockup />
-        <a href="/tournaments" className="lv-btn-ghost">
-          Tournaments
-        </a>
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <a href="/tournaments" className="lv-btn-ghost">
+            Tournaments
+          </a>
+        </div>
       </header>
 
       {loading && <p className="text-white/40 text-sm">Loading matches...</p>}

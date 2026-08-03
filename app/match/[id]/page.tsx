@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { TeamLogo } from "@/components/TeamLogo";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 type Match = {
@@ -464,11 +465,14 @@ export default function PublicMatchPage() {
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-5xl mx-auto space-y-8">
       <header className="space-y-1">
-        <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
+          <ThemeToggle />
+        </div>
         <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="flex items-end gap-3 sm:gap-4">
-            <div className="flex flex-col items-center gap-1.5 w-20 sm:w-24">
-              <TeamLogo url={match.team_a?.logo_url} highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
+          <h1 className="flex items-end gap-4 sm:gap-6">
+            <div className="flex flex-col items-center gap-2 w-24 sm:w-32">
+              <TeamLogo url={match.team_a?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
               <span
                 className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
                   match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""
@@ -477,9 +481,22 @@ export default function PublicMatchPage() {
                 {match.team_a?.name}
               </span>
             </div>
-            <span className="text-white/30 text-lg sm:text-xl mb-6 sm:mb-7">vs</span>
-            <div className="flex flex-col items-center gap-1.5 w-20 sm:w-24">
-              <TeamLogo url={match.team_b?.logo_url} highlight={match.status === "finished" && seriesWinnerTeamId === teamBId} />
+            {/* The series score is the single most-scanned number on this
+                page — it now dwarfs "vs" and every other header element
+                instead of being buried in the finished-only winner line. */}
+            <span className="lv-score flex items-center gap-2 sm:gap-3 text-4xl sm:text-6xl mb-8 sm:mb-10">
+              {games.length > 0 ? (
+                <>
+                  <span className={gamesWonByA > gamesWonByB ? "text-signal" : "text-paper"}>{gamesWonByA}</span>
+                  <span className="text-white/20 text-2xl sm:text-4xl">–</span>
+                  <span className={gamesWonByB > gamesWonByA ? "text-signal" : "text-paper"}>{gamesWonByB}</span>
+                </>
+              ) : (
+                <span className="text-white/30 text-lg sm:text-xl font-sans">VS</span>
+              )}
+            </span>
+            <div className="flex flex-col items-center gap-2 w-24 sm:w-32">
+              <TeamLogo url={match.team_b?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamBId} />
               <span
                 className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
                   match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""
@@ -711,36 +728,74 @@ export default function PublicMatchPage() {
       )}
 
       <section>
-        <h2 className="lv-heading mb-2">Draft recap {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
-        <div className="grid grid-cols-2 gap-4 text-sm">
+        <h2 className="lv-heading mb-3">Draft recap {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
           {[
             { name: match.team_a?.name, bans: teamABans, picks: teamAPicks, teamId: teamAId },
             { name: match.team_b?.name, bans: teamBBans, picks: teamBPicks, teamId: teamBId },
           ].map((t, i) => (
-            <div key={i} className="lv-card-flush p-4 space-y-2">
+            <div key={i} className="lv-card-flush p-4 space-y-3">
               <p className="text-white/70 font-semibold">{t.name}</p>
-              <div className="text-xs text-white/40 flex items-center gap-1.5 flex-wrap">
-                <span>Bans:</span>
-                {t.bans.length === 0 && "—"}
-                {t.bans.map((b) => (
-                  <span key={b.id} className="inline-flex items-center gap-1">
-                    {b.hero?.icon_url && <img src={proxiedImageUrl(b.hero.icon_url)} alt="" className="w-4 h-4 rounded-full object-cover object-top grayscale opacity-70" />}
-                    {b.hero_name}
-                  </span>
-                ))}
+
+              <div className="rounded-lg border border-white/10 p-3 space-y-2">
+                <p className="text-[10px] uppercase tracking-wider text-white/40">Picks</p>
+                {t.picks.length === 0 ? (
+                  <p className="text-xs text-white/30">—</p>
+                ) : (
+                  <div className="flex flex-wrap gap-3">
+                    {t.picks.map((p) => (
+                      <div key={p.id} className="flex flex-col items-center gap-1 w-14">
+                        {p.hero?.icon_url ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={proxiedImageUrl(p.hero.icon_url)}
+                            alt=""
+                            className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg object-cover object-top border border-white/10"
+                          />
+                        ) : (
+                          <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-white/5 border border-white/10" />
+                        )}
+                        <span className="text-[10px] text-white/70 text-center leading-tight truncate w-full">{p.hero_name}</span>
+                        {p.player?.ign && (
+                          <span className="text-[9px] text-white/40 text-center leading-tight truncate w-full">{p.player.ign}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              <div className="text-xs text-white/40 space-y-0.5">
-                <p>Picks:</p>
-                {t.picks.length === 0 && <p className="pl-2">—</p>}
-                {t.picks.map((p) => (
-                  <p key={p.id} className="pl-2 flex items-center gap-1.5">
-                    {p.hero?.icon_url && <img src={proxiedImageUrl(p.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
-                    <span>
-                      {p.hero_name}
-                      {p.player?.ign ? <span className="text-white/60"> — {p.player.ign}{p.player.role ? ` (${p.player.role})` : ""}</span> : ""}
-                    </span>
-                  </p>
-                ))}
+
+              <div className="rounded-lg border border-white/10 p-3 space-y-2">
+                <p className="text-[10px] uppercase tracking-wider text-white/40">Bans</p>
+                {t.bans.length === 0 ? (
+                  <p className="text-xs text-white/30">—</p>
+                ) : (
+                  <div className="flex flex-wrap gap-3">
+                    {t.bans.map((b) => (
+                      <div key={b.id} className="flex flex-col items-center gap-1 w-12">
+                        <div className="relative w-10 h-10 sm:w-11 sm:h-11 rounded-lg overflow-hidden border border-white/10">
+                          {b.hero?.icon_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={proxiedImageUrl(b.hero.icon_url)}
+                              alt=""
+                              className="w-full h-full object-cover object-top grayscale opacity-50"
+                            />
+                          ) : (
+                            <div className="w-full h-full bg-white/5" />
+                          )}
+                          {/* Diagonal ban strike — a single rotated bar across
+                              the desaturated portrait reads as "banned" at a
+                              glance, vs. the previous plain inline text list. */}
+                          <div className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
+                            <div className="w-[150%] h-[2px] bg-signal/80 rotate-45" />
+                          </div>
+                        </div>
+                        <span className="text-[9px] text-white/40 text-center leading-tight truncate w-full">{b.hero_name}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ))}

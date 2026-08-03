@@ -765,17 +765,21 @@ export default function MatchesPage() {
                   onBlur={(e) => updateMatch(m.id, { youtube_url: e.target.value })}
                   className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
                 />
+                {/* Strict color-coding so these two are never confused for
+                    a routine "ghost" action mid-broadcast — win-green for
+                    the state that starts something, muted slate for the
+                    one that ends it. */}
                 <button
                   onClick={() => updateMatch(m.id, { status: "live" })}
                   disabled={!m.youtube_url}
                   title={m.youtube_url ? undefined : "Add a stream link first — a match can't go live without one"}
-                  className="lv-btn-ghost disabled:opacity-40"
+                  className="lv-btn border border-win/50 text-win hover:bg-win/10 hover:border-win disabled:opacity-40"
                 >
                   Set live
                 </button>
                 <button
                   onClick={() => updateMatch(m.id, { status: "finished" })}
-                  className="lv-btn-ghost"
+                  className="lv-btn border border-slate-400/40 text-slate-300 hover:bg-slate-400/10 hover:border-slate-400/70"
                 >
                   Set finished
                 </button>

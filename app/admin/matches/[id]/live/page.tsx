@@ -2805,7 +2805,7 @@ export default function LiveConsolePage() {
       </div>
 
       {!isEditable && (
-        <p className="text-xs text-yellow-300 bg-yellow-500/10 border border-yellow-500/30 rounded px-3 py-2">
+        <p className="lv-alert-warning">
           This match is scheduled — result, game result, draft/picks-bans, moment log, and OCR capture are locked
           until it&apos;s set live (needs a stream link on the Matches page) or marked finished. The roster fixes in
           Live scoreboard above stay available.
@@ -4096,7 +4096,7 @@ export default function LiveConsolePage() {
             )}
 
             {suggestedWinner && match.team_a && match.team_b && (
-              <div className="flex flex-wrap items-center gap-3 bg-yellow-500/10 border border-yellow-500/30 rounded px-4 py-3">
+              <div className="lv-alert-warning flex flex-wrap items-center gap-3 text-sm px-4 py-3">
                 <span className="text-sm">
                   AI detected a possible winner:{" "}
                   <strong>{suggestedWinner === match.team_a.id ? match.team_a.name : match.team_b.name}</strong>
@@ -4117,7 +4117,7 @@ export default function LiveConsolePage() {
             )}
 
             {suggestion && (
-              <div className="flex flex-wrap items-center gap-3 bg-yellow-500/10 border border-yellow-500/30 rounded px-4 py-3">
+              <div className="lv-alert-warning flex flex-wrap items-center gap-3 text-sm px-4 py-3">
                 <span className="text-sm">
                   Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
                   <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>

@@ -3,6 +3,25 @@
 @tailwind utilities;
 
 @layer base {
+  /* Theme variables — RGB triples (not hex) so Tailwind's `<alpha-value>`
+     opacity modifiers (bg-white/10, text-white/70, etc.) keep working
+     exactly as written everywhere they're already used. `.light` is the
+     class next-themes toggles on <html>; :root (no class / .dark) is
+     today's unchanged default, so nobody who never touches the new theme
+     toggle sees any difference at all. */
+  :root {
+    --color-ink: 10 10 10; /* #0A0A0A */
+    --color-paper: 255 255 255; /* #FFFFFF */
+    --color-white: 255 255 255;
+    --bg-glow-opacity: 1;
+  }
+  .light {
+    --color-ink: 250 250 251; /* near-white background */
+    --color-paper: 10 10 10; /* near-black text on the light background */
+    --color-white: 10 10 10; /* every bg-white/NN & text-white/NN becomes dark-on-light */
+    --bg-glow-opacity: 0.4; /* the red ambient glow is subtler on a light page */
+  }
+
   * {
     scrollbar-color: #e31e2a4d transparent;
   }
@@ -30,8 +49,8 @@
   body {
     @apply bg-ink text-paper font-sans antialiased;
     background-image:
-      radial-gradient(60rem 30rem at 15% -10%, #e31e2a1a, transparent 60%),
-      radial-gradient(50rem 25rem at 110% 10%, #e31e2a12, transparent 60%);
+      radial-gradient(60rem 30rem at 15% -10%, rgba(227, 30, 42, calc(0.1 * var(--bg-glow-opacity))), transparent 60%),
+      radial-gradient(50rem 25rem at 110% 10%, rgba(227, 30, 42, calc(0.07 * var(--bg-glow-opacity))), transparent 60%);
     background-attachment: fixed;
   }
 
@@ -74,13 +93,16 @@
 }
 
 @layer components {
-  /* Panels/cards used across match lists, admin tables, live console sections */
+  /* Panels/cards used across match lists, admin tables, live console sections.
+     One chamfered corner (top-right) instead of a fully rounded box — the
+     angular cut is the single highest-leverage "esports HUD" cue since
+     .lv-card/.lv-card-flush cascade to essentially every panel on the site. */
   .lv-card {
     @apply relative rounded-xl border border-white/10 bg-white/[0.02] backdrop-blur-sm
-      transition-all duration-200 hover:border-signal/40 hover:bg-white/[0.04];
+      transition-all duration-200 hover:border-signal/40 hover:bg-white/[0.04] lv-clip-corner;
   }
   .lv-card-flush {
-    @apply relative rounded-xl border border-white/10 bg-white/[0.02];
+    @apply relative rounded-xl border border-white/10 bg-white/[0.02] lv-clip-corner;
   }
 
   /* Buttons — bold, high-contrast, esports-style uppercase tracking on ghost/secondary */
@@ -89,8 +111,8 @@
       px-3.5 py-2 transition-all duration-200 disabled:opacity-50 disabled:pointer-events-none;
   }
   .lv-btn-primary {
-    @apply lv-btn bg-signal text-paper shadow-[0_0_0_0_rgba(227,30,42,0)]
-      hover:shadow-[0_0_20px_2px_rgba(227,30,42,0.45)] hover:brightness-110 active:brightness-95;
+    @apply lv-btn bg-signal text-paper shadow-[0_0_0_0_rgba(227,30,42,0)] lv-clip-corner-sm
+      hover:shadow-[0_0_28px_4px_rgba(227,30,42,0.55)] hover:brightness-110 active:brightness-95;
   }
   .lv-btn-ghost {
     @apply lv-btn border border-white/15 text-white/70 hover:border-signal/50 hover:text-white hover:bg-signal/10;
@@ -131,6 +153,25 @@
   /* Angular corner clip — echoes the brand mark's wing angularity. Use sparingly. */
   .lv-clip-corner {
     clip-path: polygon(0 0, 100% 0, 100% 100%, 12px 100%, 0 calc(100% - 12px));
+  }
+  /* Same cut, scaled down for button-sized elements — the 12px card cut
+     read as broken/oversized on a ~32-40px-tall button. */
+  .lv-clip-corner-sm {
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 6px 100%, 0 calc(100% - 6px));
+  }
+
+  /* Translucent-background + solid-left-border "system notification" look
+     for inline warnings — was previously ad-hoc `border border-yellow-500/30`
+     (a full outline) repeated at each call site in the live console. */
+  .lv-alert-warning {
+    @apply text-xs text-yellow-300 bg-yellow-500/10 border-l-4 border-yellow-500/70 rounded-r px-3 py-2;
+  }
+
+  /* Very subtle alternating-row tint for real data tables (admin scoreboard
+     stats, live console lists) — applied to a <tr>/row wrapper via
+     :nth-child so callers don't need to compute index parity themselves. */
+  .lv-table-row:nth-child(even) {
+    @apply bg-white/[0.02];
   }
 
   /* Score display — mono-score token: JetBrains Mono, for figures that

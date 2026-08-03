@@ -15,8 +15,14 @@ const WIKI_API = "https://liquipedia.net/mobilelegends/api.php";
 export const USER_AGENT =
   "LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)";
 
-const MAX_RETRIES = 4;
-const RETRY_BASE_MS = 20000; // 20s, 40s, 60s, 80s
+// Was 4 retries / 20s base (200s max wait). Confirmed via job logs this
+// isn't enough for a *sustained* throttle window (as opposed to a single
+// transient 429): import-team-details.mjs exhausted all 4 retries on every
+// request for 6+ teams in a row in one run, each failing after ~200s
+// wasted. Raised so a sustained window has more room to pass before a
+// script gives up on an individual page.
+const MAX_RETRIES = 6;
+const RETRY_BASE_MS = 20000; // 20s, 40s, 60s, 80s, 100s, 120s
 
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

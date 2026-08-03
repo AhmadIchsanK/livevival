@@ -164,6 +164,22 @@ async function findMatch(tournamentId, leftName, rightName) {
   return { ...data, leftId, rightId };
 }
 
+// Liquipedia's bracket picks/bans popup only ever exposes a hero NAME per
+// slot (see heroesIn() above — reads a[title], nothing else), never a
+// player attribution, so hero_id is the only extra thing recoverable here.
+// hero_name is already the exact Liquipedia page title (same source
+// import-liquipedia-heroes.mjs uses for heroes.name), confirmed against
+// production data to match heroes.name by plain equality with zero misses
+// — no fuzzy/normalize matching needed.
+let heroIdByName = null;
+async function heroIdFor(heroName) {
+  if (!heroIdByName) {
+    const { data } = await supabase.from("heroes").select("id, name");
+    heroIdByName = new Map((data ?? []).map((h) => [h.name, h.id]));
+  }
+  return heroIdByName.get(heroName) ?? null;
+}
+
 async function insertPicksAndBans(gameId, side, teamId, matchId) {
   const insertAll = async (heroes, type) => {
     for (const heroName of heroes ?? []) {
@@ -172,6 +188,7 @@ async function insertPicksAndBans(gameId, side, teamId, matchId) {
         match_id: matchId,
         team_id: teamId,
         hero_name: heroName,
+        hero_id: await heroIdFor(heroName),
         type,
       });
       if (error && !error.message.includes("duplicate key")) {

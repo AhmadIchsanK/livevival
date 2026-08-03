@@ -90,6 +90,7 @@ type KeyMoment = {
   is_key_moment: boolean;
 };
 type NetWorthPoint = { game_id: string; minute_mark: number; team_a_gold: number; team_b_gold: number };
+type RosterPlayer = { id: string; ign: string; role: string | null; team_id: string; photo_url: string | null };
 type Screenshot = { id: string; game_id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
 
 // Same fixed left-to-right draft order as the admin live console: exp
@@ -118,6 +119,7 @@ export default function PublicMatchPage() {
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
   const [netWorth, setNetWorth] = useState<NetWorthPoint[]>([]);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
+  const [roster, setRoster] = useState<RosterPlayer[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -192,7 +194,18 @@ export default function PublicMatchPage() {
       });
     }
 
-    const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }, { data: ss }] = await Promise.all([
+    // hero_picks_bans.player_id is always null for Liquipedia-sourced
+    // matches — the bracket picks/bans popup this scraper reads has no
+    // player-per-hero attribution at all (confirmed against the scraper's
+    // own selectors). The "Players" section below falls back to each
+    // team's full roster instead of trying to derive a per-game lineup
+    // from picks that were never going to have that data.
+    const rosterTeamIds = [
+      (matchData.team_a as unknown as { id: string } | null)?.id,
+      (matchData.team_b as unknown as { id: string } | null)?.id,
+    ].filter((id): id is string => Boolean(id));
+
+    const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: nw }, { data: ss }, { data: rp }] = await Promise.all([
       supabase
         .from("hero_picks_bans")
         .select("id, game_id, team_id, player_id, hero_name, type, pick_order, player:players(ign, role), hero:heroes(icon_url)")
@@ -210,6 +223,9 @@ export default function PublicMatchPage() {
         .order("created_at", { ascending: false }),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
       supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
+      rosterTeamIds.length > 0
+        ? supabase.from("players").select("id, ign, role, team_id, photo_url").in("team_id", rosterTeamIds)
+        : Promise.resolve({ data: [] as RosterPlayer[] }),
     ]);
     setPickBans((pb as unknown as PickBan[]) ?? []);
     setStats((ps as unknown as PlayerStat[]) ?? []);
@@ -217,6 +233,7 @@ export default function PublicMatchPage() {
     setKeyMoments((km as unknown as KeyMoment[]) ?? []);
     setNetWorth((nw as NetWorthPoint[]) ?? []);
     setScreenshots((ss as Screenshot[]) ?? []);
+    setRoster((rp as RosterPlayer[]) ?? []);
   }, [matchId]);
 
   useEffect(() => {
@@ -557,25 +574,38 @@ export default function PublicMatchPage() {
 
       {match.update_source !== "local_ocr" && (
         <section>
-          <h2 className="lv-heading mb-2">Players {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+          <h2 className="lv-heading mb-2">Players</h2>
           <div className="grid grid-cols-2 gap-4 text-sm">
             {[
-              { name: match.team_a?.name, picks: teamAPicks },
-              { name: match.team_b?.name, picks: teamBPicks },
-            ].map((t, i) => (
-              <div key={i} className="lv-card-flush p-4 space-y-1">
-                <p className="text-white/70 font-semibold text-sm">{t.name}</p>
-                {t.picks.length === 0 && <p className="text-xs text-white/30">Lineup not logged yet.</p>}
-                {/* Dedupe by player_id — a fuzzy-match collision or a stray
-                    duplicate pick row shouldn't show the same player twice. */}
-                {[...new Map(t.picks.map((p) => [p.player_id ?? p.id, p])).values()].map((p) => (
-                  <p key={p.id} className="text-xs text-white/60">
-                    {p.player?.ign}
-                    {p.player?.role ? ` — ${p.player.role}` : ""}
-                  </p>
-                ))}
-              </div>
-            ))}
+              { name: match.team_a?.name, teamId: teamAId },
+              { name: match.team_b?.name, teamId: teamBId },
+            ].map((t, i) => {
+              // Not derived from hero_picks_bans — Liquipedia's picks/bans
+              // data has no player-per-hero attribution to draw a per-game
+              // lineup from, so this shows the team's full roster instead.
+              const teamRoster = roster
+                .filter((p) => p.team_id === t.teamId)
+                .sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
+              return (
+                <div key={i} className="lv-card-flush p-4 space-y-1.5">
+                  <p className="text-white/70 font-semibold text-sm">{t.name}</p>
+                  {teamRoster.length === 0 && <p className="text-xs text-white/30">Roster not added yet.</p>}
+                  {teamRoster.map((p) => (
+                    <p key={p.id} className="text-xs text-white/60 flex items-center gap-1.5">
+                      {p.photo_url ? (
+                        <img src={p.photo_url} alt="" className="w-5 h-5 rounded-full object-cover object-top" />
+                      ) : (
+                        <span className="w-5 h-5 rounded-full bg-white/10" />
+                      )}
+                      <span>
+                        {p.ign}
+                        {p.role ? ` — ${p.role}` : ""}
+                      </span>
+                    </p>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </section>
       )}

@@ -40,7 +40,14 @@ jobs:
 
   import-heroes:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Was capped at 30 min on the assumption ~130 heroes x a paced request
+    # each would fit comfortably. Wrong: confirmed via job logs the run
+    # hits this cap and gets force-cancelled mid-alphabet every time (~80
+    # heroes needing an icon fetch x ~4-8s each, plus a full categorymembers
+    # pass first) — hero icons were stuck at exactly Harley→Zilong across
+    # every re-trigger as a result. Raised to give a cold/mostly-cold run
+    # enough runway to actually finish in one pass.
+    timeout-minutes: 90
     concurrency:
       group: liquipedia-import-heroes
       cancel-in-progress: false

@@ -571,6 +571,11 @@ export default function MatchesPage() {
               onClick={() => {
                 setActiveTab(tab.key);
                 setSelected(new Set());
+                // Upcoming matches read naturally soonest-first; everything
+                // else (live/finished) reads naturally most-recent-first —
+                // each tab lands on its own sensible default, still
+                // overridable via the sort dropdown afterward.
+                setSortBy(tab.key === "scheduled" ? "oldest" : "newest");
               }}
               className={`text-sm px-4 py-2 rounded-t ${
                 activeTab === tab.key ? "bg-white/10 text-white font-semibold" : "text-white/40 hover:text-white/70"
@@ -765,10 +770,19 @@ export default function MatchesPage() {
                   onBlur={(e) => updateMatch(m.id, { youtube_url: e.target.value })}
                   className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
                 />
-                {/* Strict color-coding so these two are never confused for
-                    a routine "ghost" action mid-broadcast — win-green for
-                    the state that starts something, muted slate for the
-                    one that ends it. */}
+                {/* Strict color-coding so these three are never confused
+                    for a routine "ghost" action mid-broadcast — amber for
+                    the state that rolls a match back to not-yet-started,
+                    win-green for the state that starts something, muted
+                    slate for the one that ends it. Previously "Scheduled"
+                    was only reachable from inside the live console. */}
+                <button
+                  onClick={() => updateMatch(m.id, { status: "scheduled" })}
+                  disabled={m.status === "scheduled"}
+                  className="lv-btn border border-amber-400/40 text-amber-300 hover:bg-amber-400/10 hover:border-amber-400/70 disabled:opacity-40"
+                >
+                  Set scheduled
+                </button>
                 <button
                   onClick={() => updateMatch(m.id, { status: "live" })}
                   disabled={!m.youtube_url}

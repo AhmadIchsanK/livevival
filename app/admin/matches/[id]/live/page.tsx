@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
 import { TeamLogo } from "@/components/TeamLogo";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
   { pattern: /SAVAGE/i, type: "savage" },
@@ -2759,7 +2760,17 @@ export default function LiveConsolePage() {
     if (!teamId) return [];
     const pickedIds = new Set(pickBans.filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id).map((pb) => pb.player_id));
     const statIds = new Set(stats.map((s) => s.player_id));
-    const included = players.filter((p) => p.team_id === teamId && (pickedIds.has(p.id) || statIds.has(p.id)));
+    // is_active_roster is the roster editor's own "which 5" decision — a
+    // player flagged active shows here even before any pick/stat row
+    // exists, which is what makes the roster show up on the Live
+    // Scoreboard as soon as it's decided, not only once the draft or a
+    // KDA edit has actually happened. Picked/statted players stay
+    // included too so a genuine mid-game substitution (added via "+ Add"
+    // below, which isn't itself an is_active_roster flip) still renders —
+    // a benched sub who's neither flagged active nor actually in the game
+    // is the only thing this excludes.
+    const activeRosterIds = new Set(players.filter((p) => p.team_id === teamId && p.is_active_roster).map((p) => p.id));
+    const included = players.filter((p) => p.team_id === teamId && (activeRosterIds.has(p.id) || pickedIds.has(p.id) || statIds.has(p.id)));
     const base = included.length > 0 ? included : players.filter((p) => p.team_id === teamId);
     return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
   }
@@ -3503,7 +3514,7 @@ export default function LiveConsolePage() {
                           {h.icon_url ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
-                              src={h.icon_url}
+                              src={proxiedImageUrl(h.icon_url)}
                               alt=""
                               className={`w-10 h-10 rounded-full object-cover border border-white/10 ${
                                 !taken ? "transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal" : ""
@@ -3549,7 +3560,7 @@ export default function LiveConsolePage() {
                           <div key={pb.id} className="flex items-center gap-2">
                             {hero?.icon_url ? (
                               // eslint-disable-next-line @next/next/no-img-element
-                              <img src={hero.icon_url} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
+                              <img src={proxiedImageUrl(hero.icon_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
                             ) : (
                               <span className="w-6 h-6 rounded-full bg-white/10 block" />
                             )}
@@ -3602,7 +3613,7 @@ export default function LiveConsolePage() {
                     {h.icon_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={h.icon_url}
+                        src={proxiedImageUrl(h.icon_url)}
                         alt=""
                         className="w-12 h-12 rounded-full object-cover border border-white/10 transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal"
                       />
@@ -3655,7 +3666,7 @@ export default function LiveConsolePage() {
           <div className="flex items-center gap-1.5">
             {heroes.find((h) => h.name === pbHero)?.icon_url && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={heroes.find((h) => h.name === pbHero)!.icon_url!} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
+              <img src={proxiedImageUrl(heroes.find((h) => h.name === pbHero)!.icon_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
             )}
             <select
               value={pbHero}
@@ -3810,7 +3821,7 @@ export default function LiveConsolePage() {
                 <div key={p.id} className="flex gap-2 items-center text-sm">
                   {p.photo_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={p.photo_url} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10 shrink-0" />
+                    <img src={proxiedImageUrl(p.photo_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10 shrink-0" />
                   ) : (
                     <span className="w-6 h-6 rounded-full bg-white/10 shrink-0" />
                   )}
@@ -3827,7 +3838,7 @@ export default function LiveConsolePage() {
                   {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={heroes.find((h) => h.name === stat?.hero_name)!.icon_url!}
+                      src={proxiedImageUrl(heroes.find((h) => h.name === stat?.hero_name)!.icon_url)}
                       alt=""
                       className="w-5 h-5 rounded-full object-cover -mr-1"
                     />

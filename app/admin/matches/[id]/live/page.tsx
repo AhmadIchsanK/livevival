@@ -1039,6 +1039,56 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  const [retakingDraft, setRetakingDraft] = useState(false);
+  // Picks staged mid-draft can go stale by the time the draft actually
+  // locks in (a last-second swap, a misread corrected by the caster) —
+  // this does one fresh OCR pass over both draft-picks regions and
+  // corrects hero_picks_bans per player instead of leaving whatever was
+  // captured earlier standing. Only meaningful once DRAFT_COMPLETE, with
+  // capture still running so there's a live frame to read.
+  async function retakeDraftPicks() {
+    const video = previewRef.current;
+    const worker = workerRef.current;
+    if (!game || !match || !video || !worker) return;
+    setRetakingDraft(true);
+    try {
+      const sides: [CaptureField, () => string | null][] = [
+        ["draft_picks_left", resolveLeftTeamId],
+        ["draft_picks_right", resolveRightTeamId],
+      ];
+      for (const [field, getTeamId] of sides) {
+        const box = regions[field];
+        const teamId = getTeamId();
+        if (!box || !teamId) continue;
+        const canvas = cropCanvasFor(video, box);
+        if (!canvas) continue;
+        const { data: { text } } = await worker.recognize(canvas);
+        for (const { player, hero } of parseDraftPickLines(text, teamId)) {
+          const playerRow = players.find((p) => p.team_id === teamId && p.ign.toLowerCase() === player.toLowerCase());
+          if (!playerRow) continue;
+          // Replace this player's existing pick (if any) rather than
+          // appending — a retake is a correction, not a second pick.
+          await supabase.from("hero_picks_bans").delete().eq("game_id", game.id).eq("player_id", playerRow.id).eq("type", "pick");
+          await supabase.from("hero_picks_bans").insert({
+            game_id: game.id,
+            match_id: matchId,
+            team_id: teamId,
+            player_id: playerRow.id,
+            hero_name: hero,
+            hero_id: matchHeroId(hero),
+            type: "pick",
+            pick_order: pickBans.length + 1,
+          });
+          await logPickBanMoment("pick", teamId, hero, playerRow.id);
+          await updateStat(playerRow.id, "hero_name", hero);
+        }
+      }
+    } finally {
+      setRetakingDraft(false);
+      loadAll();
+    }
+  }
+
   function discardStagedDraftAction(index: number) {
     setStagedDraftActions((prev) => prev.filter((_, i) => i !== index));
   }
@@ -1485,13 +1535,28 @@ export default function LiveConsolePage() {
     const hero = heroes.find((h) => n.includes(normalize(h.name)));
     return { player, hero };
   }
+  // The draft-picks overlay puts player name and hero name on separate
+  // lines (player on top, hero below it) per slot, not both on one line —
+  // findPlayerAndHeroInLine per-line-in-isolation never matched anything
+  // real against that layout, which is why draft-pick OCR looked
+  // completely dead. Still handles a same-line "player — hero" format too
+  // in case a different tournament's overlay does put them together.
   function parseDraftPickLines(text: string, teamId: string | null): { player: string; hero: string }[] {
     const results: { player: string; hero: string }[] = [];
+    let pendingPlayer: string | null = null;
     for (const rawLine of text.split(/\n/)) {
       const line = rawLine.trim();
       if (!line) continue;
       const { player, hero } = findPlayerAndHeroInLine(line, teamId);
-      if (player && hero) results.push({ player: player.ign, hero: hero.name });
+      if (player && hero) {
+        results.push({ player: player.ign, hero: hero.name });
+        pendingPlayer = null;
+      } else if (player) {
+        pendingPlayer = player.ign;
+      } else if (hero && pendingPlayer) {
+        results.push({ player: pendingPlayer, hero: hero.name });
+        pendingPlayer = null;
+      }
     }
     return results;
   }
@@ -1681,6 +1746,27 @@ export default function LiveConsolePage() {
     if (game && (kdaLeftParsed.length > 0 || kdaRightParsed.length > 0)) loadAll();
   }
 
+  // captureTick/captureFrameAndAnalyze are plain functions recreated on
+  // every render, closing over that render's state — regions, match, game,
+  // players, heroes, stagedDraftActions, all of it. A bare
+  // setInterval(captureTick, 5000) locks in whatever those values were AT
+  // THE MOMENT "Start capture" was clicked and never sees anything
+  // calibrated or changed afterward (a region drawn mid-session, a phase
+  // transition to Game ongoing, a roster edit) for the rest of that
+  // capture session — this is the real reason OCR looked completely dead
+  // once the match moved past whatever phase was active when capture
+  // started, not an OCR-accuracy problem but a stale-closure one (the
+  // classic setInterval-in-React pitfall). Routing the interval through a
+  // ref that's refreshed to the latest closure every render fixes it
+  // without needing to tear down and recreate the interval on every state
+  // change.
+  const captureTickRef = useRef(captureTick);
+  const captureFrameAndAnalyzeRef = useRef(captureFrameAndAnalyze);
+  useEffect(() => {
+    captureTickRef.current = captureTick;
+    captureFrameAndAnalyzeRef.current = captureFrameAndAnalyze;
+  });
+
   async function startCapture() {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
@@ -1702,10 +1788,10 @@ export default function LiveConsolePage() {
         // resolution. Against an 8000 tokens-per-minute free-tier budget,
         // a ~5000-token request only has room for one per rolling minute;
         // anything faster was guaranteed to fail on most ticks.
-        intervalRef.current = setInterval(captureFrameAndAnalyze, 60000);
+        intervalRef.current = setInterval(() => captureFrameAndAnalyzeRef.current(), 60000);
       } else {
         workerRef.current = await createWorker("eng");
-        intervalRef.current = setInterval(captureTick, 5000);
+        intervalRef.current = setInterval(() => captureTickRef.current(), 5000);
       }
     } catch (err) {
       console.error("Could not start screen share for local capture", err);
@@ -2491,42 +2577,64 @@ export default function LiveConsolePage() {
                 </button>
               ))}
             </div>
-            <div className="flex items-center gap-2 pt-1">
-              <span className="text-lg font-bold tabular-nums w-16">
-                {String(Math.floor(manualElapsedSeconds(game) / 60)).padStart(2, "0")}:
-                {String(manualElapsedSeconds(game) % 60).padStart(2, "0")}
-              </span>
-              {game.manual_time_running ? (
-                <button onClick={pauseManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
-                  ⏸ Pause
+            {/* Only one of these two blocks at a time — previously both
+                rendered together regardless of which source was selected,
+                so pressing "Start" here always ran the manual stopwatch
+                even with "OCR clock" selected above, which read as "OCR
+                shows manual seconds instead of the real time." */}
+            {game.clock_source === "manual" ? (
+              <div className="flex items-center gap-2 pt-1">
+                <span className="text-lg font-bold tabular-nums w-16">
+                  {String(Math.floor(manualElapsedSeconds(game) / 60)).padStart(2, "0")}:
+                  {String(manualElapsedSeconds(game) % 60).padStart(2, "0")}
+                </span>
+                {game.manual_time_running ? (
+                  <button onClick={pauseManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
+                    ⏸ Pause
+                  </button>
+                ) : (
+                  <button onClick={startManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
+                    ▶ Start
+                  </button>
+                )}
+                <button onClick={() => adjustManualClock(-60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                  −1m
                 </button>
-              ) : (
-                <button onClick={startManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
-                  ▶ Start
+                <button onClick={() => adjustManualClock(60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                  +1m
                 </button>
-              )}
-              <button onClick={() => adjustManualClock(-60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
-                −1m
-              </button>
-              <button onClick={() => adjustManualClock(60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
-                +1m
-              </button>
-              <input
-                type="text"
-                placeholder="MM:SS"
-                title="Set the clock directly, e.g. 12:30"
-                className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
-                onBlur={(e) => {
-                  if (e.target.value === "") return;
-                  const m = e.target.value.trim().match(/^(\d{1,3}):(\d{2})$/);
-                  if (m) setManualClockSeconds(Number(m[1]) * 60 + Number(m[2]));
-                  e.target.value = "";
-                }}
-              />
-            </div>
+                <input
+                  type="text"
+                  placeholder="MM:SS"
+                  title="Set the clock directly, e.g. 12:30"
+                  className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                  onBlur={(e) => {
+                    if (e.target.value === "") return;
+                    const m = e.target.value.trim().match(/^(\d{1,3}):(\d{2})$/);
+                    if (m) setManualClockSeconds(Number(m[1]) * 60 + Number(m[2]));
+                    e.target.value = "";
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 pt-1">
+                <span className="text-lg font-bold tabular-nums w-16">
+                  {game.current_time_seconds != null
+                    ? `${String(Math.floor(game.current_time_seconds / 60)).padStart(2, "0")}:${String(game.current_time_seconds % 60).padStart(2, "0")}`
+                    : "—:—"}
+                </span>
+                <span className="text-[10px] text-white/40">
+                  {readings.game_timer
+                    ? `Last OCR read: "${readings.game_timer}"`
+                    : "No OCR read yet — calibrate the Game timer region below and start capture."}
+                </span>
+              </div>
+            )}
             <p className="text-[10px] text-white/40">
-              Manual stopwatch — a fallback for when OCR can&apos;t read the on-screen timer. Whichever source is
-              selected above is what the public page shows.
+              {game.clock_source === "manual"
+                ? "Manual stopwatch — a fallback for when OCR can't read the on-screen timer."
+                : "OCR clock — reads the Game timer region below every tick while capture is running."}
+              {" "}Whichever source is selected above is what the public page shows.
             </p>
           </div>
         )}
@@ -2543,6 +2651,16 @@ export default function LiveConsolePage() {
                 className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
               >
                 🖼 Hero reference
+              </button>
+            )}
+            {match.state === "DRAFT_COMPLETE" && (
+              <button
+                onClick={retakeDraftPicks}
+                disabled={!captureActive || retakingDraft}
+                title={captureActive ? "Re-reads both draft-picks regions and corrects any player's pick to match" : "Start capture first"}
+                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+              >
+                {retakingDraft ? "Retaking..." : "🔄 Retake draft picks"}
               </button>
             )}
             <button
@@ -3136,6 +3254,23 @@ export default function LiveConsolePage() {
         {match.update_source === "local_ocr" && (
           <p className="text-xs text-white/50 bg-white/5 border border-white/10 rounded px-3 py-2">
             {PHASE_TRACKER_HINTS[match.state] ?? PHASE_TRACKER_HINTS.CUSTOM}
+          </p>
+        )}
+
+        {/* Nothing else here makes it obvious when a phase has zero
+            regions calibrated — OCR just silently reads nothing forever
+            in that case, which looked identical to "OCR is broken" from
+            the outside. */}
+        {match.update_source === "local_ocr" && activeCaptureFields.length > 0 && (
+          <p
+            className={`text-xs rounded px-3 py-2 border ${
+              activeCaptureFields.every((f) => regions[f.field])
+                ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
+                : "text-yellow-300 border-yellow-500/30 bg-yellow-500/10"
+            }`}
+          >
+            {activeCaptureFields.filter((f) => regions[f.field]).length}/{activeCaptureFields.length} regions calibrated for this phase
+            {!activeCaptureFields.every((f) => regions[f.field]) && " — uncalibrated fields read nothing, however OCR-ready the rest looks"}
           </p>
         )}
 

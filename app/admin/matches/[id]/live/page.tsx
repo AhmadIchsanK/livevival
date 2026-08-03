@@ -526,6 +526,56 @@ export default function LiveConsolePage() {
     return Object.entries(vars).reduce((s, [k, v]) => s.split(`{${k}}`).join(v ?? ""), tpl);
   }
 
+  // declareGameWinner/finalizeSeriesFinished used to post a hardcoded
+  // Telegram string for "game_finish"/"match_finish" no matter what an
+  // admin configured on /admin/telegram-notifications (unlike the
+  // DRAFT_STARTED/DRAFT_COMPLETE/GAME_STARTED phase notices below, which
+  // already respect their moment_templates row) — editing that template
+  // had zero effect. Same lookup pattern as those phase notices: an
+  // existing row's telegram_enabled/telegram_message_template wins, no row
+  // at all preserves the old always-on default so existing setups don't
+  // suddenly go silent.
+  function telegramMessageFor(type: string, defaultMessage: string, vars: Record<string, string>) {
+    const tpl = momentTemplates.find((t) => t.type === type && !t.phase);
+    if (!tpl) return defaultMessage;
+    if (!tpl.telegram_enabled) return null;
+    return tpl.telegram_message_template ? fillTelegramTemplate(tpl.telegram_message_template, vars) : defaultMessage;
+  }
+
+  // These auto/manual key-moment screenshots get shared around directly
+  // (viewers screenshot Savage/Maniac clips constantly) with no indication
+  // they came from this broadcast's own capture — stamp a small logo +
+  // "Captured with Livevival" credit onto the bottom of the frame before
+  // upload. Logo is cached after the first load since every capture reuses it.
+  const watermarkLogoRef = useRef<HTMLImageElement | null>(null);
+  function loadWatermarkLogo(): Promise<HTMLImageElement | null> {
+    if (watermarkLogoRef.current) return Promise.resolve(watermarkLogoRef.current);
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        watermarkLogoRef.current = img;
+        resolve(img);
+      };
+      img.onerror = () => resolve(null);
+      img.src = "/logo/logo-dark-bg.png";
+    });
+  }
+  async function drawWatermark(ctx: CanvasRenderingContext2D, width: number, height: number) {
+    const logo = await loadWatermarkLogo();
+    const pad = Math.max(12, width * 0.015);
+    const logoWidth = logo ? Math.min(width * 0.2, 200) : 0;
+    const logoHeight = logo ? logoWidth * (logo.naturalHeight / logo.naturalWidth) : 0;
+    const barHeight = Math.max(logoHeight, 22) + pad;
+    ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+    ctx.fillRect(0, height - barHeight, width, barHeight);
+    if (logo) ctx.drawImage(logo, pad, height - logoHeight - pad / 2, logoWidth, logoHeight);
+    ctx.font = `${Math.max(11, Math.round(width * 0.014))}px sans-serif`;
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    ctx.fillText("Captured with Livevival", width - pad, height - barHeight / 2);
+  }
+
   // Captures the current shared-screen frame and uploads it straight into
   // the moment being logged (key_moments.screenshot_url) instead of a
   // separate game_screenshots row — one attach action, one moment, one
@@ -540,8 +590,15 @@ export default function LiveConsolePage() {
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-      canvas.getContext("2d")?.drawImage(video, 0, 0);
-      canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        resolve(null);
+        return;
+      }
+      ctx.drawImage(video, 0, 0);
+      drawWatermark(ctx, canvas.width, canvas.height).then(() => {
+        canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
+      });
     });
   }
   async function uploadMomentScreenshot(): Promise<string | null> {
@@ -2094,16 +2151,27 @@ export default function LiveConsolePage() {
     // those results still reach Telegram.
     if (match.update_source === "local_ocr") {
       const winnerName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
-      await postToTelegram(
+      const vars = {
+        team_a: match.team_a?.name ?? "",
+        team_b: match.team_b?.name ?? "",
+        tournament: match.tournament?.name ?? "",
+        winner: winnerName ?? "",
+        timestamp: mmssTimestamp(),
+      };
+      const gameMsg = telegramMessageFor(
+        "game_finish",
         `🎮 <b>Game ${game.game_number} result</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${winnerName}</b>\n${match.tournament?.name}`,
-        { entityType: "game", entityId: game.id, notificationType: "game_result" }
+        vars
       );
+      if (gameMsg) await postToTelegram(gameMsg, { entityType: "game", entityId: game.id, notificationType: "game_result" });
       if (seriesWinner) {
         const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
-        await postToTelegram(
+        const matchMsg = telegramMessageFor(
+          "match_finish",
           `🏆 <b>Match finished</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${seriesWinnerName}</b>\n${match.tournament?.name}`,
-          { entityType: "match", entityId: match.id, notificationType: "match_finished" }
+          { ...vars, winner: seriesWinnerName ?? "" }
         );
+        if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
       }
     }
 
@@ -2138,10 +2206,18 @@ export default function LiveConsolePage() {
         source: "manual",
         is_key_moment: true,
       });
-      await postToTelegram(
+      const matchMsg = telegramMessageFor(
+        "match_finish",
         `🏆 <b>Match finished</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${seriesWinnerName}</b>\n${match.tournament?.name}`,
-        { entityType: "match", entityId: match.id, notificationType: "match_finished" }
+        {
+          team_a: match.team_a?.name ?? "",
+          team_b: match.team_b?.name ?? "",
+          tournament: match.tournament?.name ?? "",
+          winner: seriesWinnerName ?? "",
+          timestamp: mmssTimestamp(),
+        }
       );
+      if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
     }
     loadAll();
   }
@@ -2327,6 +2403,8 @@ export default function LiveConsolePage() {
           DRAFT_STARTED: `✏️ <b>Draft started — Game ${game.game_number}</b>\n${header}`,
           DRAFT_COMPLETE: `📋 <b>Draft complete — Game ${game.game_number}</b>\n${header}\n\n${buildDraftRecap()}`,
           GAME_STARTED: `🎮 <b>Game ${game.game_number} ongoing</b>\n${header}`,
+          TECHNICAL_PAUSE: `⏸️ <b>Technical pause</b>\n${header}`,
+          STREAM_ENDED: `📴 <b>Stream ended</b>\n${header}`,
         };
         if (noticeTemplate?.telegram_enabled) {
           const message = noticeTemplate.telegram_message_template
@@ -2334,14 +2412,20 @@ export default function LiveConsolePage() {
                 team_a: match.team_a?.name ?? "",
                 team_b: match.team_b?.name ?? "",
                 tournament: match.tournament?.name ?? "",
+                game: String(game.game_number),
                 timestamp: mmssTimestamp(),
               })
             : DEFAULT_PHASE_MESSAGES[newState];
           if (message) {
             await postToTelegram(message, {
-              entityType: newState === "DRAFT_COMPLETE" ? "game" : newState === "GAME_STARTED" ? "game" : "match",
+              entityType: newState === "DRAFT_COMPLETE" || newState === "GAME_STARTED" ? "game" : "match",
               entityId: newState === "DRAFT_STARTED" ? match.id : game.id,
-              notificationType: newState === "DRAFT_STARTED" ? "draft_started" : newState === "DRAFT_COMPLETE" ? "draft_result" : "game_started",
+              notificationType:
+                newState === "DRAFT_STARTED" ? "draft_started"
+                : newState === "DRAFT_COMPLETE" ? "draft_result"
+                : newState === "GAME_STARTED" ? "game_started"
+                : newState === "TECHNICAL_PAUSE" ? "technical_pause"
+                : "stream_ended",
             });
           }
         }

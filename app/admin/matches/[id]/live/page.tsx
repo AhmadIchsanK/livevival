@@ -1873,6 +1873,25 @@ export default function LiveConsolePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A closed tab, refresh, or typed-in URL while capture is running tears
+  // down the screen-share stream and the OCR interval with no way back —
+  // the admin has to re-share the screen and, worse, re-calibrate nothing
+  // since regions persist, but loses whatever the running session's local
+  // state (staged draft actions, in-flight readings) hadn't been saved
+  // yet. Browsers only allow a generic native confirmation here (custom
+  // text in the dialog was removed from all major browsers years ago for
+  // abuse-prevention reasons), but that's still real friction against an
+  // accidental close mid-broadcast.
+  useEffect(() => {
+    if (!captureActive) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [captureActive]);
+
   useEffect(() => {
     if (!match || !DRAFT_PHASES.includes(match.state)) setStagedDraftActions([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2336,8 +2355,15 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  if (error) return <p className="text-red-400 text-sm">{error}</p>;
-  if (!match || !game) return <p className="text-white/50 text-sm">Loading match...</p>;
+  // Only a genuine load failure (the match/game never came back at all)
+  // is worth a full-page message — every other setError() call happens
+  // once the console is already up and running (a rejected phase change,
+  // a blocked delete, etc.), and previously replaced this entire live
+  // page with a bare line of red text, which during an actual broadcast
+  // read as "the page just disappeared." Those now show as a dismissible
+  // toast instead (rendered near the bottom of this component) without
+  // tearing down the console underneath.
+  if (!match || !game) return <p className="text-red-400 text-sm">{error ?? "Loading match..."}</p>;
 
   // Editing (result, game result, draft/picks-bans, moment log, OCR) is
   // only allowed once a match is actually live or finished — a scheduled
@@ -3291,6 +3317,16 @@ export default function LiveConsolePage() {
         <p className="text-xs text-white/50 fixed bottom-4 right-4 bg-black/80 border border-white/10 rounded px-3 py-2 z-50">
           {telegramStatus}
         </p>
+      )}
+
+      {/* Action errors (rejected phase change, blocked delete, etc.) —
+          a dismissible toast, not a page teardown. See the comment above
+          the match/game null-check for why this changed. */}
+      {error && (
+        <div className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:max-w-sm bg-red-500/15 border border-red-500/40 rounded px-3 py-2 z-50 flex items-start gap-2">
+          <p className="text-xs text-red-300 flex-1">{error}</p>
+          <button onClick={() => setError(null)} className="text-red-300/60 hover:text-red-300 text-xs shrink-0">✕</button>
+        </div>
       )}
 
       {/* Local capture (admin PC) — only drives anything when this match is on local_ocr */}

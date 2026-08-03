@@ -102,10 +102,21 @@ function roleIndex(role: string | null | undefined) {
   return i === -1 ? ROLE_ORDER.length : i;
 }
 
+// Per-game VODs frequently point at ONE shared base video with a per-game
+// `?t=<seconds>` (or `&start=`) offset rather than separate URLs each —
+// confirmed against real data (all 7 games of a BO7 pointing at the same
+// youtu.be/<id> with only `t=` differing). Dropping that offset (as the
+// old version did) meant every game produced the exact same embed URL, so
+// switching games never even changed the iframe's src — the player just
+// sat on game 1's src the whole time. Carry the offset through as `start=`
+// (the embed player's own param name for it) so both the video ID AND the
+// seek position change per game.
 function youtubeEmbedUrl(url: string | null) {
   if (!url) return null;
   const idMatch = url.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
-  return idMatch ? `https://www.youtube.com/embed/${idMatch[1]}` : null;
+  if (!idMatch) return null;
+  const startMatch = url.match(/[?&](?:t|start)=(\d+)/);
+  return `https://www.youtube.com/embed/${idMatch[1]}${startMatch ? `?start=${startMatch[1]}` : ""}`;
 }
 
 // YouTube's live chat has its own dedicated embed (separate iframe from the
@@ -140,6 +151,7 @@ export default function PublicMatchPage() {
   const [recapRatio, setRecapRatio] = useState<"portrait" | "landscape">("portrait");
   const [recapMode, setRecapMode] = useState<"simple" | "advanced">("simple");
   const [copied, setCopied] = useState(false);
+  const [recapPreviewOpen, setRecapPreviewOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
@@ -566,7 +578,13 @@ export default function PublicMatchPage() {
           <div className="sm:w-3/5 space-y-2">
             {embedUrl ? (
               <div className="lv-card-flush overflow-hidden">
-                <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
+                <iframe
+                  key={embedUrl}
+                  src={embedUrl}
+                  className="w-full aspect-video"
+                  allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                  allowFullScreen
+                />
               </div>
             ) : (
               videoUrl && (
@@ -852,14 +870,20 @@ export default function PublicMatchPage() {
         <section>
           <h2 className="lv-heading mb-2">Share recap</h2>
           <div className="flex flex-wrap items-start gap-4">
-            <div className="lv-card-flush p-2 overflow-hidden" style={{ width: recapRatio === "portrait" ? 135 : 240 }}>
+            <button
+              type="button"
+              onClick={() => setRecapPreviewOpen(true)}
+              className="lv-card-flush p-2 overflow-hidden hover:border-signal/40 transition-colors"
+              style={{ width: recapRatio === "portrait" ? 135 : 240 }}
+              title="Click to preview full size"
+            >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
                 alt="Match recap card"
                 className="w-full rounded"
               />
-            </div>
+            </button>
             <div className="space-y-3 text-xs">
               <div className="flex gap-2">
                 {(["portrait", "landscape"] as const).map((r) => (
@@ -912,6 +936,40 @@ export default function PublicMatchPage() {
             </div>
           </div>
         </section>
+      )}
+
+      {recapPreviewOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setRecapPreviewOpen(false)}
+        >
+          <div className="max-w-lg w-full flex flex-col items-center gap-4" onClick={(e) => e.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+              alt="Match recap card preview"
+              className="w-full rounded lv-card-flush"
+            />
+            <div className="flex flex-wrap gap-2 justify-center">
+              <a
+                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+                download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
+                className="lv-btn-primary inline-block !text-xs !py-1.5"
+              >
+                Download
+              </a>
+              <button onClick={handleShare} className="lv-btn-primary inline-block !text-xs !py-1.5 !bg-white/10 !text-white">
+                Share ↗
+              </button>
+              <button
+                onClick={() => setRecapPreviewOpen(false)}
+                className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

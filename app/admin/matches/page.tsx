@@ -4,6 +4,107 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Option = { id: string; label: string };
+
+// A plain <select> forces picking from an existing (mostly Liquipedia-
+// scraped) list of 150+ tournaments / 300+ teams, with no way to type a
+// brand-new name — the only route to a custom/test match was leaving this
+// page to create the tournament/team elsewhere first, with no visible
+// pointer to do so. This adds a "+ Create new..." option that reveals an
+// inline name field, inserts the row right here, and auto-selects it.
+function CreatableSelect({
+  label,
+  options,
+  value,
+  onChange,
+  onCreate,
+  placeholder,
+}: {
+  label: string;
+  options: Option[];
+  value: string;
+  onChange: (id: string) => void;
+  onCreate: (name: string) => Promise<string | null>;
+  placeholder: string;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submitNew() {
+    const name = newName.trim();
+    if (!name || busy) return;
+    setBusy(true);
+    const id = await onCreate(name);
+    setBusy(false);
+    if (id) {
+      onChange(id);
+      setCreating(false);
+      setNewName("");
+    }
+  }
+
+  if (creating) {
+    return (
+      <div className="space-y-1">
+        <label className="text-xs text-white/50">{label}</label>
+        <div className="flex gap-1">
+          <input
+            autoFocus
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                submitNew();
+              }
+            }}
+            placeholder={`New ${label.toLowerCase()} name`}
+            className="flex-1 bg-black/30 border border-signal/40 rounded px-3 py-2 text-sm"
+          />
+          <button
+            type="button"
+            onClick={submitNew}
+            disabled={busy || !newName.trim()}
+            className="lv-btn-primary !px-3 !py-2 shrink-0"
+          >
+            {busy ? "..." : "Add"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setCreating(false);
+              setNewName("");
+            }}
+            className="lv-btn-ghost !px-2 !py-2 shrink-0"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <label className="text-xs text-white/50">{label}</label>
+      <select
+        required
+        value={value}
+        onChange={(e) => {
+          if (e.target.value === "__new__") setCreating(true);
+          else onChange(e.target.value);
+        }}
+        className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+      >
+        <option value="">{placeholder}</option>
+        <option value="__new__">+ Create new {label.toLowerCase()}…</option>
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>{o.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
 type Game = { id: string; game_number: number; vod_url: string | null; vod_url_source: "auto" | "manual" };
 type Match = {
   id: string;
@@ -89,6 +190,37 @@ export default function MatchesPage() {
     setDetectUrl("");
     setDetectedTitle(null);
     setSuggestions([]);
+  }
+
+  // Minimal rows — a custom/test tournament or team created inline here has
+  // no Liquipedia link and can be fully fleshed out later from
+  // /admin/tournaments or /admin/teams (logo, dates, tier, etc.).
+  async function createTournamentInline(name: string) {
+    const { data, error } = await supabase
+      .from("tournaments")
+      .insert({ name, tier: "S" })
+      .select("id")
+      .single();
+    if (error || !data) {
+      setError(error?.message ?? "Failed to create tournament");
+      return null;
+    }
+    setTournaments((prev) => [...prev, { id: data.id, label: name }].sort((a, b) => a.label.localeCompare(b.label)));
+    return data.id;
+  }
+
+  async function createTeamInline(name: string) {
+    const { data, error } = await supabase
+      .from("teams")
+      .insert({ name })
+      .select("id")
+      .single();
+    if (error || !data) {
+      setError(error?.message ?? "Failed to create team");
+      return null;
+    }
+    setTeams((prev) => [...prev, { id: data.id, label: name }].sort((a, b) => a.label.localeCompare(b.label)));
+    return data.id;
   }
 
   async function loadOptions() {
@@ -362,50 +494,34 @@ export default function MatchesPage() {
       <div>
         <h1 className="lv-heading text-lg mb-4">Create a match</h1>
         <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4 max-w-xl">
-          <div className="col-span-2 space-y-1">
-            <label className="text-xs text-white/50">Tournament</label>
-            <select
-              required
+          <div className="col-span-2">
+            <CreatableSelect
+              label="Tournament"
+              options={tournaments}
               value={tournamentId}
-              onChange={(e) => setTournamentId(e.target.value)}
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
-            >
-              <option value="">Select tournament</option>
-              {tournaments.map((t) => (
-                <option key={t.id} value={t.id}>{t.label}</option>
-              ))}
-            </select>
+              onChange={setTournamentId}
+              onCreate={createTournamentInline}
+              placeholder="Select tournament"
+            />
           </div>
 
-          <div className="space-y-1">
-            <label className="text-xs text-white/50">Team A</label>
-            <select
-              required
-              value={teamAId}
-              onChange={(e) => setTeamAId(e.target.value)}
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
-            >
-              <option value="">Select team</option>
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>{t.label}</option>
-              ))}
-            </select>
-          </div>
+          <CreatableSelect
+            label="Team A"
+            options={teams}
+            value={teamAId}
+            onChange={setTeamAId}
+            onCreate={createTeamInline}
+            placeholder="Select team"
+          />
 
-          <div className="space-y-1">
-            <label className="text-xs text-white/50">Team B</label>
-            <select
-              required
-              value={teamBId}
-              onChange={(e) => setTeamBId(e.target.value)}
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
-            >
-              <option value="">Select team</option>
-              {teams.map((t) => (
-                <option key={t.id} value={t.id}>{t.label}</option>
-              ))}
-            </select>
-          </div>
+          <CreatableSelect
+            label="Team B"
+            options={teams}
+            value={teamBId}
+            onChange={setTeamBId}
+            onCreate={createTeamInline}
+            placeholder="Select team"
+          />
 
           <div className="space-y-1">
             <label className="text-xs text-white/50">Format</label>

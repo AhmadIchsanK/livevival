@@ -146,22 +146,51 @@ async function findTeamId(name) {
   return data?.id ?? null;
 }
 
-async function findMatch(tournamentId, leftName, rightName) {
+// Same two teams can face off more than once in one tournament (a
+// round-robin group stage, or a group-stage + playoff rematch) — confirmed
+// against real data: Team Vamos vs Team Spirit played twice in MSC/2026,
+// which made this query's old `.maybeSingle()` return 2 rows and error out
+// on every single run (the error was silently discarded since only `data`
+// was destructured), permanently skipping BOTH matches with "no existing
+// match row" even though both existed. Disambiguate multiple candidates
+// using the popup's own scraped kickoff timestamp against each candidate's
+// scheduled_at instead of assuming the pairing is unique.
+async function findMatch(tournamentId, leftName, rightName, matchTimestamp) {
   const leftId = await findTeamId(leftName);
   const rightId = await findTeamId(rightName);
   if (!leftId || !rightId) return null;
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("matches")
-    .select("id, format, team_a_id, team_b_id")
+    .select("id, format, team_a_id, team_b_id, scheduled_at")
     .eq("tournament_id", tournamentId)
     .or(
       `and(team_a_id.eq.${leftId},team_b_id.eq.${rightId}),and(team_a_id.eq.${rightId},team_b_id.eq.${leftId})`
-    )
-    .maybeSingle();
+    );
 
-  if (!data) return null;
-  return { ...data, leftId, rightId };
+  if (error) {
+    console.error(`Failed looking up match for ${leftName} vs ${rightName}:`, error.message);
+    return null;
+  }
+  if (!data || data.length === 0) return null;
+  if (data.length === 1) return { ...data[0], leftId, rightId };
+
+  if (!matchTimestamp) {
+    console.warn(`Multiple match rows for ${leftName} vs ${rightName} in this tournament and no timestamp to disambiguate — skipping`);
+    return null;
+  }
+  const targetMs = matchTimestamp * 1000;
+  let closest = data[0];
+  let closestDiff = Infinity;
+  for (const row of data) {
+    if (!row.scheduled_at) continue;
+    const diff = Math.abs(new Date(row.scheduled_at).getTime() - targetMs);
+    if (diff < closestDiff) {
+      closestDiff = diff;
+      closest = row;
+    }
+  }
+  return { ...closest, leftId, rightId };
 }
 
 // Liquipedia's bracket picks/bans popup only ever exposes a hero NAME per
@@ -201,7 +230,7 @@ async function insertPicksAndBans(gameId, side, teamId, matchId) {
 }
 
 async function importMatchDetail(tournamentId, m) {
-  const match = await findMatch(tournamentId, m.leftName, m.rightName);
+  const match = await findMatch(tournamentId, m.leftName, m.rightName, m.timestamp);
   if (!match) {
     console.warn(`No existing match row for ${m.leftName} vs ${m.rightName} — skipping (run the schedule importer first)`);
     return;

@@ -368,6 +368,33 @@ export default function PublicMatchPage() {
   const liveDraftTimerB =
     match.state === "DRAFT_STARTED" && match.draft_timer_b_seconds != null ? formatMMSS(match.draft_timer_b_seconds - draftElapsed) : null;
 
+  // Whose turn it is to pick/ban — inferred from the pick/ban tool's own
+  // state (how many rows are already logged for this game) rather than
+  // from which timer looks like it's counting down, since both sides'
+  // timers decrement identically client-side (see above) and can't
+  // actually distinguish "on the clock" from "waiting." The admin's draft
+  // simulation always logs in this exact fixed order (see DRAFT_SEQUENCE
+  // in the live console), so the count of already-logged picks/bans for
+  // this game is itself the step index — and the very first logged row's
+  // team is always the "blue" side by construction, so it doubles as the
+  // blue/red -> team_a/team_b key with no separate DB field needed.
+  const DRAFT_TURN_SIDES: ("blue" | "red")[] = [
+    "blue", "red", "blue", "red", "blue", "red",
+    "blue", "red", "red", "blue", "blue", "red",
+    "red", "blue", "red", "blue",
+    "red", "blue", "blue", "red",
+  ];
+  const draftOrderedPickBans = [...pickBans]
+    .filter((p) => p.game_id === selectedGameId)
+    .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
+  const blueTeamId = draftOrderedPickBans[0]?.team_id ?? null;
+  const draftTurnTeamId =
+    match.state === "DRAFT_STARTED" && blueTeamId && draftOrderedPickBans.length < DRAFT_TURN_SIDES.length
+      ? DRAFT_TURN_SIDES[draftOrderedPickBans.length] === "blue"
+        ? blueTeamId
+        : blueTeamId === teamAId ? teamBId : teamAId
+      : null;
+
   const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
   const embedUrl = youtubeEmbedUrl(videoUrl) ?? facebookEmbedUrl(videoUrl);
   // Chat only makes sense against the actual live stream, not a per-game
@@ -566,8 +593,21 @@ export default function PublicMatchPage() {
             )
           )}
           {(liveDraftTimerA || liveDraftTimerB) && (
-            <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Draft pick timer">
-              ⏳ {match.team_a?.name}: {liveDraftTimerA ?? "—"} · {match.team_b?.name}: {liveDraftTimerB ?? "—"}
+            <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Draft pick/ban timer">
+              ⏳{" "}
+              <span className={draftTurnTeamId === teamAId ? "text-signal font-semibold" : undefined}>
+                {match.team_a?.name}: {liveDraftTimerA ?? "—"}
+              </span>{" "}
+              ·{" "}
+              <span className={draftTurnTeamId === teamBId ? "text-signal font-semibold" : undefined}>
+                {match.team_b?.name}: {liveDraftTimerB ?? "—"}
+              </span>
+              {draftTurnTeamId && (
+                <span className="text-white/40">
+                  {" "}
+                  — {draftTurnTeamId === teamAId ? match.team_a?.name : match.team_b?.name}'s turn
+                </span>
+              )}
             </span>
           )}
           {match.update_source === "local_ocr" && (

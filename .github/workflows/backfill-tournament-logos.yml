@@ -1,0 +1,24 @@
+name: Backfill tournament logos (one-time)
+
+# Manual-only, no schedule — this is a one-time cleanup for the ~150
+# tournaments that never got a logo because the only existing scrape for
+# it only runs within the recurring refresh job's rolling past-year
+# window (see scripts/backfill-tournament-logos.mjs for the full root
+# cause). Safe to re-run; it only ever touches rows still missing a logo.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/backfill-tournament-logos.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

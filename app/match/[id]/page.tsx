@@ -95,8 +95,8 @@ type RosterPlayer = { id: string; ign: string; role: string | null; team_id: str
 type Screenshot = { id: string; game_id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
 
 // Same fixed left-to-right draft order as the admin live console: exp
-// lane, jungler, mid laner, gold laner, roamer.
-const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
+// lane, jungler, mid laner, roamer, gold laner.
+const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Roamer", "Gold Laner"];
 function roleIndex(role: string | null | undefined) {
   const i = ROLE_ORDER.indexOf(role ?? "");
   return i === -1 ? ROLE_ORDER.length : i;
@@ -270,6 +270,17 @@ export default function PublicMatchPage() {
       supabase.removeChannel(channel);
     };
   }, [matchId, loadAll]);
+
+  // Safety net alongside the Realtime subscription above, not a
+  // replacement for it — a websocket can silently drop (a corporate
+  // proxy, a browser extension, a reconnect that doesn't come back) with
+  // no visible error, which reads as "the moment list needs a refresh."
+  // This guarantees new moments/scores show up within ~10s regardless of
+  // whatever's wrong with that connection at any given moment.
+  useEffect(() => {
+    const interval = setInterval(loadAll, 10000);
+    return () => clearInterval(interval);
+  }, [loadAll]);
 
   if (loadError) {
     return (
@@ -546,31 +557,39 @@ export default function PublicMatchPage() {
           </div>
         )}
 
-        {embedUrl ? (
-          <div className="lv-card-flush overflow-hidden">
-            <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
-          </div>
-        ) : (
-          videoUrl && (
-            <a href={videoUrl} target="_blank" className="lv-nav-link block">
-              Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
-            </a>
-          )
-        )}
-
-        {chatEmbedUrl && (
-          <div>
-            <button
-              onClick={() => setChatOpen((v) => !v)}
-              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70"
-            >
-              💬 {chatOpen ? "Hide chat" : "Show chat"}
-            </button>
-            {chatOpen && (
-              <iframe src={chatEmbedUrl} className="w-full h-72 mt-2 rounded border border-white/10" />
+        {/* Capped to a medium width (was full-bleed across the whole page
+            column) with chat beside it on desktop instead of stacked below
+            — the Moment list underneath is meant to be the main focus, not
+            the stream. Stacks back to video-then-chat on mobile where
+            there's no room for two columns. */}
+        <div className="max-w-3xl mx-auto flex flex-col sm:flex-row gap-3">
+          <div className="sm:w-3/5 space-y-2">
+            {embedUrl ? (
+              <div className="lv-card-flush overflow-hidden">
+                <iframe src={embedUrl} className="w-full aspect-video" allow="autoplay; encrypted-media" allowFullScreen />
+              </div>
+            ) : (
+              videoUrl && (
+                <a href={videoUrl} target="_blank" className="lv-nav-link block">
+                  Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
+                </a>
+              )
             )}
           </div>
-        )}
+          {chatEmbedUrl && (
+            <div className="sm:w-2/5 flex flex-col">
+              <button
+                onClick={() => setChatOpen((v) => !v)}
+                className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70 self-start sm:self-stretch"
+              >
+                💬 {chatOpen ? "Hide chat" : "Show chat"}
+              </button>
+              {chatOpen && (
+                <iframe src={chatEmbedUrl} className="w-full h-56 sm:h-auto sm:flex-1 sm:min-h-0 mt-2 rounded border border-white/10" />
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {match.update_source === "local_ocr" && (

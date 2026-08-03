@@ -282,9 +282,40 @@ export default function LiveConsolePage() {
   const [pbType, setPbType] = useState<"pick" | "ban">("ban");
   const [pbPlayer, setPbPlayer] = useState("");
   const [pbHero, setPbHero] = useState("");
+  // Shared by both the manual "Hero picks & bans" form and the OCR/AI-vision
+  // draft-detection push flow (commitDraftAction below) — every pick/ban,
+  // however it got logged, should show up in the Moment list without a
+  // separate manual step.
+  async function logPickBanMoment(type: "pick" | "ban", teamId: string, heroName: string, playerId?: string | null) {
+    if (!game || !match) return;
+    const teamName = teamId === match.team_a?.id ? match.team_a?.name : teamId === match.team_b?.id ? match.team_b?.name : "";
+    const playerName = playerId ? players.find((p) => p.id === playerId)?.ign : null;
+    await supabase.from("key_moments").insert({
+      game_id: game.id,
+      match_id: matchId,
+      type,
+      team_id: teamId,
+      player_id: playerId || null,
+      description: `${teamName} ${type === "pick" ? "picks" : "bans"} ${heroName}${playerName ? ` — ${playerName}` : ""}`,
+      minute_mark: minute,
+      source: "auto",
+    });
+  }
+
   async function logPickBan() {
     if (!pbTeam || !pbHero || !game) return;
     if (pbType === "pick" && !pbPlayer) return;
+    // Same-team hero uniqueness — two players on one team can't both be
+    // running the same hero in the same game.
+    if (pbType === "pick") {
+      const dupeHero = pickBans.some(
+        (pb) => pb.team_id === pbTeam && pb.type === "pick" && pb.hero_name.toLowerCase() === pbHero.toLowerCase()
+      );
+      if (dupeHero) {
+        setError(`${pbHero} is already picked by this team this game.`);
+        return;
+      }
+    }
     const { error } = await supabase.from("hero_picks_bans").insert({
       game_id: game.id,
       match_id: matchId,
@@ -299,6 +330,11 @@ export default function LiveConsolePage() {
       setError(error.message);
       return;
     }
+    await logPickBanMoment(pbType, pbTeam, pbHero, pbType === "pick" ? pbPlayer : null);
+    // A manual pick is the scoreboard's source of truth for that slot —
+    // sync it immediately instead of leaving the two to drift until
+    // someone edits K/D/A by hand.
+    if (pbType === "pick" && pbPlayer) await updateStat(pbPlayer, "hero_name", pbHero);
     setPbHero("");
     setPbPlayer("");
     loadAll();
@@ -872,6 +908,7 @@ export default function LiveConsolePage() {
       },
       { onConflict: "game_id,team_id,hero_name,type" }
     );
+    await logPickBanMoment(action.type, teamId, action.hero_name);
   }
 
   async function pushStagedDraftActions() {
@@ -2080,9 +2117,11 @@ export default function LiveConsolePage() {
             >
               <option value="">Player</option>
               {pbTeam &&
-                rosterFor(pbTeam).map((p) => (
-                  <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
-                ))}
+                rosterFor(pbTeam)
+                  .filter((p) => !pickBans.some((pb) => pb.player_id === p.id && pb.type === "pick"))
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                  ))}
             </select>
           )}
           <div className="flex items-center gap-1.5">

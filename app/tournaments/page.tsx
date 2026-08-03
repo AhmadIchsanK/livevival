@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 type Tournament = {
   id: string;
@@ -116,9 +117,12 @@ export default function TournamentsIndexPage() {
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">
-      <header className="space-y-1">
-        <a href="/" className="lv-nav-link">&larr; Matches</a>
-        <h1 className="font-display font-light text-2xl tracking-tight">Tournaments</h1>
+      <header className="space-y-1 flex items-start justify-between">
+        <div>
+          <a href="/" className="lv-nav-link">&larr; Matches</a>
+          <h1 className="font-display font-light text-2xl tracking-tight">Tournaments</h1>
+        </div>
+        <ThemeToggle />
       </header>
 
       <div className="flex gap-2 flex-wrap">
@@ -126,12 +130,12 @@ export default function TournamentsIndexPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search tournaments..."
-          className="flex-1 min-w-[200px] bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal/60"
+          className="flex-1 min-w-[200px] bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal/60"
         />
         <select
           value={tierFilter}
           onChange={(e) => setTierFilter(e.target.value as "" | "S" | "A")}
-          className="bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+          className="bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
         >
           <option value="">All tiers</option>
           <option value="S">S-Tier</option>
@@ -140,7 +144,7 @@ export default function TournamentsIndexPage() {
         <select
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as SortKey)}
-          className="bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+          className="bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
         >
           <option value="date_desc">Newest first</option>
           <option value="date_asc">Oldest first</option>

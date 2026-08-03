@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { createPortal } from "react-dom";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
 import { TeamLogo } from "@/components/TeamLogo";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
   { pattern: /SAVAGE/i, type: "savage" },
@@ -892,6 +892,7 @@ export default function LiveConsolePage() {
     | "countdown"
     | "draft_timer"
     | "draft_hero_pick"
+    | "map_setting"
     | "game_timer"
     | "team_kills"
     | "objective"
@@ -911,12 +912,16 @@ export default function LiveConsolePage() {
 
   // Every (phase, category, variable) combination an admin can add for a
   // match — the "Add tracker" control below offers whatever's in this
-  // catalog for the selected phase, minus whatever's already added.
-  // Draft-finish (DRAFT_COMPLETE) has no tracker of its own: it reads the
-  // same per-player draft_hero_pick regions from DRAFT_STARTED (see
-  // retakeDraftPicks) rather than needing a second set. Bans stay manual —
-  // ban slots show no text on screen, only an icon, so there's nothing for
-  // deterministic OCR to read there.
+  // catalog for the selected phase, minus whatever's already added. Kept
+  // deliberately narrow per-phase (only what's reliably readable and
+  // actually needed) rather than every variable that could theoretically
+  // be scraped off screen — GAME_FINISHED/TECHNICAL_PAUSE/SERIES_FINISHED/
+  // CUSTOM have no tracker of their own at all (victory/pause banners
+  // proved unreliable and the phase transitions themselves are driven by
+  // the admin's own controls, not OCR); DRAFT_COMPLETE likewise has none
+  // (draft results come from the manual ban/pick simulation, not OCR).
+  // Bans stay manual — ban slots show no text on screen, only an icon, so
+  // there's nothing for deterministic OCR to read there.
   function catalogForPhase(phase: string): { category: TrackerCategory; field: string; label: string }[] {
     switch (phase) {
       case "MATCH_NOT_STARTED":
@@ -924,29 +929,15 @@ export default function LiveConsolePage() {
       case "DRAFT_STARTED": {
         const items: { category: TrackerCategory; field: string; label: string }[] = [];
         for (const side of SIDES) items.push({ category: "draft_timer", field: `draft_timer_${side.key}`, label: `Draft timer — ${side.label}` });
-        for (const side of SIDES) {
-          for (let n = 1; n <= 5; n++) {
-            items.push({
-              category: "draft_hero_pick",
-              field: `draft_hero_pick_${side.key}_${n}`,
-              label: `Hero pick — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
-            });
-          }
-        }
+        items.push({ category: "map_setting", field: "map_setting", label: "Map setting (one-time, auto-selects the map)" });
         return items;
       }
       case "GAME_STARTED": {
         const items: { category: TrackerCategory; field: string; label: string }[] = [
           { category: "game_timer", field: "game_timer", label: "Game timer" },
-          { category: "kill_banner", field: "kill_banner", label: "Kill banner (Savage/Maniac/etc.)" },
         ];
         for (const side of SIDES) items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}` });
         for (const side of SIDES) items.push({ category: "net_worth", field: `net_worth_${side.key}`, label: `Net worth — ${side.label}` });
-        for (const side of SIDES) {
-          for (const type of OBJECTIVE_TYPES) {
-            items.push({ category: "objective", field: `objective_${side.key}_${type}`, label: `Objective — ${side.label} — ${type}` });
-          }
-        }
         for (const side of SIDES) {
           for (let n = 1; n <= 5; n++) {
             items.push({
@@ -958,10 +949,6 @@ export default function LiveConsolePage() {
         }
         return items;
       }
-      case "GAME_FINISHED":
-        return [{ category: "victory_banner", field: "victory_banner", label: "Victory/defeat banner" }];
-      case "TECHNICAL_PAUSE":
-        return [{ category: "pause_word", field: "pause_word", label: "Pause indicator" }];
       default:
         return [];
     }
@@ -999,7 +986,7 @@ export default function LiveConsolePage() {
   // "pendingFsBox" is full-screen's draw-then-pick flow, where a box can
   // exist with no tracker assigned yet. Read by the shared mousemove/mouseup
   // effect below so both flows can share one drag implementation.
-  const dragTarget = useRef<"draftBox" | "pendingFsBox">("draftBox");
+  const dragTarget = useRef<"draftBox" | "pendingBox">("draftBox");
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
@@ -1018,6 +1005,11 @@ export default function LiveConsolePage() {
   // victory-banner OCR and the deterministic win-count math below).
   const unreadableTimerSince = useRef<number | null>(null);
   const pauseSuggested = useRef(false);
+  // Map-setting detection only ever needs to fire once per game — without
+  // this guard every OCR tick that still sees the map-select overlay on
+  // screen would keep re-writing games.map, which is wasted work at best
+  // and a footgun if the admin manually corrects it mid-draft at worst.
+  const mapAutoSetForGame = useRef<string | null>(null);
   // Guards against overlapping ticks — GAME_STARTED scans up to 18 regions
   // sequentially (10 of those are the per-player K/D/A slots; vs. 1-4 for
   // every other phase), and each is a real tesseract.js recognize() call.
@@ -1051,25 +1043,32 @@ export default function LiveConsolePage() {
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
   const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
 
-  // ── Full-screen tracker placement ─────────────────────────────────────
-  // A second, bigger editor over the SAME capture_regions rows as the
-  // small inline calibration view above — not a parallel data model. The
-  // inline view's flow is "pick a tracker, then draw its box"; full-screen
-  // reverses that ("draw a box, then pick which tracker it's for") since a
-  // full viewport makes free-hand placement much easier to see, so it
-  // needs its own draft box (pendingFsBox) that can exist with no tracker
-  // assigned yet — draftBox/calibratingField stay reserved for "editing a
-  // tracker that's already been chosen" (used by both views).
-  const [fullscreenPlacementOpen, setFullscreenPlacementOpen] = useState(false);
-  const [fsPhaseFilter, setFsPhaseFilter] = useState<string>("");
-  const [fsEditMode, setFsEditMode] = useState(false);
-  const [pendingFsBox, setPendingFsBox] = useState<RegionBox | null>(null);
-  const [fsPickerPhase, setFsPickerPhase] = useState<string>("");
-  const [fsPickerField, setFsPickerField] = useState<string>("");
+  // ── Slide-anywhere tracker placement (inline canvas) ──────────────────
+  // A second way to add a tracker on the SAME big canvas as the "pick a
+  // tracker, then draw its box" flow below — this one draws first
+  // (pendingBox can exist with no tracker assigned yet), then a small
+  // picker assigns phase+variable. Both methods write the same
+  // capture_regions rows; draftBox/calibratingField stay reserved for
+  // "editing/drawing a tracker that's already been chosen" (the older
+  // method). This used to only work inside a separate full-screen portal
+  // (removed — placement drifted whenever the browser/video resized or
+  // moved mid-session), so it now lives directly on the enlarged inline
+  // canvas instead.
+  const [canvasPhaseFilter, setCanvasPhaseFilter] = useState<string>("");
+  const [pendingBox, setPendingBox] = useState<RegionBox | null>(null);
+  const [pendingBoxPhase, setPendingBoxPhase] = useState<string>("");
+  const [pendingBoxField, setPendingBoxField] = useState<string>("");
   useEffect(() => {
-    if (pendingFsBox && !fsPickerPhase) setFsPickerPhase(fsPhaseFilter || match?.state || "MATCH_NOT_STARTED");
+    if (pendingBox && !pendingBoxPhase) setPendingBoxPhase(canvasPhaseFilter || match?.state || "MATCH_NOT_STARTED");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingFsBox]);
+  }, [pendingBox]);
+  // Auto-follow the match's current live phase — an admin can still
+  // override it manually (e.g. to calibrate a tracker ahead of time for a
+  // phase that hasn't started yet), but it snaps back to the live phase
+  // whenever that changes, per the "filter should auto-follow" ask.
+  useEffect(() => {
+    if (match?.state) setCanvasPhaseFilter(match.state);
+  }, [match?.state]);
 
   // ── Full-frame AI capture (no calibration) ───────────────────────────
   // Alternative to the manual crop-region OCR above: sends the whole
@@ -1166,11 +1165,14 @@ export default function LiveConsolePage() {
     const seq: DraftAtomicAction[] = [];
     const ban = (side: DraftSide, n = 1) => { for (let i = 0; i < n; i++) seq.push({ side, type: "ban" }); };
     const pick = (side: DraftSide, n = 1) => { for (let i = 0; i < n; i++) seq.push({ side, type: "pick" }); };
+    // Revised order (10 bans + 10 picks, 20 steps total) — replaces the
+    // earlier 12-ban/10-pick MLBB-realistic order per an explicit
+    // site-owner correction of the exact sequence.
     ban("blue"); ban("red"); ban("blue"); ban("red"); ban("blue"); ban("red"); // Ban 1: B1,R1,B2,R2,B3,R3
-    pick("blue"); pick("red", 2); pick("blue", 2);                            // Pick 1: Blue P1, Red P1+P2, Blue P2+P3
+    pick("blue"); pick("red", 2); pick("blue", 2); pick("red");                // Pick 1: Blue P1, Red P1+P2, Blue P2+P3, Red P3
     ban("red"); ban("blue"); ban("red"); ban("blue");                        // Ban 2: R4,B4,R5,B5
-    pick("red"); pick("blue", 2); pick("red", 2);                            // Pick 2: Red P3, Blue P4+P5, Red P4+P5
-    return seq; // 12 bans + 10 picks
+    pick("red"); pick("blue", 2); pick("red");                                // Pick 2: Red P4, Blue P4+P5, Red P5
+    return seq; // 10 bans + 10 picks
   }
   const DRAFT_SEQUENCE = buildDraftSequence();
 
@@ -1559,27 +1561,27 @@ export default function LiveConsolePage() {
   }
 
   // Same "already tracked" filter as trackerCatalogOptions, just
-  // parameterized by the full-screen picker's own phase pick instead of
+  // parameterized by the slide-anywhere picker's own phase pick instead of
   // the inline Add-tracker row's phase state — the two panels are
   // independent UI, same underlying catalog.
-  const fsPickerOptions = catalogForPhase(fsPickerPhase).filter(
-    (opt) => !trackers.some((t) => t.phase === fsPickerPhase && t.field === opt.field)
+  const pendingBoxOptions = catalogForPhase(pendingBoxPhase).filter(
+    (opt) => !trackers.some((t) => t.phase === pendingBoxPhase && t.field === opt.field)
   );
-  async function savePendingFsBox() {
-    if (!pendingFsBox) return;
-    const opt = fsPickerOptions.find((o) => o.field === fsPickerField);
+  async function savePendingBox() {
+    if (!pendingBox) return;
+    const opt = pendingBoxOptions.find((o) => o.field === pendingBoxField);
     if (!opt) return;
-    const existing = trackers.find((t) => t.phase === fsPickerPhase && t.field === opt.field);
-    if (existing) await saveRegion(opt.field, pendingFsBox);
-    else await addTrackerWithRegion(fsPickerPhase, opt.category, opt.field, opt.label, pendingFsBox);
-    setPendingFsBox(null);
-    setFsPickerPhase("");
-    setFsPickerField("");
+    const existing = trackers.find((t) => t.phase === pendingBoxPhase && t.field === opt.field);
+    if (existing) await saveRegion(opt.field, pendingBox);
+    else await addTrackerWithRegion(pendingBoxPhase, opt.category, opt.field, opt.label, pendingBox);
+    setPendingBox(null);
+    setPendingBoxPhase("");
+    setPendingBoxField("");
   }
-  function cancelPendingFsBox() {
-    setPendingFsBox(null);
-    setFsPickerPhase("");
-    setFsPickerField("");
+  function cancelPendingBox() {
+    setPendingBox(null);
+    setPendingBoxPhase("");
+    setPendingBoxField("");
   }
 
   const [savedDefaultField, setSavedDefaultField] = useState<string | null>(null);
@@ -1974,10 +1976,27 @@ export default function LiveConsolePage() {
           }
           case "team_kills": {
             if (!sideTeamId || !game) break;
-            const n = trimmed.match(/\d+/);
-            if (!n) break;
+            // Digits only — this is the tracker the admin called out as
+            // "keep failing," so it gets the strictest cleaning of any
+            // category here plus a sanity bound: a raw \d+ match on
+            // unfiltered OCR text could latch onto a stray digit from
+            // overlay chrome next to the actual kill count, and an absurd
+            // read (three-plus digits) is never a real kill count.
+            const digitsOnly = trimmed.replace(/[^0-9]/g, "");
+            if (!digitsOnly) break;
+            const kills = Number(digitsOnly);
+            if (!Number.isFinite(kills) || kills < 0 || kills > 300) break;
             const column = sideTeamId === match?.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
-            await supabase.from("games").update({ [column]: Number(n[0]) }).eq("id", game.id);
+            await supabase.from("games").update({ [column]: kills }).eq("id", game.id);
+            break;
+          }
+          case "map_setting": {
+            if (!game || mapAutoSetForGame.current === game.id) break;
+            const found = MAPS.find((m) => trimmed.toLowerCase().includes(m.toLowerCase()));
+            if (found) {
+              mapAutoSetForGame.current = game.id;
+              setGameMap(found);
+            }
             break;
           }
           case "objective": {
@@ -2117,12 +2136,7 @@ export default function LiveConsolePage() {
 
   // Runs after captureActive flips true and React has actually mounted the
   // <video> element — this is what attaches the shared stream, not
-  // startCapture() itself (see the comment there). Also re-runs on
-  // fullscreenPlacementOpen: toggling full-screen conditionally mounts a
-  // DIFFERENT <video> element (inline view vs. the full-screen portal),
-  // and srcObject doesn't carry over across that swap — previewRef always
-  // points at whichever one is currently mounted, so re-attaching here
-  // keeps the live stream showing in whichever view is visible.
+  // startCapture() itself (see the comment there).
   useEffect(() => {
     if (!captureActive || !streamRef.current || !previewRef.current) return;
     const video = previewRef.current;
@@ -2141,7 +2155,7 @@ export default function LiveConsolePage() {
     else video.addEventListener("loadedmetadata", fireFirstFrame, { once: true });
     return () => video.removeEventListener("loadedmetadata", fireFirstFrame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [captureActive, fullscreenPlacementOpen]);
+  }, [captureActive]);
 
   useEffect(() => {
     return () => stopCapture();
@@ -2184,9 +2198,9 @@ export default function LiveConsolePage() {
   // handle's own mousedown from also bubbling to the container's
   // "start a fresh draw" handler. `target` picks which state the drag
   // writes into — defaults to the existing pick-tracker-then-draw flow
-  // (draftBox); full-screen's draw-then-pick flow passes "pendingFsBox"
+  // (draftBox); the slide-anywhere draw-then-pick flow passes "pendingBox"
   // instead, since that box exists before any tracker is chosen.
-  function startBoxDrag(mode: DragMode, e: React.MouseEvent, target: "draftBox" | "pendingFsBox" = "draftBox") {
+  function startBoxDrag(mode: DragMode, e: React.MouseEvent, target: "draftBox" | "pendingBox" = "draftBox") {
     if (target === "draftBox" && !calibratingField) return;
     e.stopPropagation();
     const container = e.currentTarget.closest("[data-crop-container]");
@@ -2196,7 +2210,7 @@ export default function LiveConsolePage() {
     dragMode.current = mode;
     dragTarget.current = target;
     dragStartPct.current = clientToPct(e.clientX, e.clientY, rect);
-    dragStartBox.current = target === "pendingFsBox" ? pendingFsBox : draftBox;
+    dragStartBox.current = target === "pendingBox" ? pendingBox : draftBox;
   }
 
   useEffect(() => {
@@ -2206,7 +2220,7 @@ export default function LiveConsolePage() {
       const start = dragStartPct.current;
       if (!mode || !rect || !start) return;
       const pt = clientToPct(e.clientX, e.clientY, rect);
-      const setBox = dragTarget.current === "pendingFsBox" ? setPendingFsBox : setDraftBox;
+      const setBox = dragTarget.current === "pendingBox" ? setPendingBox : setDraftBox;
 
       if (mode === "draw") {
         setBox({
@@ -2746,7 +2760,17 @@ export default function LiveConsolePage() {
     if (!teamId) return [];
     const pickedIds = new Set(pickBans.filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id).map((pb) => pb.player_id));
     const statIds = new Set(stats.map((s) => s.player_id));
-    const included = players.filter((p) => p.team_id === teamId && (pickedIds.has(p.id) || statIds.has(p.id)));
+    // is_active_roster is the roster editor's own "which 5" decision — a
+    // player flagged active shows here even before any pick/stat row
+    // exists, which is what makes the roster show up on the Live
+    // Scoreboard as soon as it's decided, not only once the draft or a
+    // KDA edit has actually happened. Picked/statted players stay
+    // included too so a genuine mid-game substitution (added via "+ Add"
+    // below, which isn't itself an is_active_roster flip) still renders —
+    // a benched sub who's neither flagged active nor actually in the game
+    // is the only thing this excludes.
+    const activeRosterIds = new Set(players.filter((p) => p.team_id === teamId && p.is_active_roster).map((p) => p.id));
+    const included = players.filter((p) => p.team_id === teamId && (activeRosterIds.has(p.id) || pickedIds.has(p.id) || statIds.has(p.id)));
     const base = included.length > 0 ? included : players.filter((p) => p.team_id === teamId);
     return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
   }
@@ -2799,7 +2823,7 @@ export default function LiveConsolePage() {
               else loadAll();
             }}
             placeholder="Livestream URL (YouTube or Facebook)"
-            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs w-56"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs w-56"
           />
           <select
             value={match.state}
@@ -2824,7 +2848,7 @@ export default function LiveConsolePage() {
                 value={customLabelDraft || match.custom_state_label || ""}
                 onChange={(e) => setCustomLabelDraft(e.target.value)}
                 placeholder="e.g. TVC / caster session"
-                className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs w-48"
+                className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs w-48"
               />
               <button onClick={saveCustomLabel} className="lv-btn-ghost !px-2 !py-1 text-xs">Save</button>
             </span>
@@ -2977,7 +3001,7 @@ export default function LiveConsolePage() {
             value={game.map ?? ""}
             onChange={(e) => setGameMap(e.target.value)}
             disabled={!isEditable}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
           >
             <option value="">Not set</option>
             {MAPS.map((m) => (
@@ -3087,7 +3111,7 @@ export default function LiveConsolePage() {
                   type="text"
                   placeholder="MM:SS"
                   title="Set the clock directly, e.g. 12:30"
-                  className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                  className="w-16 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                   onBlur={(e) => {
                     if (e.target.value === "") return;
                     const m = e.target.value.trim().match(/^(\d{1,3}):(\d{2})$/);
@@ -3119,6 +3143,244 @@ export default function LiveConsolePage() {
           </div>
         )}
       </div>
+
+      {match.update_source === "local_ocr" && (
+        <>
+
+      {/* Moment list */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Moment list</h2>
+          <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
+        </div>
+        <div className="flex gap-2 items-end flex-wrap">
+          <select
+            value={kmTemplateId}
+            onChange={(e) => setKmTemplateId(e.target.value)}
+            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+          >
+            <option value="">Choose a template...</option>
+            {availableTemplates.map((t) => (
+              <option key={t.id} value={t.id}>{t.label_template}</option>
+            ))}
+          </select>
+          {selectedTemplate?.label_template.includes("{team}") && (
+            <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+              <option value="">Team</option>
+              {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
+              {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
+            </select>
+          )}
+          {selectedTemplate?.label_template.includes("{hero}") && (
+            <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+              <option value="">Hero</option>
+              {heroes.map((h) => (
+                <option key={h.id} value={h.id}>{h.name}</option>
+              ))}
+            </select>
+          )}
+          {selectedTemplate?.label_template.includes("{player}") && (
+            <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+              <option value="">Player</option>
+              {players.map((p) => (
+                <option key={p.id} value={p.id}>{p.ign}</option>
+              ))}
+            </select>
+          )}
+          {selectedTemplate?.type === "custom" && (
+            <input
+              value={kmCustomText}
+              onChange={(e) => setKmCustomText(e.target.value)}
+              placeholder="Type the custom moment..."
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+            />
+          )}
+          <button onClick={logKeyMoment} disabled={!selectedTemplate || !isEditable} className="lv-btn-ghost disabled:opacity-40">
+            Log moment
+          </button>
+        </div>
+        {selectedTemplate && (
+          <div className="flex items-center gap-4">
+            <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+              <input
+                type="checkbox"
+                checked={kmAttachScreenshot}
+                onChange={(e) => setKmAttachScreenshot(e.target.checked)}
+                disabled={!captureActive}
+              />
+              📸 Also grab the current frame into this moment
+              {!captureActive && " (start capture above first)"}
+            </label>
+            {selectedTemplate.type === "custom" && (
+              <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+                <input type="checkbox" checked={kmMarkAsKey} onChange={(e) => setKmMarkAsKey(e.target.checked)} />
+                ⭐ Mark as key moment
+              </label>
+            )}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-2 text-xs">
+          {keyMoments.map((km) => {
+            const player = players.find((p) => p.id === km.player_id);
+            const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
+            if (editingMomentId === km.id) {
+              return (
+                <span key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5">
+                  <input
+                    value={editingMomentText}
+                    onChange={(e) => setEditingMomentText(e.target.value)}
+                    className="bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
+                    autoFocus
+                  />
+                  <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
+                  <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
+                </span>
+              );
+            }
+            return (
+              <span
+                key={km.id}
+                className={`px-2 py-1 rounded flex items-center gap-1.5 ${
+                  km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
+                }`}
+              >
+                {km.is_key_moment && "⭐ "}
+                {km.minute_mark}&apos; {label}
+                {km.screenshot_url && " 📸"}
+                <button
+                  onClick={() => {
+                    setEditingMomentId(km.id);
+                    setEditingMomentText(label);
+                  }}
+                  className="text-white/30 hover:text-white/70 normal-case"
+                  title="Edit"
+                >
+                  ✎
+                </button>
+                <button
+                  onClick={() =>
+                    postToTelegram(
+                      `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
+                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" }
+                    )
+                  }
+                  className="text-white/30 hover:text-signal normal-case"
+                  title="Post to Telegram"
+                >
+                  📢
+                </button>
+                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
+              </span>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* Objectives (counters) */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Objectives</h2>
+          <button
+            onClick={() =>
+              postToTelegram(buildObjectivesMessage(), { entityType: "match", entityId: match.id, notificationType: "objectives_share" })
+            }
+            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+          >
+            📢 Share to Telegram
+          </button>
+        </div>
+        <div className="flex gap-8">
+          {[match.team_a, match.team_b].map((team, idx) =>
+            team ? (
+              <div key={team.id} className="space-y-1.5">
+                <p className="text-xs text-white/50">{team.name}</p>
+                <div className="flex gap-4">
+                  {OBJECTIVE_TYPES.map((type) => (
+                    <div key={type} className="flex items-center gap-1.5">
+                      {/* One-click "+" is the primary action (also logs a
+                          Moment list entry, per spec) — "−" stays for
+                          correcting a misclick, same underlying counter. */}
+                      <button
+                        onClick={() => incrementObjective(team.id, type)}
+                        disabled={!objectivesEditable}
+                        title={`${team.name} takes a ${type}`}
+                        className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
+                      >
+                        <span>{OBJECTIVE_ICONS[type]}</span>
+                        <span className="capitalize">{type}</span>
+                        <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
+                      </button>
+                      <button
+                        onClick={() => decrementObjective(team.id, type)}
+                        disabled={!objectivesEditable}
+                        title="Undo last"
+                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
+                      >
+                        −
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <span key={idx} />
+            )
+          )}
+        </div>
+      </section>
+
+      {/* Game screenshots */}
+      <section className="space-y-3">
+        <h2 className="font-bold">Game {game.game_number} screenshots</h2>
+        <p className="text-xs text-white/40">
+          Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
+          current in-game timer. Shown publicly at the bottom of this game&apos;s page.
+        </p>
+        <div className="flex gap-2 items-center flex-wrap">
+          <button
+            onClick={() => captureScreenshotFromPreview()}
+            disabled={!captureActive || screenshotUploading}
+            className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
+            title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
+          >
+            📸 Capture current frame
+          </button>
+          <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
+            Upload image...
+            <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
+          </label>
+          <input
+            value={screenshotNote}
+            onChange={(e) => setScreenshotNote(e.target.value)}
+            placeholder="Note (optional)"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
+          />
+          {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
+        </div>
+        <div className="flex flex-wrap gap-3">
+          {screenshots.map((s) => (
+            <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
+              <div className="flex items-center justify-between text-[10px] text-white/40">
+                <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
+                <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
+              </div>
+              {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
+            </div>
+          ))}
+          {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
+        </div>
+      </section>
+        </>
+      )}
+
+      {match.update_source !== "local_ocr" && (
+        <p className="text-xs text-white/40 border border-white/10 rounded px-3 py-2">
+          This is a Normal match — KDA, screenshots, and the moment log aren&apos;t tracked here (Liquipedia-only
+          data: picks/bans, score, stream, VOD). Switch to Hot match above to take manual/OCR control.
+        </p>
+      )}
 
       {/* Hero picks/bans */}
       <section className="space-y-3">
@@ -3234,7 +3496,7 @@ export default function LiveConsolePage() {
                   value={simHeroSearch}
                   onChange={(e) => setSimHeroSearch(e.target.value)}
                   placeholder="Search heroes..."
-                  className="w-full bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
+                  className="w-full bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
                 />
                 <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-2 max-h-64 overflow-y-auto">
                   {heroes
@@ -3252,7 +3514,7 @@ export default function LiveConsolePage() {
                           {h.icon_url ? (
                             // eslint-disable-next-line @next/next/no-img-element
                             <img
-                              src={h.icon_url}
+                              src={proxiedImageUrl(h.icon_url)}
                               alt=""
                               className={`w-10 h-10 rounded-full object-cover border border-white/10 ${
                                 !taken ? "transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal" : ""
@@ -3298,7 +3560,7 @@ export default function LiveConsolePage() {
                           <div key={pb.id} className="flex items-center gap-2">
                             {hero?.icon_url ? (
                               // eslint-disable-next-line @next/next/no-img-element
-                              <img src={hero.icon_url} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
+                              <img src={proxiedImageUrl(hero.icon_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
                             ) : (
                               <span className="w-6 h-6 rounded-full bg-white/10 block" />
                             )}
@@ -3306,7 +3568,7 @@ export default function LiveConsolePage() {
                             <select
                               defaultValue=""
                               onChange={(e) => e.target.value && assignHeroToPlayer(pb.id, e.target.value, pb.hero_name)}
-                              className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                              className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                             >
                               <option value="">Assign player...</option>
                               {activeRoster
@@ -3351,7 +3613,7 @@ export default function LiveConsolePage() {
                     {h.icon_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={h.icon_url}
+                        src={proxiedImageUrl(h.icon_url)}
                         alt=""
                         className="w-12 h-12 rounded-full object-cover border border-white/10 transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal"
                       />
@@ -3372,7 +3634,7 @@ export default function LiveConsolePage() {
               setPbTeam(e.target.value);
               setPbPlayer("");
             }}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           >
             <option value="">Team</option>
             {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
@@ -3381,7 +3643,7 @@ export default function LiveConsolePage() {
           <select
             value={pbType}
             onChange={(e) => setPbType(e.target.value as "pick" | "ban")}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           >
             <option value="ban">Ban</option>
             <option value="pick">Pick</option>
@@ -3390,7 +3652,7 @@ export default function LiveConsolePage() {
             <select
               value={pbPlayer}
               onChange={(e) => setPbPlayer(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
             >
               <option value="">Player</option>
               {pbTeam &&
@@ -3404,12 +3666,12 @@ export default function LiveConsolePage() {
           <div className="flex items-center gap-1.5">
             {heroes.find((h) => h.name === pbHero)?.icon_url && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={heroes.find((h) => h.name === pbHero)!.icon_url!} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
+              <img src={proxiedImageUrl(heroes.find((h) => h.name === pbHero)!.icon_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
             )}
             <select
               value={pbHero}
               onChange={(e) => setPbHero(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
             >
               <option value="">Hero</option>
               {heroes.map((h) => (
@@ -3461,67 +3723,8 @@ export default function LiveConsolePage() {
         )}
       </section>
 
-      {match.update_source !== "local_ocr" && (
-        <p className="text-xs text-white/40 border border-white/10 rounded px-3 py-2">
-          This is a Normal match — KDA, screenshots, and the moment log aren&apos;t tracked here (Liquipedia-only
-          data: picks/bans, score, stream, VOD). Switch to Hot match above to take manual/OCR control.
-        </p>
-      )}
-
       {match.update_source === "local_ocr" && (
         <>
-      {/* Objectives (counters) */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-bold">Objectives</h2>
-          <button
-            onClick={() =>
-              postToTelegram(buildObjectivesMessage(), { entityType: "match", entityId: match.id, notificationType: "objectives_share" })
-            }
-            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-          >
-            📢 Share to Telegram
-          </button>
-        </div>
-        <div className="flex gap-8">
-          {[match.team_a, match.team_b].map((team, idx) =>
-            team ? (
-              <div key={team.id} className="space-y-1.5">
-                <p className="text-xs text-white/50">{team.name}</p>
-                <div className="flex gap-4">
-                  {OBJECTIVE_TYPES.map((type) => (
-                    <div key={type} className="flex items-center gap-1.5">
-                      {/* One-click "+" is the primary action (also logs a
-                          Moment list entry, per spec) — "−" stays for
-                          correcting a misclick, same underlying counter. */}
-                      <button
-                        onClick={() => incrementObjective(team.id, type)}
-                        disabled={!objectivesEditable}
-                        title={`${team.name} takes a ${type}`}
-                        className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
-                      >
-                        <span>{OBJECTIVE_ICONS[type]}</span>
-                        <span className="capitalize">{type}</span>
-                        <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
-                      </button>
-                      <button
-                        onClick={() => decrementObjective(team.id, type)}
-                        disabled={!objectivesEditable}
-                        title="Undo last"
-                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
-                      >
-                        −
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <span key={idx} />
-            )
-          )}
-        </div>
-      </section>
 
       {/* Team kills — derived from K/D/A, same as the public page */}
       <section className="space-y-2">
@@ -3553,7 +3756,7 @@ export default function LiveConsolePage() {
                     defaultValue={latestNetWorth?.[key] ?? ""}
                     disabled={!netWorthEditable}
                     placeholder="Gold"
-                    className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+                    className="w-28 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
                     onBlur={(e) => {
                       const value = Number(e.target.value);
                       if (Number.isNaN(value)) return;
@@ -3618,7 +3821,7 @@ export default function LiveConsolePage() {
                 <div key={p.id} className="flex gap-2 items-center text-sm">
                   {p.photo_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={p.photo_url} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10 shrink-0" />
+                    <img src={proxiedImageUrl(p.photo_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10 shrink-0" />
                   ) : (
                     <span className="w-6 h-6 rounded-full bg-white/10 shrink-0" />
                   )}
@@ -3626,7 +3829,7 @@ export default function LiveConsolePage() {
                     <input
                       value={editingScoreboardIgn}
                       onChange={(e) => setEditingScoreboardIgn(e.target.value)}
-                      className="w-24 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-xs"
+                      className="w-24 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
                       autoFocus
                     />
                   ) : (
@@ -3635,7 +3838,7 @@ export default function LiveConsolePage() {
                   {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={heroes.find((h) => h.name === stat?.hero_name)!.icon_url!}
+                      src={proxiedImageUrl(heroes.find((h) => h.name === stat?.hero_name)!.icon_url)}
                       alt=""
                       className="w-5 h-5 rounded-full object-cover -mr-1"
                     />
@@ -3644,7 +3847,7 @@ export default function LiveConsolePage() {
                     value={stat?.hero_name ?? ""}
                     onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
                     disabled={!scoreboardEditable}
-                    className="w-24 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
+                    className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
                   >
                     <option value="">Hero</option>
                     {heroes.map((h) => (
@@ -3658,7 +3861,7 @@ export default function LiveConsolePage() {
                       defaultValue={stat?.[field] ?? 0}
                       onBlur={(e) => updateStat(p.id, field, Number(e.target.value))}
                       disabled={!scoreboardEditable}
-                      className="w-14 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
+                      className="w-14 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
                     />
                   ))}
                   <div className="flex gap-1.5 ml-auto">
@@ -3709,7 +3912,7 @@ export default function LiveConsolePage() {
                       <select
                         value={addPlayerSelect[teamId] ?? ""}
                         onChange={(e) => setAddPlayerSelect((prev) => ({ ...prev, [teamId]: e.target.value }))}
-                        className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                       >
                         <option value="">Add player...</option>
                         {available.map((p) => (
@@ -3735,179 +3938,6 @@ export default function LiveConsolePage() {
             )}
           </div>
         ))}
-      </section>
-
-      {/* Game screenshots */}
-      <section className="space-y-3">
-        <h2 className="font-bold">Game {game.game_number} screenshots</h2>
-        <p className="text-xs text-white/40">
-          Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
-          current in-game timer. Shown publicly at the bottom of this game&apos;s page.
-        </p>
-        <div className="flex gap-2 items-center flex-wrap">
-          <button
-            onClick={() => captureScreenshotFromPreview()}
-            disabled={!captureActive || screenshotUploading}
-            className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
-            title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
-          >
-            📸 Capture current frame
-          </button>
-          <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
-            Upload image...
-            <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
-          </label>
-          <input
-            value={screenshotNote}
-            onChange={(e) => setScreenshotNote(e.target.value)}
-            placeholder="Note (optional)"
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
-          />
-          {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
-        </div>
-        <div className="flex flex-wrap gap-3">
-          {screenshots.map((s) => (
-            <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
-              <div className="flex items-center justify-between text-[10px] text-white/40">
-                <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
-                <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
-              </div>
-              {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
-            </div>
-          ))}
-          {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
-        </div>
-      </section>
-
-      {/* Moment list */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-bold">Moment list</h2>
-          <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
-        </div>
-        <div className="flex gap-2 items-end flex-wrap">
-          <select
-            value={kmTemplateId}
-            onChange={(e) => setKmTemplateId(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
-          >
-            <option value="">Choose a template...</option>
-            {availableTemplates.map((t) => (
-              <option key={t.id} value={t.id}>{t.label_template}</option>
-            ))}
-          </select>
-          {selectedTemplate?.label_template.includes("{team}") && (
-            <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
-              <option value="">Team</option>
-              {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
-              {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
-            </select>
-          )}
-          {selectedTemplate?.label_template.includes("{hero}") && (
-            <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
-              <option value="">Hero</option>
-              {heroes.map((h) => (
-                <option key={h.id} value={h.id}>{h.name}</option>
-              ))}
-            </select>
-          )}
-          {selectedTemplate?.label_template.includes("{player}") && (
-            <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm">
-              <option value="">Player</option>
-              {players.map((p) => (
-                <option key={p.id} value={p.id}>{p.ign}</option>
-              ))}
-            </select>
-          )}
-          {selectedTemplate?.type === "custom" && (
-            <input
-              value={kmCustomText}
-              onChange={(e) => setKmCustomText(e.target.value)}
-              placeholder="Type the custom moment..."
-              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
-            />
-          )}
-          <button onClick={logKeyMoment} disabled={!selectedTemplate || !isEditable} className="lv-btn-ghost disabled:opacity-40">
-            Log moment
-          </button>
-        </div>
-        {selectedTemplate && (
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-1.5 text-[10px] text-white/50">
-              <input
-                type="checkbox"
-                checked={kmAttachScreenshot}
-                onChange={(e) => setKmAttachScreenshot(e.target.checked)}
-                disabled={!captureActive}
-              />
-              📸 Also grab the current frame into this moment
-              {!captureActive && " (start capture above first)"}
-            </label>
-            {selectedTemplate.type === "custom" && (
-              <label className="flex items-center gap-1.5 text-[10px] text-white/50">
-                <input type="checkbox" checked={kmMarkAsKey} onChange={(e) => setKmMarkAsKey(e.target.checked)} />
-                ⭐ Mark as key moment
-              </label>
-            )}
-          </div>
-        )}
-        <div className="flex flex-wrap gap-2 text-xs">
-          {keyMoments.map((km) => {
-            const player = players.find((p) => p.id === km.player_id);
-            const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
-            if (editingMomentId === km.id) {
-              return (
-                <span key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5">
-                  <input
-                    value={editingMomentText}
-                    onChange={(e) => setEditingMomentText(e.target.value)}
-                    className="bg-black/30 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
-                    autoFocus
-                  />
-                  <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
-                  <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-                </span>
-              );
-            }
-            return (
-              <span
-                key={km.id}
-                className={`px-2 py-1 rounded flex items-center gap-1.5 ${
-                  km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
-                }`}
-              >
-                {km.is_key_moment && "⭐ "}
-                {km.minute_mark}&apos; {label}
-                {km.screenshot_url && " 📸"}
-                <button
-                  onClick={() => {
-                    setEditingMomentId(km.id);
-                    setEditingMomentText(label);
-                  }}
-                  className="text-white/30 hover:text-white/70 normal-case"
-                  title="Edit"
-                >
-                  ✎
-                </button>
-                <button
-                  onClick={() =>
-                    postToTelegram(
-                      `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
-                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" }
-                    )
-                  }
-                  className="text-white/30 hover:text-signal normal-case"
-                  title="Post to Telegram"
-                >
-                  📢
-                </button>
-                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-              </span>
-            );
-          })}
-        </div>
       </section>
         </>
       )}
@@ -3975,7 +4005,7 @@ export default function LiveConsolePage() {
             <select
               value={resolveLeftTeamId() ?? ""}
               onChange={(e) => setOcrLeftTeam(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
             >
               <option value={match.team_a.id}>{match.team_a.name}</option>
               <option value={match.team_b.id}>{match.team_b.name}</option>
@@ -4006,7 +4036,7 @@ export default function LiveConsolePage() {
                   onChange={(e) => setOverlayHint(e.target.value)}
                   onBlur={saveOverlayHint}
                   placeholder="Overlay hint (optional) — e.g. &quot;kill banners appear top-center in yellow text&quot;"
-                  className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                  className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                 />
                 <button
                   onClick={saveOverlayHintAsTournamentDefault}
@@ -4021,55 +4051,53 @@ export default function LiveConsolePage() {
 
             {captureActive && (
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center gap-3 justify-between">
                   <span className="text-[10px] text-white/40">
                     Any tracker, any phase, is editable from here regardless of the match's current live phase.
+                    Drag directly on the video to place a new tracker, or click an existing outlined region to
+                    move/resize it.
                   </span>
-                  <button
-                    onClick={() => setFullscreenPlacementOpen(true)}
-                    className="text-xs border border-white/10 rounded px-3 py-1.5 hover:border-signal/50 hover:bg-signal/10 whitespace-nowrap"
+                  <select
+                    value={canvasPhaseFilter}
+                    onChange={(e) => setCanvasPhaseFilter(e.target.value)}
+                    className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
+                    title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
                   >
-                    ⛶ Full-screen placement
-                  </button>
+                    <option value="">All phases</option>
+                    {MATCH_PHASES.map((p) => (
+                      <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                    ))}
+                  </select>
                 </div>
                 <div
                   data-crop-container
-                  // Fixed at half the viewport width instead of free-drag
-                  // resizable — a freely resizable preview meant the exact
-                  // pixel dimensions OCR was reading varied session to
-                  // session with no consistent baseline to tune region
-                  // calibration or Tesseract accuracy against. Half-viewport
-                  // is "as big as possible without going fullscreen," which
-                  // keeps the rest of the console (moment log, scoreboard)
-                  // visible alongside it. All the crop-box math reads
+                  // Enlarged from a fixed 50vw to ~75vw ("6/8 full screen") —
+                  // a separate full-screen portal mode used to exist for
+                  // this (removed: its coordinate-locking broke whenever the
+                  // browser/video resized or moved mid-session). A single
+                  // bigger inline canvas needs no coordinate-locking trick at
+                  // all since there's only ever one rendered box to compute
+                  // percentages against. All the crop-box math reads
                   // getBoundingClientRect() live at drag time, so a fixed
                   // size needs no other code changes.
-                  className="relative w-[50vw] min-w-[480px] max-w-[1400px] border border-white/10 rounded overflow-hidden select-none"
+                  className="relative w-[75vw] min-w-[480px] max-w-[1800px] border border-white/10 rounded overflow-hidden select-none"
                   onMouseDown={(e) => {
-                    // Only starts a brand-new box — once draftBox exists,
-                    // dragging happens via its own body/handle mousedown
-                    // (startBoxDrag), which stops propagation before this
-                    // ever fires.
-                    if (captureMode === "manual" && calibratingField && !draftBox) startBoxDrag("draw", e);
+                    // Two draw-first flows share this canvas: pick-tracker-
+                    // then-draw (calibratingField already set, writes
+                    // draftBox) and slide-anywhere draw-then-pick (nothing
+                    // selected yet, writes pendingBox — a phase/variable
+                    // picker appears below once it's drawn). Existing region
+                    // buttons stop propagation on their own mousedown, so
+                    // clicking one to edit it never falls through to here.
+                    if (captureMode !== "manual") return;
+                    if (calibratingField && !draftBox) startBoxDrag("draw", e, "draftBox");
+                    else if (!calibratingField && !pendingBox) startBoxDrag("draw", e, "pendingBox");
                   }}
                 >
-                  {/* Full-screen mode reuses this SAME <video> element (via a
-                      portal) rather than mounting a second one bound to the
-                      same MediaStream — two live decodes of one stream risk
-                      drifting a frame apart, which would matter since OCR
-                      reads from whichever one is actually mounted. Only one
-                      of these two conditional branches is ever in the DOM at
-                      once, so previewRef always resolves to the visible one
-                      (the srcObject-attach effect re-runs on this toggle). */}
-                  {!fullscreenPlacementOpen ? (
-                    <video ref={previewRef} muted className="w-full block" />
-                  ) : (
-                    <div className="w-full aspect-video bg-black flex items-center justify-center text-white/30 text-xs">
-                      Preview open in full-screen mode
-                    </div>
-                  )}
+                  <video ref={previewRef} muted className="w-full block" />
                   {captureMode === "manual" &&
                     trackers
+                      .filter((t) => (canvasPhaseFilter ? t.phase === canvasPhaseFilter : true))
                       .filter(({ field }) => field !== calibratingField)
                       .map(({ field, label }) => {
                         const box = regions[field];
@@ -4110,12 +4138,12 @@ export default function LiveConsolePage() {
                         width: `${draftBox.wPct}%`,
                         height: `${draftBox.hPct}%`,
                       }}
-                      onMouseDown={(e) => startBoxDrag("move", e)}
+                      onMouseDown={(e) => startBoxDrag("move", e, "draftBox")}
                     >
                       {(["nw", "ne", "sw", "se"] as const).map((corner) => (
                         <div
                           key={corner}
-                          onMouseDown={(e) => startBoxDrag(corner, e)}
+                          onMouseDown={(e) => startBoxDrag(corner, e, "draftBox")}
                           // 20x20px hit target centered exactly on the
                           // corner via translate, regardless of box size —
                           // "edge sensitivity" before this was just the
@@ -4141,251 +4169,84 @@ export default function LiveConsolePage() {
                       <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
                     </div>
                   )}
+
+                  {/* Slide-anywhere: a brand-new box drawn without a tracker
+                      picked yet — the phase/variable picker below assigns it
+                      once drawn. */}
+                  {captureMode === "manual" && !calibratingField && pendingBox && (
+                    <div
+                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                      style={{
+                        left: `${pendingBox.xPct}%`,
+                        top: `${pendingBox.yPct}%`,
+                        width: `${pendingBox.wPct}%`,
+                        height: `${pendingBox.hPct}%`,
+                      }}
+                      onMouseDown={(e) => startBoxDrag("move", e, "pendingBox")}
+                    >
+                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                        <div
+                          key={corner}
+                          onMouseDown={(e) => startBoxDrag(corner, e, "pendingBox")}
+                          className="absolute w-5 h-5 flex items-center justify-center"
+                          style={{
+                            left: corner.includes("w") ? 0 : "100%",
+                            top: corner.includes("n") ? 0 : "100%",
+                            transform: "translate(-50%, -50%)",
+                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                          }}
+                        >
+                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {captureMode === "manual" && !calibratingField && !pendingBox && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag anywhere to place a new tracker</span>
+                    </div>
+                  )}
                 </div>
 
-                {/* Full-screen tracker placement — a bigger editor over the
-                    SAME capture_regions rows, not a parallel system. Portals
-                    to document.body so it renders above everything else
-                    regardless of where this component sits in the tree. */}
-                {fullscreenPlacementOpen &&
-                  createPortal(
-                    <div className="fixed inset-0 z-[100] bg-black flex flex-col">
-                      <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-white/10 bg-ink/95">
-                        <span className="text-xs text-white/50 uppercase tracking-wider whitespace-nowrap">
-                          Full-screen tracker placement
-                        </span>
-                        <select
-                          value={fsPhaseFilter}
-                          onChange={(e) => setFsPhaseFilter(e.target.value)}
-                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
-                          title="Only show existing regions for this phase, to reduce clutter while placing new ones"
-                        >
-                          <option value="">All phases</option>
-                          {MATCH_PHASES.map((p) => (
-                            <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={() => setFsEditMode((v) => !v)}
-                          className={`text-xs border rounded px-2 py-1.5 whitespace-nowrap ${
-                            fsEditMode ? "border-signal text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
-                          }`}
-                        >
-                          {fsEditMode ? "🖊 Edit existing: ON" : "🖊 Edit existing: OFF"}
-                        </button>
-                        <span className="text-[10px] text-white/40 hidden sm:inline">
-                          {fsEditMode ? "Click an existing region to move/resize it." : "Drag on the video to place a new tracker."}
-                        </span>
-                        <div className="flex-1" />
-                        <button
-                          onClick={() => {
-                            setFullscreenPlacementOpen(false);
-                            setPendingFsBox(null);
-                            setFsPickerPhase("");
-                            setFsPickerField("");
-                          }}
-                          className="lv-btn-ghost !text-xs"
-                        >
-                          Exit full-screen ✕
-                        </button>
-                      </div>
-
-                      <div className="flex-1 flex items-center justify-center overflow-hidden p-6">
-                        <div
-                          data-crop-container
-                          // Shrink-wraps exactly to the video's own rendered
-                          // box (inline-flex + the video's own max-w/max-h +
-                          // auto sizing below) instead of a full-viewport box
-                          // the video is stretched/letterboxed inside — this
-                          // is what makes a percentage saved here land in the
-                          // exact same spot in the small inline view: both
-                          // views' data-crop-container element IS the
-                          // video's content box, never a larger box with
-                          // transparent bars baked in, so there's no
-                          // separate letterbox offset to compute or drift
-                          // between the two.
-                          style={{ display: "inline-flex", position: "relative", maxWidth: "100%", maxHeight: "100%" }}
-                          onMouseDown={(e) => {
-                            if (fsEditMode) return; // existing-region buttons below handle their own click-to-edit
-                            if (calibratingField) {
-                              if (!draftBox) startBoxDrag("draw", e, "draftBox");
-                            } else if (!pendingFsBox) {
-                              startBoxDrag("draw", e, "pendingFsBox");
-                            }
-                          }}
-                        >
-                          <video
-                            ref={previewRef}
-                            muted
-                            style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", display: "block" }}
-                          />
-
-                          {/* Existing regions for the filtered phase — inert
-                              dim reference outlines while placing new ones
-                              (fsEditMode off), or clickable/draggable exactly
-                              like the inline view's overlays once on. */}
-                          {trackers
-                            .filter((t) => (fsPhaseFilter ? t.phase === fsPhaseFilter : true))
-                            .filter(({ field }) => field !== calibratingField)
-                            .map(({ field, label }) => {
-                              const box = regions[field];
-                              if (!box) return null;
-                              if (!fsEditMode) {
-                                return (
-                                  <div
-                                    key={field}
-                                    className="absolute border border-white/25 pointer-events-none"
-                                    style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, width: `${box.wPct}%`, height: `${box.hPct}%` }}
-                                  />
-                                );
-                              }
-                              return (
-                                <button
-                                  key={field}
-                                  type="button"
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    startCalibrating(field);
-                                  }}
-                                  title={`Click to edit: ${label}`}
-                                  className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
-                                  style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, width: `${box.wPct}%`, height: `${box.hPct}%` }}
-                                />
-                              );
-                            })}
-
-                          {/* Editing an existing tracker — same move/resize
-                              handles as the inline view. */}
-                          {calibratingField && draftBox && (
-                            <div
-                              className="absolute border-2 border-signal bg-signal/10 cursor-move"
-                              style={{
-                                left: `${draftBox.xPct}%`,
-                                top: `${draftBox.yPct}%`,
-                                width: `${draftBox.wPct}%`,
-                                height: `${draftBox.hPct}%`,
-                              }}
-                              onMouseDown={(e) => startBoxDrag("move", e, "draftBox")}
-                            >
-                              {(["nw", "ne", "sw", "se"] as const).map((corner) => (
-                                <div
-                                  key={corner}
-                                  onMouseDown={(e) => startBoxDrag(corner, e, "draftBox")}
-                                  className="absolute w-6 h-6 flex items-center justify-center"
-                                  style={{
-                                    left: corner.includes("w") ? 0 : "100%",
-                                    top: corner.includes("n") ? 0 : "100%",
-                                    transform: "translate(-50%, -50%)",
-                                    cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
-                                  }}
-                                >
-                                  <span className="w-3 h-3 bg-signal rounded-full border border-white block" />
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* A brand-new box, drawn but not yet assigned to a
-                              tracker — full-screen's draw-then-pick flow. */}
-                          {pendingFsBox && (
-                            <div
-                              className="absolute border-2 border-signal bg-signal/10 cursor-move"
-                              style={{
-                                left: `${pendingFsBox.xPct}%`,
-                                top: `${pendingFsBox.yPct}%`,
-                                width: `${pendingFsBox.wPct}%`,
-                                height: `${pendingFsBox.hPct}%`,
-                              }}
-                              onMouseDown={(e) => startBoxDrag("move", e, "pendingFsBox")}
-                            >
-                              {(["nw", "ne", "sw", "se"] as const).map((corner) => (
-                                <div
-                                  key={corner}
-                                  onMouseDown={(e) => startBoxDrag(corner, e, "pendingFsBox")}
-                                  className="absolute w-6 h-6 flex items-center justify-center"
-                                  style={{
-                                    left: corner.includes("w") ? 0 : "100%",
-                                    top: corner.includes("n") ? 0 : "100%",
-                                    transform: "translate(-50%, -50%)",
-                                    cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
-                                  }}
-                                >
-                                  <span className="w-3 h-3 bg-signal rounded-full border border-white block" />
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {calibratingField && !draftBox && (
-                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                              <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
-                            </div>
-                          )}
-                          {!calibratingField && !pendingFsBox && !fsEditMode && (
-                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                              <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to place a new tracker</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      {calibratingField && (
-                        <div className="flex gap-2 justify-center px-4 py-3 border-t border-white/10 bg-ink/95">
-                          <button
-                            onClick={lockDraftBox}
-                            disabled={!draftBox}
-                            className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
-                          >
-                            🔒 Lock {trackers.find((t) => t.field === calibratingField)?.label}
-                          </button>
-                          <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
-                            Cancel
-                          </button>
-                        </div>
-                      )}
-
-                      {pendingFsBox && (
-                        <div className="flex flex-wrap items-center gap-2 justify-center px-4 py-3 border-t border-white/10 bg-ink/95">
-                          <select
-                            value={fsPickerPhase}
-                            onChange={(e) => {
-                              setFsPickerPhase(e.target.value);
-                              setFsPickerField("");
-                            }}
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
-                          >
-                            {MATCH_PHASES.map((p) => (
-                              <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                            ))}
-                          </select>
-                          <select
-                            value={fsPickerField}
-                            onChange={(e) => setFsPickerField(e.target.value)}
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
-                          >
-                            <option value="">
-                              {fsPickerOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
-                            </option>
-                            {fsPickerOptions.map((opt) => (
-                              <option key={opt.field} value={opt.field}>{opt.label}</option>
-                            ))}
-                          </select>
-                          <button
-                            onClick={savePendingFsBox}
-                            disabled={!fsPickerField}
-                            className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
-                          >
-                            Save
-                          </button>
-                          <button onClick={cancelPendingFsBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
-                            Cancel
-                          </button>
-                        </div>
-                      )}
-                    </div>,
-                    document.body
-                  )}
+                {pendingBox && (
+                  <div className="flex flex-wrap items-center gap-2 border border-white/10 rounded px-3 py-2">
+                    <span className="text-[10px] text-white/40 uppercase tracking-wider whitespace-nowrap">New tracker</span>
+                    <select
+                      value={pendingBoxPhase}
+                      onChange={(e) => {
+                        setPendingBoxPhase(e.target.value);
+                        setPendingBoxField("");
+                      }}
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                    >
+                      {MATCH_PHASES.map((p) => (
+                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={pendingBoxField}
+                      onChange={(e) => setPendingBoxField(e.target.value)}
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
+                    >
+                      <option value="">
+                        {pendingBoxOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
+                      </option>
+                      {pendingBoxOptions.map((opt) => (
+                        <option key={opt.field} value={opt.field}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={savePendingBox}
+                      disabled={!pendingBoxField}
+                      className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
+                    >
+                      Save
+                    </button>
+                    <button onClick={cancelPendingBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                      Cancel
+                    </button>
+                  </div>
+                )}
 
                 {captureMode === "manual" && calibratingField && (
                   <div className="flex gap-2">
@@ -4414,7 +4275,7 @@ export default function LiveConsolePage() {
                           setNewTrackerPhase(e.target.value);
                           setNewTrackerChoice("");
                         }}
-                        className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                       >
                         {MATCH_PHASES.map((p) => (
                           <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
@@ -4423,7 +4284,7 @@ export default function LiveConsolePage() {
                       <select
                         value={newTrackerChoice}
                         onChange={(e) => setNewTrackerChoice(e.target.value)}
-                        className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs flex-1 min-w-[220px]"
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs flex-1 min-w-[220px]"
                       >
                         <option value="">
                           {catalogForPhase(newTrackerPhase).length === 0
@@ -4456,12 +4317,12 @@ export default function LiveConsolePage() {
                             value={trackerSearch}
                             onChange={(e) => setTrackerSearch(e.target.value)}
                             placeholder="Search trackers..."
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs flex-1 min-w-[160px]"
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs flex-1 min-w-[160px]"
                           />
                           <select
                             value={trackerPhaseFilter}
                             onChange={(e) => setTrackerPhaseFilter(e.target.value)}
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           >
                             <option value="">All phases</option>
                             {MATCH_PHASES.map((p) => (
@@ -4471,7 +4332,7 @@ export default function LiveConsolePage() {
                           <select
                             value={trackerCategoryFilter}
                             onChange={(e) => setTrackerCategoryFilter(e.target.value)}
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           >
                             <option value="">All categories</option>
                             {Array.from(new Set(trackers.map((t) => t.category))).map((c) => (
@@ -4511,7 +4372,7 @@ export default function LiveConsolePage() {
                                             onKeyDown={(e) => {
                                               if (e.key === "Enter") renameTracker(t, trackerLabelDrafts[t.id]);
                                             }}
-                                            className="bg-black/30 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-full"
+                                            className="bg-white/10 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-full"
                                           />
                                           <button onClick={() => renameTracker(t, trackerLabelDrafts[t.id])} className="text-emerald-400">✓</button>
                                         </div>
@@ -4571,7 +4432,7 @@ export default function LiveConsolePage() {
                                               value={manualTimeInputs[t.field] ?? ""}
                                               onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [t.field]: e.target.value }))}
                                               placeholder="MM:SS"
-                                              className="w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+                                              className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
                                             />
                                             <button
                                               onClick={() => {

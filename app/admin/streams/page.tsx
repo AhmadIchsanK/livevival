@@ -223,7 +223,7 @@ export default function StreamsPage() {
                   }
                 }}
                 placeholder="https://www.youtube.com/watch?v=..."
-                className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+                className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
               />
               {youtubeThumbnailUrl(url) && (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -241,7 +241,7 @@ export default function StreamsPage() {
             <select
               value={tournamentId}
               onChange={(e) => setTournamentId(e.target.value)}
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
             >
               <option value="">None</option>
               {tournaments.map((t) => (
@@ -255,7 +255,7 @@ export default function StreamsPage() {
               value={overlayTemplate}
               onChange={(e) => setOverlayTemplate(e.target.value)}
               placeholder="default, or e.g. 'kill banners top-center in yellow'"
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
             />
           </div>
           <button
@@ -289,7 +289,7 @@ export default function StreamsPage() {
             <select
               value={tournamentFilter}
               onChange={(e) => setTournamentFilter(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
             >
               <option value="">All tournaments</option>
               {tournaments.map((t) => (
@@ -299,7 +299,7 @@ export default function StreamsPage() {
             <select
               value={sortKey}
               onChange={(e) => setSortKey(e.target.value as SortKey)}
-              className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
             >
               <option value="newest">Newest first</option>
               <option value="oldest">Oldest first</option>
@@ -335,13 +335,13 @@ export default function StreamsPage() {
                       onBlur={() => {
                         if (editUrl !== s.url) fetchTitleInto(editUrl, setEditOverlay);
                       }}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
                     />
                     <div className="flex gap-2">
                       <select
                         value={editTournamentId}
                         onChange={(e) => setEditTournamentId(e.target.value)}
-                        className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                        className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                       >
                         <option value="">No tournament</option>
                         {tournaments.map((t) => (
@@ -351,7 +351,7 @@ export default function StreamsPage() {
                       <input
                         value={editOverlay}
                         onChange={(e) => setEditOverlay(e.target.value)}
-                        className="flex-1 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                        className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                       />
                     </div>
                     <div className="flex gap-2">

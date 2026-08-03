@@ -79,7 +79,7 @@ type PlayerStat = {
   assists: number;
   gold: number;
   hero: { icon_url: string | null } | null;
-  player: { ign: string; team_id: string } | null;
+  player: { ign: string; team_id: string; is_active_roster: boolean } | null;
 };
 type Objective = { id: string; game_id: string; team_id: string; type: string; minute_mark: number | null };
 const OBJECTIVE_ICONS: Record<string, string> = { tower: "🗼", lord: "👑", turtle: "🐢" };
@@ -97,7 +97,7 @@ type KeyMoment = {
   is_key_moment: boolean;
 };
 type NetWorthPoint = { game_id: string; minute_mark: number; team_a_gold: number; team_b_gold: number };
-type RosterPlayer = { id: string; ign: string; role: string | null; team_id: string; photo_url: string | null };
+type RosterPlayer = { id: string; ign: string; role: string | null; team_id: string; photo_url: string | null; is_active_roster: boolean };
 type Screenshot = { id: string; game_id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
 
 // Same fixed left-to-right draft order as the admin live console: exp
@@ -259,7 +259,9 @@ export default function PublicMatchPage() {
         .order("pick_order"),
       supabase
         .from("player_stats")
-        .select("id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id), hero:heroes(icon_url)")
+        .select(
+          "id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id, is_active_roster), hero:heroes(icon_url)"
+        )
         .eq("match_id", matchId),
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
       supabase
@@ -270,7 +272,7 @@ export default function PublicMatchPage() {
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
       supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
       rosterTeamIds.length > 0
-        ? supabase.from("players").select("id, ign, role, team_id, photo_url").in("team_id", rosterTeamIds)
+        ? supabase.from("players").select("id, ign, role, team_id, photo_url, is_active_roster").in("team_id", rosterTeamIds)
         : Promise.resolve({ data: [] as RosterPlayer[] }),
     ]);
     setPickBans((pb as unknown as PickBan[]) ?? []);
@@ -368,6 +370,33 @@ export default function PublicMatchPage() {
   const liveDraftTimerB =
     match.state === "DRAFT_STARTED" && match.draft_timer_b_seconds != null ? formatMMSS(match.draft_timer_b_seconds - draftElapsed) : null;
 
+  // Whose turn it is to pick/ban — inferred from the pick/ban tool's own
+  // state (how many rows are already logged for this game) rather than
+  // from which timer looks like it's counting down, since both sides'
+  // timers decrement identically client-side (see above) and can't
+  // actually distinguish "on the clock" from "waiting." The admin's draft
+  // simulation always logs in this exact fixed order (see DRAFT_SEQUENCE
+  // in the live console), so the count of already-logged picks/bans for
+  // this game is itself the step index — and the very first logged row's
+  // team is always the "blue" side by construction, so it doubles as the
+  // blue/red -> team_a/team_b key with no separate DB field needed.
+  const DRAFT_TURN_SIDES: ("blue" | "red")[] = [
+    "blue", "red", "blue", "red", "blue", "red",
+    "blue", "red", "red", "blue", "blue", "red",
+    "red", "blue", "red", "blue",
+    "red", "blue", "blue", "red",
+  ];
+  const draftOrderedPickBans = [...pickBans]
+    .filter((p) => p.game_id === selectedGameId)
+    .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
+  const blueTeamId = draftOrderedPickBans[0]?.team_id ?? null;
+  const draftTurnTeamId =
+    match.state === "DRAFT_STARTED" && blueTeamId && draftOrderedPickBans.length < DRAFT_TURN_SIDES.length
+      ? DRAFT_TURN_SIDES[draftOrderedPickBans.length] === "blue"
+        ? blueTeamId
+        : blueTeamId === teamAId ? teamBId : teamAId
+      : null;
+
   const videoUrl = selectedGame?.vod_url ?? match.youtube_url ?? match.stream?.url ?? null;
   const embedUrl = youtubeEmbedUrl(videoUrl) ?? facebookEmbedUrl(videoUrl);
   // Chat only makes sense against the actual live stream, not a per-game
@@ -381,12 +410,42 @@ export default function PublicMatchPage() {
   const gameNetWorth = netWorth.filter((n) => n.game_id === selectedGameId);
   const gameScreenshots = screenshots.filter((s) => s.game_id === selectedGameId);
 
-  const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId);
-  const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId);
+  // Substitutes/unselected players never show on the Live Scoreboard —
+  // only whoever the roster editor has flagged as the active five.
+  // is_active_roster !== false (rather than === true) treats a missing
+  // join as "include it" so this can't silently blank the scoreboard for
+  // older rows from before the column existed.
+  const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId && s.player?.is_active_roster !== false);
+  const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId && s.player?.is_active_roster !== false);
   // A direct team-kills OCR tracker overrides the summed player_stats total
   // once it's read anything (see the admin live console's captureTickBody).
   const teamAKills = selectedGame?.team_a_kills_override ?? teamAStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const teamBKills = selectedGame?.team_b_kills_override ?? teamBStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  const teamAActiveRoster = roster.filter((p) => p.team_id === teamAId && p.is_active_roster);
+  const teamBActiveRoster = roster.filter((p) => p.team_id === teamBId && p.is_active_roster);
+  // Once both teams have their 5-player roster decided, show it on the
+  // scoreboard even before any pick/stat row exists yet for this game —
+  // otherwise the scoreboard stays blank right up until the draft
+  // actually produces a KDA row.
+  const rosterDecided = teamAActiveRoster.length === 5 && teamBActiveRoster.length === 5;
+  type ScoreRow = { id: string; ign: string; heroIconUrl: string | null; heroName: string | null; kills: number; deaths: number; assists: number };
+  function scoreRowsFor(stats: PlayerStat[], activeRoster: RosterPlayer[]): ScoreRow[] {
+    if (stats.length > 0) {
+      return stats.map((s) => ({
+        id: s.id,
+        ign: s.player?.ign ?? "?",
+        heroIconUrl: s.hero?.icon_url ?? null,
+        heroName: s.hero_name,
+        kills: s.kills,
+        deaths: s.deaths,
+        assists: s.assists,
+      }));
+    }
+    if (!rosterDecided) return [];
+    return [...activeRoster]
+      .sort((a, b) => roleIndex(a.role) - roleIndex(b.role))
+      .map((p) => ({ id: p.id, ign: p.ign, heroIconUrl: null, heroName: null, kills: 0, deaths: 0, assists: 0 }));
+  }
   const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
   const teamAPicks = gamePickBans
     .filter((p) => p.team_id === teamAId && p.type === "pick")
@@ -494,7 +553,15 @@ export default function PublicMatchPage() {
         </div>
         <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="flex items-end gap-4 sm:gap-6">
+          {/* items-start (not items-end) — the logo is always the first
+              thing in each team's column, so top-aligning the row is what
+              keeps both logo squares level regardless of how many lines
+              the team name below wraps to (a long name like "TEAM FALCONS
+              PH" wrapping to 2 lines used to push that logo upward relative
+              to a 1-line name like "TEAM SPIRIT" under items-end). The
+              score gets a top margin instead of the old bottom margin to
+              re-center it against the now top-anchored logos. */}
+          <h1 className="flex items-start gap-4 sm:gap-6">
             <div className="flex flex-col items-center gap-2 w-24 sm:w-32">
               <div className="relative">
                 <TeamLogo url={match.team_a?.logo_url} size="xl" glow highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
@@ -513,7 +580,7 @@ export default function PublicMatchPage() {
             {/* The series score is the single most-scanned number on this
                 page — it now dwarfs "vs" and every other header element
                 instead of being buried in the finished-only winner line. */}
-            <span className="lv-score flex items-center gap-2 sm:gap-3 text-4xl sm:text-6xl mb-8 sm:mb-10">
+            <span className="lv-score flex items-center gap-2 sm:gap-3 text-4xl sm:text-6xl mt-8 sm:mt-10">
               {games.length > 0 ? (
                 <>
                   <span className={gamesWonByA > gamesWonByB ? "text-signal" : "text-paper"}>{gamesWonByA}</span>
@@ -566,8 +633,21 @@ export default function PublicMatchPage() {
             )
           )}
           {(liveDraftTimerA || liveDraftTimerB) && (
-            <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Draft pick timer">
-              ⏳ {match.team_a?.name}: {liveDraftTimerA ?? "—"} · {match.team_b?.name}: {liveDraftTimerB ?? "—"}
+            <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Draft pick/ban timer">
+              ⏳{" "}
+              <span className={draftTurnTeamId === teamAId ? "text-signal font-semibold" : undefined}>
+                {match.team_a?.name}: {liveDraftTimerA ?? "—"}
+              </span>{" "}
+              ·{" "}
+              <span className={draftTurnTeamId === teamBId ? "text-signal font-semibold" : undefined}>
+                {match.team_b?.name}: {liveDraftTimerB ?? "—"}
+              </span>
+              {draftTurnTeamId && (
+                <span className="text-white/40">
+                  {" "}
+                  — {draftTurnTeamId === teamAId ? match.team_a?.name : match.team_b?.name}'s turn
+                </span>
+              )}
             </span>
           )}
           {match.update_source === "local_ocr" && (
@@ -900,19 +980,21 @@ export default function PublicMatchPage() {
       <section>
         <div className="flex items-center justify-between mb-2">
           <h2 className="lv-heading">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
-          {gameStats.length > 0 && (
-            <p className="text-2xl font-bold tabular-nums">
-              <span className={teamAKills > teamBKills ? "text-signal" : "text-white/70"}>{teamAKills}</span>
-              <span className="text-white/30"> — </span>
-              <span className={teamBKills > teamAKills ? "text-signal" : "text-white/70"}>{teamBKills}</span>
-              <span className="text-white/40 text-xs font-normal"> kills</span>
-            </p>
-          )}
         </div>
+        {/* Team-kill score — large, above the scoreboard itself, not a
+            small line sharing the heading row. */}
+        {(gameStats.length > 0 || rosterDecided) && (
+          <p className="text-4xl sm:text-5xl font-bold tabular-nums text-center mb-3">
+            <span className={teamAKills > teamBKills ? "text-signal" : "text-white/70"}>{teamAKills}</span>
+            <span className="text-white/30 mx-2">—</span>
+            <span className={teamBKills > teamAKills ? "text-signal" : "text-white/70"}>{teamBKills}</span>
+            <span className="text-white/40 text-sm font-normal block mt-1">team kills</span>
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-4">
           {[
-            { name: match.team_a?.name, list: teamAStats },
-            { name: match.team_b?.name, list: teamBStats },
+            { name: match.team_a?.name, list: scoreRowsFor(teamAStats, teamAActiveRoster) },
+            { name: match.team_b?.name, list: scoreRowsFor(teamBStats, teamBActiveRoster) },
           ].map((t, i) => (
             <div key={i} className="lv-card-flush p-4">
               <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
@@ -923,10 +1005,10 @@ export default function PublicMatchPage() {
                 <tbody>
                   {t.list.map((s) => (
                     <tr key={s.id} className="border-t border-white/10">
-                      <td className="py-1.5">{s.player?.ign}</td>
+                      <td className="py-1.5">{s.ign}</td>
                       <td className="flex items-center gap-1.5 py-1.5">
-                        {s.hero?.icon_url && <img src={proxiedImageUrl(s.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
-                        {s.hero_name}
+                        {s.heroIconUrl && <img src={proxiedImageUrl(s.heroIconUrl)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
+                        {s.heroName ?? (s.heroIconUrl === null && s.heroName === null ? "—" : "")}
                       </td>
                       <td className="tabular-nums">{s.kills}</td>
                       <td className="tabular-nums">{s.deaths}</td>

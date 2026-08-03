@@ -198,7 +198,7 @@ export default function TeamsPage() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. RRQ Hoshi"
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
           />
         </div>
         <div className="w-32 space-y-1">
@@ -207,7 +207,7 @@ export default function TeamsPage() {
             value={shortName}
             onChange={(e) => setShortName(e.target.value)}
             placeholder="RRQ"
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
           />
         </div>
         <div className="flex-1 min-w-[200px] space-y-1">
@@ -216,7 +216,7 @@ export default function TeamsPage() {
             value={logoUrl}
             onChange={(e) => setLogoUrl(e.target.value)}
             placeholder="https://..."
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
           />
         </div>
         <button
@@ -237,12 +237,12 @@ export default function TeamsPage() {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter by name..."
-            className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
             value={sortKey}
             onChange={(e) => setSortKey(e.target.value as SortKey)}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
             <option value="name">Name A→Z</option>
             <option value="name_desc">Name Z→A</option>
@@ -253,7 +253,7 @@ export default function TeamsPage() {
             <select
               value={mergeTargetId}
               onChange={(e) => setMergeTargetId(e.target.value)}
-              className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
             >
               <option value="">Merge into...</option>
               {teams
@@ -313,7 +313,7 @@ export default function TeamsPage() {
                     <input
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
                   <td className="py-2 pr-2 space-y-1">
@@ -321,13 +321,13 @@ export default function TeamsPage() {
                       value={editShortName}
                       onChange={(e) => setEditShortName(e.target.value)}
                       placeholder="Short name"
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                     <input
                       value={editLogoUrl}
                       onChange={(e) => setEditLogoUrl(e.target.value)}
                       placeholder="Logo URL"
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                     />
                   </td>
                   <td className="py-2 text-right space-x-2">

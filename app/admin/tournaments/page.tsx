@@ -244,7 +244,7 @@ export default function TournamentsAdminPage() {
             required
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <div className="space-y-1">
@@ -252,7 +252,7 @@ export default function TournamentsAdminPage() {
           <select
             value={tier}
             onChange={(e) => setTier(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           >
             <option value="S">S</option>
             <option value="A">A</option>
@@ -264,7 +264,7 @@ export default function TournamentsAdminPage() {
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
             placeholder="e.g. MSC/2026 — leave blank for a custom/test tournament"
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
           <p className="text-[10px] text-white/30">
             Leave blank for a test match or any tournament that isn&apos;t on Liquipedia — it just won&apos;t auto-sync.
@@ -276,7 +276,7 @@ export default function TournamentsAdminPage() {
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <div className="space-y-1">
@@ -285,7 +285,7 @@ export default function TournamentsAdminPage() {
             type="date"
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <div className="col-span-2 space-y-1">
@@ -293,7 +293,7 @@ export default function TournamentsAdminPage() {
           <input
             value={logoUrl}
             onChange={(e) => setLogoUrl(e.target.value)}
-            className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
         <button
@@ -313,12 +313,12 @@ export default function TournamentsAdminPage() {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter by name or slug..."
-            className="flex-1 min-w-[160px] bg-black/30 border border-white/10 rounded px-3 py-1.5 text-sm"
+            className="flex-1 min-w-[160px] bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
             value={tierFilter}
             onChange={(e) => setTierFilter(e.target.value)}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
             <option value="">All tiers</option>
             <option value="S">S-Tier</option>
@@ -327,7 +327,7 @@ export default function TournamentsAdminPage() {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value as Status | "")}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
             <option value="">All statuses</option>
             <option value="ongoing">Ongoing</option>
@@ -337,7 +337,7 @@ export default function TournamentsAdminPage() {
           <select
             value={sortKey}
             onChange={(e) => setSortKey(e.target.value as SortKey)}
-            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
             <option value="start_desc">Newest first</option>
             <option value="start_asc">Oldest first</option>
@@ -398,14 +398,14 @@ export default function TournamentsAdminPage() {
                           <input
                             value={editName}
                             onChange={(e) => setEditName(e.target.value)}
-                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                            className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                           />
                         </td>
                         <td className="py-2 pr-2">
                           <select
                             value={editTier}
                             onChange={(e) => setEditTier(e.target.value)}
-                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                           >
                             <option value="S">S</option>
                             <option value="A">A</option>
@@ -416,13 +416,13 @@ export default function TournamentsAdminPage() {
                             type="date"
                             value={editStartDate}
                             onChange={(e) => setEditStartDate(e.target.value)}
-                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                            className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           />
                           <input
                             type="date"
                             value={editEndDate}
                             onChange={(e) => setEditEndDate(e.target.value)}
-                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                            className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           />
                         </td>
                         <td className="py-2 pr-2 space-y-1">
@@ -430,14 +430,14 @@ export default function TournamentsAdminPage() {
                             value={editSlug}
                             onChange={(e) => setEditSlug(e.target.value)}
                             placeholder="Liquipedia slug (blank = custom/test)"
-                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
+                            className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                           />
                           <input
                             value={editFmvpIgn}
                             onChange={(e) => setEditFmvpIgn(e.target.value)}
                             placeholder="FMVP IGN (optional)"
                             list="all-player-igns"
-                            className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                            className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           />
                           <datalist id="all-player-igns">
                             {allPlayerIgns.map((ign) => (

@@ -59,7 +59,7 @@ function CreatableSelect({
               }
             }}
             placeholder={`New ${label.toLowerCase()} name`}
-            className="flex-1 bg-black/30 border border-signal/40 rounded px-3 py-2 text-sm"
+            className="flex-1 bg-white/10 border border-signal/40 rounded px-3 py-2 text-sm"
           />
           <button
             type="button"
@@ -94,7 +94,7 @@ function CreatableSelect({
           if (e.target.value === "__new__") setCreating(true);
           else onChange(e.target.value);
         }}
-        className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+        className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
       >
         <option value="">{placeholder}</option>
         <option value="__new__">+ Create new {label.toLowerCase()}…</option>
@@ -452,7 +452,7 @@ export default function MatchesPage() {
             value={detectUrl}
             onChange={(e) => setDetectUrl(e.target.value)}
             placeholder="Paste a YouTube video URL"
-            className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+            className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
           <button
             onClick={detectStream}
@@ -528,7 +528,7 @@ export default function MatchesPage() {
             <select
               value={format}
               onChange={(e) => setFormat(e.target.value)}
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
             >
               <option value="BO1">BO1</option>
               <option value="BO2">BO2</option>
@@ -544,7 +544,7 @@ export default function MatchesPage() {
               type="datetime-local"
               value={scheduledAt}
               onChange={(e) => setScheduledAt(e.target.value)}
-              className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm"
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
             />
           </div>
 
@@ -571,6 +571,11 @@ export default function MatchesPage() {
               onClick={() => {
                 setActiveTab(tab.key);
                 setSelected(new Set());
+                // Upcoming matches read naturally soonest-first; everything
+                // else (live/finished) reads naturally most-recent-first —
+                // each tab lands on its own sensible default, still
+                // overridable via the sort dropdown afterward.
+                setSortBy(tab.key === "scheduled" ? "oldest" : "newest");
               }}
               className={`text-sm px-4 py-2 rounded-t ${
                 activeTab === tab.key ? "bg-white/10 text-white font-semibold" : "text-white/40 hover:text-white/70"
@@ -590,12 +595,12 @@ export default function MatchesPage() {
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
               placeholder="Search team or tournament..."
-              className="bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs w-56"
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs w-56"
             />
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as "newest" | "oldest" | "status")}
-              className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
             >
               <option value="newest">Newest first</option>
               <option value="oldest">Oldest first</option>
@@ -636,7 +641,7 @@ export default function MatchesPage() {
                     <select
                       value={editTournamentId}
                       onChange={(e) => setEditTournamentId(e.target.value)}
-                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     >
                       <option value="">Tournament</option>
                       {tournaments.map((t) => (
@@ -646,7 +651,7 @@ export default function MatchesPage() {
                     <select
                       value={editFormat}
                       onChange={(e) => setEditFormat(e.target.value)}
-                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     >
                       <option value="BO1">BO1</option>
                       <option value="BO2">BO2</option>
@@ -657,7 +662,7 @@ export default function MatchesPage() {
                     <select
                       value={editTeamAId}
                       onChange={(e) => setEditTeamAId(e.target.value)}
-                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     >
                       <option value="">Team A</option>
                       {teams.map((t) => (
@@ -667,7 +672,7 @@ export default function MatchesPage() {
                     <select
                       value={editTeamBId}
                       onChange={(e) => setEditTeamBId(e.target.value)}
-                      className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     >
                       <option value="">Team B</option>
                       {teams.map((t) => (
@@ -678,7 +683,7 @@ export default function MatchesPage() {
                       type="datetime-local"
                       value={editScheduledAt}
                       onChange={(e) => setEditScheduledAt(e.target.value)}
-                      className="col-span-2 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      className="col-span-2 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     />
                   </div>
                   <div className="flex gap-2">
@@ -728,7 +733,7 @@ export default function MatchesPage() {
                 <select
                   value={m.stream_id ?? ""}
                   onChange={(e) => updateMatch(m.id, { stream_id: e.target.value || null })}
-                  className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs max-w-[180px]"
+                  className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs max-w-[180px]"
                 >
                   <option value="">No stream linked</option>
                   {streams.map((s) => {
@@ -749,8 +754,8 @@ export default function MatchesPage() {
                   title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
                   className={`text-xs rounded px-2 py-1.5 border ${
                     m.update_source === "liquipedia"
-                      ? "border-emerald-500/40 text-emerald-400 bg-black/30"
-                      : "border-signal/50 text-signal bg-black/30"
+                      ? "border-emerald-500/40 text-emerald-400 bg-white/10"
+                      : "border-signal/50 text-signal bg-white/10"
                   }`}
                 >
                   <option value="liquipedia">📡 Normal match</option>
@@ -763,12 +768,21 @@ export default function MatchesPage() {
                   defaultValue={m.youtube_url ?? ""}
                   placeholder="YouTube livestream URL (manual console only)"
                   onBlur={(e) => updateMatch(m.id, { youtube_url: e.target.value })}
-                  className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
+                  className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
                 />
-                {/* Strict color-coding so these two are never confused for
-                    a routine "ghost" action mid-broadcast — win-green for
-                    the state that starts something, muted slate for the
-                    one that ends it. */}
+                {/* Strict color-coding so these three are never confused
+                    for a routine "ghost" action mid-broadcast — amber for
+                    the state that rolls a match back to not-yet-started,
+                    win-green for the state that starts something, muted
+                    slate for the one that ends it. Previously "Scheduled"
+                    was only reachable from inside the live console. */}
+                <button
+                  onClick={() => updateMatch(m.id, { status: "scheduled" })}
+                  disabled={m.status === "scheduled"}
+                  className="lv-btn border border-amber-400/40 text-amber-300 hover:bg-amber-400/10 hover:border-amber-400/70 disabled:opacity-40"
+                >
+                  Set scheduled
+                </button>
                 <button
                   onClick={() => updateMatch(m.id, { status: "live" })}
                   disabled={!m.youtube_url}
@@ -779,7 +793,7 @@ export default function MatchesPage() {
                 </button>
                 <button
                   onClick={() => updateMatch(m.id, { status: "finished" })}
-                  className="lv-btn border border-slate-400/40 text-slate-300 hover:bg-slate-400/10 hover:border-slate-400/70"
+                  className="lv-btn border border-white/30 text-white/70 hover:bg-white/10 hover:border-white/50"
                 >
                   Set finished
                 </button>
@@ -819,7 +833,7 @@ export default function MatchesPage() {
                             updateGameVod(m.id, g.id, { vod_url: e.target.value || null, vod_url_source: "manual" });
                           }
                         }}
-                        className="flex-1 bg-black/30 border border-white/10 rounded px-3 py-1.5 text-xs"
+                        className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
                       />
                       <span
                         className={`text-[10px] uppercase tracking-wide px-2 py-1 rounded ${

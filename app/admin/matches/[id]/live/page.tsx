@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
@@ -950,6 +951,12 @@ export default function LiveConsolePage() {
   const dragStartPct = useRef<{ x: number; y: number } | null>(null);
   const dragStartBox = useRef<RegionBox | null>(null);
   const cropRectRef = useRef<DOMRect | null>(null);
+  // Which state a drag gesture writes into — "draftBox" is the existing
+  // pick-tracker-then-draw flow (inline view, and full-screen edit mode);
+  // "pendingFsBox" is full-screen's draw-then-pick flow, where a box can
+  // exist with no tracker assigned yet. Read by the shared mousemove/mouseup
+  // effect below so both flows can share one drag implementation.
+  const dragTarget = useRef<"draftBox" | "pendingFsBox">("draftBox");
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
@@ -1000,6 +1007,26 @@ export default function LiveConsolePage() {
   const [readings, setReadings] = useState<Record<string, string>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
   const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
+
+  // ── Full-screen tracker placement ─────────────────────────────────────
+  // A second, bigger editor over the SAME capture_regions rows as the
+  // small inline calibration view above — not a parallel data model. The
+  // inline view's flow is "pick a tracker, then draw its box"; full-screen
+  // reverses that ("draw a box, then pick which tracker it's for") since a
+  // full viewport makes free-hand placement much easier to see, so it
+  // needs its own draft box (pendingFsBox) that can exist with no tracker
+  // assigned yet — draftBox/calibratingField stay reserved for "editing a
+  // tracker that's already been chosen" (used by both views).
+  const [fullscreenPlacementOpen, setFullscreenPlacementOpen] = useState(false);
+  const [fsPhaseFilter, setFsPhaseFilter] = useState<string>("");
+  const [fsEditMode, setFsEditMode] = useState(false);
+  const [pendingFsBox, setPendingFsBox] = useState<RegionBox | null>(null);
+  const [fsPickerPhase, setFsPickerPhase] = useState<string>("");
+  const [fsPickerField, setFsPickerField] = useState<string>("");
+  useEffect(() => {
+    if (pendingFsBox && !fsPickerPhase) setFsPickerPhase(fsPhaseFilter || match?.state || "MATCH_NOT_STARTED");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFsBox]);
 
   // ── Full-frame AI capture (no calibration) ───────────────────────────
   // Alternative to the manual crop-region OCR above: sends the whole
@@ -1501,6 +1528,48 @@ export default function LiveConsolePage() {
     const tracker = trackers.find((t) => t.field === field);
     if (!tracker) return;
     await supabase.from("capture_regions").update({ x_pct: null, y_pct: null, w_pct: null, h_pct: null }).eq("id", tracker.id);
+  }
+
+  // Full-screen's draw-then-pick flow needs one round trip, not two —
+  // inserting the tracker row WITH its coordinates already set, instead of
+  // addTracker() followed by a separate saveRegion() call that would read
+  // back from `trackers` state before the just-added row has landed there.
+  async function addTrackerWithRegion(phase: string, category: TrackerCategory, field: string, label: string, box: RegionBox) {
+    const { data, error } = await supabase
+      .from("capture_regions")
+      .insert({ match_id: matchId, phase, category, field, label, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct })
+      .select("id")
+      .single();
+    if (error || !data) {
+      setError(error?.message.includes("duplicate key") ? `"${label}" is already tracked for this phase.` : error?.message ?? "Failed to add tracker");
+      return;
+    }
+    setTrackers((prev) => [...prev, { id: data.id, phase, category, field, label }]);
+    setRegions((prev) => ({ ...prev, [field]: box }));
+  }
+
+  // Same "already tracked" filter as trackerCatalogOptions, just
+  // parameterized by the full-screen picker's own phase pick instead of
+  // the inline Add-tracker row's phase state — the two panels are
+  // independent UI, same underlying catalog.
+  const fsPickerOptions = catalogForPhase(fsPickerPhase).filter(
+    (opt) => !trackers.some((t) => t.phase === fsPickerPhase && t.field === opt.field)
+  );
+  async function savePendingFsBox() {
+    if (!pendingFsBox) return;
+    const opt = fsPickerOptions.find((o) => o.field === fsPickerField);
+    if (!opt) return;
+    const existing = trackers.find((t) => t.phase === fsPickerPhase && t.field === opt.field);
+    if (existing) await saveRegion(opt.field, pendingFsBox);
+    else await addTrackerWithRegion(fsPickerPhase, opt.category, opt.field, opt.label, pendingFsBox);
+    setPendingFsBox(null);
+    setFsPickerPhase("");
+    setFsPickerField("");
+  }
+  function cancelPendingFsBox() {
+    setPendingFsBox(null);
+    setFsPickerPhase("");
+    setFsPickerField("");
   }
 
   const [savedDefaultField, setSavedDefaultField] = useState<string | null>(null);
@@ -2055,7 +2124,12 @@ export default function LiveConsolePage() {
 
   // Runs after captureActive flips true and React has actually mounted the
   // <video> element — this is what attaches the shared stream, not
-  // startCapture() itself (see the comment there).
+  // startCapture() itself (see the comment there). Also re-runs on
+  // fullscreenPlacementOpen: toggling full-screen conditionally mounts a
+  // DIFFERENT <video> element (inline view vs. the full-screen portal),
+  // and srcObject doesn't carry over across that swap — previewRef always
+  // points at whichever one is currently mounted, so re-attaching here
+  // keeps the live stream showing in whichever view is visible.
   useEffect(() => {
     if (!captureActive || !streamRef.current || !previewRef.current) return;
     const video = previewRef.current;
@@ -2074,7 +2148,7 @@ export default function LiveConsolePage() {
     else video.addEventListener("loadedmetadata", fireFirstFrame, { once: true });
     return () => video.removeEventListener("loadedmetadata", fireFirstFrame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [captureActive]);
+  }, [captureActive, fullscreenPlacementOpen]);
 
   useEffect(() => {
     return () => stopCapture();
@@ -2115,17 +2189,21 @@ export default function LiveConsolePage() {
   // Starts a drag: drawing a brand-new box (no draftBox yet), moving the
   // whole box, or resizing from one corner. e.stopPropagation() keeps a
   // handle's own mousedown from also bubbling to the container's
-  // "start a fresh draw" handler.
-  function startBoxDrag(mode: DragMode, e: React.MouseEvent) {
-    if (!calibratingField) return;
+  // "start a fresh draw" handler. `target` picks which state the drag
+  // writes into — defaults to the existing pick-tracker-then-draw flow
+  // (draftBox); full-screen's draw-then-pick flow passes "pendingFsBox"
+  // instead, since that box exists before any tracker is chosen.
+  function startBoxDrag(mode: DragMode, e: React.MouseEvent, target: "draftBox" | "pendingFsBox" = "draftBox") {
+    if (target === "draftBox" && !calibratingField) return;
     e.stopPropagation();
     const container = e.currentTarget.closest("[data-crop-container]");
     if (!container) return;
     const rect = container.getBoundingClientRect();
     cropRectRef.current = rect;
     dragMode.current = mode;
+    dragTarget.current = target;
     dragStartPct.current = clientToPct(e.clientX, e.clientY, rect);
-    dragStartBox.current = draftBox;
+    dragStartBox.current = target === "pendingFsBox" ? pendingFsBox : draftBox;
   }
 
   useEffect(() => {
@@ -2135,9 +2213,10 @@ export default function LiveConsolePage() {
       const start = dragStartPct.current;
       if (!mode || !rect || !start) return;
       const pt = clientToPct(e.clientX, e.clientY, rect);
+      const setBox = dragTarget.current === "pendingFsBox" ? setPendingFsBox : setDraftBox;
 
       if (mode === "draw") {
-        setDraftBox({
+        setBox({
           xPct: Math.min(start.x, pt.x),
           yPct: Math.min(start.y, pt.y),
           wPct: Math.abs(pt.x - start.x),
@@ -2150,7 +2229,7 @@ export default function LiveConsolePage() {
       if (mode === "move") {
         const dx = pt.x - start.x;
         const dy = pt.y - start.y;
-        setDraftBox({
+        setBox({
           ...startBox,
           xPct: Math.min(100 - startBox.wPct, Math.max(0, startBox.xPct + dx)),
           yPct: Math.min(100 - startBox.hPct, Math.max(0, startBox.yPct + dy)),
@@ -2178,7 +2257,7 @@ export default function LiveConsolePage() {
       if (mode.includes("s")) {
         hPct = Math.max(MIN, pt.y - startBox.yPct);
       }
-      setDraftBox({ xPct, yPct, wPct, hPct });
+      setBox({ xPct, yPct, wPct, hPct });
     }
     function onUp() {
       dragMode.current = null;
@@ -3717,6 +3796,17 @@ export default function LiveConsolePage() {
 
             {captureActive && (
               <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-white/40">
+                    Any tracker, any phase, is editable from here regardless of the match's current live phase.
+                  </span>
+                  <button
+                    onClick={() => setFullscreenPlacementOpen(true)}
+                    className="text-xs border border-white/10 rounded px-3 py-1.5 hover:border-signal/50 hover:bg-signal/10 whitespace-nowrap"
+                  >
+                    ⛶ Full-screen placement
+                  </button>
+                </div>
                 <div
                   data-crop-container
                   // Fixed at half the viewport width instead of free-drag
@@ -3738,9 +3828,23 @@ export default function LiveConsolePage() {
                     if (captureMode === "manual" && calibratingField && !draftBox) startBoxDrag("draw", e);
                   }}
                 >
-                  <video ref={previewRef} muted className="w-full block" />
+                  {/* Full-screen mode reuses this SAME <video> element (via a
+                      portal) rather than mounting a second one bound to the
+                      same MediaStream — two live decodes of one stream risk
+                      drifting a frame apart, which would matter since OCR
+                      reads from whichever one is actually mounted. Only one
+                      of these two conditional branches is ever in the DOM at
+                      once, so previewRef always resolves to the visible one
+                      (the srcObject-attach effect re-runs on this toggle). */}
+                  {!fullscreenPlacementOpen ? (
+                    <video ref={previewRef} muted className="w-full block" />
+                  ) : (
+                    <div className="w-full aspect-video bg-black flex items-center justify-center text-white/30 text-xs">
+                      Preview open in full-screen mode
+                    </div>
+                  )}
                   {captureMode === "manual" &&
-                    activeTrackers
+                    trackers
                       .filter(({ field }) => field !== calibratingField)
                       .map(({ field, label }) => {
                         const box = regions[field];
@@ -3813,6 +3917,251 @@ export default function LiveConsolePage() {
                     </div>
                   )}
                 </div>
+
+                {/* Full-screen tracker placement — a bigger editor over the
+                    SAME capture_regions rows, not a parallel system. Portals
+                    to document.body so it renders above everything else
+                    regardless of where this component sits in the tree. */}
+                {fullscreenPlacementOpen &&
+                  createPortal(
+                    <div className="fixed inset-0 z-[100] bg-black flex flex-col">
+                      <div className="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-white/10 bg-ink/95">
+                        <span className="text-xs text-white/50 uppercase tracking-wider whitespace-nowrap">
+                          Full-screen tracker placement
+                        </span>
+                        <select
+                          value={fsPhaseFilter}
+                          onChange={(e) => setFsPhaseFilter(e.target.value)}
+                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                          title="Only show existing regions for this phase, to reduce clutter while placing new ones"
+                        >
+                          <option value="">All phases</option>
+                          {MATCH_PHASES.map((p) => (
+                            <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => setFsEditMode((v) => !v)}
+                          className={`text-xs border rounded px-2 py-1.5 whitespace-nowrap ${
+                            fsEditMode ? "border-signal text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
+                          }`}
+                        >
+                          {fsEditMode ? "🖊 Edit existing: ON" : "🖊 Edit existing: OFF"}
+                        </button>
+                        <span className="text-[10px] text-white/40 hidden sm:inline">
+                          {fsEditMode ? "Click an existing region to move/resize it." : "Drag on the video to place a new tracker."}
+                        </span>
+                        <div className="flex-1" />
+                        <button
+                          onClick={() => {
+                            setFullscreenPlacementOpen(false);
+                            setPendingFsBox(null);
+                            setFsPickerPhase("");
+                            setFsPickerField("");
+                          }}
+                          className="lv-btn-ghost !text-xs"
+                        >
+                          Exit full-screen ✕
+                        </button>
+                      </div>
+
+                      <div className="flex-1 flex items-center justify-center overflow-hidden p-6">
+                        <div
+                          data-crop-container
+                          // Shrink-wraps exactly to the video's own rendered
+                          // box (inline-flex + the video's own max-w/max-h +
+                          // auto sizing below) instead of a full-viewport box
+                          // the video is stretched/letterboxed inside — this
+                          // is what makes a percentage saved here land in the
+                          // exact same spot in the small inline view: both
+                          // views' data-crop-container element IS the
+                          // video's content box, never a larger box with
+                          // transparent bars baked in, so there's no
+                          // separate letterbox offset to compute or drift
+                          // between the two.
+                          style={{ display: "inline-flex", position: "relative", maxWidth: "100%", maxHeight: "100%" }}
+                          onMouseDown={(e) => {
+                            if (fsEditMode) return; // existing-region buttons below handle their own click-to-edit
+                            if (calibratingField) {
+                              if (!draftBox) startBoxDrag("draw", e, "draftBox");
+                            } else if (!pendingFsBox) {
+                              startBoxDrag("draw", e, "pendingFsBox");
+                            }
+                          }}
+                        >
+                          <video
+                            ref={previewRef}
+                            muted
+                            style={{ maxWidth: "100%", maxHeight: "100%", width: "auto", height: "auto", display: "block" }}
+                          />
+
+                          {/* Existing regions for the filtered phase — inert
+                              dim reference outlines while placing new ones
+                              (fsEditMode off), or clickable/draggable exactly
+                              like the inline view's overlays once on. */}
+                          {trackers
+                            .filter((t) => (fsPhaseFilter ? t.phase === fsPhaseFilter : true))
+                            .filter(({ field }) => field !== calibratingField)
+                            .map(({ field, label }) => {
+                              const box = regions[field];
+                              if (!box) return null;
+                              if (!fsEditMode) {
+                                return (
+                                  <div
+                                    key={field}
+                                    className="absolute border border-white/25 pointer-events-none"
+                                    style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, width: `${box.wPct}%`, height: `${box.hPct}%` }}
+                                  />
+                                );
+                              }
+                              return (
+                                <button
+                                  key={field}
+                                  type="button"
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    startCalibrating(field);
+                                  }}
+                                  title={`Click to edit: ${label}`}
+                                  className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
+                                  style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, width: `${box.wPct}%`, height: `${box.hPct}%` }}
+                                />
+                              );
+                            })}
+
+                          {/* Editing an existing tracker — same move/resize
+                              handles as the inline view. */}
+                          {calibratingField && draftBox && (
+                            <div
+                              className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                              style={{
+                                left: `${draftBox.xPct}%`,
+                                top: `${draftBox.yPct}%`,
+                                width: `${draftBox.wPct}%`,
+                                height: `${draftBox.hPct}%`,
+                              }}
+                              onMouseDown={(e) => startBoxDrag("move", e, "draftBox")}
+                            >
+                              {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                                <div
+                                  key={corner}
+                                  onMouseDown={(e) => startBoxDrag(corner, e, "draftBox")}
+                                  className="absolute w-6 h-6 flex items-center justify-center"
+                                  style={{
+                                    left: corner.includes("w") ? 0 : "100%",
+                                    top: corner.includes("n") ? 0 : "100%",
+                                    transform: "translate(-50%, -50%)",
+                                    cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                                  }}
+                                >
+                                  <span className="w-3 h-3 bg-signal rounded-full border border-white block" />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* A brand-new box, drawn but not yet assigned to a
+                              tracker — full-screen's draw-then-pick flow. */}
+                          {pendingFsBox && (
+                            <div
+                              className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                              style={{
+                                left: `${pendingFsBox.xPct}%`,
+                                top: `${pendingFsBox.yPct}%`,
+                                width: `${pendingFsBox.wPct}%`,
+                                height: `${pendingFsBox.hPct}%`,
+                              }}
+                              onMouseDown={(e) => startBoxDrag("move", e, "pendingFsBox")}
+                            >
+                              {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                                <div
+                                  key={corner}
+                                  onMouseDown={(e) => startBoxDrag(corner, e, "pendingFsBox")}
+                                  className="absolute w-6 h-6 flex items-center justify-center"
+                                  style={{
+                                    left: corner.includes("w") ? 0 : "100%",
+                                    top: corner.includes("n") ? 0 : "100%",
+                                    transform: "translate(-50%, -50%)",
+                                    cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                                  }}
+                                >
+                                  <span className="w-3 h-3 bg-signal rounded-full border border-white block" />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {calibratingField && !draftBox && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                              <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
+                            </div>
+                          )}
+                          {!calibratingField && !pendingFsBox && !fsEditMode && (
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                              <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to place a new tracker</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {calibratingField && (
+                        <div className="flex gap-2 justify-center px-4 py-3 border-t border-white/10 bg-ink/95">
+                          <button
+                            onClick={lockDraftBox}
+                            disabled={!draftBox}
+                            className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
+                          >
+                            🔒 Lock {trackers.find((t) => t.field === calibratingField)?.label}
+                          </button>
+                          <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+
+                      {pendingFsBox && (
+                        <div className="flex flex-wrap items-center gap-2 justify-center px-4 py-3 border-t border-white/10 bg-ink/95">
+                          <select
+                            value={fsPickerPhase}
+                            onChange={(e) => {
+                              setFsPickerPhase(e.target.value);
+                              setFsPickerField("");
+                            }}
+                            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                          >
+                            {MATCH_PHASES.map((p) => (
+                              <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={fsPickerField}
+                            onChange={(e) => setFsPickerField(e.target.value)}
+                            className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
+                          >
+                            <option value="">
+                              {fsPickerOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
+                            </option>
+                            {fsPickerOptions.map((opt) => (
+                              <option key={opt.field} value={opt.field}>{opt.label}</option>
+                            ))}
+                          </select>
+                          <button
+                            onClick={savePendingFsBox}
+                            disabled={!fsPickerField}
+                            className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
+                          >
+                            Save
+                          </button>
+                          <button onClick={cancelPendingFsBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </div>,
+                    document.body
+                  )}
+
                 {captureMode === "manual" && calibratingField && (
                   <div className="flex gap-2">
                     <button

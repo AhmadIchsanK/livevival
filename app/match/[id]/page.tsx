@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
+import { TeamLogo } from "@/components/TeamLogo";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 type Match = {
@@ -415,14 +416,37 @@ export default function PublicMatchPage() {
   // explicit button, since some users on a supported browser still prefer
   // a plain link over the share sheet).
   async function handleShare() {
-    const shareData = {
-      title: `${match?.team_a?.name} vs ${match?.team_b?.name} — Livevival`,
-      text: seriesWinnerName ? `🏆 ${seriesWinnerName} wins ${Math.max(gamesWonByA, gamesWonByB)}–${Math.min(gamesWonByA, gamesWonByB)}` : "Match recap on Livevival",
-      url: window.location.href,
-    };
+    const shareTitle = `${match?.team_a?.name} vs ${match?.team_b?.name} — Livevival`;
+    const shareText = seriesWinnerName
+      ? `🏆 ${seriesWinnerName} wins ${Math.max(gamesWonByA, gamesWonByB)}–${Math.min(gamesWonByA, gamesWonByB)}`
+      : "Match recap on Livevival";
+
+    // Attaching the actual recap image (portrait = the same 1080x1920 IG/
+    // FB/TikTok Story dimensions) is what lets "Share" post the image
+    // itself to a Story — most story composers won't auto-fetch a plain
+    // link as media. Only attempted when the share sheet actually supports
+    // file attachments; any outcome here (shared or cancelled) is final,
+    // no fallback double-prompt afterward.
+    if (typeof navigator.canShare === "function") {
+      try {
+        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}&mode=${recapMode}`);
+        const blob = await res.blob();
+        const file = new File([blob], "livevival-recap.png", { type: "image/png" });
+        if (navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({ title: shareTitle, text: shareText, files: [file] });
+          } catch {
+            // User cancelled the share sheet — not an error worth surfacing.
+          }
+          return;
+        }
+      } catch {
+        // Image fetch failed — fall through to a plain link share instead.
+      }
+    }
     if (navigator.share) {
       try {
-        await navigator.share(shareData);
+        await navigator.share({ title: shareTitle, text: shareText, url: window.location.href });
       } catch {
         // User cancelled the share sheet — not an error worth surfacing.
       }
@@ -443,23 +467,8 @@ export default function PublicMatchPage() {
         <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
         <div className="flex items-center gap-3 flex-wrap">
           <h1 className="flex items-end gap-3 sm:gap-4">
-            {/* Boxed background behind the logo so it never blends into the
-                dark page background, regardless of the logo's own colors —
-                name sits below instead of inline so the box can be sized
-                for the logo alone. */}
             <div className="flex flex-col items-center gap-1.5 w-20 sm:w-24">
-              <div
-                className={`w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-white/10 border flex items-center justify-center p-2 ${
-                  match.status === "finished" && seriesWinnerTeamId === teamAId ? "border-signal ring-1 ring-signal" : "border-white/10"
-                }`}
-              >
-                {match.team_a?.logo_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={proxiedImageUrl(match.team_a.logo_url)} alt="" className="w-full h-full object-contain" />
-                ) : (
-                  <span className="text-white/20 text-xs">?</span>
-                )}
-              </div>
+              <TeamLogo url={match.team_a?.logo_url} highlight={match.status === "finished" && seriesWinnerTeamId === teamAId} />
               <span
                 className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
                   match.status === "finished" && seriesWinnerTeamId === teamAId ? "text-signal" : ""
@@ -470,18 +479,7 @@ export default function PublicMatchPage() {
             </div>
             <span className="text-white/30 text-lg sm:text-xl mb-6 sm:mb-7">vs</span>
             <div className="flex flex-col items-center gap-1.5 w-20 sm:w-24">
-              <div
-                className={`w-14 h-14 sm:w-16 sm:h-16 rounded-xl bg-white/10 border flex items-center justify-center p-2 ${
-                  match.status === "finished" && seriesWinnerTeamId === teamBId ? "border-signal ring-1 ring-signal" : "border-white/10"
-                }`}
-              >
-                {match.team_b?.logo_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={proxiedImageUrl(match.team_b.logo_url)} alt="" className="w-full h-full object-contain" />
-                ) : (
-                  <span className="text-white/20 text-xs">?</span>
-                )}
-              </div>
+              <TeamLogo url={match.team_b?.logo_url} highlight={match.status === "finished" && seriesWinnerTeamId === teamBId} />
               <span
                 className={`font-display font-light text-sm sm:text-base text-center leading-tight ${
                   match.status === "finished" && seriesWinnerTeamId === teamBId ? "text-signal" : ""
@@ -905,7 +903,7 @@ export default function PublicMatchPage() {
                       recapRatio === r ? "border-signal text-signal" : "border-white/10 text-white/50 hover:bg-white/5"
                     }`}
                   >
-                    {r === "portrait" ? "9:16" : "16:9"}
+                    {r === "portrait" ? "Portrait" : "Landscape"}
                   </button>
                 ))}
               </div>

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
+import { TeamLogo } from "@/components/TeamLogo";
 
 const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
   { pattern: /SAVAGE/i, type: "savage" },
@@ -26,8 +27,8 @@ type Match = {
   tournament_id: string | null;
   ocr_left_team_id: string | null;
   tournament: { name: string } | null;
-  team_a: { id: string; name: string } | null;
-  team_b: { id: string; name: string } | null;
+  team_a: { id: string; name: string; logo_url: string | null } | null;
+  team_b: { id: string; name: string; logo_url: string | null } | null;
 };
 type Player = { id: string; team_id: string; ign: string; role: string | null; photo_url: string | null };
 type Game = {
@@ -121,8 +122,8 @@ export default function LiveConsolePage() {
       .select(
         `id, youtube_url, format, current_game_number, status, state, custom_state_label, update_source, series_winner_team_id, tournament_id, ocr_left_team_id,
          tournament:tournaments(name),
-         team_a:teams!matches_team_a_id_fkey(id, name),
-         team_b:teams!matches_team_b_id_fkey(id, name)`
+         team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
+         team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
       )
       .eq("id", matchId)
       .single();
@@ -2678,8 +2679,10 @@ export default function LiveConsolePage() {
   return (
     <div className="text-white space-y-8 max-w-6xl">
       <div>
-        <h1 className="lv-heading text-lg">
+        <h1 className="lv-heading text-lg flex items-center gap-2.5">
+          <TeamLogo url={match.team_a?.logo_url} size="sm" />
           {match.team_a?.name} vs {match.team_b?.name}
+          <TeamLogo url={match.team_b?.logo_url} size="sm" />
         </h1>
         <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>

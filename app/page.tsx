@@ -283,6 +283,34 @@ function MonthCalendar({
   );
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// HH:MM:SS, uncapped hours (a match ~23h away shows "23:59:59", not a
+// truncated/wrapped value) — matches the plain digital-countdown look
+// asked for, not a "Xd Yh" style breakdown.
+function formatCountdown(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+// Bottom-right corner badge, only for matches starting within 24h — `now`
+// is a single shared ticking clock from the parent (one setInterval for
+// the whole slider, not one per card). Deliberately muted (white/40, the
+// theme-aware token) so it reads as a small utility readout, not a second
+// competing headline next to the team names.
+function MatchCountdown({ scheduledAt, now }: { scheduledAt: string; now: number }) {
+  const diff = new Date(scheduledAt).getTime() - now;
+  if (diff <= 0 || diff > DAY_MS) return null;
+  return (
+    <span className="absolute bottom-1.5 right-2.5 text-[10px] font-mono tabular-nums text-white/40 tracking-wide">
+      {formatCountdown(diff)}
+    </span>
+  );
+}
+
 function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; selectedDate: string | null }) {
   const scrollerRef = useRef<HTMLDivElement>(null);
 
@@ -294,6 +322,21 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
     byDay.get(key)!.push(m);
   }
   const days = Array.from(byDay.keys()).sort();
+
+  // Only ticks while at least one match is actually within the 24h
+  // countdown window — otherwise this section would re-render every
+  // second for no visible reason on days with nothing imminent.
+  const hasImminentMatch = matches.some((m) => {
+    if (!m.scheduled_at) return false;
+    const diff = new Date(m.scheduled_at).getTime() - Date.now();
+    return diff > 0 && diff <= DAY_MS;
+  });
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!hasImminentMatch) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasImminentMatch]);
 
   function scrollBy(amount: number) {
     scrollerRef.current?.scrollBy({ left: amount, behavior: "smooth" });
@@ -319,7 +362,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
             <div
               key={day}
               id={`day-${day}`}
-              className={`shrink-0 w-72 snap-start space-y-2 rounded-lg ${
+              className={`shrink-0 w-80 snap-start space-y-2 rounded-lg ${
                 day === selectedDate ? "ring-2 ring-signal/60 p-2 -m-2" : ""
               }`}
             >
@@ -335,16 +378,28 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                   <a
                     key={m.id}
                     href={`/match/${m.id}`}
-                    className="lv-card block px-3 py-2"
+                    className="lv-card relative block px-3 py-3 pb-5 space-y-1.5"
                   >
-                    <p className="font-semibold text-xs flex items-center gap-1.5">
-                      <TeamLogo url={m.team_a?.logo_url} size="sm" />
-                      {m.team_a?.name ?? "TBD"} <span className="text-white/30">vs</span> {m.team_b?.name ?? "TBD"}
-                      <TeamLogo url={m.team_b?.logo_url} size="sm" />
-                    </p>
-                    <p className="text-[11px] text-white/40 truncate">
+                    {/* Same centered team/VS layout as Recent results — two
+                        equal columns either side of a fixed middle column
+                        so it stays centered regardless of name length. */}
+                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+                      <div className="flex items-center justify-end gap-1.5 min-w-0">
+                        <span className="font-semibold text-xs truncate">{m.team_a?.name ?? "TBD"}</span>
+                        <TeamLogo url={m.team_a?.logo_url} size="sm" />
+                      </div>
+                      <span className="lv-score text-sm shrink-0 bg-white/5 border border-white/10 rounded-md px-2 py-1 uppercase tracking-wide">
+                        vs
+                      </span>
+                      <div className="flex items-center justify-start gap-1.5 min-w-0">
+                        <TeamLogo url={m.team_b?.logo_url} size="sm" />
+                        <span className="font-semibold text-xs truncate">{m.team_b?.name ?? "TBD"}</span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-white/40 truncate text-center">
                       {m.tournament?.name} · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
+                    {m.scheduled_at && <MatchCountdown scheduledAt={m.scheduled_at} now={now} />}
                   </a>
                 ))}
               </div>

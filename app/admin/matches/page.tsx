@@ -615,7 +615,9 @@ export default function MatchesPage() {
                 />
                 <button
                   onClick={() => updateMatch(m.id, { status: "live" })}
-                  className="lv-btn-ghost"
+                  disabled={!m.youtube_url}
+                  title={m.youtube_url ? undefined : "Add a stream link first — a match can't go live without one"}
+                  className="lv-btn-ghost disabled:opacity-40"
                 >
                   Set live
                 </button>

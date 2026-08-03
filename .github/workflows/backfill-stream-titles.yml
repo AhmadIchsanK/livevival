@@ -1,0 +1,23 @@
+name: Backfill stream titles (one-time)
+
+# Manual-only, no schedule — this is a one-time cleanup for streams added
+# before/outside the admin page's on-blur title auto-fill, not a recurring
+# job. Safe to re-run; it only ever touches rows still at the default
+# overlay_template.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js
+      - run: node scripts/backfill-stream-titles.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

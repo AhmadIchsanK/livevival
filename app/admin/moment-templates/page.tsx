@@ -20,7 +20,7 @@ type Template = {
 // started") that isn't itself a loggable moment.
 const TYPES = [
   "savage", "maniac", "lord_steal", "turtle_steal", "ace",
-  "phase_change", "game_finish", "match_finish", "game_pause", "pick", "ban", "custom", "phase_notice",
+  "phase_change", "game_finish", "match_finish", "game_pause", "pick", "ban", "custom", "phase_notice", "game_timestamp",
 ];
 
 // Matches match_state (superset of game_state) — "Any" (null) applies the
@@ -144,10 +144,11 @@ export default function MomentTemplatesPage() {
         <h1 className="lv-heading text-lg">Moment templates</h1>
         <p className="text-xs text-white/40 mt-1">
           Prefilled moment-log entries the live console offers instead of free typing. Use{" "}
-          <code className="text-white/60">{"{team}"}</code>, <code className="text-white/60">{"{hero}"}</code>, and{" "}
-          <code className="text-white/60">{"{player}"}</code> as placeholders — the console fills them in from the
-          match&apos;s own roster/hero data when a template is used. Scope a template to a phase so it only shows up
-          when relevant, or leave phase as &quot;Any&quot;.
+          <code className="text-white/60">{"{team}"}</code>, <code className="text-white/60">{"{hero}"}</code>,{" "}
+          <code className="text-white/60">{"{player}"}</code>, and <code className="text-white/60">{"{timestamp}"}</code> as
+          placeholders — the console fills them in from the match&apos;s own roster/hero data and current game clock
+          when a template is used. Scope a template to a phase so it only shows up when relevant, or leave phase as
+          &quot;Any&quot;.
         </p>
       </div>
 

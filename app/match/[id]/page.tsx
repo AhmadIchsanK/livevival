@@ -207,7 +207,7 @@ export default function PublicMatchPage() {
         .from("key_moments")
         .select("id, game_id, type, description, minute_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
         .eq("match_id", matchId)
-        .order("created_at"),
+        .order("created_at", { ascending: false }),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
       supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
     ]);
@@ -422,7 +422,10 @@ export default function PublicMatchPage() {
       {match.update_source === "local_ocr" && (
         <section>
           <h2 className="lv-heading mb-2">Moment list</h2>
-          <div className="space-y-2">
+          {/* Sized to show ~10 moments before scrolling — newest always on
+              top (query is sorted created_at desc), older ones scroll into
+              view instead of being cut off. */}
+          <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
             {keyMoments.map((km) =>
               km.is_key_moment ? (
                 <div key={km.id} className="lv-card-flush p-3 flex gap-3 items-start border border-signal/40 bg-signal/10">
@@ -563,7 +566,9 @@ export default function PublicMatchPage() {
               <div key={i} className="lv-card-flush p-4 space-y-1">
                 <p className="text-white/70 font-semibold text-sm">{t.name}</p>
                 {t.picks.length === 0 && <p className="text-xs text-white/30">Lineup not logged yet.</p>}
-                {t.picks.map((p) => (
+                {/* Dedupe by player_id — a fuzzy-match collision or a stray
+                    duplicate pick row shouldn't show the same player twice. */}
+                {[...new Map(t.picks.map((p) => [p.player_id ?? p.id, p])).values()].map((p) => (
                   <p key={p.id} className="text-xs text-white/60">
                     {p.player?.ign}
                     {p.player?.role ? ` — ${p.player.role}` : ""}
@@ -619,7 +624,7 @@ export default function PublicMatchPage() {
               <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
               <table className="w-full text-xs">
                 <thead className="text-white/40 text-left uppercase tracking-wide">
-                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K/D/A</th><th className="pb-1.5">Gold</th></tr>
+                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K</th><th className="pb-1.5">D</th><th className="pb-1.5">A</th></tr>
                 </thead>
                 <tbody>
                   {t.list.map((s) => (
@@ -629,12 +634,13 @@ export default function PublicMatchPage() {
                         {s.hero?.icon_url && <img src={proxiedImageUrl(s.hero.icon_url)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
                         {s.hero_name}
                       </td>
-                      <td className="tabular-nums">{s.kills}/{s.deaths}/{s.assists}</td>
-                      <td className="tabular-nums">{s.gold?.toLocaleString()}</td>
+                      <td className="tabular-nums">{s.kills}</td>
+                      <td className="tabular-nums">{s.deaths}</td>
+                      <td className="tabular-nums">{s.assists}</td>
                     </tr>
                   ))}
                   {t.list.length === 0 && (
-                    <tr><td colSpan={4} className="py-2 text-white/30">No stats yet.</td></tr>
+                    <tr><td colSpan={5} className="py-2 text-white/30">No stats yet.</td></tr>
                   )}
                 </tbody>
               </table>

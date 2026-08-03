@@ -164,11 +164,12 @@ async function findMatch(tournamentId, leftName, rightName) {
   return { ...data, leftId, rightId };
 }
 
-async function insertPicksAndBans(gameId, side, teamId) {
+async function insertPicksAndBans(gameId, side, teamId, matchId) {
   const insertAll = async (heroes, type) => {
     for (const heroName of heroes ?? []) {
       const { error } = await supabase.from("hero_picks_bans").insert({
         game_id: gameId,
+        match_id: matchId,
         team_id: teamId,
         hero_name: heroName,
         type,
@@ -222,8 +223,8 @@ async function importMatchDetail(tournamentId, m) {
       continue;
     }
 
-    if (g.left) await insertPicksAndBans(gameRow.id, { picks: g.left.picks, bans: g.leftBans }, match.leftId);
-    if (g.right) await insertPicksAndBans(gameRow.id, { picks: g.right.picks, bans: g.rightBans }, match.rightId);
+    if (g.left) await insertPicksAndBans(gameRow.id, { picks: g.left.picks, bans: g.leftBans }, match.leftId, match.id);
+    if (g.right) await insertPicksAndBans(gameRow.id, { picks: g.right.picks, bans: g.rightBans }, match.rightId, match.id);
   }
 
   console.log(`Imported ${m.leftName} vs ${m.rightName}: ${m.games.length} game(s), picks + bans + winners recorded`);

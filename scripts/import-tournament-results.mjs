@@ -28,6 +28,17 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// Same extraction pattern as extractLogoUrl in import-team-details.mjs — a
+// tournament's own infobox uses the identical markup. No extra HTTP fetch
+// needed: this reuses the same full-page HTML already fetched below for
+// the standings table.
+function extractLogoUrl($) {
+  let src = $(".infobox-image.lightmode img").first().attr("src");
+  if (!src) src = $(".infobox-image img").first().attr("src");
+  if (!src) return null;
+  return src.startsWith("http") ? src : `https://liquipedia.net${src}`;
+}
+
 function parsePlacementSort(placement) {
   const m = placement.match(/\d+/);
   return m ? Number(m[0]) : null;
@@ -83,7 +94,7 @@ async function findTeamId(name) {
 export async function importTournamentResults(pageTitle) {
   const { data: tournament } = await supabase
     .from("tournaments")
-    .select("id, name")
+    .select("id, name, logo_url")
     .eq("liquipedia_slug", pageTitle)
     .maybeSingle();
 
@@ -97,6 +108,15 @@ export async function importTournamentResults(pageTitle) {
   const $ = cheerio.load(html);
   const results = extractResults($);
   console.log(`Found ${results.length} placement row(s) for ${tournament.name}`);
+
+  if (!tournament.logo_url) {
+    const logoUrl = extractLogoUrl($);
+    if (logoUrl) {
+      const { error } = await supabase.from("tournaments").update({ logo_url: logoUrl }).eq("id", tournament.id);
+      if (error) console.error(`Failed to save logo for ${tournament.name}:`, error.message);
+      else console.log(`${tournament.name}: logo found`);
+    }
+  }
 
   for (const r of results) {
     const teamId = await findTeamId(r.teamNameRaw);

@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
+import { TeamLogo } from "@/components/TeamLogo";
 
 const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
   { pattern: /SAVAGE/i, type: "savage" },
@@ -26,8 +27,8 @@ type Match = {
   tournament_id: string | null;
   ocr_left_team_id: string | null;
   tournament: { name: string } | null;
-  team_a: { id: string; name: string } | null;
-  team_b: { id: string; name: string } | null;
+  team_a: { id: string; name: string; logo_url: string | null } | null;
+  team_b: { id: string; name: string; logo_url: string | null } | null;
 };
 type Player = { id: string; team_id: string; ign: string; role: string | null; photo_url: string | null };
 type Game = {
@@ -42,6 +43,8 @@ type Game = {
   manual_time_started_at: string | null;
   current_time_seconds: number | null;
   current_time_updated_at: string | null;
+  team_a_kills_override: number | null;
+  team_b_kills_override: number | null;
 };
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
@@ -119,8 +122,8 @@ export default function LiveConsolePage() {
       .select(
         `id, youtube_url, format, current_game_number, status, state, custom_state_label, update_source, series_winner_team_id, tournament_id, ocr_left_team_id,
          tournament:tournaments(name),
-         team_a:teams!matches_team_a_id_fkey(id, name),
-         team_b:teams!matches_team_b_id_fkey(id, name)`
+         team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
+         team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
       )
       .eq("id", matchId)
       .single();
@@ -134,7 +137,7 @@ export default function LiveConsolePage() {
 
     let { data: gameRow } = await supabase
       .from("games")
-      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at")
+      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override")
       .eq("match_id", matchId)
       .eq("game_number", m.current_game_number)
       .maybeSingle();
@@ -143,7 +146,7 @@ export default function LiveConsolePage() {
       const { data: created, error: createErr } = await supabase
         .from("games")
         .insert({ match_id: matchId, game_number: m.current_game_number, status: "live" })
-        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at")
+        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override")
         .single();
       if (createErr) {
         setError(createErr.message);
@@ -240,6 +243,20 @@ export default function LiveConsolePage() {
         return `<b>${team.name}</b>\nPicks: ${picks || "—"}\nBans: ${bans || "—"}`;
       })
       .join("\n\n");
+  }
+
+  // "All 10 players have a hero decided" — each side's starting five
+  // (same deterministic role-ordered slots the draft_hero_pick trackers
+  // resolve against) must have a logged pick for this game, regardless of
+  // whether that pick came from OCR, AI vision, or a manual edit.
+  function draftFullyResolved(): boolean {
+    if (!match?.team_a || !match?.team_b) return false;
+    for (const teamId of [match.team_a.id, match.team_b.id]) {
+      const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
+      if (teamPlayers.length < 5) return false;
+      if (teamPlayers.some((p) => !pickBans.some((pb) => pb.player_id === p.id && pb.type === "pick"))) return false;
+    }
+    return true;
   }
 
   // Dumps everything currently on this page in one message — score so far,
@@ -817,121 +834,104 @@ export default function LiveConsolePage() {
   // overlay they're calibrated against — ocr_left_team_id (set once per
   // match below) is what resolves "left" to a real team, so the regions
   // themselves never need recalibrating when sides swap between games.
-  type CaptureField =
+  //
+  // Trackers are no longer a hardcoded TypeScript union — which (phase,
+  // category, variable) combinations exist for a given match is now rows in
+  // capture_regions (phase/category/field/label + calibrated box), added,
+  // edited, and removed from the UI below instead of compiled into the app.
+  // `field` stays a stable string key (e.g. "player_kda_left_3",
+  // "objective_right_tower") — the OCR dispatch below recovers which side/
+  // slot/objective-type a given tracker is for straight from that key
+  // (see fieldParts), rather than needing 10 near-identical hardcoded
+  // branches per side per slot.
+  type TrackerCategory =
     | "countdown"
-    | "draft_timer_a"
-    | "draft_timer_b"
-    | "draft_picks_left"
-    | "draft_picks_right"
+    | "draft_timer"
+    | "draft_hero_pick"
     | "game_timer"
-    | "objectives_left"
-    | "objectives_right"
-    | "networth_left"
-    | "networth_right"
-    | "kda_left_1"
-    | "kda_left_2"
-    | "kda_left_3"
-    | "kda_left_4"
-    | "kda_left_5"
-    | "kda_right_1"
-    | "kda_right_2"
-    | "kda_right_3"
-    | "kda_right_4"
-    | "kda_right_5"
+    | "team_kills"
+    | "objective"
+    | "net_worth"
+    | "player_kda"
     | "kill_banner"
     | "victory_banner"
     | "pause_word";
-  // One region per player (5 per side) instead of one region for the whole
-  // team block — a team-block region asked OCR to read 5 lines out of one
-  // crop in a single pass, where any one player's row being slightly
-  // misaligned or a hero icon overlapping text could throw off the whole
-  // block. Individually-calibrated per-player regions are more reliable
-  // (recognize() on a small single-line crop) at the cost of 5x the
-  // calibration effort — same tradeoff already made for objectives_left/
-  // right vs. one combined region.
+  type Side = "left" | "right";
+  type Tracker = { id: string; phase: string; category: TrackerCategory; field: string; label: string };
+
   const KDA_SLOT_LABELS = ROLE_ORDER;
-  const CAPTURE_FIELDS: { field: CaptureField; label: string }[] = [
-    { field: "countdown", label: "Pre-game countdown" },
-    { field: "draft_timer_a", label: "Draft timer — Team A" },
-    { field: "draft_timer_b", label: "Draft timer — Team B" },
-    { field: "draft_picks_left", label: "Draft picks — left side (player + hero text)" },
-    { field: "draft_picks_right", label: "Draft picks — right side (player + hero text)" },
-    { field: "game_timer", label: "Game timer" },
-    { field: "objectives_left", label: "Objectives — left (tower, lord, turtle)" },
-    { field: "objectives_right", label: "Objectives — right (tower, lord, turtle)" },
-    { field: "networth_left", label: "Net worth — left" },
-    { field: "networth_right", label: "Net worth — right" },
-    ...([1, 2, 3, 4, 5] as const).map((n) => ({
-      field: `kda_left_${n}` as CaptureField,
-      label: `K/D/A — left #${n} (${KDA_SLOT_LABELS[n - 1]})`,
-    })),
-    ...([1, 2, 3, 4, 5] as const).map((n) => ({
-      field: `kda_right_${n}` as CaptureField,
-      label: `K/D/A — right #${n} (${KDA_SLOT_LABELS[n - 1]})`,
-    })),
-    { field: "kill_banner", label: "Kill banner (Savage/Maniac/etc.)" },
-    { field: "victory_banner", label: "Victory/defeat banner" },
-    { field: "pause_word", label: "Pause indicator" },
+  const SIDES: { key: Side; label: string }[] = [
+    { key: "left", label: "Left" },
+    { key: "right", label: "Right" },
   ];
-  // Which crop regions are relevant to each phase — this is what makes each
-  // phase's tracker genuinely different instead of one field list shown
-  // regardless of what's actually on screen. Draft-finish (DRAFT_COMPLETE)
-  // has no region of its own: its tracker is the staged-picks review panel
-  // surfaced separately below. Bans stay manual/AI-only — ban slots show no
-  // text on screen, only an icon, so there's nothing for deterministic OCR
-  // to read there.
-  const PHASE_CAPTURE_FIELDS: Record<string, CaptureField[]> = {
-    MATCH_NOT_STARTED: ["countdown"],
-    DRAFT_STARTED: ["draft_timer_a", "draft_timer_b", "draft_picks_left", "draft_picks_right"],
-    DRAFT_COMPLETE: [],
-    GAME_STARTED: [
-      "game_timer",
-      "objectives_left",
-      "objectives_right",
-      "networth_left",
-      "networth_right",
-      "kda_left_1",
-      "kda_left_2",
-      "kda_left_3",
-      "kda_left_4",
-      "kda_left_5",
-      "kda_right_1",
-      "kda_right_2",
-      "kda_right_3",
-      "kda_right_4",
-      "kda_right_5",
-      "kill_banner",
-    ],
-    GAME_FINISHED: ["victory_banner"],
-    SERIES_FINISHED: [],
-    TECHNICAL_PAUSE: ["pause_word"],
-    CUSTOM: [],
-  };
-  const EMPTY_CAPTURE_RECORD = {
-    countdown: null,
-    draft_timer_a: null,
-    draft_timer_b: null,
-    draft_picks_left: null,
-    draft_picks_right: null,
-    game_timer: null,
-    objectives_left: null,
-    objectives_right: null,
-    networth_left: null,
-    networth_right: null,
-    kda_left_1: null,
-    kda_left_2: null,
-    kda_left_3: null,
-    kda_left_4: null,
-    kda_left_5: null,
-    kda_right_1: null,
-    kda_right_2: null,
-    kda_right_3: null,
-    kda_right_4: null,
-    kda_right_5: null,
-    kill_banner: null,
-    victory_banner: null,
-    pause_word: null,
-  };
+
+  // Every (phase, category, variable) combination an admin can add for a
+  // match — the "Add tracker" control below offers whatever's in this
+  // catalog for the selected phase, minus whatever's already added.
+  // Draft-finish (DRAFT_COMPLETE) has no tracker of its own: it reads the
+  // same per-player draft_hero_pick regions from DRAFT_STARTED (see
+  // retakeDraftPicks) rather than needing a second set. Bans stay manual —
+  // ban slots show no text on screen, only an icon, so there's nothing for
+  // deterministic OCR to read there.
+  function catalogForPhase(phase: string): { category: TrackerCategory; field: string; label: string }[] {
+    switch (phase) {
+      case "MATCH_NOT_STARTED":
+        return [{ category: "countdown", field: "countdown", label: "Pre-game countdown" }];
+      case "DRAFT_STARTED": {
+        const items: { category: TrackerCategory; field: string; label: string }[] = [];
+        for (const side of SIDES) items.push({ category: "draft_timer", field: `draft_timer_${side.key}`, label: `Draft timer — ${side.label}` });
+        for (const side of SIDES) {
+          for (let n = 1; n <= 5; n++) {
+            items.push({
+              category: "draft_hero_pick",
+              field: `draft_hero_pick_${side.key}_${n}`,
+              label: `Hero pick — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
+            });
+          }
+        }
+        return items;
+      }
+      case "GAME_STARTED": {
+        const items: { category: TrackerCategory; field: string; label: string }[] = [
+          { category: "game_timer", field: "game_timer", label: "Game timer" },
+          { category: "kill_banner", field: "kill_banner", label: "Kill banner (Savage/Maniac/etc.)" },
+        ];
+        for (const side of SIDES) items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}` });
+        for (const side of SIDES) items.push({ category: "net_worth", field: `net_worth_${side.key}`, label: `Net worth — ${side.label}` });
+        for (const side of SIDES) {
+          for (const type of OBJECTIVE_TYPES) {
+            items.push({ category: "objective", field: `objective_${side.key}_${type}`, label: `Objective — ${side.label} — ${type}` });
+          }
+        }
+        for (const side of SIDES) {
+          for (let n = 1; n <= 5; n++) {
+            items.push({
+              category: "player_kda",
+              field: `player_kda_${side.key}_${n}`,
+              label: `K/D/A — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
+            });
+          }
+        }
+        return items;
+      }
+      case "GAME_FINISHED":
+        return [{ category: "victory_banner", field: "victory_banner", label: "Victory/defeat banner" }];
+      case "TECHNICAL_PAUSE":
+        return [{ category: "pause_word", field: "pause_word", label: "Pause indicator" }];
+      default:
+        return [];
+    }
+  }
+
+  // Pulls side/slot/objective-type back out of a field key built by the
+  // catalog above — e.g. "player_kda_left_3" -> { side: "left", slot: 3 }.
+  function fieldParts(field: string): { side: Side | null; slot: number | null; objectiveType: string | null } {
+    const side: Side | null = field.includes("_left") ? "left" : field.includes("_right") ? "right" : null;
+    const slotMatch = field.match(/_(\d)$/);
+    const slot = slotMatch ? Number(slotMatch[1]) : null;
+    const objectiveType = OBJECTIVE_TYPES.find((t) => field.endsWith(`_${t}`)) ?? null;
+    return { side, slot, objectiveType };
+  }
   type RegionBox = { xPct: number; yPct: number; wPct: number; hPct: number };
 
   const previewRef = useRef<HTMLVideoElement>(null);
@@ -981,7 +981,7 @@ export default function LiveConsolePage() {
   const tickInFlight = useRef(false);
 
   const [captureActive, setCaptureActive] = useState(false);
-  const [calibratingField, setCalibratingField] = useState<CaptureField | null>(null);
+  const [calibratingField, setCalibratingField] = useState<string | null>(null);
   // Live-editable draft of the region currently being calibrated — shown
   // with a preview box + corner handles, not persisted to capture_regions
   // until the admin explicitly locks it (see lockDraftBox). Starts from
@@ -989,33 +989,15 @@ export default function LiveConsolePage() {
   // real corner-drag adjustment instead of redrawing from scratch.
   const [draftBox, setDraftBox] = useState<RegionBox | null>(null);
   const [manualTimeInputs, setManualTimeInputs] = useState<Record<string, string>>({});
-  const [regions, setRegions] = useState<Record<CaptureField, RegionBox | null>>({ ...EMPTY_CAPTURE_RECORD });
-  const [readings, setReadings] = useState<Record<CaptureField, string>>({
-    ...EMPTY_CAPTURE_RECORD,
-    countdown: "",
-    draft_timer_a: "",
-    draft_timer_b: "",
-    draft_picks_left: "",
-    draft_picks_right: "",
-    game_timer: "",
-    objectives_left: "",
-    objectives_right: "",
-    networth_left: "",
-    networth_right: "",
-    kda_left_1: "",
-    kda_left_2: "",
-    kda_left_3: "",
-    kda_left_4: "",
-    kda_left_5: "",
-    kda_right_1: "",
-    kda_right_2: "",
-    kda_right_3: "",
-    kda_right_4: "",
-    kda_right_5: "",
-    kill_banner: "",
-    victory_banner: "",
-    pause_word: "",
-  });
+  // Trackers this match currently has configured (loaded from
+  // capture_regions, tournament defaults layered under match-specific rows —
+  // see the load effect below) — replaces the old hardcoded CAPTURE_FIELDS/
+  // PHASE_CAPTURE_FIELDS arrays. `regions`/`readings` stay keyed by the same
+  // `field` string as before; only what populates them (data instead of a
+  // compiled-in list) changed.
+  const [trackers, setTrackers] = useState<Tracker[]>([]);
+  const [regions, setRegions] = useState<Record<string, RegionBox | null>>({});
+  const [readings, setReadings] = useState<Record<string, string>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
   const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
 
@@ -1098,14 +1080,20 @@ export default function LiveConsolePage() {
   // Draft phases (DRAFT_STARTED/DRAFT_COMPLETE) never auto-write detected
   // picks/bans straight to the DB — a misread hero name during a fast draft
   // is much costlier to have gone live already than a stat glitch that
-  // gets overwritten next tick. Detections pile up here for the admin to
-  // review and explicitly push instead.
+  // gets overwritten next tick. Detections surface as a pop-out (see
+  // draftPickPopup below) instead of a passive bottom banner, so a fresh
+  // pick actually interrupts the admin rather than waiting to be noticed.
   const DRAFT_PHASES = ["DRAFT_STARTED", "DRAFT_COMPLETE"];
-  const [stagedDraftActions, setStagedDraftActions] = useState<
-    { type: "pick" | "ban"; team_name: string; hero_name: string }[]
-  >([]);
+  type StagedDraftAction = { type: "pick" | "ban"; team_name: string; hero_name: string; player_id?: string; player_name?: string };
+  const [stagedDraftActions, setStagedDraftActions] = useState<StagedDraftAction[]>([]);
+  // A dismissed detection shouldn't immediately pop back up on the very
+  // next tick reading the exact same (still-uncommitted) crop — keyed by
+  // player+hero so a genuine correction (OCR later reads a DIFFERENT hero
+  // for that slot) still surfaces as a new suggestion.
+  const dismissedDraftKeys = useRef<Set<string>>(new Set());
+  const draftPickPopup = stagedDraftActions[0] ?? null;
 
-  async function commitDraftAction(action: { type: "pick" | "ban"; team_name: string; hero_name: string }) {
+  async function commitDraftAction(action: StagedDraftAction) {
     const teamId = matchTeamId(action.team_name);
     if (!teamId || !action.hero_name || !game) return;
     const alreadyLogged = pickBans.some(
@@ -1117,6 +1105,7 @@ export default function LiveConsolePage() {
         game_id: game.id,
         match_id: matchId,
         team_id: teamId,
+        player_id: action.player_id ?? null,
         hero_name: action.hero_name,
         hero_id: matchHeroId(action.hero_name),
         type: action.type,
@@ -1124,67 +1113,104 @@ export default function LiveConsolePage() {
       },
       { onConflict: "game_id,team_id,hero_name,type" }
     );
-    await logPickBanMoment(action.type, teamId, action.hero_name);
+    await logPickBanMoment(action.type, teamId, action.hero_name, action.player_id);
+    // A deterministic per-slot pick already knows exactly which player it
+    // is — no reason to make the admin also go update Live Scoreboard by
+    // hand for something OCR already resolved with certainty.
+    if (action.player_id) await updateStat(action.player_id, "hero_name", action.hero_name);
   }
 
-  async function pushStagedDraftActions() {
-    for (const action of stagedDraftActions) await commitDraftAction(action);
-    setStagedDraftActions([]);
+  function draftKeyFor(action: Pick<StagedDraftAction, "player_id" | "hero_name">) {
+    return `${action.player_id ?? ""}:${action.hero_name.toLowerCase()}`;
+  }
+  async function pushDraftPickPopup() {
+    if (!draftPickPopup) return;
+    await commitDraftAction(draftPickPopup);
+    setStagedDraftActions((prev) => prev.slice(1));
     loadAll();
+  }
+  function dismissDraftPickPopup() {
+    if (!draftPickPopup) return;
+    dismissedDraftKeys.current.add(draftKeyFor(draftPickPopup));
+    setStagedDraftActions((prev) => prev.slice(1));
   }
 
   const [retakingDraft, setRetakingDraft] = useState(false);
   // Picks staged mid-draft can go stale by the time the draft actually
   // locks in (a last-second swap, a misread corrected by the caster) —
-  // this does one fresh OCR pass over both draft-picks regions and
-  // corrects hero_picks_bans per player instead of leaving whatever was
-  // captured earlier standing. Only meaningful once DRAFT_COMPLETE, with
-  // capture still running so there's a live frame to read.
+  // this does one fresh OCR pass over every per-player draft_hero_pick
+  // tracker and corrects hero_picks_bans per player instead of leaving
+  // whatever was captured earlier standing. Only meaningful once
+  // DRAFT_COMPLETE, with capture still running so there's a live frame to
+  // read. Each tracker's slot number deterministically identifies which
+  // roster player it belongs to (teamPlayers sorted by role, same order
+  // KDA_SLOT_LABELS uses) — the crop only ever needs to contain a hero
+  // name, not a player name too, since position already answers "who."
+  const [retakeIncomplete, setRetakeIncomplete] = useState<number | null>(null);
   async function retakeDraftPicks() {
     const video = previewRef.current;
     const worker = workerRef.current;
     if (!game || !match || !video || !worker) return;
     setRetakingDraft(true);
+    setRetakeIncomplete(null);
     try {
-      const sides: [CaptureField, () => string | null][] = [
-        ["draft_picks_left", resolveLeftTeamId],
-        ["draft_picks_right", resolveRightTeamId],
-      ];
-      for (const [field, getTeamId] of sides) {
-        const box = regions[field];
-        const teamId = getTeamId();
-        if (!box || !teamId) continue;
+      // Read every tracker first and buffer the results — only once every
+      // slot that has a calibrated region has actually resolved a hero do
+      // any of them get written, instead of writing player-by-player as
+      // each OCR pass completes (which could leave hero_picks_bans/live
+      // score in an inconsistent half-updated state if the pass is
+      // interrupted partway through).
+      const draftHeroPickTrackers = trackers.filter((t) => t.category === "draft_hero_pick");
+      const resolved: { teamId: string; playerRow: Player; hero: { id: string; name: string } }[] = [];
+      let attempted = 0;
+      for (const tracker of draftHeroPickTrackers) {
+        const { side, slot } = fieldParts(tracker.field);
+        if (!side || !slot) continue;
+        const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
+        const box = regions[tracker.field];
+        if (!teamId || !box) continue;
+        attempted++;
+        const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
+        const playerRow = teamPlayers[slot - 1];
+        if (!playerRow) continue;
         const canvas = cropCanvasFor(video, box);
         if (!canvas) continue;
         const { data: { text } } = await worker.recognize(canvas);
-        for (const { player, hero } of parseDraftPickLines(text, teamId)) {
-          const playerRow = players.find((p) => p.team_id === teamId && p.ign.toLowerCase() === player.toLowerCase());
-          if (!playerRow) continue;
-          // Replace this player's existing pick (if any) rather than
-          // appending — a retake is a correction, not a second pick.
-          await supabase.from("hero_picks_bans").delete().eq("game_id", game.id).eq("player_id", playerRow.id).eq("type", "pick");
-          await supabase.from("hero_picks_bans").insert({
-            game_id: game.id,
-            match_id: matchId,
-            team_id: teamId,
-            player_id: playerRow.id,
-            hero_name: hero,
-            hero_id: matchHeroId(hero),
-            type: "pick",
-            pick_order: pickBans.length + 1,
-          });
-          await logPickBanMoment("pick", teamId, hero, playerRow.id);
-          await updateStat(playerRow.id, "hero_name", hero);
-        }
+        const n = normalize(text);
+        const hero = heroes.find((h) => n.includes(normalize(h.name)));
+        if (!hero) continue;
+        resolved.push({ teamId, playerRow, hero });
+      }
+      if (attempted > 0 && resolved.length < attempted) {
+        // Partial read — surfaced, not silently applied, since committing
+        // half a draft's worth of picks is exactly the "wrong write that's
+        // costlier than waiting a tick" this whole staged/buffered
+        // approach exists to avoid. Retrying (recapture usually clears a
+        // transient misread) is the expected next step.
+        setRetakeIncomplete(resolved.length);
+        return;
+      }
+      for (const { teamId, playerRow, hero } of resolved) {
+        // Replace this player's existing pick (if any) rather than
+        // appending — a retake is a correction, not a second pick.
+        await supabase.from("hero_picks_bans").delete().eq("game_id", game.id).eq("player_id", playerRow.id).eq("type", "pick");
+        await supabase.from("hero_picks_bans").insert({
+          game_id: game.id,
+          match_id: matchId,
+          team_id: teamId,
+          player_id: playerRow.id,
+          hero_name: hero.name,
+          hero_id: hero.id,
+          type: "pick",
+          pick_order: pickBans.length + 1,
+        });
+        await logPickBanMoment("pick", teamId, hero.name, playerRow.id);
+        await updateStat(playerRow.id, "hero_name", hero.name);
       }
     } finally {
       setRetakingDraft(false);
       loadAll();
     }
-  }
-
-  function discardStagedDraftAction(index: number) {
-    setStagedDraftActions((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function applyAiDetection(detection: AiDetection) {
@@ -1347,61 +1373,163 @@ export default function LiveConsolePage() {
     (async () => {
       // Tournament-wide defaults first, then match-specific rows layered on
       // top — a match that was never calibrated inherits the tournament's
-      // saved regions; one that was calibrated keeps its own. "overlay_hint"
-      // is a text-only field (crop-region columns stay null for it) reusing
-      // this same table/scoping instead of a dedicated one.
+      // saved trackers/regions; one that was calibrated keeps its own.
+      // "overlay_hint" is a text-only row (crop-region columns stay null for
+      // it, phase 'ANY') reusing this same table/scoping instead of a
+      // dedicated one.
+      const cols = "id, field, phase, category, label, x_pct, y_pct, w_pct, h_pct, hint_text";
       const [{ data: tournamentDefaults }, { data: matchRegions }] = await Promise.all([
-        supabase.from("capture_regions").select("field, x_pct, y_pct, w_pct, h_pct, hint_text").eq("tournament_id", match.tournament_id),
-        supabase.from("capture_regions").select("field, x_pct, y_pct, w_pct, h_pct, hint_text").eq("match_id", matchId),
+        supabase.from("capture_regions").select(cols).eq("tournament_id", match.tournament_id),
+        supabase.from("capture_regions").select(cols).eq("match_id", matchId),
       ]);
-      setRegions((prev) => {
-        const next = { ...prev };
-        for (const r of tournamentDefaults ?? []) {
-          if (r.field === "overlay_hint") continue;
-          next[r.field as CaptureField] = { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct };
-        }
-        for (const r of matchRegions ?? []) {
-          if (r.field === "overlay_hint") continue;
-          next[r.field as CaptureField] = { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct };
-        }
-        return next;
-      });
-      const tournamentHint = tournamentDefaults?.find((r) => r.field === "overlay_hint")?.hint_text;
-      const matchHint = matchRegions?.find((r) => r.field === "overlay_hint")?.hint_text;
+      const nextTrackers: Tracker[] = [];
+      const nextRegions: Record<string, RegionBox | null> = {};
+      for (const r of [...(tournamentDefaults ?? []), ...(matchRegions ?? [])]) {
+        if (r.category === "overlay_hint") continue;
+        const idx = nextTrackers.findIndex((t) => t.field === r.field);
+        const tracker: Tracker = { id: r.id, phase: r.phase, category: r.category as TrackerCategory, field: r.field, label: r.label ?? r.field };
+        if (idx === -1) nextTrackers.push(tracker);
+        else nextTrackers[idx] = tracker; // match-specific row overrides the tournament default with the same field
+        nextRegions[r.field] = r.x_pct != null ? { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct } : null;
+      }
+      setTrackers(nextTrackers);
+      setRegions((prev) => ({ ...prev, ...nextRegions }));
+      const tournamentHint = tournamentDefaults?.find((r) => r.category === "overlay_hint")?.hint_text;
+      const matchHint = matchRegions?.find((r) => r.category === "overlay_hint")?.hint_text;
       if (matchHint ?? tournamentHint) setOverlayHint(matchHint ?? tournamentHint ?? "");
     })();
   }, [matchId, match?.tournament_id]);
 
-  async function saveRegion(field: CaptureField, box: RegionBox) {
-    setRegions((prev) => ({ ...prev, [field]: box }));
-    await supabase.from("capture_regions").upsert(
-      { match_id: matchId, field, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct },
-      { onConflict: "match_id,field" }
-    );
-  }
-  async function clearRegion(field: CaptureField) {
+  // Adding a tracker creates the capture_regions row with no coordinates yet
+  // (calibration is a separate, explicit step below) — the phase-scoped
+  // unique index (match_id, phase, field) is the hard backstop against a
+  // duplicate slipping through; a friendly message covers the common case
+  // instead of just surfacing the raw constraint-violation error.
+  async function addTracker(phase: string, category: TrackerCategory, field: string, label: string) {
+    const { data, error } = await supabase
+      .from("capture_regions")
+      .insert({ match_id: matchId, phase, category, field, label })
+      .select("id")
+      .single();
+    if (error || !data) {
+      setError(error?.message.includes("duplicate key") ? `"${label}" is already tracked for this phase.` : error?.message ?? "Failed to add tracker");
+      return;
+    }
+    setTrackers((prev) => [...prev, { id: data.id, phase, category, field, label }]);
     setRegions((prev) => ({ ...prev, [field]: null }));
-    setReadings((prev) => ({ ...prev, [field]: "" }));
-    await supabase.from("capture_regions").delete().eq("match_id", matchId).eq("field", field);
   }
 
-  const [savedDefaultField, setSavedDefaultField] = useState<CaptureField | null>(null);
-  async function saveRegionAsTournamentDefault(field: CaptureField) {
-    const box = regions[field];
+  async function removeTracker(tracker: Tracker) {
+    await supabase.from("capture_regions").delete().eq("id", tracker.id);
+    setTrackers((prev) => prev.filter((t) => t.id !== tracker.id));
+    setRegions((prev) => {
+      const next = { ...prev };
+      delete next[tracker.field];
+      return next;
+    });
+    setReadings((prev) => {
+      const next = { ...prev };
+      delete next[tracker.field];
+      return next;
+    });
+    if (calibratingField === tracker.field) {
+      setCalibratingField(null);
+      setDraftBox(null);
+    }
+  }
+
+  const [trackerLabelDrafts, setTrackerLabelDrafts] = useState<Record<string, string>>({});
+  async function renameTracker(tracker: Tracker, newLabel: string) {
+    const label = newLabel.trim();
+    if (!label || label === tracker.label) return;
+    await supabase.from("capture_regions").update({ label }).eq("id", tracker.id);
+    setTrackers((prev) => prev.map((t) => (t.id === tracker.id ? { ...t, label } : t)));
+    setTrackerLabelDrafts((prev) => {
+      const next = { ...prev };
+      delete next[tracker.id];
+      return next;
+    });
+  }
+
+  // ── Tracker list: add + sortable/searchable/filterable table ─────────
+  const [newTrackerPhase, setNewTrackerPhase] = useState<string>(match?.state ?? "MATCH_NOT_STARTED");
+  const [newTrackerChoice, setNewTrackerChoice] = useState("");
+  const [trackerSearch, setTrackerSearch] = useState("");
+  const [trackerPhaseFilter, setTrackerPhaseFilter] = useState("");
+  const [trackerCategoryFilter, setTrackerCategoryFilter] = useState("");
+  const [trackerSort, setTrackerSort] = useState<{ key: "phase" | "category" | "label" | "calibrated"; dir: 1 | -1 }>({
+    key: "phase",
+    dir: 1,
+  });
+  function toggleTrackerSort(key: typeof trackerSort.key) {
+    setTrackerSort((prev) => (prev.key === key ? { key, dir: prev.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
+  }
+  // Whatever's in the catalog for the selected phase, minus fields already
+  // tracked there — the phase-scoped unique index is the hard backstop,
+  // this is just so the dropdown doesn't even offer a duplicate.
+  const trackerCatalogOptions = catalogForPhase(newTrackerPhase).filter(
+    (opt) => !trackers.some((t) => t.phase === newTrackerPhase && t.field === opt.field)
+  );
+  async function handleAddTracker() {
+    const opt = trackerCatalogOptions.find((o) => o.field === newTrackerChoice);
+    if (!opt) return;
+    await addTracker(newTrackerPhase, opt.category, opt.field, opt.label);
+    setNewTrackerChoice("");
+  }
+  const visibleTrackers = trackers
+    .filter((t) => (trackerPhaseFilter ? t.phase === trackerPhaseFilter : true))
+    .filter((t) => (trackerCategoryFilter ? t.category === trackerCategoryFilter : true))
+    .filter((t) => (trackerSearch ? t.label.toLowerCase().includes(trackerSearch.toLowerCase()) : true))
+    .sort((a, b) => {
+      const dir = trackerSort.dir;
+      if (trackerSort.key === "calibrated") return (Number(!!regions[a.field]) - Number(!!regions[b.field])) * dir;
+      return a[trackerSort.key].localeCompare(b[trackerSort.key]) * dir;
+    });
+
+  async function saveRegion(field: string, box: RegionBox) {
+    setRegions((prev) => ({ ...prev, [field]: box }));
+    const tracker = trackers.find((t) => t.field === field);
+    if (!tracker) return;
+    await supabase
+      .from("capture_regions")
+      .update({ x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct })
+      .eq("id", tracker.id);
+  }
+  async function clearRegionCoords(field: string) {
+    setRegions((prev) => ({ ...prev, [field]: null }));
+    setReadings((prev) => ({ ...prev, [field]: "" }));
+    const tracker = trackers.find((t) => t.field === field);
+    if (!tracker) return;
+    await supabase.from("capture_regions").update({ x_pct: null, y_pct: null, w_pct: null, h_pct: null }).eq("id", tracker.id);
+  }
+
+  const [savedDefaultField, setSavedDefaultField] = useState<string | null>(null);
+  async function saveRegionAsTournamentDefault(tracker: Tracker) {
+    const box = regions[tracker.field];
     if (!box || !match?.tournament_id) return;
     await supabase.from("capture_regions").upsert(
-      { tournament_id: match.tournament_id, field, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct },
-      { onConflict: "tournament_id,field" }
+      {
+        tournament_id: match.tournament_id,
+        phase: tracker.phase,
+        category: tracker.category,
+        field: tracker.field,
+        label: tracker.label,
+        x_pct: box.xPct,
+        y_pct: box.yPct,
+        w_pct: box.wPct,
+        h_pct: box.hPct,
+      },
+      { onConflict: "tournament_id,phase,field" }
     );
-    setSavedDefaultField(field);
+    setSavedDefaultField(tracker.field);
     setTimeout(() => setSavedDefaultField(null), 2000);
   }
 
   async function saveOverlayHint() {
     if (!matchId) return;
     await supabase.from("capture_regions").upsert(
-      { match_id: matchId, field: "overlay_hint", hint_text: overlayHint || null },
-      { onConflict: "match_id,field" }
+      { match_id: matchId, phase: "ANY", category: "overlay_hint", field: "overlay_hint", label: "Overlay hint", hint_text: overlayHint || null },
+      { onConflict: "match_id,phase,field" }
     );
   }
 
@@ -1409,8 +1537,8 @@ export default function LiveConsolePage() {
   async function saveOverlayHintAsTournamentDefault() {
     if (!match?.tournament_id) return;
     await supabase.from("capture_regions").upsert(
-      { tournament_id: match.tournament_id, field: "overlay_hint", hint_text: overlayHint || null },
-      { onConflict: "tournament_id,field" }
+      { tournament_id: match.tournament_id, phase: "ANY", category: "overlay_hint", field: "overlay_hint", label: "Overlay hint", hint_text: overlayHint || null },
+      { onConflict: "tournament_id,phase,field" }
     );
     setOverlayHintSavedAsDefault(true);
     setTimeout(() => setOverlayHintSavedAsDefault(false), 2000);
@@ -1431,7 +1559,15 @@ export default function LiveConsolePage() {
     const crop = document.createElement("canvas");
     crop.width = cw;
     crop.height = ch;
-    crop.getContext("2d")?.drawImage(full, cx, cy, cw, ch, 0, 0, cw, ch);
+    const cropCtx = crop.getContext("2d");
+    // Grayscale before Tesseract sees it — broadcast overlays are almost
+    // always light text on a dark translucent panel (or vice versa); color
+    // noise (team colors bleeding through the panel, chroma compression
+    // artifacts) doesn't carry any digit/letter information and Tesseract's
+    // own internal binarization does better starting from a flat luminance
+    // image than from full color.
+    if (cropCtx) cropCtx.filter = "grayscale(1)";
+    cropCtx?.drawImage(full, cx, cy, cw, ch, 0, 0, cw, ch);
     return crop;
   }
 
@@ -1618,67 +1754,52 @@ export default function LiveConsolePage() {
     else loadAll();
   }
 
-  // Best-effort line parser shared by draft-pick and K/D/A regions: scans
-  // each OCR'd line for a known hero name and a known player ign as
-  // substrings (fuzzy via normalize()) rather than assuming a fixed column
-  // layout, since the exact overlay text format varies by tournament.
-  function findPlayerAndHeroInLine(line: string, teamId: string | null) {
-    const teamPlayers = teamId ? players.filter((p) => p.team_id === teamId) : players;
-    const n = normalize(line);
-    const player = teamPlayers.find((p) => n.includes(normalize(p.ign)));
-    const hero = heroes.find((h) => n.includes(normalize(h.name)));
-    return { player, hero };
+  // Deterministic per-slot player resolution — a draft_hero_pick or
+  // player_kda tracker's own (side, slot) already says which roster
+  // position it is (same role order KDA_SLOT_LABELS/teamPlayers uses
+  // everywhere else), so identity no longer depends on fuzzy-matching a
+  // player name out of the OCR text — only the hero name (or K/D/A digits)
+  // needs to be legible in that crop.
+  function slotPlayer(side: Side, slot: number): Player | null {
+    const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
+    if (!teamId) return null;
+    const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
+    return teamPlayers[slot - 1] ?? null;
   }
-  // The draft-picks overlay puts player name and hero name on separate
-  // lines (player on top, hero below it) per slot, not both on one line —
-  // findPlayerAndHeroInLine per-line-in-isolation never matched anything
-  // real against that layout, which is why draft-pick OCR looked
-  // completely dead. Still handles a same-line "player — hero" format too
-  // in case a different tournament's overlay does put them together.
-  function parseDraftPickLines(text: string, teamId: string | null): { player: string; hero: string }[] {
-    const results: { player: string; hero: string }[] = [];
-    let pendingPlayer: string | null = null;
-    for (const rawLine of text.split(/\n/)) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const { player, hero } = findPlayerAndHeroInLine(line, teamId);
-      if (player && hero) {
-        results.push({ player: player.ign, hero: hero.name });
-        pendingPlayer = null;
-      } else if (player) {
-        pendingPlayer = player.ign;
-      } else if (hero && pendingPlayer) {
-        results.push({ player: pendingPlayer, hero: hero.name });
-        pendingPlayer = null;
-      }
-    }
-    return results;
+  function findHeroInText(text: string) {
+    const n = normalize(text);
+    return heroes.find((h) => n.includes(normalize(h.name))) ?? null;
   }
-  function parseKdaLines(text: string, teamId: string | null) {
-    const results: { playerId: string; heroName: string | null; kills: number; deaths: number; assists: number }[] = [];
-    for (const rawLine of text.split(/\n/)) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const kda = line.match(/(\d+)\D+(\d+)\D+(\d+)/);
-      if (!kda) continue;
-      const { player, hero } = findPlayerAndHeroInLine(line, teamId);
-      if (!player) continue;
-      results.push({ playerId: player.id, heroName: hero?.name ?? null, kills: Number(kda[1]), deaths: Number(kda[2]), assists: Number(kda[3]) });
-    }
-    return results;
+  // Broadcast overlays show net worth either as a raw digit count
+  // ("23456") or already abbreviated ("23.4K") depending on the
+  // tournament — accept both, always resolving to the same raw-gold
+  // number for storage (display-side formatting re-abbreviates it, see
+  // formatGold below).
+  function parseGoldText(text: string): number | null {
+    const abbreviated = text.match(/(\d+(?:\.\d+)?)\s*[kK]/);
+    if (abbreviated) return Math.round(Number(abbreviated[1]) * 1000);
+    const raw = text.match(/\d[\d,]*/);
+    return raw ? Number(raw[0].replace(/,/g, "")) : null;
   }
-  async function applyObjectiveReading(teamId: string, text: string) {
-    const nums = text.match(/\d+/g)?.map(Number);
-    if (!nums || nums.length < 3) return;
-    const targets: [string, number][] = [
-      ["tower", nums[0]],
-      ["lord", nums[1]],
-      ["turtle", nums[2]],
-    ];
-    for (const [type, target] of targets) {
-      const current = objectiveCount(teamId, type);
-      for (let i = current; i < target; i++) await incrementObjective(teamId, type);
-    }
+  function formatGold(n: number): string {
+    return `${(n / 1000).toFixed(1)}K`;
+  }
+  // Prefers a slash-separated "K/D/A" (what the request explicitly calls
+  // out, and what most broadcast overlays actually show) but still accepts
+  // any other single-character separator as a fallback for a tournament
+  // whose overlay uses a different glyph between the three numbers.
+  function parseKda(text: string): { kills: number; deaths: number; assists: number } | null {
+    const slash = text.match(/(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/);
+    const loose = slash ?? text.match(/(\d+)\D+(\d+)\D+(\d+)/);
+    if (!loose) return null;
+    return { kills: Number(loose[1]), deaths: Number(loose[2]), assists: Number(loose[3]) };
+  }
+  async function applySingleObjectiveReading(teamId: string, type: string, text: string) {
+    const n = text.match(/\d+/);
+    if (!n) return;
+    const target = Number(n[0]);
+    const current = objectiveCount(teamId, type);
+    for (let i = current; i < target; i++) await incrementObjective(teamId, type);
   }
 
   async function captureTick() {
@@ -1695,111 +1816,143 @@ export default function LiveConsolePage() {
   }
 
   async function captureTickBody(video: HTMLVideoElement, worker: NonNullable<typeof workerRef.current>) {
-    // Only scan the fields that matter for whatever phase the admin has
+    // Only scan the trackers configured for whatever phase the admin has
     // this match set to right now — this is what makes each phase's
-    // tracker genuinely distinct instead of always reading the same trio
+    // tracker genuinely distinct instead of always reading the same fields
     // regardless of what's actually on screen.
-    const activeFields = PHASE_CAPTURE_FIELDS[match?.state ?? ""] ?? [];
+    const activeTrackers = trackers.filter((t) => t.phase === match?.state);
     const leftTeamId = resolveLeftTeamId();
     const rightTeamId = resolveRightTeamId();
     // Collected across the loop and applied once at the end, since both
-    // sides of a paired region (net worth, K/D/A) need to be read before
+    // sides of a paired variable (net worth, K/D/A) need to be read before
     // they can be cross-checked or combined into one write.
     let networthLeft: number | null = null;
     let networthRight: number | null = null;
-    let kdaLeftParsed: ReturnType<typeof parseKdaLines> = [];
-    let kdaRightParsed: ReturnType<typeof parseKdaLines> = [];
+    const kdaParsed: { playerId: string; heroName: string | null; kills: number; deaths: number; assists: number }[] = [];
 
-    for (const field of activeFields) {
-      const box = regions[field];
+    for (const tracker of activeTrackers) {
+      const box = regions[tracker.field];
       if (!box) continue;
       const canvas = cropCanvasFor(video, box);
       if (!canvas) continue;
+      const { side, slot, objectiveType } = fieldParts(tracker.field);
+      const sideTeamId = side === "left" ? leftTeamId : side === "right" ? rightTeamId : null;
 
       try {
         const { data: { text } } = await worker.recognize(canvas);
         const trimmed = text.trim();
-        setReadings((prev) => ({ ...prev, [field]: trimmed }));
+        setReadings((prev) => ({ ...prev, [tracker.field]: trimmed }));
         const mmss = trimmed.match(/(\d{1,2}):(\d{2})/);
         const secondsOnly = trimmed.match(/^(\d{1,3})$/);
 
-        if (field === "kill_banner") {
-          const found = OCR_KEYWORDS.find((k) => k.pattern.test(trimmed));
-          if (found) setSuggestion({ type: found.type, raw: trimmed });
-        }
-        if (field === "game_timer") {
-          if (mmss) {
-            unreadableTimerSince.current = null;
-            pauseSuggested.current = false;
-            setMinute(Number(mmss[1]));
-            setSecondOfMinute(Number(mmss[2]));
-            updateGameClock(Number(mmss[1]), Number(mmss[2]));
-            maybeAutoStartGame();
-          } else if (match?.state === "GAME_STARTED") {
-            // The one case reserved for "tracker went blank" inference — see
-            // the comment on unreadableTimerSince above.
-            if (unreadableTimerSince.current === null) unreadableTimerSince.current = Date.now();
-            const unreadableForMs = Date.now() - unreadableTimerSince.current;
-            if (unreadableForMs >= 30000 && !pauseSuggested.current) {
-              pauseSuggested.current = true;
-              setSuggestion({ type: "game_pause", raw: "Game timer unreadable for 30+ seconds" });
-            }
+        switch (tracker.category) {
+          case "kill_banner": {
+            const found = OCR_KEYWORDS.find((k) => k.pattern.test(trimmed));
+            if (found) setSuggestion({ type: found.type, raw: trimmed });
+            break;
           }
-        }
-        if (field === "countdown") {
-          if (mmss) updateCountdown(Number(mmss[1]), Number(mmss[2]));
-          else if (secondsOnly) updateCountdown(0, Number(secondsOnly[1]));
-        }
-        if (field === "draft_timer_a" || field === "draft_timer_b") {
-          const side = field === "draft_timer_a" ? "a" : "b";
-          if (mmss) updateDraftTimer(side, Number(mmss[1]) * 60 + Number(mmss[2]));
-          else if (secondsOnly) updateDraftTimer(side, Number(secondsOnly[1]));
-        }
-        if (field === "draft_picks_left" || field === "draft_picks_right") {
-          const teamId = field === "draft_picks_left" ? leftTeamId : rightTeamId;
-          const teamName = teamId === match?.team_a?.id ? match?.team_a?.name : match?.team_b?.name;
-          if (teamName) {
-            // Player attribution isn't part of the shared staged-action shape
-            // (same limitation the AI-vision draft path already has) — the
-            // player match is only used here to increase confidence that a
-            // line is really a pick line, not junk OCR noise.
-            const pairs = parseDraftPickLines(trimmed, teamId);
-            setStagedDraftActions((prev) => {
-              const next = [...prev];
-              for (const { hero } of pairs) {
-                const dupe = next.some((a) => a.type === "pick" && a.team_name === teamName && a.hero_name.toLowerCase() === hero.toLowerCase());
-                if (!dupe) next.push({ type: "pick", team_name: teamName, hero_name: hero });
+          case "game_timer": {
+            if (mmss) {
+              unreadableTimerSince.current = null;
+              pauseSuggested.current = false;
+              setMinute(Number(mmss[1]));
+              setSecondOfMinute(Number(mmss[2]));
+              updateGameClock(Number(mmss[1]), Number(mmss[2]));
+              maybeAutoStartGame();
+            } else if (match?.state === "GAME_STARTED") {
+              // The one case reserved for "tracker went blank" inference — see
+              // the comment on unreadableTimerSince above.
+              if (unreadableTimerSince.current === null) unreadableTimerSince.current = Date.now();
+              const unreadableForMs = Date.now() - unreadableTimerSince.current;
+              if (unreadableForMs >= 30000 && !pauseSuggested.current) {
+                pauseSuggested.current = true;
+                setSuggestion({ type: "game_pause", raw: "Game timer unreadable for 30+ seconds" });
               }
-              return next;
-            });
+            }
+            break;
           }
-        }
-        if (field === "objectives_left" && leftTeamId) await applyObjectiveReading(leftTeamId, trimmed);
-        if (field === "objectives_right" && rightTeamId) await applyObjectiveReading(rightTeamId, trimmed);
-        if (field === "networth_left") {
-          const n = trimmed.match(/\d[\d,]*/);
-          if (n) networthLeft = Number(n[0].replace(/,/g, ""));
-        }
-        if (field === "networth_right") {
-          const n = trimmed.match(/\d[\d,]*/);
-          if (n) networthRight = Number(n[0].replace(/,/g, ""));
-        }
-        // One region per player now (not one region for the whole team
-        // block) — each field still goes through parseKdaLines since a
-        // single-line crop is just the degenerate case of the multi-line
-        // parser it already was, but results now accumulate across the 5
-        // per-side fields instead of being overwritten by the last one read.
-        if (field.startsWith("kda_left_")) kdaLeftParsed = [...kdaLeftParsed, ...parseKdaLines(trimmed, leftTeamId)];
-        if (field.startsWith("kda_right_")) kdaRightParsed = [...kdaRightParsed, ...parseKdaLines(trimmed, rightTeamId)];
-        if (field === "victory_banner" && /victory|defeat|win/i.test(trimmed)) {
-          const teamId = guessWinnerFromText(trimmed);
-          if (teamId) setSuggestedWinner(teamId);
-        }
-        if (field === "pause_word" && /pause/i.test(trimmed)) {
-          setSuggestion({ type: "game_pause", raw: trimmed });
+          case "countdown": {
+            if (mmss) updateCountdown(Number(mmss[1]), Number(mmss[2]));
+            else if (secondsOnly) updateCountdown(0, Number(secondsOnly[1]));
+            break;
+          }
+          case "draft_timer": {
+            if (!sideTeamId) break;
+            const teamLetter: "a" | "b" | null = sideTeamId === match?.team_a?.id ? "a" : sideTeamId === match?.team_b?.id ? "b" : null;
+            if (!teamLetter) break;
+            if (mmss) updateDraftTimer(teamLetter, Number(mmss[1]) * 60 + Number(mmss[2]));
+            else if (secondsOnly) updateDraftTimer(teamLetter, Number(secondsOnly[1]));
+            break;
+          }
+          case "draft_hero_pick": {
+            // Slot position already answers "which player" — the crop only
+            // needs a legible hero name, not a player name too. Staged (not
+            // auto-committed) same as before: a misread hero during a fast
+            // draft is costlier to have gone live already than a stat
+            // glitch a later tick corrects.
+            if (!side || !slot) break;
+            const teamId = side === "left" ? leftTeamId : rightTeamId;
+            const teamName = teamId === match?.team_a?.id ? match?.team_a?.name : match?.team_b?.name;
+            const playerRow = slotPlayer(side, slot);
+            const hero = findHeroInText(trimmed);
+            const alreadyCommitted = playerRow && pickBans.some((pb) => pb.player_id === playerRow.id && pb.type === "pick");
+            const wasDismissed = playerRow && hero && dismissedDraftKeys.current.has(draftKeyFor({ player_id: playerRow.id, hero_name: hero.name }));
+            if (teamName && hero && playerRow && !alreadyCommitted && !wasDismissed) {
+              setStagedDraftActions((prev) => {
+                const dupe = prev.some((a) => a.player_id === playerRow.id && a.hero_name.toLowerCase() === hero.name.toLowerCase());
+                if (dupe) return prev;
+                // A previous (likely wrong) staged pick for this same
+                // player gets replaced rather than piling up — only one
+                // pick per player can ever be real.
+                const withoutThisPlayer = prev.filter((a) => a.player_id !== playerRow.id);
+                return [...withoutThisPlayer, { type: "pick", team_name: teamName, hero_name: hero.name, player_id: playerRow.id, player_name: playerRow.ign }];
+              });
+            }
+            break;
+          }
+          case "team_kills": {
+            if (!sideTeamId || !game) break;
+            const n = trimmed.match(/\d+/);
+            if (!n) break;
+            const column = sideTeamId === match?.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+            await supabase.from("games").update({ [column]: Number(n[0]) }).eq("id", game.id);
+            break;
+          }
+          case "objective": {
+            if (sideTeamId && objectiveType) await applySingleObjectiveReading(sideTeamId, objectiveType, trimmed);
+            break;
+          }
+          case "net_worth": {
+            const gold = parseGoldText(trimmed);
+            if (gold == null) break;
+            if (side === "left") networthLeft = gold;
+            if (side === "right") networthRight = gold;
+            break;
+          }
+          case "player_kda": {
+            if (!side || !slot) break;
+            const playerRow = slotPlayer(side, slot);
+            const kda = parseKda(trimmed);
+            if (playerRow && kda) {
+              const hero = findHeroInText(trimmed);
+              kdaParsed.push({ playerId: playerRow.id, heroName: hero?.name ?? null, ...kda });
+            }
+            break;
+          }
+          case "victory_banner": {
+            if (/victory|defeat|win/i.test(trimmed)) {
+              const teamId = guessWinnerFromText(trimmed);
+              if (teamId) setSuggestedWinner(teamId);
+            }
+            break;
+          }
+          case "pause_word": {
+            if (/pause/i.test(trimmed)) setSuggestion({ type: "game_pause", raw: trimmed });
+            break;
+          }
         }
       } catch (err) {
-        console.error(`OCR error (${field})`, err);
+        console.error(`OCR error (${tracker.field})`, err);
       }
     }
 
@@ -1817,9 +1970,13 @@ export default function LiveConsolePage() {
     // (applyAiDetection) — a misread here just gets corrected by the next
     // tick or a manual edit in Live scoreboard, unlike draft picks (staged,
     // reviewed, pushed explicitly) where a wrong write is a one-time event
-    // that's costlier to have gone live.
+    // that's costlier to have gone live. Identity is deterministic now (the
+    // tracker's own slot), so there's no more "same player matched on both
+    // sides" class of bug to warn about — only a duplicate hero is still
+    // worth flagging (a real data problem: two teams can't have picked the
+    // same hero).
     if (game) {
-      for (const row of [...kdaLeftParsed, ...kdaRightParsed]) {
+      for (const row of kdaParsed) {
         await supabase.from("player_stats").upsert(
           { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills: row.kills, deaths: row.deaths, assists: row.assists },
           { onConflict: "game_id,player_id" }
@@ -1827,17 +1984,11 @@ export default function LiveConsolePage() {
       }
     }
 
-    // Consistency checks — dismissible warnings only, never block a write.
-    const leftIds = new Set(kdaLeftParsed.map((r) => r.playerId));
-    const crossedSides = kdaRightParsed.some((r) => leftIds.has(r.playerId));
-    const leftHeroes = kdaLeftParsed.map((r) => r.heroName).filter(Boolean);
-    const rightHeroes = kdaRightParsed.map((r) => r.heroName).filter(Boolean);
-    const duplicateHero = leftHeroes.find((h) => rightHeroes.includes(h));
-    if (crossedSides) setConsistencyWarning("Same player matched on both K/D/A regions — check ocr_left team mapping or region calibration.");
-    else if (duplicateHero) setConsistencyWarning(`"${duplicateHero}" matched as picked on both teams — check hero OCR/roster data.`);
-    else setConsistencyWarning(null);
+    const heroesSeen = kdaParsed.map((r) => r.heroName).filter((h): h is string => Boolean(h));
+    const duplicateHero = heroesSeen.find((h, i) => heroesSeen.indexOf(h) !== i);
+    setConsistencyWarning(duplicateHero ? `"${duplicateHero}" read as picked on two different K/D/A trackers — check hero OCR/roster data.` : null);
 
-    if (game && (kdaLeftParsed.length > 0 || kdaRightParsed.length > 0)) loadAll();
+    if (game && kdaParsed.length > 0) loadAll();
   }
 
   // captureTick/captureFrameAndAnalyze are plain functions recreated on
@@ -2053,7 +2204,7 @@ export default function LiveConsolePage() {
     setDraftBox(null);
     setCalibratingField(null);
   }
-  function startCalibrating(field: CaptureField) {
+  function startCalibrating(field: string) {
     setCalibratingField(field);
     setDraftBox(regions[field] ?? null);
   }
@@ -2319,6 +2470,20 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  const [statusSaving, setStatusSaving] = useState(false);
+  async function updateMatchStatus(status: "scheduled" | "live" | "finished") {
+    if (!match || status === match.status) return;
+    if (status === "live" && !match.youtube_url) return;
+    setStatusSaving(true);
+    const { error } = await supabase.from("matches").update({ status }).eq("id", match.id);
+    setStatusSaving(false);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    loadAll();
+  }
+
   // Full reset for a Normal match gone wrong (bad sync, wrong teams matched,
   // etc.) — every child table keyed by match_id, then the games themselves,
   // then the match row back to its pre-anything state so the next sync (or
@@ -2406,7 +2571,15 @@ export default function LiveConsolePage() {
           TECHNICAL_PAUSE: `⏸️ <b>Technical pause</b>\n${header}`,
           STREAM_ENDED: `📴 <b>Stream ended</b>\n${header}`,
         };
-        if (noticeTemplate?.telegram_enabled) {
+        // Draft-complete specifically must not announce a recap that's
+        // still missing picks — a phase transition can happen (manually,
+        // or once OCR/AI infers it) before all 10 players actually have a
+        // hero resolved, whether that resolution came from OCR auto-detect
+        // or a manual edit. The "📢 Announce draft" button stays a manual
+        // override with no such gate — clicking it IS the "or manually"
+        // case this is meant to allow.
+        const blockedByIncompleteDraft = newState === "DRAFT_COMPLETE" && !draftFullyResolved();
+        if (noticeTemplate?.telegram_enabled && !blockedByIncompleteDraft) {
           const message = noticeTemplate.telegram_message_template
             ? fillTelegramTemplate(noticeTemplate.telegram_message_template, {
                 team_a: match.team_a?.name ?? "",
@@ -2465,7 +2638,7 @@ export default function LiveConsolePage() {
   const objectivesEditable = isEditable && OBJECTIVES_EDITABLE_PHASES.has(match.state);
 
   const embedUrl = youtubeEmbedUrl(match.youtube_url);
-  const activeCaptureFields = CAPTURE_FIELDS.filter((f) => (PHASE_CAPTURE_FIELDS[match.state] ?? []).includes(f.field));
+  const activeTrackers = trackers.filter((t) => t.phase === match.state);
 
   // The starting five for this game = whoever has a logged pick, not the
   // whole roster (which included bench/subs never playing this game —
@@ -2488,16 +2661,16 @@ export default function LiveConsolePage() {
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
-  // Same derivation the public page already uses — a team kill total is
-  // just the sum of that team's player_stats.kills, so it stays correct
-  // automatically as K/D/A updates rather than needing its own tracked
-  // number. This was previously only shown on the public page, not here.
-  const teamAKillsTotal = stats
-    .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id)
-    .reduce((sum, s) => sum + (s.kills ?? 0), 0);
-  const teamBKillsTotal = stats
-    .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b?.id)
-    .reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  // A direct "team_kills" OCR tracker (see captureTickBody) overrides this
+  // once it's read anything — falls back to summing player_stats.kills
+  // (the only source before that tracker existed, and still the only
+  // source for Normal/Liquipedia-sourced matches).
+  const teamAKillsTotal =
+    game?.team_a_kills_override ??
+    stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  const teamBKillsTotal =
+    game?.team_b_kills_override ??
+    stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   async function addScoreboardPlayer(playerId: string) {
     await ensureStatRow(playerId);
     loadAll();
@@ -2506,8 +2679,10 @@ export default function LiveConsolePage() {
   return (
     <div className="text-white space-y-8 max-w-6xl">
       <div>
-        <h1 className="lv-heading text-lg">
+        <h1 className="lv-heading text-lg flex items-center gap-2.5">
+          <TeamLogo url={match.team_a?.logo_url} size="sm" />
           {match.team_a?.name} vs {match.team_b?.name}
+          <TeamLogo url={match.team_b?.logo_url} size="sm" />
         </h1>
         <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
@@ -2539,6 +2714,32 @@ export default function LiveConsolePage() {
               <button onClick={saveCustomLabel} className="lv-btn-ghost !px-2 !py-1 text-xs">Save</button>
             </span>
           )}
+          {/* Match status — previously only settable from the admin/matches
+              list, so an admin already deep in the live console had to leave
+              it to flip status, and everything below stayed locked
+              (isEditable) until they did. Same "Live needs a stream link"
+              rule as the matches list. */}
+          <div className="flex items-center gap-1" title="Match status — controls whether this console is locked (see the notice below the phase row)">
+            {(["scheduled", "live", "finished"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => updateMatchStatus(s)}
+                disabled={statusSaving || match.status === s || (s === "live" && !match.youtube_url)}
+                title={s === "live" && !match.youtube_url ? "Add a stream link first — a match can't go live without one" : undefined}
+                className={`text-[10px] px-2 py-0.5 rounded border uppercase tracking-wide disabled:opacity-40 ${
+                  match.status === s
+                    ? s === "live"
+                      ? "border-signal bg-signal/20 text-signal"
+                      : s === "finished"
+                      ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-400"
+                      : "border-white/30 bg-white/10 text-white"
+                    : "border-white/10 text-white/40 hover:bg-white/10 hover:text-white/70"
+                }`}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
           <button
             onClick={toggleUpdateSource}
             title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
@@ -2811,14 +3012,21 @@ export default function LiveConsolePage() {
               </button>
             )}
             {match.state === "DRAFT_COMPLETE" && (
-              <button
-                onClick={retakeDraftPicks}
-                disabled={!captureActive || retakingDraft}
-                title={captureActive ? "Re-reads both draft-picks regions and corrects any player's pick to match" : "Start capture first"}
-                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
-              >
-                {retakingDraft ? "Retaking..." : "🔄 Retake draft picks"}
-              </button>
+              <span className="inline-flex items-center gap-1.5">
+                <button
+                  onClick={retakeDraftPicks}
+                  disabled={!captureActive || retakingDraft}
+                  title={captureActive ? "Re-reads every per-player draft-pick region; only writes once all of them resolve a hero" : "Start capture first"}
+                  className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+                >
+                  {retakingDraft ? "Retaking..." : "🔄 Retake draft picks"}
+                </button>
+                {retakeIncomplete != null && (
+                  <span className="text-[10px] text-yellow-300" title="Nothing was written — retry once the overlay text is legible for every slot">
+                    Only {retakeIncomplete} of the calibrated slots read a hero — not written, retry
+                  </span>
+                )}
+              </span>
             )}
             <button
               onClick={() =>
@@ -3048,19 +3256,22 @@ export default function LiveConsolePage() {
             team ? (
               <div key={team.id} className="space-y-1">
                 <p className="text-xs text-white/50">{team.name}</p>
-                <input
-                  type="number"
-                  defaultValue={latestNetWorth?.[key] ?? ""}
-                  disabled={!isEditable}
-                  placeholder="Gold"
-                  className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
-                  onBlur={(e) => {
-                    const value = Number(e.target.value);
-                    if (Number.isNaN(value)) return;
-                    if (value === (latestNetWorth?.[key] ?? null)) return;
-                    updateNetWorthManual(idx === 0 ? value : other, idx === 0 ? other : value);
-                  }}
-                />
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="number"
+                    defaultValue={latestNetWorth?.[key] ?? ""}
+                    disabled={!isEditable}
+                    placeholder="Gold"
+                    className="w-28 bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+                    onBlur={(e) => {
+                      const value = Number(e.target.value);
+                      if (Number.isNaN(value)) return;
+                      if (value === (latestNetWorth?.[key] ?? null)) return;
+                      updateNetWorthManual(idx === 0 ? value : other, idx === 0 ? other : value);
+                    }}
+                  />
+                  {latestNetWorth?.[key] != null && <span className="text-xs text-white/40 tabular-nums">{formatGold(latestNetWorth[key])}</span>}
+                </div>
               </div>
             ) : (
               <span key={idx} />
@@ -3441,16 +3652,16 @@ export default function LiveConsolePage() {
             regions calibrated — OCR just silently reads nothing forever
             in that case, which looked identical to "OCR is broken" from
             the outside. */}
-        {match.update_source === "local_ocr" && activeCaptureFields.length > 0 && (
+        {match.update_source === "local_ocr" && activeTrackers.length > 0 && (
           <p
             className={`text-xs rounded px-3 py-2 border ${
-              activeCaptureFields.every((f) => regions[f.field])
+              activeTrackers.every((t) => regions[t.field])
                 ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
                 : "text-yellow-300 border-yellow-500/30 bg-yellow-500/10"
             }`}
           >
-            {activeCaptureFields.filter((f) => regions[f.field]).length}/{activeCaptureFields.length} regions calibrated for this phase
-            {!activeCaptureFields.every((f) => regions[f.field]) && " — uncalibrated fields read nothing, however OCR-ready the rest looks"}
+            {activeTrackers.filter((t) => regions[t.field]).length}/{activeTrackers.length} trackers calibrated for this phase
+            {!activeTrackers.every((t) => regions[t.field]) && " — uncalibrated trackers read nothing, however OCR-ready the rest looks"}
           </p>
         )}
 
@@ -3508,13 +3719,17 @@ export default function LiveConsolePage() {
               <div className="space-y-3">
                 <div
                   data-crop-container
-                  // Bigger default (was max-w-md/448px) and genuinely
-                  // resizable via the native browser corner-drag handle —
-                  // `resize` needs overflow non-visible to work, which
-                  // overflow-auto already gives it. All the crop-box math
-                  // reads getBoundingClientRect() live at drag time, so a
-                  // resized container needs no other code changes.
-                  className="relative w-full max-w-3xl min-w-[320px] border border-white/10 rounded resize overflow-auto select-none"
+                  // Fixed at half the viewport width instead of free-drag
+                  // resizable — a freely resizable preview meant the exact
+                  // pixel dimensions OCR was reading varied session to
+                  // session with no consistent baseline to tune region
+                  // calibration or Tesseract accuracy against. Half-viewport
+                  // is "as big as possible without going fullscreen," which
+                  // keeps the rest of the console (moment log, scoreboard)
+                  // visible alongside it. All the crop-box math reads
+                  // getBoundingClientRect() live at drag time, so a fixed
+                  // size needs no other code changes.
+                  className="relative w-[50vw] min-w-[480px] max-w-[1400px] border border-white/10 rounded overflow-hidden select-none"
                   onMouseDown={(e) => {
                     // Only starts a brand-new box — once draftBox exists,
                     // dragging happens via its own body/handle mousedown
@@ -3525,7 +3740,7 @@ export default function LiveConsolePage() {
                 >
                   <video ref={previewRef} muted className="w-full block" />
                   {captureMode === "manual" &&
-                    activeCaptureFields
+                    activeTrackers
                       .filter(({ field }) => field !== calibratingField)
                       .map(({ field, label }) => {
                         const box = regions[field];
@@ -3605,7 +3820,7 @@ export default function LiveConsolePage() {
                       disabled={!draftBox}
                       className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
                     >
-                      🔒 Lock {CAPTURE_FIELDS.find((f) => f.field === calibratingField)?.label}
+                      🔒 Lock {trackers.find((t) => t.field === calibratingField)?.label}
                     </button>
                     <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
                       Cancel
@@ -3613,94 +3828,233 @@ export default function LiveConsolePage() {
                   </div>
                 )}
 
-                {captureMode === "manual" && activeCaptureFields.length === 0 && (
-                  <p className="text-xs text-white/40 border border-white/10 rounded p-3">
-                    {match.state === "DRAFT_COMPLETE"
-                      ? "Any picks staged during Draft started are still reviewable above — no crop region needed for this phase."
-                      : "Nothing to track in this phase — move to Waiting, Draft started, Game ongoing, Game finished, or Technical pause to calibrate a region."}
-                  </p>
-                )}
+                {captureMode === "manual" && (
+                  <div className="space-y-3">
+                    {/* Add tracker — categorized by phase, catalog already
+                        excludes whatever's tracked for that phase; the
+                        phase-scoped DB unique index is the hard backstop. */}
+                    <div className="border border-white/10 rounded p-2 flex flex-wrap gap-2 items-center">
+                      <select
+                        value={newTrackerPhase}
+                        onChange={(e) => {
+                          setNewTrackerPhase(e.target.value);
+                          setNewTrackerChoice("");
+                        }}
+                        className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      >
+                        {MATCH_PHASES.map((p) => (
+                          <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={newTrackerChoice}
+                        onChange={(e) => setNewTrackerChoice(e.target.value)}
+                        className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-xs flex-1 min-w-[220px]"
+                      >
+                        <option value="">
+                          {catalogForPhase(newTrackerPhase).length === 0
+                            ? "Nothing to track in this phase"
+                            : trackerCatalogOptions.length === 0
+                            ? "Everything available is already tracked for this phase"
+                            : "Select a variable to track..."}
+                        </option>
+                        {trackerCatalogOptions.map((opt) => (
+                          <option key={opt.field} value={opt.field}>{opt.label}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={handleAddTracker}
+                        disabled={!newTrackerChoice}
+                        className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
+                      >
+                        + Add tracker
+                      </button>
+                    </div>
 
-                {captureMode === "manual" && activeCaptureFields.length > 0 && (
-                  <div className="grid grid-cols-3 gap-2">
-                    {activeCaptureFields.map(({ field, label }) => (
-                      <div key={field} className="border border-white/10 rounded p-2 space-y-1.5">
-                        <p className="text-[10px] text-white/50">{label}</p>
-                        <div className="flex gap-1">
-                          <button
-                            onClick={() => startCalibrating(field)}
-                            disabled={calibratingField === field}
-                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1 disabled:opacity-40"
+                    {trackers.length === 0 ? (
+                      <p className="text-xs text-white/40 border border-white/10 rounded p-3">
+                        No trackers configured yet for this match — add one above for whichever phase you want to start with.
+                      </p>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap gap-2 items-center">
+                          <input
+                            value={trackerSearch}
+                            onChange={(e) => setTrackerSearch(e.target.value)}
+                            placeholder="Search trackers..."
+                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs flex-1 min-w-[160px]"
+                          />
+                          <select
+                            value={trackerPhaseFilter}
+                            onChange={(e) => setTrackerPhaseFilter(e.target.value)}
+                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
                           >
-                            {calibratingField === field ? "Adjusting above..." : regions[field] ? "Resize" : "Calibrate"}
-                          </button>
-                          {regions[field] && (
-                            <button
-                              onClick={() => {
-                                clearRegion(field);
-                                if (calibratingField === field) setDraftBox(null);
-                              }}
-                              title="Clear this region"
-                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
-                            >
-                              ✕
-                            </button>
-                          )}
+                            <option value="">All phases</option>
+                            {MATCH_PHASES.map((p) => (
+                              <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={trackerCategoryFilter}
+                            onChange={(e) => setTrackerCategoryFilter(e.target.value)}
+                            className="bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+                          >
+                            <option value="">All categories</option>
+                            {Array.from(new Set(trackers.map((t) => t.category))).map((c) => (
+                              <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
+                            ))}
+                          </select>
                         </div>
-                        {regions[field] && (
-                          <button
-                            onClick={() => saveRegionAsTournamentDefault(field)}
-                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 w-full text-white/50"
-                            title="New matches in this tournament will start with this region already calibrated"
-                          >
-                            {savedDefaultField === field ? "Saved as default ✓" : "Save as tournament default"}
-                          </button>
-                        )}
-                        <p className="text-xs text-white/70 truncate" title={readings[field]}>
-                          {readings[field] || "—"}
-                        </p>
-                        {(field === "countdown" || field === "draft_timer_a" || field === "draft_timer_b") && (
-                          <div className="flex gap-1">
-                            <input
-                              value={manualTimeInputs[field] ?? ""}
-                              onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [field]: e.target.value }))}
-                              placeholder="MM:SS"
-                              className="w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-[10px]"
-                            />
-                            <button
-                              onClick={() => {
-                                const value = manualTimeInputs[field] ?? "";
-                                if (field === "countdown") setManualCountdown(value);
-                                else setManualDraftTimer(field === "draft_timer_a" ? "a" : "b", value);
-                              }}
-                              title="Set this directly instead of waiting on OCR — useful if the region isn't calibrated yet or the overlay text isn't readable"
-                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 flex-1"
-                            >
-                              Set manually
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
+
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs border-collapse">
+                            <thead>
+                              <tr className="text-white/40 text-left border-b border-white/10">
+                                {(["phase", "category", "label", "calibrated"] as const).map((key) => (
+                                  <th key={key} className="py-1 pr-2 font-normal cursor-pointer select-none whitespace-nowrap" onClick={() => toggleTrackerSort(key)}>
+                                    {key === "calibrated" ? "Status" : key} {trackerSort.key === key ? (trackerSort.dir === 1 ? "▲" : "▼") : ""}
+                                  </th>
+                                ))}
+                                <th className="py-1 pr-2 font-normal">Reading</th>
+                                <th className="py-1 font-normal">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {visibleTrackers.map((t) => {
+                                const calibrated = !!regions[t.field];
+                                const isCountdownLike = t.category === "countdown" || t.category === "draft_timer";
+                                return (
+                                  <tr key={t.id} className={`border-b border-white/5 ${t.phase === match.state ? "" : "opacity-50"}`}>
+                                    <td className="py-1.5 pr-2 whitespace-nowrap">{t.phase.replace(/_/g, " ")}</td>
+                                    <td className="py-1.5 pr-2 whitespace-nowrap capitalize">{t.category.replace(/_/g, " ")}</td>
+                                    <td className="py-1.5 pr-2 min-w-[160px]">
+                                      {trackerLabelDrafts[t.id] != null ? (
+                                        <div className="flex gap-1">
+                                          <input
+                                            autoFocus
+                                            value={trackerLabelDrafts[t.id]}
+                                            onChange={(e) => setTrackerLabelDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter") renameTracker(t, trackerLabelDrafts[t.id]);
+                                            }}
+                                            className="bg-black/30 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-full"
+                                          />
+                                          <button onClick={() => renameTracker(t, trackerLabelDrafts[t.id])} className="text-emerald-400">✓</button>
+                                        </div>
+                                      ) : (
+                                        <button onClick={() => setTrackerLabelDrafts((prev) => ({ ...prev, [t.id]: t.label }))} className="text-left hover:text-signal" title="Click to rename">
+                                          {t.label}
+                                        </button>
+                                      )}
+                                    </td>
+                                    <td className="py-1.5 pr-2 whitespace-nowrap">
+                                      <span className={calibrated ? "text-emerald-400" : "text-yellow-300"}>{calibrated ? "Calibrated" : "Not calibrated"}</span>
+                                    </td>
+                                    <td className="py-1.5 pr-2 text-white/60 truncate max-w-[160px]" title={readings[t.field]}>
+                                      {readings[t.field] || "—"}
+                                    </td>
+                                    <td className="py-1.5">
+                                      <div className="flex flex-wrap gap-1 items-center">
+                                        <button
+                                          onClick={() => startCalibrating(t.field)}
+                                          disabled={calibratingField === t.field || t.phase !== match.state}
+                                          title={t.phase !== match.state ? "Switch the phase dropdown to this tracker's phase to calibrate it" : undefined}
+                                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+                                        >
+                                          {calibratingField === t.field ? "Adjusting..." : calibrated ? "Resize" : "Calibrate"}
+                                        </button>
+                                        {calibrated && (
+                                          <>
+                                            <button
+                                              onClick={() => {
+                                                clearRegionCoords(t.field);
+                                                if (calibratingField === t.field) setDraftBox(null);
+                                              }}
+                                              title="Clear calibration (keeps the tracker)"
+                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                                            >
+                                              Clear
+                                            </button>
+                                            <button
+                                              onClick={() => saveRegionAsTournamentDefault(t)}
+                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                                              title="New matches in this tournament will start with this tracker already calibrated"
+                                            >
+                                              {savedDefaultField === t.field ? "Saved ✓" : "Save as default"}
+                                            </button>
+                                          </>
+                                        )}
+                                        <button
+                                          onClick={() => removeTracker(t)}
+                                          title="Remove this tracker entirely"
+                                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
+                                        >
+                                          Remove
+                                        </button>
+                                        {isCountdownLike && (
+                                          <span className="flex gap-1">
+                                            <input
+                                              value={manualTimeInputs[t.field] ?? ""}
+                                              onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [t.field]: e.target.value }))}
+                                              placeholder="MM:SS"
+                                              className="w-16 bg-black/30 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+                                            />
+                                            <button
+                                              onClick={() => {
+                                                const value = manualTimeInputs[t.field] ?? "";
+                                                if (t.category === "countdown") setManualCountdown(value);
+                                                else {
+                                                  const { side } = fieldParts(t.field);
+                                                  const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
+                                                  const letter: "a" | "b" | null = teamId === match.team_a?.id ? "a" : teamId === match.team_b?.id ? "b" : null;
+                                                  if (letter) setManualDraftTimer(letter, value);
+                                                }
+                                              }}
+                                              title="Set this directly instead of waiting on OCR"
+                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                                            >
+                                              Set
+                                            </button>
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 
-                {match && DRAFT_PHASES.includes(match.state) && stagedDraftActions.length > 0 && (
-                  <div className="border border-yellow-500/30 bg-yellow-500/10 rounded p-3 space-y-2 text-xs">
-                    <p className="text-yellow-300 font-semibold">
-                      {stagedDraftActions.length} draft action{stagedDraftActions.length === 1 ? "" : "s"} detected — review before pushing
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {stagedDraftActions.map((a, i) => (
-                        <span key={i} className="lv-badge bg-white/10 text-white/70 capitalize inline-flex items-center gap-1">
-                          {a.type} {a.hero_name} ({a.team_name})
-                          <button onClick={() => discardStagedDraftAction(i)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-                        </span>
-                      ))}
+                {/* Pop-out per detection instead of a passive bottom
+                    banner — a fresh hero-pick read interrupts the admin
+                    directly rather than waiting to be noticed among other
+                    UI. Only the front of the queue shows; Push/Dismiss
+                    advances to the next one if more than one came in. */}
+                {match && DRAFT_PHASES.includes(match.state) && draftPickPopup && (
+                  <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+                    <div className="bg-ink border border-signal/40 rounded-lg p-5 max-w-sm w-full space-y-3">
+                      <p className="text-xs text-white/40 uppercase tracking-wide">Hero pick detected</p>
+                      <p className="text-lg font-semibold">
+                        {draftPickPopup.player_name ?? "Player"} <span className="text-white/40">picks</span> {draftPickPopup.hero_name}
+                      </p>
+                      <p className="text-xs text-white/50">{draftPickPopup.team_name}</p>
+                      {stagedDraftActions.length > 1 && (
+                        <p className="text-[10px] text-white/30">+{stagedDraftActions.length - 1} more waiting</p>
+                      )}
+                      <div className="flex gap-2 pt-1">
+                        <button onClick={pushDraftPickPopup} className="lv-btn-primary !text-xs !py-1.5 flex-1">
+                          ✓ Push
+                        </button>
+                        <button onClick={dismissDraftPickPopup} className="lv-btn-ghost !text-xs !py-1.5">
+                          Dismiss
+                        </button>
+                      </div>
                     </div>
-                    <button onClick={pushStagedDraftActions} className="lv-btn-primary !text-xs !py-1.5">
-                      Push draft update
-                    </button>
                   </div>
                 )}
 

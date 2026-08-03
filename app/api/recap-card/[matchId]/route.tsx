@@ -76,6 +76,95 @@ function renderCard({
   const scale = width / 1080;
   const teamAPicks = heroPicks.filter((p) => p.team_id === teamA?.id);
   const teamBPicks = heroPicks.filter((p) => p.team_id === teamB?.id);
+  const isLandscape = ratio === "landscape";
+
+  // Icons render in every mode now (that's the fix for "hero image still
+  // doesn't show" — the fetch used to be skipped entirely outside advanced
+  // mode); only the hero NAME text is advanced-only, per spec ("simple:
+  // only team logo, score and hero icon" / "advanced: both icon and name").
+  const heroPickRow = (name: string | undefined, picks: CardHeroPick[]) => (
+    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8 * scale }}>
+      {mode === "advanced" && <span style={{ fontSize: 18 * scale, color: "#ffffffcc" }}>{name}:</span>}
+      {picks.length === 0 && <span style={{ fontSize: 18 * scale, color: "#ffffff55" }}>—</span>}
+      {picks.map((p, j) => (
+        <div key={j} style={{ display: "flex", alignItems: "center", gap: 4 * scale }}>
+          {p.icon_url && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={p.icon_url} alt="" width={30 * scale} height={30 * scale} style={{ borderRadius: 999, objectFit: "cover", border: `1px solid #ffffff33` }} />
+          )}
+          {mode === "advanced" && <span style={{ fontSize: 18 * scale, color: "#ffffffcc" }}>{p.hero_name}</span>}
+        </div>
+      ))}
+    </div>
+  );
+
+  const teamBlock = (team: CardMatch["team_a"], wins: number, isWinner: boolean) => (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, flex: 1 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 84 * scale,
+          height: 84 * scale,
+          borderRadius: 18 * scale,
+          background: "#ffffff1a",
+          border: `${isWinner ? 3 : 1}px solid ${isWinner ? SIGNAL : "#ffffff22"}`,
+          padding: 10 * scale,
+        }}
+      >
+        {team?.logo_url && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={team.logo_url} alt="" width={64 * scale} height={64 * scale} style={{ objectFit: "contain" }} />
+        )}
+      </div>
+      <span style={{ fontSize: 34 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
+        {team?.name ?? "TBD"}
+      </span>
+    </div>
+  );
+
+  const scoreHeader = (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 * scale }}>
+      <span style={{ fontSize: 22 * scale, color: "#ffffff77", textTransform: "uppercase", letterSpacing: 2 }}>
+        {match.tournament?.name ?? ""} {match.format ? `· ${match.format}` : ""}
+      </span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        {teamBlock(teamA, aWins, winnerName === teamA?.name)}
+        <div style={{ display: "flex", alignItems: "center", gap: 16 * scale, fontSize: 72 * scale, fontWeight: 700 }}>
+          <span>{aWins}</span>
+          <span style={{ color: "#ffffff55" }}>–</span>
+          <span>{bWins}</span>
+        </div>
+        {teamBlock(teamB, bWins, winnerName === teamB?.name)}
+      </div>
+      {winnerName && <span style={{ fontSize: 26 * scale, color: SIGNAL, fontWeight: 600 }}>🏆 {winnerName} wins</span>}
+    </div>
+  );
+
+  const heroPicksBlock = (teamAPicks.length > 0 || teamBPicks.length > 0) && (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 * scale }}>
+      <span style={{ fontSize: 18 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 1 }}>Final game picks</span>
+      {heroPickRow(teamA?.name, teamAPicks)}
+      {heroPickRow(teamB?.name, teamBPicks)}
+    </div>
+  );
+
+  const mvpBlock = mode === "advanced" && mvpLine && (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 * scale }}>
+      <span style={{ fontSize: 18 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 1 }}>Top performer</span>
+      <span style={{ fontSize: 22 * scale, color: "#ffffffcc" }}>{mvpLine}</span>
+    </div>
+  );
+
+  const keyMomentsBlock = mode === "advanced" && keyMomentLines.length > 0 && (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 * scale }}>
+      <span style={{ fontSize: 18 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 1 }}>Key moments</span>
+      {keyMomentLines.map((line, i) => (
+        <span key={i} style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>🔥 {line}</span>
+      ))}
+    </div>
+  );
 
   return new ImageResponse(
     (
@@ -91,121 +180,46 @@ function renderCard({
           padding: `${64 * scale}px`,
         }}
       >
-        {/* Real width/height needed — Satori doesn't do intrinsic image
-            sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={logoUrl} alt="Livevival" width={142 * scale} height={40 * scale} />
+        {/* Brand accent bar — an angular sliver of signal red across the
+            top, echoing the site's own .lv-clip-corner mark motif, so the
+            card reads as Livevival-branded even cropped to a thumbnail. */}
+        <div
+          style={{
+            display: "flex",
+            width: 120 * scale,
+            height: 8 * scale,
+            background: SIGNAL,
+            borderRadius: 4 * scale,
+            marginBottom: 28 * scale,
+          }}
+        />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          {/* Real width/height needed — Satori doesn't do intrinsic image
+              sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={logoUrl} alt="Livevival" width={(isLandscape ? 168 : 142) * scale} height={(isLandscape ? 48 : 40) * scale} />
+        </div>
 
-        <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: "center", gap: 24 * scale }}>
-          <span style={{ fontSize: 22 * scale, color: "#ffffff77", textTransform: "uppercase", letterSpacing: 2 }}>
-            {match.tournament?.name ?? ""} {match.format ? `· ${match.format}` : ""}
-          </span>
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            {/* Boxed background behind each logo so it never blends into
-                the card's own dark background regardless of the logo's
-                colors — name sits below the box instead of beside it. */}
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, flex: 1 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 84 * scale,
-                  height: 84 * scale,
-                  borderRadius: 18 * scale,
-                  background: "#ffffff1a",
-                  border: `${winnerName === teamA?.name ? 3 : 1}px solid ${winnerName === teamA?.name ? SIGNAL : "#ffffff22"}`,
-                  padding: 10 * scale,
-                }}
-              >
-                {teamA?.logo_url && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={teamA.logo_url} alt="" width={64 * scale} height={64 * scale} style={{ objectFit: "contain" }} />
-                )}
-              </div>
-              <span style={{ fontSize: 34 * scale, fontWeight: 700, color: winnerName === teamA?.name ? SIGNAL : "#ffffff", textAlign: "center" }}>
-                {teamA?.name ?? "TBD"}
-              </span>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 16 * scale, fontSize: 72 * scale, fontWeight: 700 }}>
-              <span>{aWins}</span>
-              <span style={{ color: "#ffffff55" }}>–</span>
-              <span>{bWins}</span>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, flex: 1 }}>
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  width: 84 * scale,
-                  height: 84 * scale,
-                  borderRadius: 18 * scale,
-                  background: "#ffffff1a",
-                  border: `${winnerName === teamB?.name ? 3 : 1}px solid ${winnerName === teamB?.name ? SIGNAL : "#ffffff22"}`,
-                  padding: 10 * scale,
-                }}
-              >
-                {teamB?.logo_url && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={teamB.logo_url} alt="" width={64 * scale} height={64 * scale} style={{ objectFit: "contain" }} />
-                )}
-              </div>
-              <span style={{ fontSize: 34 * scale, fontWeight: 700, color: winnerName === teamB?.name ? SIGNAL : "#ffffff", textAlign: "center" }}>
-                {teamB?.name ?? "TBD"}
-              </span>
+        {/* Landscape gets a genuine two-column recomposition (score left,
+            picks/MVP/moments right) instead of the portrait stack scaled
+            up uniformly — the latter left the wide frame looking sparse. */}
+        {isLandscape ? (
+          <div style={{ display: "flex", flexGrow: 1, alignItems: "center", gap: 56 * scale, marginTop: 24 * scale }}>
+            <div style={{ display: "flex", flex: 1 }}>{scoreHeader}</div>
+            <div style={{ display: "flex", flexDirection: "column", flex: 1, gap: 20 * scale }}>
+              {heroPicksBlock}
+              {mvpBlock}
+              {keyMomentsBlock}
             </div>
           </div>
-
-          {winnerName && <span style={{ fontSize: 26 * scale, color: SIGNAL, fontWeight: 600 }}>🏆 {winnerName} wins</span>}
-
-          {mode === "advanced" && (teamAPicks.length > 0 || teamBPicks.length > 0) && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 * scale, marginTop: 8 * scale }}>
-              <span style={{ fontSize: 18 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 1 }}>
-                Final game picks
-              </span>
-              {[
-                { name: teamA?.name, picks: teamAPicks },
-                { name: teamB?.name, picks: teamBPicks },
-              ].map((t, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 10 * scale }}>
-                  <span style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>{t.name}:</span>
-                  {t.picks.length === 0 && <span style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>—</span>}
-                  {t.picks.map((p, j) => (
-                    <div key={j} style={{ display: "flex", alignItems: "center", gap: 5 * scale }}>
-                      {p.icon_url && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={p.icon_url} alt="" width={26 * scale} height={26 * scale} style={{ borderRadius: 999, objectFit: "cover" }} />
-                      )}
-                      <span style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>{p.hero_name}</span>
-                    </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
-
-          {mode === "advanced" && mvpLine && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 * scale, marginTop: 8 * scale }}>
-              <span style={{ fontSize: 18 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 1 }}>
-                Top performer
-              </span>
-              <span style={{ fontSize: 22 * scale, color: "#ffffffcc" }}>{mvpLine}</span>
-            </div>
-          )}
-
-          {mode === "advanced" && keyMomentLines.length > 0 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 * scale, marginTop: 8 * scale }}>
-              <span style={{ fontSize: 18 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 1 }}>
-                Key moments
-              </span>
-              {keyMomentLines.map((line, i) => (
-                <span key={i} style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>🔥 {line}</span>
-              ))}
-            </div>
-          )}
-        </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: "center", gap: 24 * scale }}>
+            {scoreHeader}
+            {heroPicksBlock}
+            {mvpBlock}
+            {keyMomentsBlock}
+          </div>
+        )}
 
         <div style={{ display: "flex", fontSize: 18 * scale, color: "#ffffff55" }}>livevival-sigma.vercel.app</div>
       </div>
@@ -255,6 +269,25 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
   let mvpLine: string | null = null;
   let keyMomentLines: string[] = [];
 
+  // Hero picks now render in BOTH modes (icons only in simple, icons+names
+  // in advanced) — gating the fetch itself behind mode === "advanced" was
+  // why "the hero image still doesn't show" for anyone sharing the
+  // default (simple) card: the query never ran, so there was nothing to
+  // render regardless of the JSX below.
+  if (games && games.length > 0) {
+    const lastGameId = games[games.length - 1].id;
+    const { data: picks } = await supabase
+      .from("hero_picks_bans")
+      .select("team_id, hero_name, pick_order, hero:heroes(icon_url)")
+      .eq("game_id", lastGameId)
+      .eq("type", "pick")
+      .order("pick_order");
+    heroPicks = (picks ?? []).map((p) => {
+      const hero = Array.isArray(p.hero) ? p.hero[0] : p.hero;
+      return { team_id: p.team_id, hero_name: p.hero_name, icon_url: proxied(origin, hero?.icon_url) };
+    });
+  }
+
   if (mode === "advanced") {
     const { data: keyMoments } = await supabase
       .from("key_moments")
@@ -267,20 +300,6 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
       const label = km.type === "savage" ? "Savage" : "Maniac";
       const who = player?.ign ?? "A player";
       return `${who} got a ${label}${game?.game_number ? ` in Game ${game.game_number}` : ""}`;
-    });
-  }
-
-  if (mode === "advanced" && games && games.length > 0) {
-    const lastGameId = games[games.length - 1].id;
-    const { data: picks } = await supabase
-      .from("hero_picks_bans")
-      .select("team_id, hero_name, pick_order, hero:heroes(icon_url)")
-      .eq("game_id", lastGameId)
-      .eq("type", "pick")
-      .order("pick_order");
-    heroPicks = (picks ?? []).map((p) => {
-      const hero = Array.isArray(p.hero) ? p.hero[0] : p.hero;
-      return { team_id: p.team_id, hero_name: p.hero_name, icon_url: proxied(origin, hero?.icon_url) };
     });
 
     const { data: stats } = await supabase

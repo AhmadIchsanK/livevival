@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { TeamLogo } from "@/components/TeamLogo";
+import { NavMenu } from "@/components/NavMenu";
 
 type Tournament = {
   id: string;
@@ -25,6 +26,33 @@ function trailingYear(dateDisplay: string | null): number | null {
   if (!dateDisplay) return null;
   const m = dateDisplay.match(/(\d{4})\s*$/);
   return m ? Number(m[1]) : null;
+}
+
+// Best-effort end date out of free-text date_display ("Feb 10-16, 2025",
+// "Nov 27 - Dec 06, 2020", "Jul 14–18, 2026") — trailingYear alone only
+// gives year granularity, which read a tournament that already finished
+// as "upcoming" for the rest of its start year (confirmed against real
+// data: "Jul 14-18, 2026" still showing as upcoming in August 2026).
+// Takes the LAST day number in the string, paired with the last month
+// name seen at or before it (a range only states the month once when
+// both ends fall in the same month), so both single- and cross-month
+// ranges resolve to their real end date.
+function parseDateDisplayEnd(dateDisplay: string | null): Date | null {
+  if (!dateDisplay) return null;
+  const yearMatch = dateDisplay.match(/\b(20\d{2})\b/);
+  if (!yearMatch) return null;
+  const withoutYear = dateDisplay.slice(0, yearMatch.index);
+  const tokenRe = /(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)?[a-z]*\.?\s*(\d{1,2})/gi;
+  let lastMonth: string | null = null;
+  let lastDay: number | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = tokenRe.exec(withoutYear))) {
+    if (match[1]) lastMonth = match[1];
+    lastDay = Number(match[2]);
+  }
+  if (!lastMonth || lastDay == null) return null;
+  const parsed = new Date(`${lastMonth} ${lastDay}, ${yearMatch[1]} 23:59:59`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 type MatchStatus = { tournament_id: string; status: string };
 type SortKey = "date_desc" | "date_asc" | "name";
@@ -67,6 +95,12 @@ export default function TournamentsIndexPage() {
       if (today > t.end_date) return "completed";
       return "ongoing";
     }
+
+    // Free-text date_display beats the match-status/year heuristics below
+    // whenever it can be parsed — precise day-level "this already ended"
+    // beats a coarse "some match somewhere is marked finished" guess.
+    const displayEnd = parseDateDisplayEnd(t.date_display);
+    if (displayEnd && Date.now() > displayEnd.getTime()) return "completed";
 
     const statuses = matchStatuses.filter((m) => m.tournament_id === t.id).map((m) => m.status);
     if (statuses.length === 0) {
@@ -122,7 +156,10 @@ export default function TournamentsIndexPage() {
           <a href="/" className="lv-nav-link">&larr; Matches</a>
           <h1 className="font-display font-light text-2xl tracking-tight">Tournaments</h1>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <NavMenu />
+        </div>
       </header>
 
       <div className="flex gap-2 flex-wrap">
@@ -200,12 +237,7 @@ function TournamentSection({
             className="lv-card flex items-center justify-between px-4 py-3 gap-3"
           >
             <div className="flex items-center gap-3 min-w-0">
-              {t.logo_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={proxiedImageUrl(t.logo_url)} alt="" className="w-8 h-8 rounded object-contain shrink-0" />
-              ) : (
-                <div className="w-8 h-8 rounded bg-white/5 shrink-0" />
-              )}
+              <TeamLogo url={t.logo_url} size="sm" />
               <div className="min-w-0">
                 <p className="font-semibold text-sm truncate">{t.name}</p>
                 {t.start_date || t.end_date ? (

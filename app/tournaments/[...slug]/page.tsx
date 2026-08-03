@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { NavMenu } from "@/components/NavMenu";
 
 type Tournament = {
   id: string;
@@ -57,7 +58,7 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
           length. */}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 w-full">
         <div className="flex items-center justify-end gap-1.5 min-w-0">
-          <span className="font-semibold text-sm truncate">{m.team_a?.name ?? "TBD"}</span>
+          <span className="font-semibold text-sm text-right leading-tight">{m.team_a?.name ?? "TBD"}</span>
           {m.team_a?.logo_url ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={proxiedImageUrl(m.team_a.logo_url)} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
@@ -79,7 +80,7 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
             // eslint-disable-next-line @next/next/no-img-element
             <img src={proxiedImageUrl(m.team_b.logo_url)} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
           ) : null}
-          <span className="font-semibold text-sm truncate">{m.team_b?.name ?? "TBD"}</span>
+          <span className="font-semibold text-sm leading-tight">{m.team_b?.name ?? "TBD"}</span>
         </div>
       </div>
       <p className="text-xs text-white/40 text-center">
@@ -158,7 +159,27 @@ export default function TournamentPage() {
       // placement is a label like "Wild Card Day 1 Star" or "MVP") —
       // confirmed against real production data showing both interleaved in
       // one "Final standings" table. Only the team rows belong there.
-      const allResults = (s as unknown as Standing[]) ?? [];
+      // Liquipedia renders a shared placement (e.g. "5-6") as ONE merged
+      // table cell spanning both teams' rows — our scraper only reads the
+      // prize off the first <td> in that span, so the second team's row
+      // lands in our DB with prize_usd null even though it earned the
+      // same amount. Backfilling the null from any sibling row that
+      // shares the same placement text fixes both the per-row display
+      // (teams tied for a placement now show the same prize instead of
+      // one of them showing "—") and the total prize pool sum (which
+      // previously undercounted by exactly the missing rows).
+      const rawResults = (s as unknown as Standing[]) ?? [];
+      const prizeByPlacement = new Map<string, number>();
+      for (const r of rawResults) {
+        if (r.prize_usd != null && !prizeByPlacement.has(r.placement.trim())) {
+          prizeByPlacement.set(r.placement.trim(), r.prize_usd);
+        }
+      }
+      const allResults = rawResults.map((r) =>
+        r.prize_usd == null && prizeByPlacement.has(r.placement.trim())
+          ? { ...r, prize_usd: prizeByPlacement.get(r.placement.trim())! }
+          : r
+      );
       setStandings(allResults.filter((r) => r.team_id));
       // Total prize pool should reflect the whole tournament, including
       // individual-award prizes (e.g. an MVP cash prize) — sum from every
@@ -250,7 +271,10 @@ export default function TournamentPage() {
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-3xl mx-auto space-y-8">
       <div className="flex items-center justify-between">
         <a href="/tournaments" className="lv-nav-link">&larr; All tournaments</a>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <ThemeToggle />
+          <NavMenu />
+        </div>
       </div>
       <header className="flex items-start gap-4">
         {tournament.logo_url && <TeamLogo url={tournament.logo_url} size="md" />}
@@ -280,10 +304,7 @@ export default function TournamentPage() {
               return (
                 <div className="lv-card-flush px-4 py-3 flex items-center gap-2">
                   <span className="text-white/40 text-xs uppercase tracking-wide">FMVP</span>
-                  {mvp.team?.logo_url && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={proxiedImageUrl(mvp.team.logo_url)} alt="" className="w-5 h-5 rounded object-contain" />
-                  )}
+                  {mvp.team?.logo_url && <TeamLogo url={mvp.team.logo_url} size="sm" />}
                   <span className="font-semibold">{mvp.ign}</span>
                   {mvp.team && <span className="text-white/40">({mvp.team.name})</span>}
                 </div>
@@ -322,12 +343,7 @@ export default function TournamentPage() {
                     <td className="py-2 px-4 font-semibold text-signal">{s.placement}</td>
                     <td className="py-2">
                       <div className="flex items-center gap-2">
-                        {s.team?.logo_url ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={proxiedImageUrl(s.team.logo_url)} alt="" className="w-5 h-5 rounded object-contain shrink-0" />
-                        ) : (
-                          <div className="w-5 h-5 shrink-0" />
-                        )}
+                        <TeamLogo url={s.team?.logo_url} size="sm" />
                         {s.team?.name ?? s.team_name_raw}
                       </div>
                     </td>

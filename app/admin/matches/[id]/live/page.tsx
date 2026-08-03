@@ -74,8 +74,10 @@ type Screenshot = { id: string; image_url: string; in_game_time: string | null; 
 const KEY_MOMENT_TYPES = ["savage", "maniac", "lord_steal", "turtle_steal", "ace"];
 
 // Same fixed left-to-right draft order used across the admin (Players page
-// role dropdown): exp lane, jungler, mid laner, gold laner, roamer.
-const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
+// role dropdown): exp lane, jungler, mid laner, roamer, gold laner —
+// confirmed against the real broadcast overlay order, which had roamer
+// before gold laner (was previously the other way around).
+const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Roamer", "Gold Laner"];
 const MAPS = ["Expanding Rivers", "Flying Cloud", "Dangerous Grass"];
 function roleIndex(role: string | null) {
   const i = ROLE_ORDER.indexOf(role ?? "");
@@ -108,6 +110,7 @@ export default function LiveConsolePage() {
   // the right grain for most of this file's existing call sites. Only
   // key_moments' new second_mark column needs the sub-minute precision.
   const [secondOfMinute, setSecondOfMinute] = useState(0);
+  const mmssTimestamp = () => `${String(minute).padStart(2, "0")}:${String(secondOfMinute).padStart(2, "0")}`;
   const [error, setError] = useState<string | null>(null);
 
   const loadAll = useCallback(async () => {
@@ -209,7 +212,7 @@ export default function LiveConsolePage() {
     }
     // Every Telegram post sent while the game is actually ongoing gets the
     // current timestamp appended — not just the one dedicated template.
-    const fullMessage = match?.state === "GAME_STARTED" ? `${message}\n⏱ ${minute}'` : message;
+    const fullMessage = match?.state === "GAME_STARTED" ? `${message}\n⏱ ${mmssTimestamp()}` : message;
     const res = await fetch("/api/telegram/notify", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -557,9 +560,48 @@ export default function LiveConsolePage() {
     return pub.publicUrl;
   }
 
+  function resetKmForm() {
+    setKmTeam("");
+    setKmHero("");
+    setKmPlayer("");
+    setKmAttachScreenshot(false);
+    setKmCustomText("");
+    setKmMarkAsKey(false);
+  }
+
   async function logKeyMoment() {
-    if (!game || !selectedTemplate) return;
-    const teamName = kmTeam === match?.team_a?.id ? match.team_a?.name : kmTeam === match?.team_b?.id ? match?.team_b?.name : "";
+    if (!game || !selectedTemplate || !match) return;
+
+    // "Team {team} wins the game!" / "wins the match!" describe a real
+    // match-affecting event, not just log text — route through the same
+    // winner-declare / series-finish logic used elsewhere (which also
+    // updates games/matches rows, posts Telegram, and logs its own
+    // moment) instead of writing a moment that claims something the
+    // match's actual state doesn't reflect.
+    if (selectedTemplate.type === "game_finish" && kmTeam) {
+      await declareGameWinner(kmTeam);
+      resetKmForm();
+      return;
+    }
+    if (selectedTemplate.type === "match_finish" && kmTeam && (kmTeam === match.team_a?.id || kmTeam === match.team_b?.id)) {
+      const allGames = [...pastGames, game];
+      const winsFor = (id: string) => allGames.filter((g) => g.winner_team_id === id).length;
+      const required = SERIES_WINS_REQUIRED[match.format ?? "BO3"] ?? 2;
+      const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
+      const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
+      const teamWins = kmTeam === match.team_a?.id ? aWins : bWins;
+      if (teamWins < required) {
+        setError(
+          `Can't log "wins the match" yet — ${kmTeam === match.team_a?.id ? match.team_a?.name : match.team_b?.name} only has ${teamWins}/${required} game win(s) for ${match.format ?? "BO3"}.`
+        );
+        return;
+      }
+      await finalizeSeriesFinished(kmTeam, aWins, bWins);
+      resetKmForm();
+      return;
+    }
+
+    const teamName = kmTeam === match.team_a?.id ? match.team_a?.name : kmTeam === match.team_b?.id ? match.team_b?.name : "";
     const heroName = heroes.find((h) => h.id === kmHero)?.name ?? "";
     const playerName = players.find((p) => p.id === kmPlayer)?.ign ?? "";
     // "custom" is the one type meant for genuine free typing, not a fixed
@@ -571,12 +613,16 @@ export default function LiveConsolePage() {
             .replace("{team}", teamName)
             .replace("{hero}", heroName)
             .replace("{player}", playerName)
-            .replace("{timestamp}", String(minute));
+            .replace("{timestamp}", mmssTimestamp());
     // Savage/maniac/etc. are always key moments; a custom entry can be
     // explicitly flagged as one too (e.g. an admin's own big-play call).
     const isKeyMoment = KEY_MOMENT_TYPES.includes(selectedTemplate.type) || (selectedTemplate.type === "custom" && kmMarkAsKey);
+    // Savage/Maniac are the two moments worth an automatic screenshot —
+    // no reason to make the admin remember to tick the checkbox for
+    // exactly the plays viewers most want a picture of.
+    const autoScreenshot = selectedTemplate.type === "savage" || selectedTemplate.type === "maniac";
 
-    const screenshotUrl = kmAttachScreenshot && captureActive ? await uploadMomentScreenshot() : null;
+    const screenshotUrl = (kmAttachScreenshot || autoScreenshot) && captureActive ? await uploadMomentScreenshot() : null;
 
     const { error: insertError } = await supabase.from("key_moments").insert({
       game_id: game.id,
@@ -598,13 +644,19 @@ export default function LiveConsolePage() {
       setError(insertError.message);
       return;
     }
+    // Securing Lord/Turtle is also an objective — logging the moment
+    // shouldn't require a second trip to the Objectives counters below to
+    // make the scoreboard agree with what the moment list just said.
+    if ((selectedTemplate.type === "lord_steal" || selectedTemplate.type === "turtle_steal") && kmTeam) {
+      await incrementObjective(kmTeam, selectedTemplate.type === "lord_steal" ? "lord" : "turtle");
+    }
     // Whether this auto-shares to Telegram is config-driven per template
     // (/admin/moment-templates), not tied to is_key_moment — everything else
     // (picks, bans, phase changes not configured to auto-post) stays manual
     // via the 📢 button per moment.
     if (selectedTemplate.telegram_enabled) {
       const message = selectedTemplate.telegram_message_template
-        ? fillTelegramTemplate(selectedTemplate.telegram_message_template, { team: teamName, hero: heroName, player: playerName, timestamp: String(minute) })
+        ? fillTelegramTemplate(selectedTemplate.telegram_message_template, { team: teamName, hero: heroName, player: playerName, timestamp: mmssTimestamp() })
         : `🔥 <b>${description}</b>\n${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`;
       postToTelegram(message, {
         entityType: "key_moment",
@@ -612,12 +664,7 @@ export default function LiveConsolePage() {
         notificationType: "key_moment_auto",
       });
     }
-    setKmTeam("");
-    setKmHero("");
-    setKmPlayer("");
-    setKmAttachScreenshot(false);
-    setKmCustomText("");
-    setKmMarkAsKey(false);
+    resetKmForm();
     loadAll();
   }
   async function deleteKeyMoment(id: string) {
@@ -722,8 +769,6 @@ export default function LiveConsolePage() {
     | "game_timer"
     | "objectives_left"
     | "objectives_right"
-    | "kills_left"
-    | "kills_right"
     | "networth_left"
     | "networth_right"
     | "kda_left_1"
@@ -745,9 +790,9 @@ export default function LiveConsolePage() {
   // misaligned or a hero icon overlapping text could throw off the whole
   // block. Individually-calibrated per-player regions are more reliable
   // (recognize() on a small single-line crop) at the cost of 5x the
-  // calibration effort — same tradeoff already made for kills_left/right
-  // and objectives_left/right vs. one combined region.
-  const KDA_SLOT_LABELS = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
+  // calibration effort — same tradeoff already made for objectives_left/
+  // right vs. one combined region.
+  const KDA_SLOT_LABELS = ROLE_ORDER;
   const CAPTURE_FIELDS: { field: CaptureField; label: string }[] = [
     { field: "countdown", label: "Pre-game countdown" },
     { field: "draft_timer_a", label: "Draft timer — Team A" },
@@ -757,8 +802,6 @@ export default function LiveConsolePage() {
     { field: "game_timer", label: "Game timer" },
     { field: "objectives_left", label: "Objectives — left (tower, lord, turtle)" },
     { field: "objectives_right", label: "Objectives — right (tower, lord, turtle)" },
-    { field: "kills_left", label: "Team kills — left" },
-    { field: "kills_right", label: "Team kills — right" },
     { field: "networth_left", label: "Net worth — left" },
     { field: "networth_right", label: "Net worth — right" },
     ...([1, 2, 3, 4, 5] as const).map((n) => ({
@@ -788,8 +831,6 @@ export default function LiveConsolePage() {
       "game_timer",
       "objectives_left",
       "objectives_right",
-      "kills_left",
-      "kills_right",
       "networth_left",
       "networth_right",
       "kda_left_1",
@@ -818,8 +859,6 @@ export default function LiveConsolePage() {
     game_timer: null,
     objectives_left: null,
     objectives_right: null,
-    kills_left: null,
-    kills_right: null,
     networth_left: null,
     networth_right: null,
     kda_left_1: null,
@@ -904,8 +943,6 @@ export default function LiveConsolePage() {
     game_timer: "",
     objectives_left: "",
     objectives_right: "",
-    kills_left: "",
-    kills_right: "",
     networth_left: "",
     networth_right: "",
     kda_left_1: "",
@@ -2278,7 +2315,7 @@ export default function LiveConsolePage() {
                 team_a: match.team_a?.name ?? "",
                 team_b: match.team_b?.name ?? "",
                 tournament: match.tournament?.name ?? "",
-                timestamp: String(minute),
+                timestamp: mmssTimestamp(),
               })
             : DEFAULT_PHASE_MESSAGES[newState];
           if (message) {
@@ -2341,6 +2378,16 @@ export default function LiveConsolePage() {
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
+  // Same derivation the public page already uses — a team kill total is
+  // just the sum of that team's player_stats.kills, so it stays correct
+  // automatically as K/D/A updates rather than needing its own tracked
+  // number. This was previously only shown on the public page, not here.
+  const teamAKillsTotal = stats
+    .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id)
+    .reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  const teamBKillsTotal = stats
+    .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b?.id)
+    .reduce((sum, s) => sum + (s.kills ?? 0), 0);
   async function addScoreboardPlayer(playerId: string) {
     await ensureStatRow(playerId);
     loadAll();
@@ -2867,6 +2914,19 @@ export default function LiveConsolePage() {
         </div>
       </section>
 
+      {/* Team kills — derived from K/D/A, same as the public page */}
+      <section className="space-y-2">
+        <h2 className="font-bold">Team kills</h2>
+        <div className="flex gap-6 text-lg font-bold tabular-nums">
+          <span className={teamAKillsTotal > teamBKillsTotal ? "text-signal" : "text-white"}>
+            {match.team_a?.name}: {teamAKillsTotal}
+          </span>
+          <span className={teamBKillsTotal > teamAKillsTotal ? "text-signal" : "text-white"}>
+            {match.team_b?.name}: {teamBKillsTotal}
+          </span>
+        </div>
+      </section>
+
       {/* Net worth — OCR-fed each tick, but directly editable too */}
       <section className="space-y-2">
         <h2 className="font-bold">Net worth</h2>
@@ -3328,7 +3388,13 @@ export default function LiveConsolePage() {
               <div className="space-y-3">
                 <div
                   data-crop-container
-                  className="relative w-full max-w-md border border-white/10 rounded overflow-hidden select-none"
+                  // Bigger default (was max-w-md/448px) and genuinely
+                  // resizable via the native browser corner-drag handle —
+                  // `resize` needs overflow non-visible to work, which
+                  // overflow-auto already gives it. All the crop-box math
+                  // reads getBoundingClientRect() live at drag time, so a
+                  // resized container needs no other code changes.
+                  className="relative w-full max-w-3xl min-w-[320px] border border-white/10 rounded resize overflow-auto select-none"
                   onMouseDown={(e) => {
                     // Only starts a brand-new box — once draftBox exists,
                     // dragging happens via its own body/handle mousedown
@@ -3341,13 +3407,24 @@ export default function LiveConsolePage() {
                   {captureMode === "manual" &&
                     activeCaptureFields
                       .filter(({ field }) => field !== calibratingField)
-                      .map(({ field }) => {
+                      .map(({ field, label }) => {
                         const box = regions[field];
                         if (!box) return null;
                         return (
-                          <div
+                          // Clickable straight from the video instead of
+                          // only via the small "Resize" button in the field
+                          // list below — jumps directly into edit mode for
+                          // whichever region was clicked.
+                          <button
                             key={field}
-                            className="absolute border-2 border-white/40 pointer-events-none"
+                            type="button"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startCalibrating(field);
+                            }}
+                            title={`Click to edit: ${label}`}
+                            className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
                             style={{
                               left: `${box.xPct}%`,
                               top: `${box.yPct}%`,

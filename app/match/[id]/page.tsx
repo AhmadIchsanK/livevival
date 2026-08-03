@@ -95,8 +95,8 @@ type RosterPlayer = { id: string; ign: string; role: string | null; team_id: str
 type Screenshot = { id: string; game_id: string; image_url: string; in_game_time: string | null; note: string | null; created_at: string };
 
 // Same fixed left-to-right draft order as the admin live console: exp
-// lane, jungler, mid laner, gold laner, roamer.
-const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
+// lane, jungler, mid laner, roamer, gold laner.
+const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Roamer", "Gold Laner"];
 function roleIndex(role: string | null | undefined) {
   const i = ROLE_ORDER.indexOf(role ?? "");
   return i === -1 ? ROLE_ORDER.length : i;

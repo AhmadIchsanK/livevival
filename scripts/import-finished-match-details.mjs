@@ -220,6 +220,19 @@ async function importMatchDetail(tournamentId, m) {
     // assumed from the series winner — correctly handles reverse sweeps.
     const gameWinnerTeamId = g.left?.won ? match.leftId : g.right?.won ? match.rightId : null;
 
+    // Only include vod_url in the upsert when this game hasn't been
+    // manually overridden — PostgREST's upsert only touches the columns
+    // present in the payload, so omitting vod_url here leaves an admin's
+    // manual link alone instead of clobbering it with whatever (or
+    // nothing) Liquipedia currently shows for this game.
+    const { data: existingGame } = await supabase
+      .from("games")
+      .select("vod_url_source")
+      .eq("match_id", match.id)
+      .eq("game_number", g.gameNumber)
+      .maybeSingle();
+    const isManualVod = existingGame?.vod_url_source === "manual";
+
     const { data: gameRow, error } = await supabase
       .from("games")
       .upsert(
@@ -228,7 +241,7 @@ async function importMatchDetail(tournamentId, m) {
           game_number: g.gameNumber,
           state: "GAME_FINISHED",
           winner_team_id: gameWinnerTeamId,
-          vod_url: m.vods[g.gameNumber] ?? null,
+          ...(isManualVod ? {} : { vod_url: m.vods[g.gameNumber] ?? null }),
         },
         { onConflict: "match_id,game_number" }
       )

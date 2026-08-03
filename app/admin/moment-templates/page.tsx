@@ -231,107 +231,102 @@ export default function MomentTemplatesPage() {
         ))}
       </select>
 
-      <table className="w-full text-sm">
-        <thead className="text-white/40 text-left">
-          <tr>
-            <th className="font-normal pb-2">Label</th>
-            <th className="font-normal pb-2">Type</th>
-            <th className="font-normal pb-2">Phase</th>
-            <th className="font-normal pb-2 w-16">Order</th>
-            <th className="font-normal pb-2">Telegram</th>
-            <th className="font-normal pb-2 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((t) => (
-            <tr key={t.id} className="border-t border-white/10">
-              {editingId === t.id ? (
-                <>
-                  <td className="py-2 pr-2">
-                    <input
-                      value={editLabel}
-                      onChange={(e) => setEditLabel(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 pr-2">
-                    <select
-                      value={editType}
-                      onChange={(e) => setEditType(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
-                    >
-                      {TYPES.map((ty) => (
-                        <option key={ty} value={ty}>{ty.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="py-2 pr-2">
-                    <select
-                      value={editPhase}
-                      onChange={(e) => setEditPhase(e.target.value)}
-                      className="w-full bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
-                    >
-                      <option value="">Any</option>
-                      {PHASES.map((p) => (
-                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="py-2 pr-2">
-                    <input
-                      type="number"
-                      value={editSortOrder}
-                      onChange={(e) => setEditSortOrder(Number(e.target.value))}
-                      className="w-16 bg-black/30 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 pr-2 space-y-1">
-                    <label className="flex items-center gap-1 text-xs text-white/60">
-                      <input type="checkbox" checked={editTelegramEnabled} onChange={(e) => setEditTelegramEnabled(e.target.checked)} />
-                      Auto-post
-                    </label>
-                    {editTelegramEnabled && (
-                      <textarea
-                        value={editTelegramMessageTemplate}
-                        onChange={(e) => setEditTelegramMessageTemplate(e.target.value)}
-                        placeholder="Default format"
-                        rows={2}
-                        className="w-40 bg-black/30 border border-white/10 rounded px-2 py-1 text-xs"
+      {/* Grouped by phase (matching Any-phase templates in their own bucket
+          at the end) instead of one flat table — with ~14+ templates it was
+          hard to tell at a glance which ones fire for a given phase, and
+          editing a Telegram message meant typing into a cramped table cell. */}
+      {[...PHASES, null].map((phaseGroup) => {
+        const rows = filtered.filter((t) => (phaseGroup === null ? t.phase === null : t.phase === phaseGroup));
+        if (rows.length === 0) return null;
+        return (
+          <section key={phaseGroup ?? "any"} className="space-y-2">
+            <h2 className="lv-heading text-sm">{phaseGroup ? phaseGroup.replace(/_/g, " ") : "Any phase"} ({rows.length})</h2>
+            <div className="space-y-2">
+              {rows.map((t) => (
+                <div key={t.id} className="border border-white/10 rounded p-3">
+                  {editingId === t.id ? (
+                    <div className="space-y-2">
+                      <input
+                        value={editLabel}
+                        onChange={(e) => setEditLabel(e.target.value)}
+                        placeholder="Label template"
+                        className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
                       />
-                    )}
-                  </td>
-                  <td className="py-2 text-right space-x-2">
-                    <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">Save</button>
-                    <button onClick={() => setEditingId(null)} className="lv-btn-ghost !px-2 !py-1">Cancel</button>
-                  </td>
-                </>
-              ) : (
-                <>
-                  <td className="py-2">{t.label_template}</td>
-                  <td className="py-2 text-white/60 capitalize">{t.type.replace(/_/g, " ")}</td>
-                  <td className="py-2 text-white/60">{t.phase ? t.phase.replace(/_/g, " ") : "Any"}</td>
-                  <td className="py-2 text-white/40">{t.sort_order}</td>
-                  <td className="py-2">
-                    <label className="flex items-center gap-1 text-xs text-white/60 cursor-pointer" title={t.telegram_message_template ?? "Uses default message format"}>
-                      <input type="checkbox" checked={t.telegram_enabled} onChange={() => toggleTelegram(t)} />
-                      {t.telegram_enabled ? "On" : "Off"}
-                    </label>
-                  </td>
-                  <td className="py-2 text-right space-x-2">
-                    <button onClick={() => startEdit(t)} className="lv-btn-ghost !px-2 !py-1">Edit</button>
-                    <button onClick={() => deleteTemplate(t.id)} className="lv-btn-danger !px-2 !py-1">Delete</button>
-                  </td>
-                </>
-              )}
-            </tr>
-          ))}
-          {filtered.length === 0 && (
-            <tr>
-              <td colSpan={6} className="py-4 text-white/30 text-center">No templates yet.</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+                      <div className="grid grid-cols-3 gap-2">
+                        <select
+                          value={editType}
+                          onChange={(e) => setEditType(e.target.value)}
+                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+                        >
+                          {TYPES.map((ty) => (
+                            <option key={ty} value={ty}>{ty.replace(/_/g, " ")}</option>
+                          ))}
+                        </select>
+                        <select
+                          value={editPhase}
+                          onChange={(e) => setEditPhase(e.target.value)}
+                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+                        >
+                          <option value="">Any phase</option>
+                          {PHASES.map((p) => (
+                            <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="number"
+                          value={editSortOrder}
+                          onChange={(e) => setEditSortOrder(Number(e.target.value))}
+                          title="Sort order"
+                          className="bg-black/30 border border-white/10 rounded px-2 py-1.5 text-sm"
+                        />
+                      </div>
+                      <label className="flex items-center gap-1.5 text-xs text-white/60">
+                        <input type="checkbox" checked={editTelegramEnabled} onChange={(e) => setEditTelegramEnabled(e.target.checked)} />
+                        Auto-post to Telegram when this is logged
+                      </label>
+                      {editTelegramEnabled && (
+                        <textarea
+                          value={editTelegramMessageTemplate}
+                          onChange={(e) => setEditTelegramMessageTemplate(e.target.value)}
+                          placeholder="Telegram message (optional — falls back to a default format)"
+                          rows={2}
+                          className="w-full bg-black/30 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+                        />
+                      )}
+                      <div className="flex gap-2">
+                        <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-3 !py-1.5">Save</button>
+                        <button onClick={() => setEditingId(null)} className="lv-btn-ghost !px-3 !py-1.5">Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate">{t.label_template}</p>
+                        <p className="text-xs text-white/40 mt-0.5">
+                          <span className="capitalize">{t.type.replace(/_/g, " ")}</span> · order {t.sort_order}
+                          {t.telegram_enabled && <span className="text-emerald-400"> · Telegram on</span>}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <label
+                          className="flex items-center gap-1 text-xs text-white/60 cursor-pointer"
+                          title={t.telegram_message_template ?? "Uses default message format"}
+                        >
+                          <input type="checkbox" checked={t.telegram_enabled} onChange={() => toggleTelegram(t)} />
+                          Telegram
+                        </label>
+                        <button onClick={() => startEdit(t)} className="lv-btn-ghost !px-2 !py-1">Edit</button>
+                        <button onClick={() => deleteTemplate(t.id)} className="lv-btn-danger !px-2 !py-1">Delete</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </section>
+        );
+      })}
+      {filtered.length === 0 && <p className="text-white/30 text-sm">No templates yet.</p>}
     </div>
   );
 }

@@ -52,6 +52,8 @@ type Game = {
   manual_time_seconds: number | null;
   manual_time_running: boolean;
   manual_time_started_at: string | null;
+  team_a_kills_override: number | null;
+  team_b_kills_override: number | null;
 };
 type PickBan = {
   id: string;
@@ -206,7 +208,7 @@ export default function PublicMatchPage() {
     const { data: gameRows } = await supabase
       .from("games")
       .select(
-        "id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at"
+        "id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, team_a_kills_override, team_b_kills_override"
       )
       .eq("match_id", matchId)
       .order("game_number", { ascending: true });
@@ -364,8 +366,10 @@ export default function PublicMatchPage() {
 
   const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId);
   const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId);
-  const teamAKills = teamAStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
-  const teamBKills = teamBStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  // A direct team-kills OCR tracker overrides the summed player_stats total
+  // once it's read anything (see the admin live console's captureTickBody).
+  const teamAKills = selectedGame?.team_a_kills_override ?? teamAStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  const teamBKills = selectedGame?.team_b_kills_override ?? teamBStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
   const teamAPicks = gamePickBans
     .filter((p) => p.team_id === teamAId && p.type === "pick")

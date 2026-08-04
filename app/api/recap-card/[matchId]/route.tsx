@@ -124,7 +124,7 @@ function renderCard({
       >
         {p.icon_url && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={p.icon_url} alt="" width={110 * scale} height={110 * scale} style={{ objectFit: "cover" }} />
+          <img src={p.icon_url} alt="" width={110 * scale} height={110 * scale} style={{ objectFit: "cover", objectPosition: "top" }} />
         )}
       </div>
       <span

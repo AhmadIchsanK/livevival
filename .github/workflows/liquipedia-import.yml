@@ -46,7 +46,12 @@ jobs:
     # heroes needing an icon fetch x ~4-8s each, plus a full categorymembers
     # pass first) — hero icons were stuck at exactly Harley→Zilong across
     # every re-trigger as a result. Raised to give a cold/mostly-cold run
-    # enough runway to actually finish in one pass.
+    # enough runway to actually finish in one pass. The script now also
+    # backfills role/lane/region per hero (one extra infobox fetch, only
+    # while any of those three are still null) — worst case doubles the
+    # request count on the very first cold run after this changed, still
+    # comfortably inside this budget; every run after that only re-fetches
+    # for genuinely new heroes.
     timeout-minutes: 90
     concurrency:
       group: liquipedia-import-heroes

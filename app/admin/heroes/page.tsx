@@ -8,6 +8,8 @@ type Hero = {
   id: string;
   name: string;
   role: string | null;
+  lane: string | null;
+  region: string | null;
   icon_url: string | null;
   aliases: string[];
   liquipedia_slug: string | null;
@@ -29,12 +31,16 @@ export default function HeroesPage() {
 
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
+  const [lane, setLane] = useState("");
+  const [region, setRegion] = useState("");
   const [iconUrl, setIconUrl] = useState("");
   const [aliases, setAliases] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editRole, setEditRole] = useState("");
+  const [editLane, setEditLane] = useState("");
+  const [editRegion, setEditRegion] = useState("");
   const [editIconUrl, setEditIconUrl] = useState("");
   const [editAliases, setEditAliases] = useState("");
 
@@ -44,7 +50,7 @@ export default function HeroesPage() {
   async function loadHeroes() {
     const { data } = await supabase
       .from("heroes")
-      .select("id, name, role, icon_url, aliases, liquipedia_slug")
+      .select("id, name, role, lane, region, icon_url, aliases, liquipedia_slug")
       .order("name", { ascending: true });
     setHeroes((data as Hero[]) ?? []);
   }
@@ -60,6 +66,8 @@ export default function HeroesPage() {
       (h) =>
         h.name.toLowerCase().includes(q) ||
         (h.role ?? "").toLowerCase().includes(q) ||
+        (h.lane ?? "").toLowerCase().includes(q) ||
+        (h.region ?? "").toLowerCase().includes(q) ||
         h.aliases.some((a) => a.toLowerCase().includes(q))
     );
   }, [heroes, filter]);
@@ -84,6 +92,8 @@ export default function HeroesPage() {
     const { error } = await supabase.from("heroes").insert({
       name,
       role: role || null,
+      lane: lane || null,
+      region: region || null,
       icon_url: iconUrl || null,
       aliases: parseAliases(aliases),
     });
@@ -95,6 +105,8 @@ export default function HeroesPage() {
     }
     setName("");
     setRole("");
+    setLane("");
+    setRegion("");
     setIconUrl("");
     setAliases("");
     loadHeroes();
@@ -104,6 +116,8 @@ export default function HeroesPage() {
     setEditingId(h.id);
     setEditName(h.name);
     setEditRole(h.role ?? "");
+    setEditLane(h.lane ?? "");
+    setEditRegion(h.region ?? "");
     setEditIconUrl(h.icon_url ?? "");
     setEditAliases(h.aliases.join(", "));
   }
@@ -114,6 +128,8 @@ export default function HeroesPage() {
       .update({
         name: editName,
         role: editRole || null,
+        lane: editLane || null,
+        region: editRegion || null,
         icon_url: editIconUrl || null,
         aliases: parseAliases(editAliases),
       })
@@ -180,12 +196,12 @@ export default function HeroesPage() {
   }
 
   return (
-    <div className="text-white space-y-6 max-w-3xl">
+    <div className="text-white space-y-6 max-w-4xl">
       <div>
         <h1 className="lv-heading text-lg">Heroes</h1>
         <p className="text-xs text-white/40 mt-1">
-          Auto-imported from Liquipedia every 6h (name + icon). Edit role/aliases here, or add anything the
-          importer missed.
+          Auto-imported from Liquipedia every 6h (name, icon, role, lane, region). Edit any field here, or add
+          anything the importer missed — the importer never overwrites a field it finds already set.
         </p>
       </div>
 
@@ -206,6 +222,24 @@ export default function HeroesPage() {
             value={role}
             onChange={(e) => setRole(e.target.value)}
             placeholder="Fighter/Tank/..."
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-white/50">Lane</label>
+          <input
+            value={lane}
+            onChange={(e) => setLane(e.target.value)}
+            placeholder="Exp Lane/Mid Lane/Roam/..."
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-white/50">Region</label>
+          <input
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            placeholder="e.g. Moniyan Empire"
             className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
@@ -289,6 +323,8 @@ export default function HeroesPage() {
             <th className="font-normal pb-2 w-10"></th>
             <th className="font-normal pb-2">Name</th>
             <th className="font-normal pb-2">Role</th>
+            <th className="font-normal pb-2">Lane</th>
+            <th className="font-normal pb-2">Region</th>
             <th className="font-normal pb-2">Aliases</th>
             <th className="font-normal pb-2 text-right">Actions</th>
           </tr>
@@ -310,6 +346,20 @@ export default function HeroesPage() {
                     <input
                       value={editRole}
                       onChange={(e) => setEditRole(e.target.value)}
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
+                    />
+                  </td>
+                  <td className="py-2 pr-2">
+                    <input
+                      value={editLane}
+                      onChange={(e) => setEditLane(e.target.value)}
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
+                    />
+                  </td>
+                  <td className="py-2 pr-2">
+                    <input
+                      value={editRegion}
+                      onChange={(e) => setEditRegion(e.target.value)}
                       className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
@@ -348,6 +398,8 @@ export default function HeroesPage() {
                   </td>
                   <td className="py-2">{h.name}</td>
                   <td className="py-2 text-white/60">{h.role ?? "—"}</td>
+                  <td className="py-2 text-white/60">{h.lane ?? "—"}</td>
+                  <td className="py-2 text-white/60">{h.region ?? "—"}</td>
                   <td className="py-2 text-white/40 text-xs">{h.aliases.join(", ") || "—"}</td>
                   <td className="py-2 text-right space-x-2">
                     <button
@@ -369,7 +421,7 @@ export default function HeroesPage() {
           ))}
           {filtered.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-4 text-white/30 text-center">
+              <td colSpan={8} className="py-4 text-white/30 text-center">
                 No heroes match.
               </td>
             </tr>

@@ -15,6 +15,7 @@ type MatchRow = {
   scheduled_at: string | null;
   format: string | null;
   update_source: "liquipedia" | "local_ocr";
+  series_winner_team_id: string | null;
   tournament: { name: string; tier: string; liquipedia_slug: string | null; logo_url: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
@@ -25,10 +26,38 @@ const PAGE_SIZE = 30;
 const UPCOMING_DAYS_RANGE = 30;
 const FINISHED_FETCH_CAP = 300; // generous, but bounded — see note below
 
-const MATCH_SELECT = `id, status, scheduled_at, format, update_source,
+const MATCH_SELECT = `id, status, scheduled_at, format, update_source, series_winner_team_id,
   tournament:tournaments(name, tier, liquipedia_slug, logo_url),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
+
+// A team name of 13+ characters ("Bigetron by Vitality", "Team Falcons PH")
+// overflows the fixed-width name column on a phone-sized card — shrink the
+// font for long names instead of letting them wrap/clip.
+function teamNameSizeClass(name: string | null | undefined, base: string, long: string) {
+  return (name?.length ?? 0) >= 13 ? long : base;
+}
+
+// A match can be marked "finished" with a real series_winner_team_id even
+// though no game ever got a winner recorded — a walkover/withdrawal, not an
+// actual 0-0. games.winner_team_id-derived scores can't distinguish "this
+// hasn't started" from "this was decided without being played", so this
+// checks the one signal that can: a finished match whose game-derived score
+// is still 0-0 despite already having a declared series winner.
+function isForfeitWin(m: MatchRow, score: { a: number; b: number } | undefined) {
+  return m.status === "finished" && !!m.series_winner_team_id && (!score || (score.a === 0 && score.b === 0));
+}
+
+function ForfeitBadge() {
+  return (
+    <span
+      className="lv-badge bg-red-600/20 text-red-400 border border-red-600/40 shrink-0"
+      title="Decided by walkover — no games were played"
+    >
+      🟥 W.O.
+    </span>
+  );
+}
 
 // Hot = fully admin/OCR-controlled (KDA, items, moment log all available).
 // Normal = Liquipedia auto-sync only (score, picks/bans, VOD). Shown so
@@ -202,17 +231,28 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
           flex row where a short name lets the score drift off-center. */}
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
         <div className="flex items-center justify-end gap-2 min-w-0">
-          <p className="font-semibold text-sm text-right leading-tight">{m.team_a?.name ?? "TBD"}</p>
+          <p className={`font-semibold text-right leading-tight ${teamNameSizeClass(m.team_a?.name, "text-sm", "text-xs")}`}>{m.team_a?.name ?? "TBD"}</p>
           <TeamLogo url={m.team_a?.logo_url} size="sm" />
         </div>
         <p className="lv-score text-3xl shrink-0 px-1">{seriesScoreLabel(score) ?? "vs"}</p>
         <div className="flex items-center justify-start gap-2 min-w-0">
           <TeamLogo url={m.team_b?.logo_url} size="sm" />
-          <p className="font-semibold text-sm leading-tight">{m.team_b?.name ?? "TBD"}</p>
+          <p className={`font-semibold leading-tight ${teamNameSizeClass(m.team_b?.name, "text-sm", "text-xs")}`}>{m.team_b?.name ?? "TBD"}</p>
         </div>
       </div>
       <p className="text-xs text-white/40 mt-2 truncate text-center">
-        {m.tournament?.name} · {m.tournament?.tier}-Tier · {m.format}
+        {m.tournament?.liquipedia_slug ? (
+          <a
+            href={`/tournaments/${m.tournament.liquipedia_slug}`}
+            onClick={(e) => e.stopPropagation()}
+            className="hover:text-white/70 underline"
+          >
+            {m.tournament?.name}
+          </a>
+        ) : (
+          m.tournament?.name
+        )}{" "}
+        · {m.tournament?.tier}-Tier · {m.format}
       </p>
     </a>
   );
@@ -385,7 +425,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                         so it stays centered regardless of name length. */}
                     <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
                       <div className="flex items-center justify-end gap-1.5 min-w-0">
-                        <span className="font-semibold text-xs text-right leading-tight">{m.team_a?.name ?? "TBD"}</span>
+                        <span className={`font-semibold text-right leading-tight ${teamNameSizeClass(m.team_a?.name, "text-xs", "text-[10px]")}`}>{m.team_a?.name ?? "TBD"}</span>
                         <TeamLogo url={m.team_a?.logo_url} size="sm" />
                       </div>
                       <span className="lv-score text-sm shrink-0 bg-white/5 border border-white/10 rounded-md px-2 py-1 uppercase tracking-wide">
@@ -393,11 +433,22 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                       </span>
                       <div className="flex items-center justify-start gap-1.5 min-w-0">
                         <TeamLogo url={m.team_b?.logo_url} size="sm" />
-                        <span className="font-semibold text-xs leading-tight">{m.team_b?.name ?? "TBD"}</span>
+                        <span className={`font-semibold leading-tight ${teamNameSizeClass(m.team_b?.name, "text-xs", "text-[10px]")}`}>{m.team_b?.name ?? "TBD"}</span>
                       </div>
                     </div>
                     <p className="text-[11px] text-white/40 truncate text-center">
-                      {m.tournament?.name} · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      {m.tournament?.liquipedia_slug ? (
+                        <a
+                          href={`/tournaments/${m.tournament.liquipedia_slug}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="hover:text-white/70 underline"
+                        >
+                          {m.tournament?.name}
+                        </a>
+                      ) : (
+                        m.tournament?.name
+                      )}{" "}
+                      · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
                     {m.scheduled_at && <MatchCountdown scheduledAt={m.scheduled_at} now={now} />}
                   </a>
@@ -423,8 +474,10 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
       <div className="space-y-2">
         {visible.map((m) => {
           const score = scores[m.id];
-          const aWon = score && score.a > score.b;
-          const bWon = score && score.b > score.a;
+          const forfeit = isForfeitWin(m, score);
+          const aWon = forfeit ? m.series_winner_team_id === m.team_a?.id : score && score.a > score.b;
+          const bWon = forfeit ? m.series_winner_team_id === m.team_b?.id : score && score.b > score.a;
+          const scoreLabel = forfeit ? `${aWon ? "W" : "L"}–${bWon ? "W" : "L"}` : seriesScoreLabel(score) ?? "—";
           return (
             <a
               key={m.id}
@@ -436,15 +489,23 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   card, a full width away from either team. */}
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
                 <div className="flex items-center justify-end gap-2 min-w-0">
-                  <span className={`font-semibold text-sm text-right leading-tight ${aWon ? "text-signal" : ""}`}>{m.team_a?.name ?? "TBD"}</span>
+                  <span
+                    className={`font-semibold text-right leading-tight ${teamNameSizeClass(m.team_a?.name, "text-sm", "text-xs")} ${aWon ? "text-signal" : ""}`}
+                  >
+                    {m.team_a?.name ?? "TBD"}
+                  </span>
                   <TeamLogo url={m.team_a?.logo_url} size="sm" highlight={!!aWon} />
                 </div>
                 <span className="lv-score text-xl shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1">
-                  {seriesScoreLabel(score) ?? "—"}
+                  {scoreLabel}
                 </span>
                 <div className="flex items-center justify-start gap-2 min-w-0">
                   <TeamLogo url={m.team_b?.logo_url} size="sm" highlight={!!bWon} />
-                  <span className={`font-semibold text-sm leading-tight ${bWon ? "text-signal" : ""}`}>{m.team_b?.name ?? "TBD"}</span>
+                  <span
+                    className={`font-semibold leading-tight ${teamNameSizeClass(m.team_b?.name, "text-sm", "text-xs")} ${bWon ? "text-signal" : ""}`}
+                  >
+                    {m.team_b?.name ?? "TBD"}
+                  </span>
                 </div>
               </div>
               <div className="flex flex-col items-center gap-1 text-center">
@@ -463,7 +524,10 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   · {m.tournament?.tier}-Tier · {m.format}
                   {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
                 </p>
-                <HotBadge updateSource={m.update_source} />
+                <div className="flex items-center gap-1.5">
+                  <HotBadge updateSource={m.update_source} />
+                  {forfeit && <ForfeitBadge />}
+                </div>
               </div>
             </a>
           );

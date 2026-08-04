@@ -120,42 +120,46 @@ function renderCard({
   // here, so this always uses a light plate, which reads correctly for the
   // overwhelming majority of real team/hero art (dark or colorful icons on
   // white) at the cost of not inverting for the rare near-white logo.
-  const heroPortrait = (p: CardHeroPick, i: number, boxSize: number, ringWidth: number) => {
+  //
+  // The card the browser renders for a real match page's Draft Recap panel
+  // (app/match/[id]/page.tsx) gets this exactly right with plain CSS:
+  // `object-fit: cover; object-position: top` on a roughly-square box.
+  // Satori can't do the same thing — `object-fit` compiles straight to an
+  // SVG `preserveAspectRatio="xMidYMid slice"` (confirmed by inspecting the
+  // bundled renderer's source) that always centers the crop on both axes
+  // and never reads `object-position` at all. A prior attempt compensated
+  // by cover-fitting into a box 2.4x taller than a SQUARE frame, which
+  // over-corrected: it forced enough horizontal scale-up to cover that tall
+  // a box that real hero art was visibly losing its left/right edges ("get
+  // cutting out"). The fix is to make the frame itself portrait-shaped
+  // (closer to the hero art's own real proportions) instead of forcing a
+  // square into a tall crop — a portrait frame needs far less artificial
+  // height padding to bias the crop toward the face, so far less horizontal
+  // over-crop happens as a side effect.
+  const heroPortrait = (p: CardHeroPick, i: number, boxWidth: number, ringWidth: number) => {
     const hasKda = p.kills != null && p.deaths != null && p.assists != null;
+    const boxHeight = boxWidth * 1.35;
     return (
-      <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 * scale, width: boxSize + 16 * scale }}>
+      <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, width: boxWidth + 16 * scale }}>
         <div
           style={{
             display: "flex",
             position: "relative",
-            width: boxSize,
-            height: boxSize,
-            borderRadius: boxSize * 0.18,
+            width: boxWidth,
+            height: boxHeight,
+            borderRadius: boxWidth * 0.14,
             background: "#f5f5f5",
             border: `${ringWidth}px solid ${p.type === "ban" ? "#ffffff40" : SIGNAL}`,
             overflow: "hidden",
           }}
         >
           {p.icon_url && (
-            // Satori's `object-fit: cover` compiles straight to an SVG
-            // `preserveAspectRatio="xMidYMid slice"` (confirmed by
-            // inspecting the bundled renderer's source) — it always
-            // centers the crop on both axes and never reads
-            // `objectPosition` at all, which is why an earlier
-            // `objectPosition: "top"` attempt rendered identically to no
-            // fix. Framing on the hero's face instead of full-body art has
-            // to be done geometrically instead: cover-fit the image into a
-            // box much taller than the visible frame (so the vertical crop
-            // that cover-fit centers lands mostly below the face), pin
-            // that tall box to the top of an overflow-hidden container the
-            // real size we want, and let the container clip away
-            // everything below it.
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={p.icon_url}
               alt=""
-              width={boxSize}
-              height={boxSize * 2.4}
+              width={boxWidth}
+              height={boxHeight * 1.35}
               style={{ objectFit: "cover", position: "absolute", top: 0, left: 0 }}
             />
           )}
@@ -165,9 +169,9 @@ function renderCard({
         </div>
         <span
           style={{
-            fontSize: 17 * scale,
-            fontWeight: 600,
-            color: p.type === "ban" ? "#ffffff88" : "#ffffffdd",
+            fontSize: 19 * scale,
+            fontWeight: 700,
+            color: p.type === "ban" ? "#ffffff88" : "#ffffffee",
             textAlign: "center",
             textTransform: "uppercase",
             letterSpacing: 0.5,
@@ -176,7 +180,7 @@ function renderCard({
           {p.hero_name}
         </span>
         {hasKda && (
-          <span style={{ fontSize: 15 * scale, fontWeight: 600, color: "#ffffff99", letterSpacing: 0.5 }}>
+          <span style={{ fontSize: 16 * scale, fontWeight: 600, color: "#ffffff99", letterSpacing: 0.5 }}>
             {p.kills}/{p.deaths}/{p.assists}
           </span>
         )}
@@ -207,20 +211,26 @@ function renderCard({
     </span>
   );
 
+  // Everything here is center-oriented (not left-aligned like the previous
+  // version) per the redesign brief — the ribbon, the picks row, and the
+  // bans row all center on the column's own width, and in portrait mode
+  // the whole column is centered on the card. Hero portraits are also
+  // noticeably bigger than before (128*scale-wide picks vs. the old
+  // 110*scale square) so the section fills more of the available frame
+  // instead of leaving visible dead space.
   const teamPickColumn = (name: string | undefined, picks: CardHeroPick[], bans: CardHeroPick[]) => (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
       <div
         style={{
           display: "flex",
-          alignSelf: "flex-start",
           background: SIGNAL,
           borderRadius: 6 * scale,
-          padding: `${8 * scale}px ${20 * scale}px`,
+          padding: `${8 * scale}px ${22 * scale}px`,
         }}
       >
         <span
           style={{
-            fontSize: 20 * scale,
+            fontSize: 21 * scale,
             fontWeight: 700,
             color: "#ffffff",
             textTransform: "uppercase",
@@ -230,17 +240,17 @@ function renderCard({
           {name ?? "TBD"}
         </span>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 * scale }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
         {subLabel("Picks")}
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 18 * scale }}>
-          {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i, 110 * scale, 4)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 20 * scale }}>
+          {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i, 128 * scale, 4)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
         </div>
       </div>
       {bans.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 * scale }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
           {subLabel("Bans")}
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 14 * scale }}>
-            {bans.map((p, i) => heroPortrait(p, i, 78 * scale, 3))}
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 16 * scale }}>
+            {bans.map((p, i) => heroPortrait(p, i, 92 * scale, 3))}
           </div>
         </div>
       )}
@@ -249,13 +259,13 @@ function renderCard({
 
   const hasAnyPickOrBan = teamAPicks.length > 0 || teamBPicks.length > 0 || teamABans.length > 0 || teamBBans.length > 0;
   const finalPicksBlock = hasAnyPickOrBan && (
-    <div style={{ display: "flex", flexDirection: "column", gap: 32 * scale }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 36 * scale }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16 * scale }}>
         {ticks.left}
         <span style={{ fontSize: 22 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks &amp; bans</span>
         {ticks.right}
       </div>
-      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", gap: isLandscape ? 56 * scale : 44 * scale }}>
+      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 64 * scale : 48 * scale, width: "100%" }}>
         {teamPickColumn(teamA?.name, teamAPicks, teamABans)}
         {teamPickColumn(teamB?.name, teamBPicks, teamBBans)}
       </div>

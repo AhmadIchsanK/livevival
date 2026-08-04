@@ -7,6 +7,7 @@ const NAV_LINKS = [
   { href: "/players", label: "Players" },
   { href: "/teams", label: "Teams" },
   { href: "/heroes", label: "Heroes" },
+  { href: "/apply-contributor", label: "Apply as Contributor" },
 ];
 
 // Replaces the old bare "Tournaments" text link — a burger button opening

@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
 import { TeamLogo } from "@/components/TeamLogo";
+import { HeroIcon } from "@/components/HeroIcon";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
@@ -3932,18 +3933,7 @@ export default function LiveConsolePage() {
                           title={h.name}
                           className={`flex flex-col items-center gap-1 group ${taken ? "opacity-30 cursor-not-allowed" : ""}`}
                         >
-                          {h.icon_url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={proxiedImageUrl(h.icon_url)}
-                              alt=""
-                              className={`w-10 h-10 rounded-lg object-cover border border-white/10 ${
-                                !taken ? "transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal" : ""
-                              }`}
-                            />
-                          ) : (
-                            <span className="w-10 h-10 rounded-lg bg-white/10 block" />
-                          )}
+                          <HeroIcon url={h.icon_url} name={h.name} size="sm" />
                           <span className="text-[9px] text-white/60 group-hover:text-white text-center leading-tight truncate w-full">
                             {h.name}
                           </span>
@@ -3979,12 +3969,7 @@ export default function LiveConsolePage() {
                         const hero = heroes.find((h) => h.name === pb.hero_name);
                         return (
                           <div key={pb.id} className="flex items-center gap-2">
-                            {hero?.icon_url ? (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img src={proxiedImageUrl(hero.icon_url)} alt="" className="w-6 h-6 rounded-md object-cover border border-white/10" />
-                            ) : (
-                              <span className="w-6 h-6 rounded-md bg-white/10 block" />
-                            )}
+                            <HeroIcon url={hero?.icon_url} name={pb.hero_name} size="xs" />
                             <span className="text-xs w-24 truncate">{pb.hero_name}</span>
                             <select
                               defaultValue=""
@@ -4031,16 +4016,7 @@ export default function LiveConsolePage() {
                     }}
                     className="flex flex-col items-center gap-1 group"
                   >
-                    {h.icon_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={proxiedImageUrl(h.icon_url)}
-                        alt=""
-                        className="w-12 h-12 rounded-lg object-cover border border-white/10 transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal"
-                      />
-                    ) : (
-                      <span className="w-12 h-12 rounded-lg bg-white/10 transition-transform duration-150 group-hover:-translate-y-1" />
-                    )}
+                    <HeroIcon url={h.icon_url} name={h.name} size="md" />
                     <span className="text-[10px] text-white/60 group-hover:text-white text-center leading-tight">{h.name}</span>
                   </button>
                 ))}
@@ -4086,8 +4062,7 @@ export default function LiveConsolePage() {
           )}
           <div className="flex items-center gap-1.5">
             {heroes.find((h) => h.name === pbHero)?.icon_url && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={proxiedImageUrl(heroes.find((h) => h.name === pbHero)!.icon_url)} alt="" className="w-6 h-6 rounded-md object-cover border border-white/10" />
+              <HeroIcon url={heroes.find((h) => h.name === pbHero)!.icon_url} name={pbHero} size="xs" />
             )}
             <select
               value={pbHero}
@@ -4257,12 +4232,7 @@ export default function LiveConsolePage() {
                     <span className="w-24 truncate">{p.ign}</span>
                   )}
                   {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={proxiedImageUrl(heroes.find((h) => h.name === stat?.hero_name)!.icon_url)}
-                      alt=""
-                      className="w-5 h-5 rounded object-cover -mr-1"
-                    />
+                    <HeroIcon url={heroes.find((h) => h.name === stat?.hero_name)!.icon_url} name={stat?.hero_name} size="xs" className="-mr-1" />
                   )}
                   <select
                     value={stat?.hero_name ?? ""}

@@ -3248,10 +3248,58 @@ export default function LiveConsolePage() {
           admin needs reachable no matter how far down the page they've
           scrolled (moment log, scoreboard, calibration UI are all long). */}
       <div className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
-        <h1 className="lv-heading text-lg flex items-center gap-2.5">
-          <TeamLogo url={match.team_a?.logo_url} size="sm" />
-          {match.team_a?.name} vs {match.team_b?.name}
-          <TeamLogo url={match.team_b?.logo_url} size="sm" />
+        <h1 className="lv-heading text-lg flex items-center gap-2.5 flex-wrap">
+          {/* Each team's own little "live-score box" — logo + name, with
+              the last-captured net worth pinned to its top-right corner
+              (raw last-read value, not recomputed — see formatGold) and
+              the kills score in between. Lives in the sticky header
+              (rather than only in the Team kills/Net worth sections
+              further down the page) specifically so it — and the team
+              kills count — never scrolls out of view, per the "kills
+              counter stays visible" ask. Liquipedia/Normal matches have
+              neither net worth nor a local kills tracker, so this stays
+              a plain name row for those. */}
+          {match.update_source === "local_ocr" ? (
+            <>
+              <span className="relative inline-flex items-center gap-1.5 border border-white/10 rounded px-2 py-1">
+                <TeamLogo url={match.team_a?.logo_url} size="sm" />
+                {match.team_a?.name}
+                {latestNetWorth?.team_a_gold != null && (
+                  <span
+                    className="absolute -top-2 -right-2 text-[9px] font-mono tabular-nums bg-signal text-white rounded px-1 py-0.5 leading-none shadow"
+                    title="Last-captured net worth"
+                  >
+                    {formatGold(latestNetWorth.team_a_gold)}
+                  </span>
+                )}
+              </span>
+              <span className={`text-base font-bold tabular-nums ${teamAKillsTotal > teamBKillsTotal ? "text-signal" : "text-white/70"}`}>
+                {teamAKillsTotal}
+              </span>
+              <span className="text-white/30 text-sm">–</span>
+              <span className={`text-base font-bold tabular-nums ${teamBKillsTotal > teamAKillsTotal ? "text-signal" : "text-white/70"}`}>
+                {teamBKillsTotal}
+              </span>
+              <span className="relative inline-flex items-center gap-1.5 border border-white/10 rounded px-2 py-1">
+                {match.team_b?.name}
+                <TeamLogo url={match.team_b?.logo_url} size="sm" />
+                {latestNetWorth?.team_b_gold != null && (
+                  <span
+                    className="absolute -top-2 -right-2 text-[9px] font-mono tabular-nums bg-signal text-white rounded px-1 py-0.5 leading-none shadow"
+                    title="Last-captured net worth"
+                  >
+                    {formatGold(latestNetWorth.team_b_gold)}
+                  </span>
+                )}
+              </span>
+            </>
+          ) : (
+            <>
+              <TeamLogo url={match.team_a?.logo_url} size="sm" />
+              {match.team_a?.name} vs {match.team_b?.name}
+              <TeamLogo url={match.team_b?.logo_url} size="sm" />
+            </>
+          )}
         </h1>
         <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">

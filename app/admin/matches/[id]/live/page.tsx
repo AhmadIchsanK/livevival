@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
+import { DraftOverlay, type DraftOverlayPickBan } from "@/components/DraftOverlay";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 // Auto-detected moment triggers only — narrowed to the four kill-streak
@@ -618,6 +619,34 @@ export default function LiveConsolePage() {
     if (error) setError(error.message);
     else loadAll();
   }
+  // Corrects which hero a single already-logged pick/ban row was for —
+  // the write path the DraftOverlay's click-a-slot correction UI uses
+  // (via the same Hero reference modal as the plain form below, just
+  // targeted at one existing row instead of filling the "add new" form).
+  // Same table, same update semantics as assignHeroToPlayer already uses
+  // for the post-draft player assignment step — just correcting hero_name
+  // instead of player_id.
+  async function correctPickBanHero(pb: PickBan, heroName: string) {
+    const heroId = heroes.find((h) => h.name === heroName)?.id ?? null;
+    if (isContributor) {
+      pushPendingEdit({
+        table: "hero_picks_bans",
+        action: "update",
+        before: { id: pb.id, hero_name: pb.hero_name },
+        after: { id: pb.id, hero_name: heroName, hero_id: heroId },
+      });
+      setPickBans((prev) => prev.map((p) => (p.id === pb.id ? { ...p, hero_name: heroName } : p)));
+      if (pb.type === "pick" && pb.player_id) await updateStat(pb.player_id, "hero_name", heroName);
+      return;
+    }
+    const { error } = await supabase.from("hero_picks_bans").update({ hero_name: heroName, hero_id: heroId }).eq("id", pb.id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    if (pb.type === "pick" && pb.player_id) await updateStat(pb.player_id, "hero_name", heroName);
+    loadAll();
+  }
 
   // ── Scoreboard ──────────────────────────────────────────────────────
   async function ensureStatRow(playerId: string) {
@@ -679,6 +708,16 @@ export default function LiveConsolePage() {
   // pick/ban selection, since scrolling a plain <select> of 130+ heroes by
   // name is slow mid-draft. Draft-phase only per its own purpose.
   const [showHeroPicker, setShowHeroPicker] = useState(false);
+  // Set when the Hero reference modal was opened from the DraftOverlay's
+  // click-a-slot correction flow rather than the plain "add new pick/ban"
+  // form — redirects the modal's click handler to correctPickBanHero for
+  // that one existing row instead of filling pbHero. Cleared whenever the
+  // modal closes any other way too, so a stray reopen never mis-targets.
+  const [heroPickerTarget, setHeroPickerTarget] = useState<{ pb: PickBan; label: string } | null>(null);
+  function closeHeroPicker() {
+    setShowHeroPicker(false);
+    setHeroPickerTarget(null);
+  }
   // Reconciles this Hot match's hero picks/bans against Liquipedia's own
   // bracket record — see scripts/sync-hot-match-picks-bans.mjs for why this
   // only ever touches which hero was picked/banned, never kill stats, the
@@ -3219,6 +3258,50 @@ export default function LiveConsolePage() {
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
+
+  // ── Draft overlay (broadcast-style) derived values ────────────────────
+  // Left/right follows the draft simulation's own Blue/Red assignment once
+  // it's running (Blue conventionally shown on the left) — before it
+  // starts, or once it's cleared post-draft, falls back to the same
+  // left/right calibration the OCR tracker above already uses, so the
+  // overlay doesn't flip sides relative to the rest of this page.
+  function teamById(teamId: string | null | undefined) {
+    if (!teamId) return null;
+    return match?.team_a?.id === teamId ? match.team_a : match?.team_b?.id === teamId ? match.team_b : null;
+  }
+  const overlayLeftTeamId = draftSim?.blueTeamId ?? resolveLeftTeamId();
+  const overlayRightTeamId = draftSim?.redTeamId ?? resolveRightTeamId();
+  const overlayLeftTeam = teamById(overlayLeftTeamId);
+  const overlayRightTeam = teamById(overlayRightTeamId);
+  const overlayLeftPlayers = activeFive(overlayLeftTeamId ?? undefined);
+  const overlayRightPlayers = activeFive(overlayRightTeamId ?? undefined);
+  const overlayTurn = draftSim ? DRAFT_SEQUENCE[draftSim.stepIndex] : null;
+  const overlayTurnSide: "left" | "right" | null = overlayTurn
+    ? (overlayTurn.side === "blue" ? draftSim!.blueTeamId : draftSim!.redTeamId) === overlayLeftTeamId
+      ? "left"
+      : "right"
+    : null;
+  const overlayPhaseLabel = draftSim
+    ? overlayTurn!.type === "ban"
+      ? "BANNING"
+      : "PICKING"
+    : match.state === "DRAFT_COMPLETE"
+    ? "FINAL ADJUSTMENTS"
+    : "DRAFT PHASE";
+  const overlayStageLabel = `${match.tournament?.name ?? "Draft"} · Game ${game.game_number}`;
+  const overlayTurnLabel = draftSim ? draftStepLabel(draftSim.stepIndex) : null;
+  const overlayStepProgress = draftSim ? `${draftSim.stepIndex + 1}/${DRAFT_SEQUENCE.length}` : null;
+  const overlayTurnKey = draftSim ? `${game.id}-${draftSim.stepIndex}` : `${game.id}-${match.state}`;
+  function heroIconFor(heroName: string) {
+    return heroes.find((h) => h.name === heroName)?.icon_url ?? null;
+  }
+  function openHeroPickerForCorrection(pb: DraftOverlayPickBan, label: string) {
+    const realPb = pickBans.find((p) => p.id === pb.id);
+    if (!realPb) return;
+    setHeroPickerTarget({ pb: realPb, label });
+    setShowHeroPicker(true);
+  }
+
   async function toggleActiveRoster(playerId: string, next: boolean) {
     const { error } = await supabase.from("players").update({ is_active_roster: next }).eq("id", playerId);
     if (error) {
@@ -4641,6 +4724,34 @@ export default function LiveConsolePage() {
         </div>
         {syncDraftStatus && <p className="text-xs text-white/50">{syncDraftStatus}</p>}
 
+        {/* Broadcast-style draft overlay — presentation layer on top of the
+            same pickBans/roster state the plain form and simulation grid
+            below read and write. Player photos flip to hero icons as each
+            pick lands (via pickBans' own player_id, set either by the
+            manual form immediately or by the post-sim "assign player"
+            step), the acting side glows while draftSim has a live turn,
+            and — once anything's editable — clicking a locked-in slot
+            reopens the same Hero reference modal targeted at that one row
+            instead of a fresh insert. */}
+        {DRAFT_PHASES.includes(match.state) && match.team_a && match.team_b && (
+          <DraftOverlay
+            leftTeam={overlayLeftTeam}
+            rightTeam={overlayRightTeam}
+            leftPlayers={overlayLeftPlayers}
+            rightPlayers={overlayRightPlayers}
+            pickBans={pickBans as DraftOverlayPickBan[]}
+            heroIconFor={heroIconFor}
+            stageLabel={overlayStageLabel}
+            phaseLabel={overlayPhaseLabel}
+            turnSide={overlayTurnSide}
+            turnLabel={overlayTurnLabel}
+            stepProgress={overlayStepProgress}
+            turnKey={overlayTurnKey}
+            interactive={pickBanEditable}
+            onCorrectPick={openHeroPickerForCorrection}
+          />
+        )}
+
         {/* Active roster (main lineup) — editable up through Draft complete
             (not locked the instant the draft starts, per spec). Draft can't
             start unless both teams have exactly 5 checked here; gated in
@@ -4814,23 +4925,29 @@ export default function LiveConsolePage() {
         {showHeroPicker && (
           <div
             className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6"
-            onClick={() => setShowHeroPicker(false)}
+            onClick={closeHeroPicker}
           >
             <div
               className="bg-ink border border-white/10 rounded-lg p-4 max-w-3xl w-full max-h-[80vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-3">
-                <h3 className="font-bold text-sm">Hero reference — click to select</h3>
-                <button onClick={() => setShowHeroPicker(false)} className="text-white/40 hover:text-white/70 text-sm">✕</button>
+                <h3 className="font-bold text-sm">
+                  {heroPickerTarget ? `Correct pick — ${heroPickerTarget.label}` : "Hero reference — click to select"}
+                </h3>
+                <button onClick={closeHeroPicker} className="text-white/40 hover:text-white/70 text-sm">✕</button>
               </div>
               <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
                 {heroes.map((h) => (
                   <button
                     key={h.id}
                     onClick={() => {
-                      setPbHero(h.name);
-                      setShowHeroPicker(false);
+                      if (heroPickerTarget) {
+                        correctPickBanHero(heroPickerTarget.pb, h.name);
+                      } else {
+                        setPbHero(h.name);
+                      }
+                      closeHeroPicker();
                     }}
                     className="flex flex-col items-center gap-1 group"
                   >

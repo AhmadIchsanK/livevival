@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 const NAV_LINKS = [
+  { href: "/matches", label: "Matches" },
   { href: "/tournaments", label: "Tournaments" },
   { href: "/players", label: "Players" },
   { href: "/teams", label: "Teams" },

@@ -16,6 +16,7 @@
 //      for admin-triggered posts).
 
 import { supabase } from "./config.mjs";
+import { broadcastToSlack } from "./slack.mjs";
 
 let warnedMissingConfig = false;
 
@@ -41,6 +42,12 @@ export async function sendTelegramMessage(text) {
       console.error(`Telegram sendMessage failed (${res.status}): ${body}`);
       return { ok: false, error: body };
     }
+    // Every automatic worker notification mirrors to Slack too — this was
+    // previously only wired up on the Next.js app's admin-triggered
+    // /api/telegram/notify route, which this process never calls (it POSTs
+    // straight to Telegram's API), so worker-driven notifications (match
+    // live, match finished, etc.) were silently never reaching Slack.
+    await broadcastToSlack(text).catch((err) => console.error("Slack broadcast failed:", err.message));
     return { ok: true };
   } catch (err) {
     console.error("Telegram sendMessage request failed:", err.message);

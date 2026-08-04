@@ -31,17 +31,18 @@ async function sendSlackDM(token, userId, text) {
   await slackApi("chat.postMessage", token, { channel: dmChannel, text }).catch(() => {});
 }
 
-// Posts to the configured channel, then DMs every opted-in subscriber
+// Posts to every configured channel, then DMs every opted-in subscriber
 // (see slack_dm_subscriptions, toggled via the Next.js app's
 // /api/slack/events "on"/"off" DM commands — same table, same opt-in
-// list, both processes read/write it). No-op (with a one-time console
-// note) when SLACK_BOT_TOKEN/SLACK_CHANNEL_ID aren't set on this Railway
-// service specifically — they're configured separately from the Vercel
-// deployment's copy of the same two vars.
+// list, both processes read/write it). SLACK_CHANNEL_ID accepts a
+// comma-separated list — the bot must be invited to each one. No-op (with
+// a one-time console note) when SLACK_BOT_TOKEN/SLACK_CHANNEL_ID aren't
+// set on this Railway service specifically — they're configured
+// separately from the Vercel deployment's copy of the same two vars.
 export async function broadcastToSlack(text) {
   const token = process.env.SLACK_BOT_TOKEN;
-  const channel = process.env.SLACK_CHANNEL_ID;
-  if (!token || !channel) {
+  const channels = (process.env.SLACK_CHANNEL_ID ?? "").split(",").map((c) => c.trim()).filter(Boolean);
+  if (!token || channels.length === 0) {
     if (!warnedMissingConfig) {
       console.log("Slack not configured on this service (SLACK_BOT_TOKEN/SLACK_CHANNEL_ID unset) — skipping.");
       warnedMissingConfig = true;
@@ -50,9 +51,11 @@ export async function broadcastToSlack(text) {
   }
 
   const mrkdwn = telegramHtmlToSlackMrkdwn(text);
-  await slackApi("chat.postMessage", token, { channel, text: mrkdwn }).catch((err) =>
-    console.error("Slack chat.postMessage failed:", err.message)
-  );
+  for (const channel of channels) {
+    await slackApi("chat.postMessage", token, { channel, text: mrkdwn }).catch((err) =>
+      console.error("Slack chat.postMessage failed:", err.message)
+    );
+  }
 
   const { data: subs } = await supabase.from("slack_dm_subscriptions").select("slack_user_id").eq("enabled", true);
   for (const sub of subs ?? []) {

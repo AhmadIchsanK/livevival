@@ -99,6 +99,16 @@ type Screenshot = { id: string; image_url: string; in_game_time: string | null; 
 // still appears in the same feed, just styled as a regular line item.
 const KEY_MOMENT_TYPES = ["savage", "maniac", "double_kill", "triple_kill", "lord_steal", "turtle_steal", "ace"];
 
+// Only these two phases ever have an OCR tracker worth running — the game
+// clock, kills, net worth, and K/D/A only exist on screen once the game has
+// actually started, and Technical pause just needs the "pause" word
+// confirmed. Every other phase (draft, pre-game countdown, finished, custom)
+// is driven by the admin's own manual controls instead, so the phase
+// dropdowns below (add tracker / canvas filter / phase filter) never offer
+// them — narrower than the general match-phase selector further up, which
+// still needs the full set.
+const TRACKER_PHASES = ["GAME_STARTED", "TECHNICAL_PAUSE"];
+
 // Fallback label text for a detected moment when no /admin/moment-templates
 // row exists for its type yet — escalating kill-streak flair per an
 // explicit site-owner example (Double Kill2️⃣, Triple Kill3️⃣, Maniac💀,
@@ -1361,15 +1371,21 @@ export default function LiveConsolePage() {
   const [pendingBoxPhase, setPendingBoxPhase] = useState<string>("");
   const [pendingBoxField, setPendingBoxField] = useState<string>("");
   useEffect(() => {
-    if (pendingBox && !pendingBoxPhase) setPendingBoxPhase(canvasPhaseFilter || match?.state || "MATCH_NOT_STARTED");
+    if (pendingBox && !pendingBoxPhase) {
+      const fallback = match?.state && TRACKER_PHASES.includes(match.state) ? match.state : TRACKER_PHASES[0];
+      setPendingBoxPhase(canvasPhaseFilter || fallback);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingBox]);
   // Auto-follow the match's current live phase — an admin can still
   // override it manually (e.g. to calibrate a tracker ahead of time for a
   // phase that hasn't started yet), but it snaps back to the live phase
-  // whenever that changes, per the "filter should auto-follow" ask.
+  // whenever that changes, per the "filter should auto-follow" ask. Only
+  // ever snaps to one of the two tracker phases — the match itself can be
+  // in any phase (draft, finished, etc.), but there's nothing to track
+  // there, so the filter just stays wherever it already was instead.
   useEffect(() => {
-    if (match?.state) setCanvasPhaseFilter(match.state);
+    if (match?.state && TRACKER_PHASES.includes(match.state)) setCanvasPhaseFilter(match.state);
   }, [match?.state]);
 
   // ── Full-frame AI capture (no calibration) ───────────────────────────
@@ -1823,7 +1839,9 @@ export default function LiveConsolePage() {
   }
 
   // ── Tracker list: add + sortable/searchable/filterable table ─────────
-  const [newTrackerPhase, setNewTrackerPhase] = useState<string>(match?.state ?? "MATCH_NOT_STARTED");
+  const [newTrackerPhase, setNewTrackerPhase] = useState<string>(
+    match?.state && TRACKER_PHASES.includes(match.state) ? match.state : TRACKER_PHASES[0]
+  );
   const [newTrackerChoice, setNewTrackerChoice] = useState("");
   const [trackerSearch, setTrackerSearch] = useState("");
   const [trackerPhaseFilter, setTrackerPhaseFilter] = useState("");
@@ -2984,18 +3002,16 @@ export default function LiveConsolePage() {
     "MATCH_NOT_STARTED", "DRAFT_STARTED", "DRAFT_COMPLETE", "GAME_STARTED",
     "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM",
   ];
-  // What this phase's tracker area actually does — each phase behaves
-  // differently, not just a label on the same always-on tracker.
+  // What this phase's tracker area actually does — only GAME_STARTED and
+  // TECHNICAL_PAUSE have a real OCR tracker at all now (see TRACKER_PHASES
+  // above); every other match phase is driven by the admin's own manual
+  // controls, so the hint just says so via NO_TRACKER_PHASE_HINT below
+  // instead of describing a tracker that no longer exists for that phase.
   const PHASE_TRACKER_HINTS: Record<string, string> = {
-    MATCH_NOT_STARTED: "Waiting — tracker reads a pre-game countdown, shown live on the public page. No countdown found usually means TVC/caster session; use Custom if so.",
-    DRAFT_STARTED: "Drafting — reads each team's per-pick countdown, plus picks (player + hero text) from the two draft-picks regions, staged below for review before pushing. Bans stay manual — ban slots show no text, only an icon.",
-    DRAFT_COMPLETE: "Drafting finished — any picks still staged below can be reviewed and pushed. Nothing writes to the draft automatically.",
     GAME_STARTED: "Game ongoing — the main event: game timer, objectives, kills, net worth, and per-player K/D/A all track here (one region per side), applying automatically each tick. Set which side is \"left\" below.",
-    GAME_FINISHED: "Game finished — tracker optionally reads a victory/defeat banner to suggest a winner; otherwise declare the winner manually below.",
-    SERIES_FINISHED: "Match finished — capture is no longer needed for this series.",
     TECHNICAL_PAUSE: "Technical pause — tracker just looks for the word \"pause\" to confirm what you already flagged manually.",
-    CUSTOM: "Custom phase — no dedicated tracker; use the label above to describe what's actually happening.",
   };
+  const NO_TRACKER_PHASE_HINT = "No tracker for this phase — OCR capture only runs during Game ongoing or Technical pause. Everything else here is driven by the manual controls above.";
   const [customLabelDraft, setCustomLabelDraft] = useState("");
   async function setMatchPhase(newState: string) {
     if (!match) return;
@@ -3408,7 +3424,7 @@ export default function LiveConsolePage() {
 
         {match.update_source === "local_ocr" && (
           <p className="text-xs text-white/50 bg-white/5 border border-white/10 rounded px-3 py-2">
-            {PHASE_TRACKER_HINTS[match.state] ?? PHASE_TRACKER_HINTS.CUSTOM}
+            {PHASE_TRACKER_HINTS[match.state] ?? NO_TRACKER_PHASE_HINT}
           </p>
         )}
 
@@ -3494,7 +3510,7 @@ export default function LiveConsolePage() {
                     title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
                   >
                     <option value="">All phases</option>
-                    {MATCH_PHASES.map((p) => (
+                    {TRACKER_PHASES.map((p) => (
                       <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
                     ))}
                   </select>
@@ -3649,7 +3665,7 @@ export default function LiveConsolePage() {
                       }}
                       className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     >
-                      {MATCH_PHASES.map((p) => (
+                      {TRACKER_PHASES.map((p) => (
                         <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
                       ))}
                     </select>
@@ -3707,7 +3723,7 @@ export default function LiveConsolePage() {
                         }}
                         className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                       >
-                        {MATCH_PHASES.map((p) => (
+                        {TRACKER_PHASES.map((p) => (
                           <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
                         ))}
                       </select>
@@ -3755,7 +3771,7 @@ export default function LiveConsolePage() {
                             className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           >
                             <option value="">All phases</option>
-                            {MATCH_PHASES.map((p) => (
+                            {TRACKER_PHASES.map((p) => (
                               <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
                             ))}
                           </select>

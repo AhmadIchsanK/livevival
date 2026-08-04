@@ -36,18 +36,25 @@ function dims(ratio: Ratio) {
   return ratio === "portrait" ? { width: 1080, height: 1920 } : { width: 1920, height: 1080 };
 }
 
-// Small angled accent ticks flanking a section title — Satori supports
-// `transform`, so this reproduces the slanted red mark motif from the
-// reference designs without needing a licensed icon asset.
+// Small accent ticks flanking a section title. An earlier version used
+// `transform: skewX()` here (and on the ribbon tags below) to match the
+// reference design's angled marks exactly — that corrupted Satori's layout
+// for every sibling after it (confirmed against a real broken render: two
+// team pick columns collapsed into each other and one side vanished
+// entirely in landscape). Satori's yoga-based layout engine computes box
+// size from the pre-transform geometry in most cases, but nested/opposing
+// skews on flex containers is exactly the kind of case its docs warn is
+// unsupported — so this drops the skew and keeps a plain rectangle, which
+// still reads as an accent mark without risking the same corruption.
 function tickMarks(scale: number) {
   const tick = (
     <div
       style={{
         display: "flex",
-        width: 14 * scale,
+        width: 16 * scale,
         height: 4 * scale,
         background: SIGNAL,
-        transform: "skewX(-25deg)",
+        borderRadius: 2 * scale,
       }}
     />
   );
@@ -76,7 +83,17 @@ function renderCard({
     match.series_winner_team_id ?? (aWins > bWins ? teamA?.id : bWins > aWins ? teamB?.id : null) ?? null;
 
   const { width, height } = dims(ratio);
-  const scale = width / 1080;
+  // Every size below is an absolute pixel value tuned to look right on
+  // portrait's 1920px-TALL canvas, so the right scale factor is always
+  // "how does this canvas's HEIGHT compare to portrait's" — not width.
+  // Using width/1080 for landscape (1920 wide) inflated every element by
+  // ~1.78x on top of already-portrait-tuned sizes, which is why a real
+  // landscape render overflowed its own 1080px-tall frame and the whole
+  // picks section fell off the bottom, invisible. Landscape's height
+  // (1080) is a bit over half of portrait's (1920), so this scales
+  // everything down accordingly — its much wider frame is what gives the
+  // two-column pick layout room, not bigger absolute pixel sizes.
+  const scale = ratio === "landscape" ? height / 1920 : width / 1080;
   const teamAPicks = heroPicks.filter((p) => p.team_id === teamA?.id);
   const teamBPicks = heroPicks.filter((p) => p.team_id === teamB?.id);
   const isLandscape = ratio === "landscape";
@@ -91,28 +108,28 @@ function renderCard({
   // overwhelming majority of real team/hero art (dark or colorful icons on
   // white) at the cost of not inverting for the rare near-white logo.
   const heroPortrait = (p: CardHeroPick, i: number) => (
-    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 * scale, width: 92 * scale }}>
+    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 * scale, width: 118 * scale }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 84 * scale,
-          height: 84 * scale,
+          width: 110 * scale,
+          height: 110 * scale,
           borderRadius: 999,
           background: "#f5f5f5",
-          border: `3px solid ${SIGNAL}`,
+          border: `4px solid ${SIGNAL}`,
           overflow: "hidden",
         }}
       >
         {p.icon_url && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={p.icon_url} alt="" width={84 * scale} height={84 * scale} style={{ objectFit: "cover" }} />
+          <img src={p.icon_url} alt="" width={110 * scale} height={110 * scale} style={{ objectFit: "cover" }} />
         )}
       </div>
       <span
         style={{
-          fontSize: 15 * scale,
+          fontSize: 17 * scale,
           fontWeight: 600,
           color: "#ffffffdd",
           textAlign: "center",
@@ -125,24 +142,37 @@ function renderCard({
     </div>
   );
 
+  // Ribbon tag: a plain solid-color rounded rect, not the angled/skewed
+  // shape in the reference art. Satori's layout engine (yoga) doesn't
+  // reliably support a `transform: skewX()` flex container with a
+  // counter-skewed text child inside it — confirmed against a real broken
+  // render where this exact pattern corrupted the layout of every sibling
+  // after it (two team columns collapsing into each other, and the whole
+  // row vanishing in landscape). Not worth the risk for a cosmetic angle.
+  // `flex: 1` (flex-grow with an implicit flex-basis: 0) is only safe here
+  // in landscape's row layout — confirmed via an offline render test that
+  // Satori's layout engine collapses a COLUMN-direction flex item using
+  // flex-grow to near-zero height when its parent's height is content-
+  // driven rather than fixed (exactly portrait's case here), which is what
+  // caused team A's whole column — ribbon and all 5 hero portraits — to
+  // render on top of team B's instead of stacked above it. Landscape's row
+  // layout doesn't hit this; each column's cross-axis (width) is bounded
+  // by the frame's own definite width, so flex-grow resolves correctly
+  // there and both columns split the row evenly as intended.
   const teamPickColumn = (name: string | undefined, picks: CardHeroPick[]) => (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 * scale, flex: 1 }}>
-      {/* Angled ribbon tag — both teams get the same signal-red treatment,
-          matching both reference designs (neither singles out one side). */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
       <div
         style={{
           display: "flex",
           alignSelf: "flex-start",
           background: SIGNAL,
-          padding: `${6 * scale}px ${18 * scale}px`,
-          transform: "skewX(-12deg)",
+          borderRadius: 6 * scale,
+          padding: `${8 * scale}px ${20 * scale}px`,
         }}
       >
         <span
           style={{
-            display: "flex",
-            transform: "skewX(12deg)",
-            fontSize: 18 * scale,
+            fontSize: 20 * scale,
             fontWeight: 700,
             color: "#ffffff",
             textTransform: "uppercase",
@@ -152,20 +182,20 @@ function renderCard({
           {name ?? "TBD"}
         </span>
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 14 * scale }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 18 * scale }}>
         {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
       </div>
     </div>
   );
 
   const finalPicksBlock = (teamAPicks.length > 0 || teamBPicks.length > 0) && (
-    <div style={{ display: "flex", flexDirection: "column", gap: 22 * scale }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14 * scale }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 32 * scale }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16 * scale }}>
         {ticks.left}
-        <span style={{ fontSize: 20 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks</span>
+        <span style={{ fontSize: 22 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks</span>
         {ticks.right}
       </div>
-      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", gap: isLandscape ? 40 * scale : 26 * scale }}>
+      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", gap: isLandscape ? 56 * scale : 44 * scale }}>
         {teamPickColumn(teamA?.name, teamAPicks)}
         {teamPickColumn(teamB?.name, teamBPicks)}
       </div>
@@ -178,29 +208,29 @@ function renderCard({
   // is a cosmetic variant of the same information, and a per-team badge
   // reads unambiguously at any size, so it's used for both ratios.
   const teamBox = (team: CardMatch["team_a"], wins: number, isWinner: boolean, hasWinner: boolean) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale, flex: 1, opacity: hasWinner && !isWinner ? 0.55 : 1 }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 * scale, flex: 1, opacity: hasWinner && !isWinner ? 0.55 : 1 }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 176 * scale,
-          height: 176 * scale,
-          borderRadius: 28 * scale,
+          width: 220 * scale,
+          height: 220 * scale,
+          borderRadius: 32 * scale,
           background: "#f5f5f5",
-          border: `${isWinner ? 6 : 2}px solid ${isWinner ? SIGNAL : "#ffffff2a"}`,
-          padding: 20 * scale,
-          boxShadow: isWinner ? `0 0 ${64 * scale}px ${SIGNAL}66` : "none",
+          border: `${isWinner ? 7 : 2}px solid ${isWinner ? SIGNAL : "#ffffff2a"}`,
+          padding: 24 * scale,
+          boxShadow: isWinner ? `0 0 ${72 * scale}px ${SIGNAL}66` : "none",
         }}
       >
         {team?.logo_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={team.logo_url} alt="" width={132 * scale} height={132 * scale} style={{ objectFit: "contain" }} />
+          <img src={team.logo_url} alt="" width={164 * scale} height={164 * scale} style={{ objectFit: "contain" }} />
         ) : (
-          <span style={{ fontSize: 48 * scale, fontWeight: 700, color: INK }}>{(team?.name ?? "?").slice(0, 2).toUpperCase()}</span>
+          <span style={{ fontSize: 56 * scale, fontWeight: 700, color: INK }}>{(team?.name ?? "?").slice(0, 2).toUpperCase()}</span>
         )}
       </div>
-      <span style={{ fontSize: 32 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
+      <span style={{ fontSize: 36 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
         {team?.name ?? "TBD"}
       </span>
       {isWinner && (
@@ -209,7 +239,7 @@ function renderCard({
             display: "flex",
             alignItems: "center",
             gap: 6 * scale,
-            fontSize: 16 * scale,
+            fontSize: 17 * scale,
             fontWeight: 700,
             color: SIGNAL,
             textTransform: "uppercase",
@@ -217,7 +247,7 @@ function renderCard({
             background: `${SIGNAL}1a`,
             border: `1px solid ${SIGNAL}55`,
             borderRadius: 999,
-            padding: `${4 * scale}px ${14 * scale}px`,
+            padding: `${5 * scale}px ${16 * scale}px`,
           }}
         >
           🏆 Winner
@@ -227,15 +257,15 @@ function renderCard({
   );
 
   const scoreBar = (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 24 * scale }}>
-      <span style={{ fontSize: 20 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 3, textAlign: "center" }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 28 * scale }}>
+      <span style={{ fontSize: 22 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 3, textAlign: "center" }}>
         {match.tournament?.name ?? ""} {match.format ? `· ${match.format}` : ""}
       </span>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 40 * scale, width: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 48 * scale, width: "100%" }}>
         {teamBox(teamA, aWins, winnerId === teamA?.id, Boolean(winnerId))}
-        <div style={{ display: "flex", alignItems: "center", gap: 24 * scale, fontSize: 140 * scale, fontWeight: 700, lineHeight: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 28 * scale, fontSize: 160 * scale, fontWeight: 700, lineHeight: 1 }}>
           <span style={{ color: winnerId === teamA?.id ? SIGNAL : "#ffffff" }}>{aWins}</span>
-          <span style={{ color: "#ffffff33", fontSize: 80 * scale }}>–</span>
+          <span style={{ color: "#ffffff33", fontSize: 90 * scale }}>–</span>
           <span style={{ color: winnerId === teamB?.id ? SIGNAL : "#ffffff" }}>{bWins}</span>
         </div>
         {teamBox(teamB, bWins, winnerId === teamB?.id, Boolean(winnerId))}
@@ -329,8 +359,14 @@ function renderCard({
           {/* Landscape gets a genuine two-column recomposition for the
               picks (each team's 5 heroes as their own row, side by side)
               instead of the portrait's stacked rows — matches the two
-              reference layouts rather than scaling one design uniformly. */}
-          <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, justifyContent: "center", gap: isLandscape ? 48 * scale : 40 * scale, marginTop: 24 * scale }}>
+              reference layouts rather than scaling one design uniformly.
+              Top-anchored (not `justifyContent: "center"` inside a grown
+              flex container) — centering a content block shorter than the
+              available height left a large dead gap above the tournament
+              line on a real render; a fixed top offset plus generous
+              between-section gaps fills the frame in a way that's
+              predictable regardless of how much content each match has. */}
+          <div style={{ display: "flex", flexDirection: "column", gap: isLandscape ? 64 * scale : 56 * scale, marginTop: 56 * scale }}>
             {scoreBar}
             {finalPicksBlock}
           </div>

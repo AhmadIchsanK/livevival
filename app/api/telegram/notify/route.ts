@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { broadcastToSlack } from "@/lib/slack";
 
 // Admin-triggered Telegram posts — the pieces the always-on worker can't
 // automate on its own: draft recaps and key moments for matches on
@@ -68,6 +69,11 @@ export async function POST(req: NextRequest) {
     const errText = await res.text();
     return NextResponse.json({ error: `Telegram API error: ${errText}` }, { status: 502 });
   }
+
+  // Best-effort mirror — every Telegram post also goes to Slack (channel +
+  // any DM-opted-in user) when SLACK_BOT_TOKEN/SLACK_CHANNEL_ID are set.
+  // Never blocks or fails this response on Slack's account.
+  broadcastToSlack(message, photoUrl).catch(() => {});
 
   // entityType/entityId/notificationType are optional — only passed when
   // the caller wants this specific post logged against

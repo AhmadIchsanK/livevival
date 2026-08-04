@@ -333,3 +333,14 @@ exception when duplicate_object then null; end $$;
 do $$ begin
   create policy "capture_regions_admin_only" on capture_regions for all to authenticated using (is_admin()) with check (is_admin());
 exception when duplicate_object then null; end $$;
+
+-- ── Slack DM opt-in/out (brand new table) ──
+
+create table if not exists slack_dm_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  slack_user_id text not null unique,
+  enabled boolean not null default true,
+  updated_at timestamptz not null default now()
+);
+
+alter table slack_dm_subscriptions enable row level security;

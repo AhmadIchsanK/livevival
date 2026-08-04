@@ -6,6 +6,7 @@ import * as cheerio from "cheerio";
 import { supabase } from "./config.mjs";
 import { fetchRenderedPage } from "./liquipediaClient.mjs";
 import { notifyOnce } from "./telegram.mjs";
+import { isEmbeddableStreamUrl, findStreamFallback } from "./youtubeStreamFallback.mjs";
 
 export function parseFormat(text) {
   const m = text.match(/Bo(\d)/i);
@@ -124,7 +125,7 @@ export async function syncTournamentSchedule(tournament, html) {
 
     const { data: existing } = await supabase
       .from("matches")
-      .select("id, status, update_source, notification_tier")
+      .select("id, status, update_source, notification_tier, stream:streams!matches_stream_id_fkey(url)")
       .eq("liquipedia_match_key", key)
       .maybeSingle();
 
@@ -135,7 +136,23 @@ export async function syncTournamentSchedule(tournament, html) {
     // on-demand link); the live-stream link takes priority beforehand,
     // since a VOD generally doesn't exist yet at that point. Either one is
     // "the" stream link when only one is present.
-    const linkUrl = m.finished ? m.youtubeUrl ?? m.streamUrl : m.streamUrl ?? m.youtubeUrl;
+    let linkUrl = m.finished ? m.youtubeUrl ?? m.streamUrl : m.streamUrl ?? m.youtubeUrl;
+
+    // Liquipedia's match-info stream link is a liquipedia.net
+    // Special:Stream/<platform>/<channel> redirect page, not a direct
+    // youtube.com/twitch.tv URL — not embeddable as-is (see
+    // youtubeStreamFallback.mjs). Falls back to a best-effort YouTube
+    // search instead, unless a genuinely embeddable link is already
+    // attached (skip re-searching every tick once that's resolved).
+    if (linkUrl && !isEmbeddableStreamUrl(linkUrl) && !isEmbeddableStreamUrl(existing.stream?.url)) {
+      const fallbackUrl = await findStreamFallback({
+        matchKey: key,
+        tournamentName: tournament.name,
+        teamAName: m.teamAName,
+        teamBName: m.teamBName,
+      });
+      if (fallbackUrl) linkUrl = fallbackUrl;
+    }
 
     let streamId = null;
     if (linkUrl) streamId = await getOrCreateStream(linkUrl, tournament.id, m.finished);

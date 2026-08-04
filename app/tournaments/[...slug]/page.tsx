@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
+import { MatchCard } from "@/components/MatchCard";
 
 type Tournament = {
   id: string;
@@ -44,51 +44,6 @@ type PlayerPerformance = {
   deaths: number;
   assists: number;
 };
-
-function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: number } }) {
-  const scoreLabel = score ? `${score.a}–${score.b}` : null;
-  return (
-    <a
-      href={`/match/${m.id}`}
-      className="lv-card flex flex-col items-center gap-2 px-4 py-3"
-    >
-      {/* Same centered layout as the home page's Recent results: two equal
-          columns either side of the score/status badge, so it sits
-          dead-center and both team groups stay level regardless of name
-          length. */}
-      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 w-full">
-        <div className="flex items-center justify-end gap-1.5 min-w-0">
-          <span className="font-semibold text-sm text-right leading-tight">{m.team_a?.name ?? "TBD"}</span>
-          {m.team_a?.logo_url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={proxiedImageUrl(m.team_a.logo_url)} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
-          ) : null}
-        </div>
-        {scoreLabel ? (
-          <span className="lv-score text-lg shrink-0 bg-white/5 border border-white/10 rounded-md px-3 py-1.5">{scoreLabel}</span>
-        ) : (
-          <span
-            className={
-              m.status === "live" ? "lv-badge-live" : m.status === "finished" ? "lv-badge-finished" : "lv-badge-scheduled"
-            }
-          >
-            {m.status}
-          </span>
-        )}
-        <div className="flex items-center justify-start gap-1.5 min-w-0">
-          {m.team_b?.logo_url ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={proxiedImageUrl(m.team_b.logo_url)} alt="" className="w-4 h-4 rounded object-contain shrink-0" />
-          ) : null}
-          <span className="font-semibold text-sm leading-tight">{m.team_b?.name ?? "TBD"}</span>
-        </div>
-      </div>
-      <p className="text-xs text-white/40 text-center">
-        {m.format}{m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
-      </p>
-    </a>
-  );
-}
 
 export default function TournamentPage() {
   const params = useParams();
@@ -390,7 +345,18 @@ export default function TournamentPage() {
       <section className="space-y-3">
         <h2 className="lv-heading">Upcoming &amp; live</h2>
         <div className="space-y-2">
-          {upcomingAndLive.map((m) => <MatchRowCard key={m.id} m={m} score={scores[m.id]} />)}
+          {upcomingAndLive.map((m) => (
+            <MatchCard
+              key={m.id}
+              href={`/match/${m.id}`}
+              status={m.status}
+              teamA={m.team_a}
+              teamB={m.team_b}
+              score={scores[m.id]}
+              scheduledAt={m.scheduled_at}
+              format={m.format}
+            />
+          ))}
           {upcomingAndLive.length === 0 && <p className="text-white/30 text-sm">No upcoming matches scheduled yet.</p>}
         </div>
       </section>
@@ -400,7 +366,18 @@ export default function TournamentPage() {
       <section className="space-y-3">
         <h2 className="lv-heading">Match history</h2>
         <div className="space-y-2">
-          {visibleHistory.map((m) => <MatchRowCard key={m.id} m={m} score={scores[m.id]} />)}
+          {visibleHistory.map((m) => (
+            <MatchCard
+              key={m.id}
+              href={`/match/${m.id}`}
+              status={m.status}
+              teamA={m.team_a}
+              teamB={m.team_b}
+              score={scores[m.id]}
+              scheduledAt={m.scheduled_at}
+              format={m.format}
+            />
+          ))}
           {history.length === 0 && <p className="text-white/30 text-sm">No finished matches yet.</p>}
         </div>
         {history.length > historyVisibleCount && (

@@ -6,22 +6,25 @@ import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
-import { TeamLogo } from "@/components/TeamLogo";
+import { MatchCard } from "@/components/MatchCard";
 
 type MatchRow = {
   id: string;
   status: string;
   scheduled_at: string | null;
+  format: string | null;
   update_source: "liquipedia" | "local_ocr";
   notification_tier: "normal" | "hot" | "priority";
-  tournament: { name: string } | null;
+  tournament: { name: string; tier: string; liquipedia_slug: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
 };
 type GameRow = { match_id: string; winner_team_id: string | null };
 
-const MATCH_SELECT = `id, status, scheduled_at, update_source, notification_tier,
-  tournament:tournaments(name),
+// Same fields as the home page's own MATCH_SELECT — this page reuses the
+// home page's match-card component, so it needs the same data to render it.
+const MATCH_SELECT = `id, status, scheduled_at, format, update_source, notification_tier,
+  tournament:tournaments(name, tier, liquipedia_slug),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
 
@@ -33,63 +36,6 @@ const TABS = [
   { key: "finished", label: "Finished" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
-
-function HotBadge({ updateSource }: { updateSource: "liquipedia" | "local_ocr" }) {
-  if (updateSource !== "local_ocr") return null;
-  return (
-    <span className="lv-badge bg-signal/20 text-signal border border-signal/40 shrink-0" title="Fully admin-tracked: live KDA, items, and moment log">
-      🔥 HOT
-    </span>
-  );
-}
-
-// notification_tier badge — a separate axis from update_source (see the
-// migration comment). Hot only shows its own badge here when it disagrees
-// with update_source, to avoid repeating the 🔥 HOT badge above.
-function TierBadge({ tier, updateSource }: { tier: "normal" | "hot" | "priority"; updateSource: "liquipedia" | "local_ocr" }) {
-  if (tier === "priority") {
-    return (
-      <span className="lv-badge bg-amber-400/20 text-amber-300 border border-amber-400/40 shrink-0" title="Priority notifications: automatic match-started and match-finished alerts">
-        🔔 PRIORITY
-      </span>
-    );
-  }
-  if (tier === "hot" && updateSource !== "local_ocr") {
-    return (
-      <span className="lv-badge bg-signal/20 text-signal border border-signal/40 shrink-0" title="Hot notification tier: full automatic Telegram/Slack alerts">
-        🔥 HOT ALERTS
-      </span>
-    );
-  }
-  return null;
-}
-
-function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: number } }) {
-  return (
-    <a href={`/match/${m.id}`} className="lv-card-flush flex items-center justify-between gap-4 p-4 hover:border-signal/40 transition-colors">
-      <div className="flex items-center gap-3 min-w-0">
-        <TeamLogo url={m.team_a?.logo_url} alt={m.team_a?.name} size="sm" />
-        <span className="text-sm font-semibold truncate">{m.team_a?.name ?? "TBD"}</span>
-        <span className="text-white/30 text-xs">vs</span>
-        <span className="text-sm font-semibold truncate">{m.team_b?.name ?? "TBD"}</span>
-        <TeamLogo url={m.team_b?.logo_url} alt={m.team_b?.name} size="sm" />
-      </div>
-      <div className="flex items-center gap-3 shrink-0">
-        {score && (
-          <span className="text-sm font-bold tabular-nums text-white/70">
-            {score.a} - {score.b}
-          </span>
-        )}
-        <HotBadge updateSource={m.update_source} />
-        <TierBadge tier={m.notification_tier} updateSource={m.update_source} />
-        <span className="text-xs text-white/40 hidden sm:inline">{m.tournament?.name}</span>
-        <span className="text-xs text-white/40 tabular-nums">
-          {m.scheduled_at ? new Date(m.scheduled_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
-        </span>
-      </div>
-    </a>
-  );
-}
 
 type SortKey = "date_asc" | "date_desc";
 
@@ -208,7 +154,21 @@ function MatchesPageInner() {
       ) : (
         <div className="space-y-2">
           {list.map((m) => (
-            <MatchRowCard key={m.id} m={m} score={scores[m.id]} />
+            <MatchCard
+              key={m.id}
+              href={`/match/${m.id}`}
+              status={m.status}
+              teamA={m.team_a}
+              teamB={m.team_b}
+              score={scores[m.id]}
+              scheduledAt={m.scheduled_at}
+              format={m.format}
+              tier={m.tournament?.tier}
+              tournamentName={m.tournament?.name}
+              tournamentSlug={m.tournament?.liquipedia_slug}
+              updateSource={m.update_source}
+              notificationTier={m.notification_tier}
+            />
           ))}
           {list.length === 0 && <p className="text-white/30 text-sm text-center py-8">No matches here.</p>}
         </div>

@@ -6,6 +6,8 @@ import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
+import { ViewToggle } from "@/components/ViewToggle";
+import { useViewMode } from "@/lib/useViewMode";
 
 type Team = { id: string; name: string; short_name: string | null; logo_url: string | null };
 type SortKey = "name_asc" | "name_desc";
@@ -24,6 +26,7 @@ function TeamsIndexPageInner() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
+  const [view, setView] = useViewMode("lv-view-teams");
 
   useEffect(() => {
     async function load() {
@@ -69,11 +72,12 @@ function TeamsIndexPageInner() {
           <option value="name_asc">Name A→Z</option>
           <option value="name_desc">Name Z→A</option>
         </select>
+        <ViewToggle mode={view} onChange={setView} />
       </div>
 
       {loading && <p className="text-white/40 text-sm">Loading...</p>}
 
-      {!loading && (
+      {!loading && view === "grid" && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {visible.map((t) => (
             <div key={t.id} className="lv-card flex flex-col items-center gap-2 px-4 py-5 text-center">
@@ -83,6 +87,35 @@ function TeamsIndexPageInner() {
             </div>
           ))}
           {visible.length === 0 && <p className="text-white/30 text-sm col-span-full">No teams match.</p>}
+        </div>
+      )}
+
+      {!loading && view === "list" && (
+        <div className="lv-card-flush overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="text-white/40 text-left bg-white/[0.03]">
+              <tr>
+                <th className="pb-2 pt-3 px-4">Team</th>
+                <th className="pb-2 pt-3 px-4">Short name</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((t) => (
+                <tr key={t.id} className="border-t border-white/10 hover:bg-white/[0.03] transition-colors">
+                  <td className="py-2 px-4">
+                    <div className="flex items-center gap-2.5">
+                      <TeamLogo url={t.logo_url} size="sm" />
+                      <span className="font-semibold">{t.name}</span>
+                    </div>
+                  </td>
+                  <td className="py-2 px-4 text-white/50">
+                    {t.short_name && t.short_name !== t.name ? t.short_name : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {visible.length === 0 && <p className="text-white/30 text-sm px-4 py-6">No teams match.</p>}
         </div>
       )}
     </main>

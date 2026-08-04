@@ -9,6 +9,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { BrandLockup } from "@/components/Brand";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
+import { formatMatchDate } from "@/lib/formatMatchDate";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 type Match = {
@@ -27,7 +28,7 @@ type Match = {
   draft_timer_a_seconds: number | null;
   draft_timer_b_seconds: number | null;
   draft_timer_updated_at: string | null;
-  tournament: { name: string; tier: string } | null;
+  tournament: { name: string; tier: string; liquipedia_slug: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
   stream: { url: string } | null;
@@ -210,7 +211,7 @@ export default function PublicMatchPage() {
       .select(
         `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source, notification_tier, scheduled_at,
          countdown_seconds, countdown_updated_at, draft_timer_a_seconds, draft_timer_b_seconds, draft_timer_updated_at,
-         tournament:tournaments(name, tier),
+         tournament:tournaments(name, tier, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url),
          stream:streams!matches_stream_id_fkey(url)`
@@ -607,7 +608,17 @@ export default function PublicMatchPage() {
             <NavMenu />
           </div>
         </div>
-        <p className="text-xs text-white/50 uppercase tracking-wide">{match.tournament?.name} · {match.tournament?.tier}-Tier · {match.format}</p>
+        <p className="text-xs text-white/50 uppercase tracking-wide">
+          {match.tournament?.liquipedia_slug ? (
+            <a href={`/tournaments/${match.tournament.liquipedia_slug}`} className="hover:text-white underline">
+              {match.tournament?.name}
+            </a>
+          ) : (
+            match.tournament?.name
+          )}{" "}
+          · {match.tournament?.tier}-Tier · {match.format}
+          {match.scheduled_at ? ` · ${formatMatchDate(match.scheduled_at)}` : ""}
+        </p>
         <div className="flex items-center gap-3 flex-wrap">
           {/* items-start (not items-end) — the logo is always the first
               thing in each team's column, so top-aligning the row is what

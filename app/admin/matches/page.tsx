@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { formatMatchDate } from "@/lib/formatMatchDate";
 
 type Option = { id: string; label: string };
 
@@ -119,7 +120,7 @@ type Match = {
   tournament_id: string | null;
   team_a_id: string | null;
   team_b_id: string | null;
-  tournament: { name: string } | null;
+  tournament: { name: string; liquipedia_slug: string | null } | null;
   team_a: { name: string } | null;
   team_b: { name: string } | null;
 };
@@ -243,7 +244,7 @@ export default function MatchesPage() {
       .select(
         `id, scheduled_at, format, status, youtube_url, state, stream_id, update_source, notification_tier,
          tournament_id, team_a_id, team_b_id,
-         tournament:tournaments(name),
+         tournament:tournaments(name, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(name),
          team_b:teams!matches_team_b_id_fkey(name)`
       )
@@ -707,7 +708,19 @@ export default function MatchesPage() {
                       {m.team_a?.name ?? "TBD"} vs {m.team_b?.name ?? "TBD"}
                     </p>
                     <p className="text-xs text-white/50">
-                      {m.tournament?.name} · {m.format} · {m.scheduled_at ? new Date(m.scheduled_at).toLocaleString() : "no time set"}
+                      {m.tournament?.liquipedia_slug ? (
+                        <a
+                          href={`/tournaments/${m.tournament.liquipedia_slug}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:text-white underline"
+                        >
+                          {m.tournament?.name}
+                        </a>
+                      ) : (
+                        m.tournament?.name
+                      )}{" "}
+                      · {m.format} · {m.scheduled_at ? formatMatchDate(m.scheduled_at) : "no time set"}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">

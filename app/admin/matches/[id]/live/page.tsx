@@ -44,7 +44,7 @@ type Match = {
   series_winner_team_id: string | null;
   tournament_id: string | null;
   ocr_left_team_id: string | null;
-  tournament: { name: string } | null;
+  tournament: { name: string; liquipedia_slug: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
 };
@@ -244,7 +244,7 @@ export default function LiveConsolePage() {
       .from("matches")
       .select(
         `id, youtube_url, format, current_game_number, status, state, custom_state_label, update_source, notification_tier, series_winner_team_id, tournament_id, ocr_left_team_id,
-         tournament:tournaments(name),
+         tournament:tournaments(name, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
       )
@@ -3233,7 +3233,21 @@ export default function LiveConsolePage() {
           <TeamLogo url={match.team_b?.logo_url} size="sm" />
         </h1>
         <div className="flex items-center gap-3 mt-1 flex-wrap">
-          <p className="text-xs text-white/50">{match.tournament?.name} · {match.format} · Game {game.game_number}</p>
+          <p className="text-xs text-white/50">
+            {match.tournament?.liquipedia_slug ? (
+              <a
+                href={`/tournaments/${match.tournament.liquipedia_slug}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-white underline"
+              >
+                {match.tournament?.name}
+              </a>
+            ) : (
+              match.tournament?.name
+            )}{" "}
+            · {match.format} · Game {game.game_number}
+          </p>
           <input
             defaultValue={match.youtube_url ?? ""}
             onBlur={async (e) => {

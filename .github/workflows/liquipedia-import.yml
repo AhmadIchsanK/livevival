@@ -17,7 +17,18 @@ name: Import Liquipedia tournaments
 on:
   schedule:
     - cron: "0 */6 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tournament_slugs:
+        description: >-
+          Optional: comma-separated liquipedia_slug value(s) (e.g.
+          "MPL/Indonesia/Season_18,MPL/Malaysia/Season_18") to re-import
+          matches for those tournaments only, bypassing the past-year
+          window and table order — for a tournament that keeps missing the
+          normal pass's timeout because of where it sits in the list. Leave
+          blank for the normal full pass.
+        required: false
+        default: ""
 
 jobs:
   import-tournaments:
@@ -91,3 +102,4 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TOURNAMENT_SLUGS: ${{ github.event.inputs.tournament_slugs }}

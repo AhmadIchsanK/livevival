@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -10,9 +11,18 @@ type Hero = { id: string; name: string; role: string | null; icon_url: string | 
 type SortKey = "name_asc" | "name_desc";
 
 export default function HeroesIndexPage() {
+  return (
+    <Suspense fallback={null}>
+      <HeroesIndexPageInner />
+    </Suspense>
+  );
+}
+
+function HeroesIndexPageInner() {
+  const searchParams = useSearchParams();
   const [heroes, setHeroes] = useState<Hero[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [roleFilter, setRoleFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
 

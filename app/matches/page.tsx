@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -67,11 +68,24 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
   );
 }
 
+type SortKey = "date_asc" | "date_desc";
+
 export default function MatchesPage() {
+  return (
+    <Suspense fallback={null}>
+      <MatchesPageInner />
+    </Suspense>
+  );
+}
+
+function MatchesPageInner() {
+  const searchParams = useSearchParams();
   const [tab, setTab] = useState<TabKey>("live");
   const [byStatus, setByStatus] = useState<Record<TabKey, MatchRow[]>>({ live: [], scheduled: [], finished: [] });
   const [scores, setScores] = useState<Record<string, { a: number; b: number }>>({});
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
+  const [sortKey, setSortKey] = useState<SortKey>("date_asc");
 
   useEffect(() => {
     async function load() {
@@ -107,7 +121,21 @@ export default function MatchesPage() {
     load();
   }, []);
 
-  const list = byStatus[tab];
+  const list = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = byStatus[tab].filter(
+      (m) =>
+        !q ||
+        (m.team_a?.name ?? "").toLowerCase().includes(q) ||
+        (m.team_b?.name ?? "").toLowerCase().includes(q) ||
+        (m.tournament?.name ?? "").toLowerCase().includes(q)
+    );
+    return [...filtered].sort((a, b) => {
+      const at = a.scheduled_at ? new Date(a.scheduled_at).getTime() : 0;
+      const bt = b.scheduled_at ? new Date(b.scheduled_at).getTime() : 0;
+      return sortKey === "date_asc" ? at - bt : bt - at;
+    });
+  }, [byStatus, tab, search, sortKey]);
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-3xl mx-auto space-y-8">
@@ -121,6 +149,22 @@ export default function MatchesPage() {
 
       <div>
         <h1 className="lv-heading mb-4">Matches</h1>
+        <div className="flex flex-wrap gap-2 mb-4">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search team or tournament..."
+            className="flex-1 min-w-[200px] bg-white/5 border border-white/10 rounded px-3 py-1.5 text-sm outline-none focus:border-signal"
+          />
+          <select
+            value={sortKey}
+            onChange={(e) => setSortKey(e.target.value as SortKey)}
+            className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-sm"
+          >
+            <option value="date_asc">Date: earliest first</option>
+            <option value="date_desc">Date: latest first</option>
+          </select>
+        </div>
         <div className="flex gap-2 border-b border-white/10">
           {TABS.map((t) => (
             <button

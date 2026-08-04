@@ -6,6 +6,7 @@ import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { TeamLogo } from "@/components/TeamLogo";
+import { GlobalSearch } from "@/components/GlobalSearch";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 
 type MatchRow = {
@@ -139,6 +140,8 @@ export default function Home() {
           <NavMenu />
         </div>
       </header>
+
+      <GlobalSearch />
 
       {loading && <p className="text-white/40 text-sm">Loading matches...</p>}
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -16,9 +17,20 @@ type Player = {
 type SortKey = "name_asc" | "name_desc" | "team_asc";
 
 export default function PlayersIndexPage() {
+  return (
+    <Suspense fallback={null}>
+      <PlayersIndexPageInner />
+    </Suspense>
+  );
+}
+
+function PlayersIndexPageInner() {
+  const searchParams = useSearchParams();
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  // Seeded from ?q= — the home page's global search links here with a term
+  // already typed, so it should show up pre-filled, not require retyping.
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [roleFilter, setRoleFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
   const [preview, setPreview] = useState<Player | null>(null);

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -10,9 +11,18 @@ type Team = { id: string; name: string; short_name: string | null; logo_url: str
 type SortKey = "name_asc" | "name_desc";
 
 export default function TeamsIndexPage() {
+  return (
+    <Suspense fallback={null}>
+      <TeamsIndexPageInner />
+    </Suspense>
+  );
+}
+
+function TeamsIndexPageInner() {
+  const searchParams = useSearchParams();
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
 
   useEffect(() => {

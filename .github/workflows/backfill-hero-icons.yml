@@ -20,27 +20,6 @@ jobs:
         with:
           node-version: 22
       - run: npm install @supabase/supabase-js cheerio
-      # TEMP DIAGNOSTIC — remove before merge. Sandbox dev environments
-      # can't reach liquipedia.net directly; this dumps real page structure
-      # via a GH Actions runner (which has internet access) into job logs.
-      - run: |
-          node -e "
-          const UA = 'LivevivalBot/1.0 (https://livevival.vercel.app; contact: rigel@rawwy.ae)';
-          (async () => {
-            const portal = await fetch('https://liquipedia.net/mobilelegends/api.php?action=parse&page=Portal:Heroes&prop=text&format=json', { headers: { 'User-Agent': UA } }).then(r => r.text());
-            console.log('=== PORTAL RENDERED (first 8000) ===');
-            console.log(portal.slice(0, 8000));
-
-            const wiki = await fetch('https://liquipedia.net/mobilelegends/api.php?action=parse&page=Chou&prop=wikitext&format=json', { headers: { 'User-Agent': UA } }).then(r => r.text());
-            console.log('=== CHOU WIKITEXT (first 5000) ===');
-            console.log(wiki.slice(0, 5000));
-
-            const rendered = await fetch('https://liquipedia.net/mobilelegends/api.php?action=parse&page=Chou&prop=text&format=json', { headers: { 'User-Agent': UA } }).then(r => r.text());
-            console.log('=== CHOU RENDERED INFOBOX AREA ===');
-            const idx = rendered.indexOf('infobox');
-            console.log(rendered.slice(Math.max(0, idx - 200), idx + 5000));
-          })();
-          "
       - run: node scripts/backfill-hero-icons.mjs
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

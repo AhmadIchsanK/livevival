@@ -20,7 +20,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-async function discoverStagePages(tournamentSlug) {
+export async function discoverStagePages(tournamentSlug) {
   const html = await fetchRenderedPage(tournamentSlug);
   const $ = cheerio.load(html);
 

@@ -360,6 +360,39 @@ export default function LiveConsolePage() {
     return res.ok;
   }
 
+  // Dispatches scripts/sync-hot-match-picks-bans.mjs (via
+  // .github/workflows/sync-hot-match-draft.yml) for this one match — see
+  // that script's module comment for why it only ever corrects which hero
+  // was picked/banned, never kill stats, the moment list, or match/game
+  // state. Runs in the background like every other Liquipedia sync
+  // trigger in this app (see app/admin/data-sync/page.tsx) — this button
+  // just kicks it off, the admin reloads the page a minute or two later to
+  // see any corrections land.
+  async function syncDraftFromLiquipedia() {
+    setSyncingDraft(true);
+    setSyncDraftStatus("");
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) {
+      setSyncDraftStatus("Not signed in.");
+      setSyncingDraft(false);
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/sync-hot-match-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ matchId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setSyncDraftStatus(res.ok ? "Triggered — reload in a minute or two to see any corrections." : data.error ?? "Failed to trigger.");
+    } catch (err) {
+      setSyncDraftStatus((err as Error).message);
+    } finally {
+      setSyncingDraft(false);
+    }
+  }
+
   // Builds the same "team → picks/bans" recap block used both by the manual
   // "Announce draft" button and the automatic draft-finished notification.
   function buildDraftRecap(): string {
@@ -601,6 +634,12 @@ export default function LiveConsolePage() {
   // pick/ban selection, since scrolling a plain <select> of 130+ heroes by
   // name is slow mid-draft. Draft-phase only per its own purpose.
   const [showHeroPicker, setShowHeroPicker] = useState(false);
+  // Reconciles this Hot match's hero picks/bans against Liquipedia's own
+  // bracket record — see scripts/sync-hot-match-picks-bans.mjs for why this
+  // only ever touches which hero was picked/banned, never kill stats, the
+  // moment list, or match/game state.
+  const [syncingDraft, setSyncingDraft] = useState(false);
+  const [syncDraftStatus, setSyncDraftStatus] = useState("");
   const [editingFinishedGame, setEditingFinishedGame] = useState(false);
   useEffect(() => {
     setEditingFinishedGame(false);
@@ -3820,8 +3859,19 @@ export default function LiveConsolePage() {
             >
               📢 Announce draft
             </button>
+            {match.update_source === "local_ocr" && (
+              <button
+                onClick={syncDraftFromLiquipedia}
+                disabled={syncingDraft}
+                title="Corrects which hero was picked/banned to match Liquipedia's bracket page. Never touches kill stats or the moment list."
+                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-50"
+              >
+                {syncingDraft ? "Syncing..." : "🔄 Sync from Liquipedia"}
+              </button>
+            )}
           </div>
         </div>
+        {syncDraftStatus && <p className="text-xs text-white/50">{syncDraftStatus}</p>}
 
         {/* Active roster (main lineup) — editable up through Draft complete
             (not locked the instant the draft starts, per spec). Draft can't

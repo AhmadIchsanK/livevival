@@ -1,0 +1,31 @@
+name: Sync Hot match picks/bans from Liquipedia
+
+# Triggered on demand from the admin console (see
+# app/api/admin/sync-hot-match-draft/route.ts) when an admin spots a
+# discrepancy between what the live OCR draft tracker logged for a Hot
+# match and what Liquipedia's own bracket page actually recorded. Scoped to
+# exactly one match's hero_picks_bans rows — see
+# scripts/sync-hot-match-picks-bans.mjs's module comment for why kill
+# stats, the moment list, and match/game state are never touched here.
+on:
+  workflow_dispatch:
+    inputs:
+      match_id:
+        description: "UUID of the match (matches.id) to reconcile"
+        required: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/sync-hot-match-picks-bans.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          MATCH_ID: ${{ inputs.match_id }}

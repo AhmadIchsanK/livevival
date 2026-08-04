@@ -496,6 +496,11 @@ export default function PublicMatchPage() {
     null;
   const seriesWinnerName =
     seriesWinnerTeamId === teamAId ? match.team_a?.name : seriesWinnerTeamId === teamBId ? match.team_b?.name : null;
+  // A match can be "finished" with a real series winner even though no game
+  // ever recorded one (a walkover/withdrawal) — games.winner_team_id-derived
+  // counts can't tell "not started" apart from "decided without being
+  // played", so this checks the one signal that can.
+  const isForfeitWin = match.status === "finished" && Boolean(match.series_winner_team_id) && gamesWonByA === 0 && gamesWonByB === 0;
 
   const gameNumberById = new Map(games.map((g) => [g.id, g.game_number]));
 
@@ -632,7 +637,13 @@ export default function PublicMatchPage() {
                 page — it now dwarfs "vs" and every other header element
                 instead of being buried in the finished-only winner line. */}
             <span className="lv-score flex items-center gap-2 sm:gap-3 text-4xl sm:text-6xl mt-8 sm:mt-10">
-              {games.length > 0 ? (
+              {isForfeitWin ? (
+                <>
+                  <span className={seriesWinnerTeamId === teamAId ? "text-signal" : "text-paper"}>{seriesWinnerTeamId === teamAId ? "W" : "L"}</span>
+                  <span className="text-white/20 text-2xl sm:text-4xl">–</span>
+                  <span className={seriesWinnerTeamId === teamBId ? "text-signal" : "text-paper"}>{seriesWinnerTeamId === teamBId ? "W" : "L"}</span>
+                </>
+              ) : games.length > 0 ? (
                 <>
                   <span className={gamesWonByA > gamesWonByB ? "text-signal" : "text-paper"}>{gamesWonByA}</span>
                   <span className="text-white/20 text-2xl sm:text-4xl">–</span>
@@ -734,6 +745,10 @@ export default function PublicMatchPage() {
             </span>
           )}
         </div>
+
+        {isForfeitWin && seriesWinnerName && (
+          <p className="lv-alert-warning">🟥 {seriesWinnerName} win by default — this match was decided without any games being played.</p>
+        )}
 
         {mvp && (
           <p className="text-sm text-white/70">

@@ -28,6 +28,85 @@ export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Shared country/region name list — originally lived only in
+// backfill-player-photos.mjs (as a flag-filename-decoding fallback), moved
+// here so import-team-details.mjs can reuse it as a denylist: 11 rows in
+// production had a country name ("Indonesia", "Philippines", "Malaysia")
+// stored as a player's `ign`, sharing a real team_id — no active importer
+// reproduces this against current Liquipedia team-page HTML (confirmed via
+// a throwaway diagnostic run against 4 of the affected teams' live pages,
+// every current roster row parsed to a real IGN), so the rows are leftover
+// contamination from an older, already-deleted region/portal-page scraper
+// (see import-team-details.mjs's header comment on what it replaced) — but
+// nothing has ever stopped a similarly-shaped bug (a mis-scoped table, a
+// flag/section-header row misread as a body row) from reintroducing the
+// same kind of row again. Rejecting an exact country-name match at parse
+// time is a cheap, permanent backstop regardless of which code path a
+// future regression comes from.
+export const COUNTRY_NAME_TO_CODE = {
+  indonesia: "ID",
+  philippines: "PH",
+  malaysia: "MY",
+  singapore: "SG",
+  myanmar: "MM",
+  cambodia: "KH",
+  thailand: "TH",
+  vietnam: "VN",
+  laos: "LA",
+  brunei: "BN",
+  "east timor": "TL",
+  brazil: "BR",
+  argentina: "AR",
+  chile: "CL",
+  peru: "PE",
+  colombia: "CO",
+  mexico: "MX",
+  bolivia: "BO",
+  ecuador: "EC",
+  paraguay: "PY",
+  uruguay: "UY",
+  venezuela: "VE",
+  "dominican republic": "DO",
+  "united states": "US",
+  "united states of america": "US",
+  canada: "CA",
+  china: "CN",
+  "south korea": "KR",
+  japan: "JP",
+  india: "IN",
+  pakistan: "PK",
+  bangladesh: "BD",
+  nepal: "NP",
+  "sri lanka": "LK",
+  turkey: "TR",
+  russia: "RU",
+  ukraine: "UA",
+  kazakhstan: "KZ",
+  uzbekistan: "UZ",
+  mongolia: "MN",
+  "saudi arabia": "SA",
+  "united arab emirates": "AE",
+  kuwait: "KW",
+  qatar: "QA",
+  egypt: "EG",
+  morocco: "MA",
+  algeria: "DZ",
+  tunisia: "TN",
+  nigeria: "NG",
+  "south africa": "ZA",
+  australia: "AU",
+  "new zealand": "NZ",
+  england: "GB",
+  "united kingdom": "GB",
+  germany: "DE",
+  france: "FR",
+  spain: "ES",
+  portugal: "PT",
+  italy: "IT",
+  poland: "PL",
+  sweden: "SE",
+};
+
 const REQUEST_TIMEOUT_MS = 20000;
 
 async function requestJson(url, label, attempt, maxRetries) {

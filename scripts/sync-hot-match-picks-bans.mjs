@@ -77,9 +77,27 @@ function findScrapedMatch(candidates, teamAName, teamBName, scheduledAt) {
   return closest;
 }
 
+// Loops every candidate page (top-level + discovered stage subpages) for a
+// tournament until it finds this specific team pair's finished-match popup.
+// Shared by the on-demand single-match reconciliation below and by
+// sync-hot-matches-cron.mjs's every-eligible-match sweep, so the fetch/
+// disambiguation logic only lives in one place.
+export async function findMatchOnLiquipedia(tournamentSlug, teamAName, teamBName, scheduledAt) {
+  const candidatePages = [tournamentSlug, ...(await discoverStagePages(tournamentSlug))];
+  for (const page of candidatePages) {
+    const html = await fetchRenderedPage(page);
+    const $ = cheerio.load(html);
+    const finished = extractFinishedMatches($);
+    const found = findScrapedMatch(finished, teamAName, teamBName, scheduledAt);
+    if (found) return found;
+    await sleep(4000);
+  }
+  return null;
+}
+
 // Reconciles one (game, team, pick|ban) group by position — see module
 // comment for why this updates-in-place instead of delete+reinsert.
-async function reconcileGroup(gameId, matchId, teamId, type, scrapedHeroNames) {
+export async function reconcileGroup(gameId, matchId, teamId, type, scrapedHeroNames) {
   const { data: existing, error } = await supabase
     .from("hero_picks_bans")
     .select("id, hero_name, pick_order, created_at")
@@ -172,18 +190,8 @@ export async function syncHotMatchPicksBans(matchId) {
     throw new Error(`Match ${matchId} is missing tournament/team data needed to look it up on Liquipedia.`);
   }
 
-  const candidatePages = [tournament.liquipedia_slug, ...(await discoverStagePages(tournament.liquipedia_slug))];
-  console.log(`Checking ${candidatePages.length} page(s) for ${teamA.name} vs ${teamB.name}: ${candidatePages.join(", ")}`);
-
-  let scrapedMatch = null;
-  for (const page of candidatePages) {
-    const html = await fetchRenderedPage(page);
-    const $ = cheerio.load(html);
-    const finished = extractFinishedMatches($);
-    scrapedMatch = findScrapedMatch(finished, teamA.name, teamB.name, match.scheduled_at);
-    if (scrapedMatch) break;
-    await sleep(4000);
-  }
+  console.log(`Looking up ${teamA.name} vs ${teamB.name} on Liquipedia (${tournament.liquipedia_slug})...`);
+  const scrapedMatch = await findMatchOnLiquipedia(tournament.liquipedia_slug, teamA.name, teamB.name, match.scheduled_at);
 
   if (!scrapedMatch) {
     console.log(`No finished-match record found on Liquipedia yet for ${teamA.name} vs ${teamB.name} — nothing to reconcile against.`);

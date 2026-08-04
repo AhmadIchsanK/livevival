@@ -1,0 +1,32 @@
+name: Sync Hot matches from Liquipedia (every 30 min)
+
+# Keeps every recent Hot (OCR-tracked) match's score/winner/game-state and
+# hero picks/bans caught up with Liquipedia's own bracket-page record —
+# scripts/sync-hot-matches-cron.mjs never touches player_stats (kills/
+# deaths/assists), key_moments, or anything screenshot-related; see that
+# script's module comment for the full scope explanation. Same manual-
+# trigger + workflow_dispatch pattern as sync-hot-match-draft.yml
+# (per-match, admin-triggered) — this is the always-on sweep across every
+# eligible match instead of one match at a time.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: sync-hot-matches-cron
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/sync-hot-matches-cron.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

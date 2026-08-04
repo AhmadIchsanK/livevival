@@ -44,10 +44,11 @@ describe("extractMatches", () => {
       finished: true,
       format: "BO3",
       youtubeUrl: "https://youtube.com/watch?v=abc123",
+      streamUrl: null,
     });
   });
 
-  it("extracts a scheduled match with no VOD as unfinished", () => {
+  it("extracts a scheduled match with no VOD but a live-stream link, resolved to an absolute URL", () => {
     const m = matches.find((x) => x.teamAName === "Team Gamma");
     expect(m).toEqual({
       teamAName: "Team Gamma",
@@ -56,6 +57,7 @@ describe("extractMatches", () => {
       finished: false,
       format: "BO5",
       youtubeUrl: null,
+      streamUrl: "https://liquipedia.net/mobilelegends/Special:Stream/youtube/GOTF_Official",
     });
   });
 

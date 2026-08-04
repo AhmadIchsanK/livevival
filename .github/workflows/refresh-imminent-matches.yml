@@ -17,4 +17,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install @supabase/supabase-js cheerio
-      - run: node scripts/debug-stream-selector.mjs
+      - run: node scripts/refresh-imminent-matches.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

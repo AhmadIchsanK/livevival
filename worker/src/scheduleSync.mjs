@@ -14,6 +14,27 @@ export function parseFormat(text) {
   return ["1", "2", "3", "5", "7"].includes(n) ? `BO${n}` : null;
 }
 
+// Liquipedia match-info popups link to a platform icon (Twitch/YouTube) via
+// a Special:Stream redirect page while a match is live/upcoming — e.g.
+// href="/mobilelegends/Special:Stream/youtube/GOTF_Official" — inside
+// .match-info-links, NOT .vodlink (that only ever appears once a match is
+// finished and Liquipedia has a real VOD to point to). Confirmed against a
+// live fetch of the Games of the Future 2026 tournament page (GitHub
+// Actions live-fetch workaround, since this sandbox can't reach
+// liquipedia.net): every unfinished popup carried a .match-info-links
+// entry, and every finished one had zero — the two are genuinely
+// phase-exclusive, matching Liquipedia's own UI (a "watch live" button
+// while a match is on, replaced by a VOD link once it wraps). The href is
+// relative to liquipedia.net, so it's resolved to an absolute URL here.
+function toAbsoluteLiquipediaUrl(href) {
+  if (!href) return null;
+  try {
+    return new URL(href, "https://liquipedia.net").href;
+  } catch {
+    return null;
+  }
+}
+
 export function extractMatches(html) {
   const $ = cheerio.load(html);
   const matches = [];
@@ -40,6 +61,7 @@ export function extractMatches(html) {
 
     const format = parseFormat($el.find(".match-info-header-scoreholder-lower").text());
     const vodHrefs = $el.find(".vodlink a[href]").map((_, a) => $(a).attr("href")).get();
+    const streamHrefs = $el.find(".match-info-links a[href]").map((_, a) => $(a).attr("href")).get();
 
     matches.push({
       teamAName,
@@ -48,6 +70,7 @@ export function extractMatches(html) {
       finished,
       format,
       youtubeUrl: vodHrefs[0] ?? null,
+      streamUrl: toAbsoluteLiquipediaUrl(streamHrefs[0]) ?? null,
     });
   });
 
@@ -80,10 +103,17 @@ async function getOrCreateStream(youtubeUrl, tournamentId, finished) {
  * Skips any match with update_source = 'local_ocr' — an admin's local
  * capture session is authoritative for that match's live state, and this
  * sync must never clobber it.
+ *
+ * Accepts an optional pre-fetched `html` so a caller polling both this and
+ * syncTournamentFinishedMatches for the same tournament in one tick (as
+ * index.mjs does) can fetch the page once and reuse it for both, instead of
+ * each function independently re-fetching the identical page — that
+ * doubling was needlessly eating into Liquipedia's rate-limit budget. Falls
+ * back to fetching it itself when called standalone.
  */
-export async function syncTournamentSchedule(tournament) {
-  const html = await fetchRenderedPage(tournament.liquipedia_slug);
-  const found = extractMatches(html);
+export async function syncTournamentSchedule(tournament, html) {
+  const pageHtml = html ?? (await fetchRenderedPage(tournament.liquipedia_slug));
+  const found = extractMatches(pageHtml);
 
   for (const m of found) {
     const teamAId = await findTeamId(m.teamAName);
@@ -101,8 +131,14 @@ export async function syncTournamentSchedule(tournament) {
     if (!existing) continue; // new matches are picked up by the 6h full importer
     if (existing.update_source === "local_ocr") continue; // admin capture owns this match
 
+    // VOD link takes priority once a match is finished (it's the permanent,
+    // on-demand link); the live-stream link takes priority beforehand,
+    // since a VOD generally doesn't exist yet at that point. Either one is
+    // "the" stream link when only one is present.
+    const linkUrl = m.finished ? m.youtubeUrl ?? m.streamUrl : m.streamUrl ?? m.youtubeUrl;
+
     let streamId = null;
-    if (m.youtubeUrl) streamId = await getOrCreateStream(m.youtubeUrl, tournament.id, m.finished);
+    if (linkUrl) streamId = await getOrCreateStream(linkUrl, tournament.id, m.finished);
 
     const payload = {};
     if (m.format) payload.format = m.format;
@@ -123,7 +159,7 @@ export async function syncTournamentSchedule(tournament) {
         existing.id,
         "match_live",
         `🔴 <b>LIVE NOW</b>\n${m.teamAName} vs ${m.teamBName}\n${tournament.name}` +
-          (m.youtubeUrl ? `\n${m.youtubeUrl}` : "")
+          (linkUrl ? `\n${linkUrl}` : "")
       );
     }
 

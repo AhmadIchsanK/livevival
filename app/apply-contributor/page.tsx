@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
 
 const PLATFORMS = [
@@ -37,32 +36,23 @@ export default function ApplyContributorPage() {
 
     setLoading(true);
 
-    // Standard client-side signup — no service role needed. The account
-    // exists right away (so login/password-reset work normally), but the
-    // /contributor dashboard stays locked behind `status = 'pending'` until
-    // an admin approves the application below.
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: { emailRedirectTo: `${window.location.origin}/contributor/login` },
+    // Goes through /api/apply-contributor (service role) rather than a
+    // client-side supabase.auth.signUp() + insert — the account is active
+    // immediately (email pre-confirmed) so it doesn't depend on this
+    // Supabase project's email-confirmation setting, and the pending
+    // contributors row insert doesn't depend on an in-browser session
+    // existing yet. The dashboard stays locked behind `status = 'pending'`
+    // until an admin approves the application.
+    const res = await fetch("/api/apply-contributor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, email, password, social_platform: platform, social_handle: handle }),
     });
-    if (signUpError || !signUpData.user) {
-      setLoading(false);
-      setError(signUpError?.message ?? "Sign up failed.");
-      return;
-    }
-
-    const { error: insertError } = await supabase.from("contributors").insert({
-      user_id: signUpData.user.id,
-      name,
-      social_platform: platform,
-      social_handle: handle,
-      email,
-    });
+    const json = await res.json().catch(() => ({}));
     setLoading(false);
 
-    if (insertError) {
-      setError(insertError.message);
+    if (!res.ok) {
+      setError(json.error ?? "Application failed.");
       return;
     }
 

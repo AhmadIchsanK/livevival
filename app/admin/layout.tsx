@@ -78,6 +78,13 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     { href: "/admin/moment-templates", label: "Moment Templates" },
     { href: "/admin/telegram-notifications", label: "Telegram Notifications" },
     { href: "/admin/data-sync", label: "Data Sync" },
+    { href: "/admin/manage-contributors", label: "Manage Contributors" },
+    { href: "/admin/contributor-requests", label: "Contributor Requests" },
+    { href: "/admin/change-log", label: "Change Log" },
+    { href: "/admin/change-password", label: "Change Password" },
+    // Add Admin is the one thing that distinguishes super_admin from admin
+    // per the confirmed scope — every other tab is identical for both.
+    ...(admin.role === "super_admin" ? [{ href: "/admin/manage-admins", label: "Manage Admins" }] : []),
   ];
 
   return (

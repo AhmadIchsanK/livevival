@@ -15,6 +15,19 @@ const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
   { pattern: /\bACE\b/i, type: "ace" },
 ];
 
+// A contributor reaches this exact page (not a separate clone) once
+// approved, but only ever for a finished match, and never writes directly
+// — every write call-site below forks on actorType and buffers into
+// pendingMatchEdits instead, bundled into one edit_requests row on submit.
+// See the route guard right after the match/game load-guard below.
+type ActorType = "admin" | "contributor";
+type MatchEditEntry = {
+  table: string;
+  action: "insert" | "update" | "delete";
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+};
+
 type Match = {
   id: string;
   youtube_url: string | null;
@@ -124,6 +137,76 @@ export default function LiveConsolePage() {
   const [secondOfMinute, setSecondOfMinute] = useState(0);
   const mmssTimestamp = () => `${String(minute).padStart(2, "0")}:${String(secondOfMinute).padStart(2, "0")}`;
   const [error, setError] = useState<string | null>(null);
+
+  // Defaults to "admin" — this page lives under /admin, so every existing
+  // write call-site's behavior is unchanged unless this flips. It only
+  // flips for a session with an approved contributors row and no admins
+  // row (an admin who happens to also have a stale contributor row still
+  // gets full admin behavior, checked first).
+  const [actorType, setActorType] = useState<ActorType>("admin");
+  const [contributorId, setContributorId] = useState<string | null>(null);
+  const [pendingMatchEdits, setPendingMatchEdits] = useState<MatchEditEntry[]>([]);
+  const [submittingMatchEdits, setSubmittingMatchEdits] = useState(false);
+  const [matchEditSubmitNotice, setMatchEditSubmitNotice] = useState<string | null>(null);
+  const isContributor = actorType === "contributor";
+
+  // Bundles every buffered {table, action, before, after} entry from this
+  // session into one edit_requests row — admin approval (app/admin/
+  // contributor-requests) replays each entry as the real write. Soft
+  // "stop" semantics: submitting doesn't clear editingFinishedGame, so a
+  // contributor can keep staging more changes in the same session if the
+  // submit fails partway (network error, RLS surprise) without losing
+  // anything already staged.
+  async function submitMatchEditRequest() {
+    if (pendingMatchEdits.length === 0 || !contributorId) return;
+    setSubmittingMatchEdits(true);
+    setMatchEditSubmitNotice(null);
+    const { error } = await supabase.from("edit_requests").insert({
+      contributor_id: contributorId,
+      entity_type: "match_live_edit",
+      entity_id: matchId,
+      action: "update",
+      proposed_changes: { edits: pendingMatchEdits },
+    });
+    setSubmittingMatchEdits(false);
+    if (error) {
+      setMatchEditSubmitNotice(`Failed to submit: ${error.message}`);
+      return;
+    }
+    setPendingMatchEdits([]);
+    setMatchEditSubmitNotice("Submitted for review.");
+  }
+
+  useEffect(() => {
+    (async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const userId = sessionData.session?.user.id;
+      if (!userId) return;
+      const { data: adminRow } = await supabase.from("admins").select("id").eq("user_id", userId).maybeSingle();
+      if (adminRow) return;
+      const { data: contributorRow } = await supabase
+        .from("contributors")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("status", "approved")
+        .maybeSingle();
+      if (contributorRow) {
+        setActorType("contributor");
+        setContributorId((contributorRow as { id: string }).id);
+      }
+    })();
+  }, []);
+
+  // Locally-generated ids for rows a contributor "creates" without ever
+  // touching the DB — only used to key React lists / reference the row
+  // again within the same session (e.g. deleting a pick they just staged);
+  // never sent anywhere as a real foreign key.
+  function fakeId() {
+    return `pending-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  function pushPendingEdit(entry: MatchEditEntry) {
+    setPendingMatchEdits((prev) => [...prev, entry]);
+  }
 
   const loadAll = useCallback(async () => {
     const { data: matchData, error: matchErr } = await supabase
@@ -339,7 +422,7 @@ export default function LiveConsolePage() {
     if (!game || !match) return;
     const teamName = teamId === match.team_a?.id ? match.team_a?.name : teamId === match.team_b?.id ? match.team_b?.name : "";
     const playerName = playerId ? players.find((p) => p.id === playerId)?.ign : null;
-    await supabase.from("key_moments").insert({
+    const payload = {
       game_id: game.id,
       match_id: matchId,
       type,
@@ -349,7 +432,12 @@ export default function LiveConsolePage() {
       minute_mark: minute,
       second_mark: secondOfMinute,
       source: "auto",
-    });
+    };
+    if (isContributor) {
+      pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: payload });
+      return;
+    }
+    await supabase.from("key_moments").insert(payload);
   }
 
   async function logPickBan() {
@@ -366,7 +454,7 @@ export default function LiveConsolePage() {
         return;
       }
     }
-    const { error } = await supabase.from("hero_picks_bans").insert({
+    const payload = {
       game_id: game.id,
       match_id: matchId,
       team_id: pbTeam,
@@ -375,7 +463,18 @@ export default function LiveConsolePage() {
       hero_id: heroes.find((h) => h.name === pbHero)?.id ?? null,
       type: pbType,
       pick_order: pickBans.length + 1,
-    });
+    };
+    if (isContributor) {
+      const newRow = { id: fakeId(), ...payload };
+      pushPendingEdit({ table: "hero_picks_bans", action: "insert", before: null, after: newRow });
+      setPickBans((prev) => [...prev, newRow as PickBan]);
+      await logPickBanMoment(pbType, pbTeam, pbHero, pbType === "pick" ? pbPlayer : null);
+      if (pbType === "pick" && pbPlayer) await updateStat(pbPlayer, "hero_name", pbHero);
+      setPbHero("");
+      setPbPlayer("");
+      return;
+    }
+    const { error } = await supabase.from("hero_picks_bans").insert(payload);
     if (error) {
       setError(error.message);
       return;
@@ -390,6 +489,12 @@ export default function LiveConsolePage() {
     loadAll();
   }
   async function deletePickBan(id: string) {
+    if (isContributor) {
+      const before = pickBans.find((p) => p.id === id) ?? null;
+      pushPendingEdit({ table: "hero_picks_bans", action: "delete", before: before as unknown as Record<string, unknown> | null, after: null });
+      setPickBans((prev) => prev.filter((p) => p.id !== id));
+      return;
+    }
     const { error } = await supabase.from("hero_picks_bans").delete().eq("id", id);
     if (error) setError(error.message);
     else loadAll();
@@ -399,6 +504,17 @@ export default function LiveConsolePage() {
   async function ensureStatRow(playerId: string) {
     const existing = stats.find((s) => s.player_id === playerId);
     if (existing || !game) return existing;
+    if (isContributor) {
+      const newRow: PlayerStat = { id: fakeId(), player_id: playerId, hero_name: null, kills: 0, deaths: 0, assists: 0, gold: 0 };
+      pushPendingEdit({
+        table: "player_stats",
+        action: "insert",
+        before: null,
+        after: { game_id: game.id, player_id: playerId } as unknown as Record<string, unknown>,
+      });
+      setStats((prev) => [...prev, newRow]);
+      return newRow;
+    }
     const { data } = await supabase
       .from("player_stats")
       .insert({ game_id: game.id, player_id: playerId })
@@ -413,6 +529,11 @@ export default function LiveConsolePage() {
     if (!row) return;
     const payload: Record<string, number | string | null> = { [field]: value };
     if (field === "hero_name") payload.hero_id = matchHeroId(value as string);
+    if (isContributor) {
+      pushPendingEdit({ table: "player_stats", action: "update", before: { id: row.id }, after: { id: row.id, ...payload } });
+      setStats((prev) => prev.map((s) => (s.id === row!.id ? { ...s, [field]: value } : s)));
+      return;
+    }
     await supabase.from("player_stats").update(payload).eq("id", row.id);
     loadAll();
   }
@@ -436,7 +557,7 @@ export default function LiveConsolePage() {
     setEditingFinishedGame(false);
   }, [game?.id]);
   async function saveScoreboardPlayerEdit(playerId: string) {
-    if (!editingScoreboardIgn.trim()) return;
+    if (!editingScoreboardIgn.trim() || isContributor) return;
     const { error } = await supabase.from("players").update({ ign: editingScoreboardIgn.trim() }).eq("id", playerId);
     if (error) setError(error.message);
     else {
@@ -445,6 +566,7 @@ export default function LiveConsolePage() {
     }
   }
   async function deleteScoreboardPlayer(playerId: string, ign: string) {
+    if (isContributor) return;
     if (!confirm(`Delete player "${ign}"? This can't be undone.`)) return;
     const { error } = await supabase.from("players").delete().eq("id", playerId);
     if (error) {
@@ -489,7 +611,6 @@ export default function LiveConsolePage() {
   const OBJECTIVE_ICONS: Record<string, string> = { tower: "🗼", lord: "👑", turtle: "🐢" };
   async function incrementObjective(teamId: string, type: string) {
     if (!game || !match) return;
-    await supabase.from("objectives").insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute });
     // A one-click objective button is otherwise silent on the public Moment
     // list — it only ever showed up in the Objectives tab's running count.
     // "objective" isn't one of key_moments_type_check's allowed values —
@@ -497,7 +618,7 @@ export default function LiveConsolePage() {
     // net worth corrections) is, and the Moment list already renders
     // `description` regardless of type.
     const teamName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
-    await supabase.from("key_moments").insert({
+    const momentPayload = {
       game_id: game.id,
       match_id: matchId,
       type: "custom",
@@ -506,7 +627,21 @@ export default function LiveConsolePage() {
       minute_mark: minute,
       second_mark: secondOfMinute,
       source: "manual",
-    });
+    };
+    if (isContributor) {
+      const newRow: Objective = { id: fakeId(), team_id: teamId, type, minute_mark: minute, created_at: new Date().toISOString() };
+      pushPendingEdit({
+        table: "objectives",
+        action: "insert",
+        before: null,
+        after: { game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute },
+      });
+      setObjectives((prev) => [...prev, newRow]);
+      pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: momentPayload });
+      return;
+    }
+    await supabase.from("objectives").insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute });
+    await supabase.from("key_moments").insert(momentPayload);
     loadAll();
   }
   async function decrementObjective(teamId: string, type: string) {
@@ -514,6 +649,11 @@ export default function LiveConsolePage() {
       .filter((o) => o.team_id === teamId && o.type === type)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
     if (!mostRecent) return;
+    if (isContributor) {
+      pushPendingEdit({ table: "objectives", action: "delete", before: mostRecent as unknown as Record<string, unknown>, after: null });
+      setObjectives((prev) => prev.filter((o) => o.id !== mostRecent.id));
+      return;
+    }
     const { error } = await supabase.from("objectives").delete().eq("id", mostRecent.id);
     if (error) setError(error.message);
     else loadAll();
@@ -525,17 +665,11 @@ export default function LiveConsolePage() {
   const latestNetWorth = netWorth[netWorth.length - 1] ?? null;
   async function updateNetWorthManual(teamAGold: number, teamBGold: number) {
     if (!game || !match) return;
-    await supabase.from("net_worth_snapshots").insert({
-      game_id: game.id,
-      match_id: matchId,
-      minute_mark: minute,
-      team_a_gold: teamAGold,
-      team_b_gold: teamBGold,
-    });
+    const snapshotPayload = { game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: teamAGold, team_b_gold: teamBGold };
     // Every manual edit gets logged — net worth otherwise only ever moves
     // via silent OCR ticks, so a manual correction should be visible/
     // auditable in the same moment list everything else goes through.
-    await supabase.from("key_moments").insert({
+    const momentPayload = {
       game_id: game.id,
       match_id: matchId,
       type: "custom",
@@ -543,7 +677,15 @@ export default function LiveConsolePage() {
       minute_mark: minute,
       second_mark: secondOfMinute,
       source: "manual",
-    });
+    };
+    if (isContributor) {
+      pushPendingEdit({ table: "net_worth_snapshots", action: "insert", before: null, after: snapshotPayload });
+      setNetWorth((prev) => [...prev, { minute_mark: minute, team_a_gold: teamAGold, team_b_gold: teamBGold }]);
+      pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: momentPayload });
+      return;
+    }
+    await supabase.from("net_worth_snapshots").insert(snapshotPayload);
+    await supabase.from("key_moments").insert(momentPayload);
     loadAll();
   }
 
@@ -2593,7 +2735,7 @@ export default function LiveConsolePage() {
   }
 
   async function toggleUpdateSource() {
-    if (!match) return;
+    if (!match || isContributor) return;
     const next = match.update_source === "liquipedia" ? "local_ocr" : "liquipedia";
     await supabase.from("matches").update({ update_source: next }).eq("id", match.id);
     loadAll();
@@ -2601,7 +2743,7 @@ export default function LiveConsolePage() {
 
   const [statusSaving, setStatusSaving] = useState(false);
   async function updateMatchStatus(status: "scheduled" | "live" | "finished") {
-    if (!match || status === match.status) return;
+    if (!match || status === match.status || isContributor) return;
     if (status === "live" && !match.youtube_url) return;
     setStatusSaving(true);
     const { error } = await supabase.from("matches").update({ status }).eq("id", match.id);
@@ -2618,7 +2760,7 @@ export default function LiveConsolePage() {
   // then the match row back to its pre-anything state so the next sync (or
   // manual entry) starts clean instead of layering on top of stale rows.
   async function resetMatch() {
-    if (!match) return;
+    if (!match || isContributor) return;
     if (
       !confirm(
         "Reset this entire match? This deletes all games, picks/bans, stats, objectives, and moments for it, and reverts it to Match not started. This can't be undone."
@@ -2750,6 +2892,25 @@ export default function LiveConsolePage() {
   // toast instead (rendered near the bottom of this component) without
   // tearing down the console underneath.
   if (!match || !game) return <p className="text-red-400 text-sm">{error ?? "Loading match..."}</p>;
+
+  // A contributor only ever reaches this page for a finished match — the
+  // request/approval workflow (buffered pendingMatchEdits, submitted as
+  // one edit_requests row) only makes sense for a match that's done, not
+  // one still being actively tracked. Blocked here rather than in a
+  // separate route because this IS the admin route — a contributor's
+  // /contributor layout wraps them into this same page component, not a
+  // parallel one, so the guard has to live where both actors land.
+  if (isContributor && match.status !== "finished") {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-3 text-white text-sm text-center px-6">
+        <p>This match isn't finished yet.</p>
+        <p className="text-white/50">Contributors can only submit corrections for finished matches.</p>
+        <a href="/contributor" className="text-signal hover:underline">
+          Back to dashboard
+        </a>
+      </main>
+    );
+  }
 
   // Editing (result, game result, draft/picks-bans, moment log, OCR) is
   // only allowed once a match is actually live or finished — a scheduled
@@ -2892,40 +3053,44 @@ export default function LiveConsolePage() {
               it to flip status, and everything below stayed locked
               (isEditable) until they did. Same "Live needs a stream link"
               rule as the matches list. */}
-          <div className="flex items-center gap-1" title="Match status — controls whether this console is locked (see the notice below the phase row)">
-            {(["scheduled", "live", "finished"] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => updateMatchStatus(s)}
-                disabled={statusSaving || match.status === s || (s === "live" && !match.youtube_url)}
-                title={s === "live" && !match.youtube_url ? "Add a stream link first — a match can't go live without one" : undefined}
-                className={`text-[10px] px-2 py-0.5 rounded border uppercase tracking-wide disabled:opacity-40 ${
-                  match.status === s
-                    ? s === "live"
-                      ? "border-signal bg-signal/20 text-signal"
-                      : s === "finished"
-                      ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-400"
-                      : "border-white/30 bg-white/10 text-white"
-                    : "border-white/10 text-white/40 hover:bg-white/10 hover:text-white/70"
-                }`}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={toggleUpdateSource}
-            title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
-            className={`text-[10px] px-2 py-0.5 rounded border ${
-              match.update_source === "liquipedia"
-                ? "border-emerald-500/40 text-emerald-400"
-                : "border-signal/50 text-signal"
-            }`}
-          >
-            {match.update_source === "liquipedia"
-              ? "📡 Normal match — click to make this a Hot match"
-              : "🔥 Hot match — click to hand back to Normal (Liquipedia auto)"}
-          </button>
+          {!isContributor && (
+            <div className="flex items-center gap-1" title="Match status — controls whether this console is locked (see the notice below the phase row)">
+              {(["scheduled", "live", "finished"] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => updateMatchStatus(s)}
+                  disabled={statusSaving || match.status === s || (s === "live" && !match.youtube_url)}
+                  title={s === "live" && !match.youtube_url ? "Add a stream link first — a match can't go live without one" : undefined}
+                  className={`text-[10px] px-2 py-0.5 rounded border uppercase tracking-wide disabled:opacity-40 ${
+                    match.status === s
+                      ? s === "live"
+                        ? "border-signal bg-signal/20 text-signal"
+                        : s === "finished"
+                        ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-400"
+                        : "border-white/30 bg-white/10 text-white"
+                      : "border-white/10 text-white/40 hover:bg-white/10 hover:text-white/70"
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+          {!isContributor && (
+            <button
+              onClick={toggleUpdateSource}
+              title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
+              className={`text-[10px] px-2 py-0.5 rounded border ${
+                match.update_source === "liquipedia"
+                  ? "border-emerald-500/40 text-emerald-400"
+                  : "border-signal/50 text-signal"
+              }`}
+            >
+              {match.update_source === "liquipedia"
+                ? "📡 Normal match — click to make this a Hot match"
+                : "🔥 Hot match — click to hand back to Normal (Liquipedia auto)"}
+            </button>
+          )}
           <button onClick={shareFullMatchInfo} className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10">
             📢 Share everything to Telegram
           </button>
@@ -2936,18 +3101,20 @@ export default function LiveConsolePage() {
           >
             {feedUrlCopied ? "✓ Copied" : "🔗 Copy Telegram feed URL"}
           </button>
-          <button
-            onClick={resetMatch}
-            disabled={!isEditable}
-            title={
-              isEditable
-                ? "Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
-                : "Not available while the match is scheduled — nothing to reset yet"
-            }
-            className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10 disabled:opacity-40"
-          >
-            ⟲ Reset match
-          </button>
+          {!isContributor && (
+            <button
+              onClick={resetMatch}
+              disabled={!isEditable}
+              title={
+                isEditable
+                  ? "Deletes all games, picks/bans, stats, and objectives for this match and reverts it to Match not started"
+                  : "Not available while the match is scheduled — nothing to reset yet"
+              }
+              className="text-[10px] border border-red-500/30 text-red-400 rounded px-2 py-0.5 hover:bg-red-500/10 disabled:opacity-40"
+            >
+              ⟲ Reset match
+            </button>
+          )}
         </div>
         {match.state === "SERIES_FINISHED" && (
           <p className="text-sm text-emerald-400 mt-2">
@@ -2990,6 +3157,38 @@ export default function LiveConsolePage() {
           until it&apos;s set live (needs a stream link on the Matches page) or marked finished. The roster fixes in
           Live scoreboard above stay available.
         </p>
+      )}
+
+      {isContributor && (
+        <div className="lv-card-flush p-4 space-y-3 border-signal/30">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold">Contributor mode</p>
+              <p className="text-xs text-white/50">
+                {finishedEditUnlocked
+                  ? "Every change below is staged locally, not saved — submit when you're done and an admin will review it."
+                  : `Click "${editingFinishedGame ? "🔓 Editing finished game" : "🔒 Unlock to edit"}" below to start staging corrections.`}
+              </p>
+            </div>
+            <button
+              onClick={submitMatchEditRequest}
+              disabled={pendingMatchEdits.length === 0 || submittingMatchEdits}
+              className="lv-btn-primary !text-xs !py-1.5 disabled:opacity-40"
+            >
+              {submittingMatchEdits ? "Submitting..." : `Submit edit request (${pendingMatchEdits.length})`}
+            </button>
+          </div>
+          {pendingMatchEdits.length > 0 && (
+            <ul className="text-xs text-white/60 space-y-1 max-h-32 overflow-y-auto">
+              {pendingMatchEdits.map((e, i) => (
+                <li key={i}>
+                  <span className="text-white/40">{e.table}</span> · {e.action}
+                </li>
+              ))}
+            </ul>
+          )}
+          {matchEditSubmitNotice && <p className="text-sm text-signal">{matchEditSubmitNotice}</p>}
+        </div>
       )}
 
       {/* Game history — the per-game results that previously showed nowhere in this console */}

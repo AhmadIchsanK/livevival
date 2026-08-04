@@ -11,6 +11,7 @@ type Match = {
   team_b_id: string | null;
   format: string | null;
   scheduled_at: string | null;
+  status: string;
   team_a: { name: string } | null;
   team_b: { name: string } | null;
 };
@@ -36,7 +37,7 @@ export default function ContributorMatchesPage() {
   useEffect(() => {
     supabase
       .from("matches")
-      .select("id, tournament_id, team_a_id, team_b_id, format, scheduled_at, team_a:teams!matches_team_a_id_fkey(name), team_b:teams!matches_team_b_id_fkey(name)")
+      .select("id, tournament_id, team_a_id, team_b_id, format, scheduled_at, status, team_a:teams!matches_team_a_id_fkey(name), team_b:teams!matches_team_b_id_fkey(name)")
       .order("scheduled_at", { ascending: false })
       .limit(200)
       .then(({ data }) => {
@@ -218,6 +219,27 @@ export default function ContributorMatchesPage() {
           {submitting ? "Submitting..." : "Submit edit request"}
         </button>
       </form>
+
+      <div className="space-y-2">
+        <h2 className="text-sm font-semibold text-white/60">Correct a finished match's scoreboard or picks</h2>
+        <div className="space-y-1.5">
+          {matches
+            .filter((m) => m.status === "finished")
+            .slice(0, 15)
+            .map((m) => (
+              <a
+                key={m.id}
+                href={`/admin/matches/${m.id}/live`}
+                className="lv-card-flush flex items-center justify-between px-3 py-2 text-sm hover:border-signal/40 transition-colors"
+              >
+                <span>
+                  {m.team_a?.name ?? "TBD"} vs {m.team_b?.name ?? "TBD"}
+                </span>
+                <span className="text-signal text-xs">Open live console →</span>
+              </a>
+            ))}
+        </div>
+      </div>
     </div>
   );
 }

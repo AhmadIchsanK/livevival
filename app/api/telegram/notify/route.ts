@@ -37,6 +37,11 @@ export async function POST(req: NextRequest) {
   if (!message || typeof message !== "string") {
     return NextResponse.json({ error: "Missing message" }, { status: 400 });
   }
+  // Screenshot capture (moment screenshots, game screenshots) passes its
+  // uploaded Storage URL here so the image reaches Telegram the same way
+  // every other auto-notification does, instead of screenshots and
+  // Telegram staying two disjoint systems.
+  const photoUrl: string | undefined = body?.photoUrl;
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -47,11 +52,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "HTML" }),
-  });
+  const res = photoUrl
+    ? await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, photo: photoUrl, caption: message, parse_mode: "HTML" }),
+      })
+    : await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "HTML" }),
+      });
 
   if (!res.ok) {
     const errText = await res.text();

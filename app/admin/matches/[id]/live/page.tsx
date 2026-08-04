@@ -10,8 +10,10 @@ import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
   { pattern: /SAVAGE/i, type: "savage" },
   { pattern: /MANIAC/i, type: "maniac" },
-  { pattern: /LORD\s*STEAL/i, type: "lord_steal" },
-  { pattern: /TURTLE\s*STEAL/i, type: "turtle_steal" },
+  { pattern: /TRIPLE\s*KILL/i, type: "triple_kill" },
+  { pattern: /DOUBLE\s*KILL/i, type: "double_kill" },
+  { pattern: /LORD\s*(STEAL|SLAIN)/i, type: "lord_steal" },
+  { pattern: /TURTLE\s*(STEAL|SLAIN)/i, type: "turtle_steal" },
   { pattern: /\bACE\b/i, type: "ace" },
 ];
 
@@ -62,7 +64,12 @@ type Game = {
 };
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
 type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
-type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number; deaths: number; assists: number; gold: number };
+// kills/deaths/assists are nullable — null means "TBD, not yet entered" so
+// the scoreboard can tell "genuinely 0" apart from "nobody's typed
+// anything here yet." The headline team score never depends on these being
+// filled in — team_a/b_kills_override (the team_kills tracker, or a manual
+// edit) is always preferred over summing per-player rows when present.
+type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number | null; deaths: number | null; assists: number | null; gold: number };
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null; created_at: string };
 type NetWorthSnapshot = { minute_mark: number; team_a_gold: number; team_b_gold: number };
 type KeyMoment = {
@@ -88,7 +95,22 @@ type Screenshot = { id: string; image_url: string; in_game_time: string | null; 
 // The handful of genuinely dramatic moment types that stand out inline in
 // the moment list — everything else (phase changes, picks, custom notes)
 // still appears in the same feed, just styled as a regular line item.
-const KEY_MOMENT_TYPES = ["savage", "maniac", "lord_steal", "turtle_steal", "ace"];
+const KEY_MOMENT_TYPES = ["savage", "maniac", "double_kill", "triple_kill", "lord_steal", "turtle_steal", "ace"];
+
+// Fallback label text for a detected moment when no /admin/moment-templates
+// row exists for its type yet — escalating kill-streak flair per an
+// explicit site-owner example (Double Kill2️⃣, Triple Kill3️⃣, Maniac💀,
+// 🔥SAVAGE!!🔥). A configured template row always wins over this.
+const DEFAULT_MOMENT_LABELS: Record<string, string> = {
+  double_kill: "{player} Double Kill 2️⃣",
+  triple_kill: "{player} Triple Kill 3️⃣",
+  maniac: "{player} goes MANIAC 💀",
+  savage: "🔥 {player} SAVAGE!! 🔥",
+  lord_steal: "Lord slain!",
+  turtle_steal: "Turtle slain!",
+  ace: "ACE!",
+  game_pause: "Game paused",
+};
 
 // Same fixed left-to-right draft order used across the admin (Players page
 // role dropdown): exp lane, jungler, mid laner, roamer, gold laner —
@@ -298,18 +320,7 @@ export default function LiveConsolePage() {
   // finished), and anything on a local_ocr match, which the worker skips
   // entirely since the admin's local capture session owns it.
   const [telegramStatus, setTelegramStatus] = useState<string | null>(null);
-  const [feedUrlCopied, setFeedUrlCopied] = useState(false);
-  async function copyTelegramFeedUrl() {
-    // The human-readable page (not the raw JSON API route) — this is what
-    // actually unfurls with the notification text when pasted into Slack/
-    // Discord, and reads cleanly if opened directly in a browser. The JSON
-    // route still exists for anything that wants to consume it
-    // programmatically.
-    await navigator.clipboard.writeText(`${window.location.origin}/telegram-feed/${matchId}`);
-    setFeedUrlCopied(true);
-    setTimeout(() => setFeedUrlCopied(false), 2000);
-  }
-  async function postToTelegram(message: string, meta?: { entityType: string; entityId: string; notificationType: string }) {
+  async function postToTelegram(message: string, meta?: { entityType: string; entityId: string; notificationType: string }, photoUrl?: string) {
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData.session?.access_token;
     if (!token) {
@@ -322,7 +333,7 @@ export default function LiveConsolePage() {
     const res = await fetch("/api/telegram/notify", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ message: fullMessage, matchId, ...meta }),
+      body: JSON.stringify({ message: fullMessage, matchId, photoUrl, ...meta }),
     });
     const data = await res.json();
     setTelegramStatus(res.ok ? "Posted to Telegram." : data.error ?? "Failed to post.");
@@ -437,7 +448,8 @@ export default function LiveConsolePage() {
       pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: payload });
       return;
     }
-    await supabase.from("key_moments").insert(payload);
+    const { error } = await supabase.from("key_moments").insert(payload);
+    if (error) setError(`Failed to log ${type} to the moment list: ${error.message}`);
   }
 
   async function logPickBan() {
@@ -505,19 +517,23 @@ export default function LiveConsolePage() {
     const existing = stats.find((s) => s.player_id === playerId);
     if (existing || !game) return existing;
     if (isContributor) {
-      const newRow: PlayerStat = { id: fakeId(), player_id: playerId, hero_name: null, kills: 0, deaths: 0, assists: 0, gold: 0 };
+      const newRow: PlayerStat = { id: fakeId(), player_id: playerId, hero_name: null, kills: null, deaths: null, assists: null, gold: 0 };
       pushPendingEdit({
         table: "player_stats",
         action: "insert",
         before: null,
-        after: { game_id: game.id, player_id: playerId } as unknown as Record<string, unknown>,
+        after: { game_id: game.id, player_id: playerId, kills: null, deaths: null, assists: null } as unknown as Record<string, unknown>,
       });
       setStats((prev) => [...prev, newRow]);
       return newRow;
     }
+    // Explicit nulls, not the table's own default-0 — a freshly-created row
+    // (e.g. from syncing a draft pick's hero) should read TBD until kills/
+    // deaths/assists actually get set, not silently show "0" for a stat
+    // nobody's entered yet.
     const { data } = await supabase
       .from("player_stats")
-      .insert({ game_id: game.id, player_id: playerId })
+      .insert({ game_id: game.id, player_id: playerId, kills: null, deaths: null, assists: null })
       .select("id, player_id, hero_name, kills, deaths, assists, gold")
       .single();
     if (data) setStats((prev) => [...prev, data as PlayerStat]);
@@ -945,11 +961,11 @@ export default function LiveConsolePage() {
       const message = selectedTemplate.telegram_message_template
         ? fillTelegramTemplate(selectedTemplate.telegram_message_template, { team: teamName, hero: heroName, player: playerName, timestamp: mmssTimestamp() })
         : `🔥 <b>${description}</b>\n${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`;
-      postToTelegram(message, {
-        entityType: "key_moment",
-        entityId: game.id,
-        notificationType: "key_moment_auto",
-      });
+      postToTelegram(
+        message,
+        { entityType: "key_moment", entityId: game.id, notificationType: "key_moment_auto" },
+        screenshotUrl ?? undefined
+      );
     }
     resetKmForm();
     loadAll();
@@ -1001,6 +1017,14 @@ export default function LiveConsolePage() {
         setError(insertErr.message);
         return;
       }
+      // Same treatment as every other auto Telegram notification — a
+      // screenshot used to be an entirely separate system with no path to
+      // the channel at all.
+      postToTelegram(
+        `📸 <b>Screenshot</b> — ${match?.team_a?.name} vs ${match?.team_b?.name}${noteOverride ?? screenshotNote ? `\n${noteOverride ?? screenshotNote}` : ""}`,
+        { entityType: "game", entityId: game.id, notificationType: "screenshot" },
+        pub.publicUrl
+      );
       setScreenshotNote("");
       loadAll();
     } finally {
@@ -1216,7 +1240,7 @@ export default function LiveConsolePage() {
   const [trackers, setTrackers] = useState<Tracker[]>([]);
   const [regions, setRegions] = useState<Record<string, RegionBox | null>>({});
   const [readings, setReadings] = useState<Record<string, string>>({});
-  const [suggestion, setSuggestion] = useState<{ type: string; raw: string } | null>(null);
+  const [suggestion, setSuggestion] = useState<{ type: string; raw: string; playerId?: string | null; playerName?: string | null } | null>(null);
   const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
 
   // ── Slide-anywhere tracker placement (inline canvas) ──────────────────
@@ -1491,29 +1515,22 @@ export default function LiveConsolePage() {
       }
 
       // Dedup within a cooldown — a banner lingers on screen for several
-      // seconds, so without this the same moment gets logged on every tick.
+      // seconds, so without this the same suggestion would re-pop on every
+      // tick. Surfaces via the same confirm popup as the OCR keyword path
+      // (setSuggestion) instead of auto-inserting — the admin confirms
+      // every detected moment either way now, AI-vision included.
       if (detection.key_moment_banner && detection.key_moment_banner !== "NONE") {
         const playerId = matchPlayerId(detection.key_moment_player_name);
         const key = `${detection.key_moment_banner}:${playerId ?? ""}`;
         const now = Date.now();
         if (lastAutoKeyMoment.current.key !== key || now - lastAutoKeyMoment.current.at > 60000) {
           lastAutoKeyMoment.current = { key, at: now };
-          // source: "ai" was never a valid value — key_moments_source_check
-          // only allows 'manual'/'auto', so every AI-vision-detected key
-          // moment (Savage/Maniac/etc.) failed this insert silently, every
-          // time, since this call's error was never checked either.
-          const { error: kmInsertError } = await supabase.from("key_moments").insert({
-            game_id: game.id,
-            match_id: matchId,
+          setSuggestion({
             type: detection.key_moment_banner.toLowerCase(),
-            player_id: playerId,
-            minute_mark: minute,
-            second_mark: secondOfMinute,
-            source: "auto",
-            confidence: detection.confidence ?? null,
-            is_key_moment: KEY_MOMENT_TYPES.includes(detection.key_moment_banner.toLowerCase()),
+            raw: detection.key_moment_player_name ? `${detection.key_moment_player_name} ${detection.key_moment_banner}` : detection.key_moment_banner,
+            playerId,
+            playerName: playerId ? players.find((p) => p.id === playerId)?.ign ?? null : detection.key_moment_player_name ?? null,
           });
-          if (kmInsertError) console.error("Failed to log AI-detected key moment:", kmInsertError.message);
         }
       }
     }
@@ -2114,7 +2131,18 @@ export default function LiveConsolePage() {
         switch (tracker.category) {
           case "kill_banner": {
             const found = OCR_KEYWORDS.find((k) => k.pattern.test(trimmed));
-            if (found) setSuggestion({ type: found.type, raw: trimmed });
+            if (found) {
+              // MLBB's own kill banner reads "{player} {MOMENT TEXT}" — the
+              // text before the matched keyword is the best guess at a
+              // player name; matchPlayerId tolerates OCR noise via its
+              // substring fallback, and simply comes back null (still
+              // loggable, just unattributed) if nothing resolves.
+              const match = trimmed.match(found.pattern);
+              const namePart = match ? trimmed.slice(0, match.index).trim() : "";
+              const playerId = namePart ? matchPlayerId(namePart) : null;
+              const playerName = playerId ? players.find((p) => p.id === playerId)?.ign ?? null : null;
+              setSuggestion({ type: found.type, raw: trimmed, playerId, playerName });
+            }
             break;
           }
           case "game_timer": {
@@ -2473,15 +2501,32 @@ export default function LiveConsolePage() {
 
   async function confirmSuggestion() {
     if (!suggestion || !game) return;
-    await supabase.from("key_moments").insert({
+    const tpl = momentTemplates.find((t) => t.type === suggestion.type && (!t.phase || t.phase === match?.state));
+    const playerName = suggestion.playerName ?? "";
+    const description = tpl
+      ? fillTelegramTemplate(tpl.label_template, { player: playerName })
+      : fillTelegramTemplate(DEFAULT_MOMENT_LABELS[suggestion.type] ?? suggestion.type, { player: playerName });
+    const { error } = await supabase.from("key_moments").insert({
       game_id: game.id,
       match_id: matchId,
       type: suggestion.type,
+      description,
+      player_id: suggestion.playerId ?? null,
       minute_mark: minute,
       second_mark: secondOfMinute,
       source: "manual",
       is_key_moment: KEY_MOMENT_TYPES.includes(suggestion.type),
     });
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    if (tpl?.telegram_enabled) {
+      const message = tpl.telegram_message_template
+        ? fillTelegramTemplate(tpl.telegram_message_template, { player: playerName, team: "", hero: "", timestamp: mmssTimestamp() })
+        : `🔥 <b>${description}</b>\n${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`;
+      postToTelegram(message, { entityType: "key_moment", entityId: game.id, notificationType: "key_moment_auto" });
+    }
     setSuggestion(null);
     loadAll();
   }
@@ -2953,16 +2998,20 @@ export default function LiveConsolePage() {
   // laner, gold laner, roamer.
   function activeFive(teamId: string | undefined) {
     if (!teamId) return [];
+    // Before the draft has actually started there's no "who's playing"
+    // decided yet — the Live Scoreboard should show nothing rather than a
+    // preset roster guess that may not match who ends up picked.
+    if (match?.state === "MATCH_NOT_STARTED") return [];
     const pickedIds = new Set(pickBans.filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id).map((pb) => pb.player_id));
     const statIds = new Set(stats.map((s) => s.player_id));
     // is_active_roster is the roster editor's own "which 5" decision — a
     // player flagged active shows here even before any pick/stat row
     // exists, which is what makes the roster show up on the Live
-    // Scoreboard as soon as it's decided, not only once the draft or a
-    // KDA edit has actually happened. Picked/statted players stay
-    // included too so a genuine mid-game substitution (added via "+ Add"
-    // below, which isn't itself an is_active_roster flip) still renders —
-    // a benched sub who's neither flagged active nor actually in the game
+    // Scoreboard as soon as Draft starts, not only once a pick or a KDA
+    // edit has actually happened. Picked/statted players stay included
+    // too so a genuine mid-game substitution (added via "+ Add" below,
+    // which isn't itself an is_active_roster flip) still renders — a
+    // benched sub who's neither flagged active nor actually in the game
     // is the only thing this excludes.
     const activeRosterIds = new Set(players.filter((p) => p.team_id === teamId && p.is_active_roster).map((p) => p.id));
     const included = players.filter((p) => p.team_id === teamId && (activeRosterIds.has(p.id) || pickedIds.has(p.id) || statIds.has(p.id)));
@@ -3093,13 +3142,6 @@ export default function LiveConsolePage() {
           )}
           <button onClick={shareFullMatchInfo} className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10">
             📢 Share everything to Telegram
-          </button>
-          <button
-            onClick={copyTelegramFeedUrl}
-            title="A public, read-only URL that lists every Telegram notification sent for this match — for the Rashid Slack integration"
-            className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10"
-          >
-            {feedUrlCopied ? "✓ Copied" : "🔗 Copy Telegram feed URL"}
           </button>
           {!isContributor && (
             <button
@@ -3500,7 +3542,8 @@ export default function LiveConsolePage() {
                   onClick={() =>
                     postToTelegram(
                       `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
-                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" }
+                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" },
+                      km.screenshot_url ?? undefined
                     )
                   }
                   className="text-white/30 hover:text-signal normal-case shrink-0"
@@ -3627,6 +3670,22 @@ export default function LiveConsolePage() {
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Hero picks & bans</h2>
           <div className="flex gap-2">
+            {/* Also rendered near Live scoreboard below for Hot matches —
+                duplicated here (same shared editingFinishedGame state) so
+                Normal matches, which never render that section at all,
+                still have a way to unlock a finished game's picks/bans and
+                score for editing. */}
+            {gameFinished && (
+              <button
+                onClick={() => setEditingFinishedGame((v) => !v)}
+                title="This game is finished — result data is read-only until unlocked"
+                className={`text-xs rounded px-2 py-1 border ${
+                  editingFinishedGame ? "border-signal/50 text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
+                }`}
+              >
+                {editingFinishedGame ? "🔓 Editing finished game — click to lock" : "🔒 Unlock to edit"}
+              </button>
+            )}
             {DRAFT_PHASES.includes(match.state) && (
               <button
                 onClick={() => setShowHeroPicker(true)}
@@ -3756,12 +3815,12 @@ export default function LiveConsolePage() {
                             <img
                               src={proxiedImageUrl(h.icon_url)}
                               alt=""
-                              className={`w-10 h-10 rounded-full object-cover border border-white/10 ${
+                              className={`w-10 h-10 rounded-lg object-cover border border-white/10 ${
                                 !taken ? "transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal" : ""
                               }`}
                             />
                           ) : (
-                            <span className="w-10 h-10 rounded-full bg-white/10 block" />
+                            <span className="w-10 h-10 rounded-lg bg-white/10 block" />
                           )}
                           <span className="text-[9px] text-white/60 group-hover:text-white text-center leading-tight truncate w-full">
                             {h.name}
@@ -3800,9 +3859,9 @@ export default function LiveConsolePage() {
                           <div key={pb.id} className="flex items-center gap-2">
                             {hero?.icon_url ? (
                               // eslint-disable-next-line @next/next/no-img-element
-                              <img src={proxiedImageUrl(hero.icon_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
+                              <img src={proxiedImageUrl(hero.icon_url)} alt="" className="w-6 h-6 rounded-md object-cover border border-white/10" />
                             ) : (
-                              <span className="w-6 h-6 rounded-full bg-white/10 block" />
+                              <span className="w-6 h-6 rounded-md bg-white/10 block" />
                             )}
                             <span className="text-xs w-24 truncate">{pb.hero_name}</span>
                             <select
@@ -3855,10 +3914,10 @@ export default function LiveConsolePage() {
                       <img
                         src={proxiedImageUrl(h.icon_url)}
                         alt=""
-                        className="w-12 h-12 rounded-full object-cover border border-white/10 transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal"
+                        className="w-12 h-12 rounded-lg object-cover border border-white/10 transition-transform duration-150 group-hover:-translate-y-1 group-hover:border-signal"
                       />
                     ) : (
-                      <span className="w-12 h-12 rounded-full bg-white/10 transition-transform duration-150 group-hover:-translate-y-1" />
+                      <span className="w-12 h-12 rounded-lg bg-white/10 transition-transform duration-150 group-hover:-translate-y-1" />
                     )}
                     <span className="text-[10px] text-white/60 group-hover:text-white text-center leading-tight">{h.name}</span>
                   </button>
@@ -3906,7 +3965,7 @@ export default function LiveConsolePage() {
           <div className="flex items-center gap-1.5">
             {heroes.find((h) => h.name === pbHero)?.icon_url && (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={proxiedImageUrl(heroes.find((h) => h.name === pbHero)!.icon_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10" />
+              <img src={proxiedImageUrl(heroes.find((h) => h.name === pbHero)!.icon_url)} alt="" className="w-6 h-6 rounded-md object-cover border border-white/10" />
             )}
             <select
               value={pbHero}
@@ -4080,7 +4139,7 @@ export default function LiveConsolePage() {
                     <img
                       src={proxiedImageUrl(heroes.find((h) => h.name === stat?.hero_name)!.icon_url)}
                       alt=""
-                      className="w-5 h-5 rounded-full object-cover -mr-1"
+                      className="w-5 h-5 rounded object-cover -mr-1"
                     />
                   )}
                   <select
@@ -4098,10 +4157,14 @@ export default function LiveConsolePage() {
                     <input
                       key={field}
                       type="number"
-                      defaultValue={stat?.[field] ?? 0}
-                      onBlur={(e) => updateStat(p.id, field, Number(e.target.value))}
+                      defaultValue={stat?.[field] ?? ""}
+                      placeholder="TBD"
+                      onBlur={(e) => {
+                        if (e.target.value === "") return; // leave TBD, don't coerce a cleared field to 0
+                        updateStat(p.id, field, Number(e.target.value));
+                      }}
                       disabled={!scoreboardEditable}
-                      className="w-14 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
+                      className="w-14 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
                     />
                   ))}
                   <div className="flex gap-1.5 ml-auto">
@@ -4769,6 +4832,24 @@ export default function LiveConsolePage() {
                   Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
                   <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>
                 </span>
+                {/* Player attribution from OCR/AI-vision text-matching is a
+                    best-effort guess — left editable here so a failed match
+                    (or a wrong one) doesn't block logging the moment. */}
+                <select
+                  value={suggestion.playerId ?? ""}
+                  onChange={(e) => {
+                    const id = e.target.value || null;
+                    setSuggestion((prev) => (prev ? { ...prev, playerId: id, playerName: players.find((p) => p.id === id)?.ign ?? null } : prev));
+                  }}
+                  className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs text-white"
+                >
+                  <option value="">No player</option>
+                  {[...(match.team_a ? players.filter((p) => p.team_id === match.team_a!.id) : []), ...(match.team_b ? players.filter((p) => p.team_id === match.team_b!.id) : [])].map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.ign}
+                    </option>
+                  ))}
+                </select>
                 <button onClick={confirmSuggestion} className="lv-btn-primary">
                   Log this
                 </button>

@@ -199,6 +199,9 @@ exception when duplicate_object then null; end $$;
 alter table key_moments add column if not exists confidence numeric;
 alter table key_moments add column if not exists screenshot_url text;
 alter table key_moments add column if not exists stream_timestamp_seconds int;
+alter table key_moments add column if not exists team_id uuid references teams(id);
+alter table key_moments add column if not exists is_key_moment boolean;
+alter table key_moments add column if not exists second_mark int;
 
 -- Backfill match_id on any pre-existing rows so the dedup index and the
 -- public match page's match_id-based queries work for older data too.
@@ -207,9 +210,14 @@ set match_id = g.match_id
 from games g
 where km.game_id = g.id and km.match_id is null;
 
+-- Picks/bans are excluded from the dedup key: minute_mark is always 0
+-- during Draft (no game clock runs yet), so keying on it would let only
+-- one auto pick and one auto ban through per game. hero_picks_bans already
+-- has its own dedup, so mirroring every one of them here is intentional,
+-- not a re-detection to guard against.
 create unique index if not exists key_moments_dedup
   on key_moments (game_id, type, minute_mark)
-  where source = 'auto';
+  where source = 'auto' and type not in ('pick', 'ban');
 
 -- ── Vision detection log (brand new table) ──
 

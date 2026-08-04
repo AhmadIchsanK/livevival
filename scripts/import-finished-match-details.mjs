@@ -58,7 +58,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-function heroesIn($, containerEl) {
+export function heroesIn($, containerEl) {
   return $(containerEl)
     .find("a[title]")
     .map((_, a) => $(a).attr("title"))
@@ -69,7 +69,7 @@ function heroesIn($, containerEl) {
  * Parses every finished match popup out of a rendered bracket page.
  * @returns {Array<object>} one entry per finished match
  */
-function extractFinishedMatches($) {
+export function extractFinishedMatches($) {
   const matches = [];
 
   $(".brkts-popup-container.brkts-match-info-popup").each((_, el) => {

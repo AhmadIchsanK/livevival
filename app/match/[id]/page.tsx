@@ -10,7 +10,6 @@ import { NavMenu } from "@/components/NavMenu";
 import { BrandLockup } from "@/components/Brand";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 import { formatMatchDate } from "@/lib/formatMatchDate";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 
 type Match = {
   id: string;
@@ -473,14 +472,17 @@ export default function PublicMatchPage() {
     .filter((p) => p.team_id === teamBId && p.type === "pick")
     .sort((a, b) => roleIndex(a.player?.role) - roleIndex(b.player?.role));
 
-  // Each team's own gold total plotted directly (not a difference line) —
-  // "positive/negative" was ambiguous about which side that even meant;
-  // two labeled lines just show who's ahead at a glance.
-  const chartData = gameNetWorth.map((n) => ({
-    minute: n.minute_mark,
-    teamA: n.team_a_gold,
-    teamB: n.team_b_gold,
-  }));
+  // Last-captured net worth reading for the selected game — a raw text
+  // readout (see formatGold below), not a recomputed/derived value. Rows
+  // are ordered by minute_mark ascending (see the query above), so the
+  // last one is simply whatever the tracker read most recently; a bad OCR
+  // read on the admin side never inserts a row at all (see the admin live
+  // console's captureTickBody), so this naturally keeps showing the last
+  // known-good value instead of blanking or showing junk.
+  const latestNetWorth = gameNetWorth[gameNetWorth.length - 1] ?? null;
+  function formatGold(n: number): string {
+    return `${(n / 1000).toFixed(1)}K`;
+  }
 
   const mvp =
     match.status === "finished" && gameStats.length > 0
@@ -916,25 +918,9 @@ export default function PublicMatchPage() {
         <p className="text-base text-white/50">Map: <span className="text-white/80 font-semibold">{selectedGame.map}</span></p>
       )}
 
-      {chartData.length > 1 && (
-        <section>
-          <h2 className="lv-heading mb-2">Net worth</h2>
-          <div className="flex items-center gap-4 text-xs text-white/50 mb-2">
-            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-signal inline-block" /> {match.team_a?.name}</span>
-            <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full bg-white/60 inline-block" /> {match.team_b?.name}</span>
-          </div>
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#ffffff15" />
-              <XAxis dataKey="minute" stroke="#ffffff60" tick={{ fontSize: 12 }} label={{ value: "minute", position: "insideBottom", fill: "#ffffff60", fontSize: 11, dy: 10 }} />
-              <YAxis stroke="#ffffff60" tick={{ fontSize: 12 }} />
-              <Tooltip contentStyle={{ background: "#0A0A0A", border: "1px solid #ffffff20" }} />
-              <Line type="monotone" dataKey="teamA" name={match.team_a?.name ?? "Team A"} stroke="#E31E2A" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="teamB" name={match.team_b?.name ?? "Team B"} stroke="#ffffff99" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </section>
-      )}
+      {/* Net worth over time chart removed — net worth is now a raw
+          last-captured-value readout (see the badge on each team's
+          Scoreboard card below), not a plotted history. */}
 
       <section>
         <h2 className="lv-heading mb-3">Draft recap {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
@@ -1063,10 +1049,22 @@ export default function PublicMatchPage() {
         )}
         <div className="grid grid-cols-2 gap-4">
           {[
-            { name: match.team_a?.name, list: scoreRowsFor(teamAStats, teamAActiveRoster) },
-            { name: match.team_b?.name, list: scoreRowsFor(teamBStats, teamBActiveRoster) },
+            { name: match.team_a?.name, list: scoreRowsFor(teamAStats, teamAActiveRoster), gold: latestNetWorth?.team_a_gold },
+            { name: match.team_b?.name, list: scoreRowsFor(teamBStats, teamBActiveRoster), gold: latestNetWorth?.team_b_gold },
           ].map((t, i) => (
-            <div key={i} className="lv-card-flush p-4">
+            <div key={i} className="lv-card-flush p-4 relative">
+              {/* Net worth — last-captured OCR reading, not a
+                  recomputed/derived value (see formatGold above). Pinned to
+                  this card's top-right corner rather than the old
+                  over-time chart. */}
+              {t.gold != null && (
+                <span
+                  className="absolute top-2 right-2 text-[10px] font-mono tabular-nums text-white/60 bg-white/10 border border-white/10 rounded px-1.5 py-0.5"
+                  title="Last-captured net worth"
+                >
+                  {formatGold(t.gold)}
+                </span>
+              )}
               <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
               <table className="w-full text-xs">
                 <thead className="text-white/40 text-left uppercase tracking-wide">

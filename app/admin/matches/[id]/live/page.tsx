@@ -8,14 +8,19 @@ import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
+// Auto-detected moment triggers only — narrowed to the four kill-streak
+// callouts (each still requires a player name attached, extracted by the
+// kill_banner OCR handler from the text preceding whatever matched here).
+// Kill streaks/ace/lord-turtle-steal detection removed per product
+// decision — those stay available as admin-clickable moment-template
+// buttons (unaffected, not driven by this array), just no longer
+// auto-suggested from OCR. The popup-confirm UX that reads off this array
+// is unchanged — only what can trigger it got narrower.
 const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
   { pattern: /SAVAGE/i, type: "savage" },
   { pattern: /MANIAC/i, type: "maniac" },
   { pattern: /TRIPLE\s*KILL/i, type: "triple_kill" },
   { pattern: /DOUBLE\s*KILL/i, type: "double_kill" },
-  { pattern: /LORD\s*(STEAL|SLAIN)/i, type: "lord_steal" },
-  { pattern: /TURTLE\s*(STEAL|SLAIN)/i, type: "turtle_steal" },
-  { pattern: /\bACE\b/i, type: "ace" },
 ];
 
 // A contributor reaches this exact page (not a separate clone) once
@@ -98,6 +103,16 @@ type Screenshot = { id: string; image_url: string; in_game_time: string | null; 
 // the moment list — everything else (phase changes, picks, custom notes)
 // still appears in the same feed, just styled as a regular line item.
 const KEY_MOMENT_TYPES = ["savage", "maniac", "double_kill", "triple_kill", "lord_steal", "turtle_steal", "ace"];
+
+// Only these two phases ever have an OCR tracker worth running — the game
+// clock, kills, net worth, and K/D/A only exist on screen once the game has
+// actually started, and Technical pause just needs the "pause" word
+// confirmed. Every other phase (draft, pre-game countdown, finished, custom)
+// is driven by the admin's own manual controls instead, so the phase
+// dropdowns below (add tracker / canvas filter / phase filter) never offer
+// them — narrower than the general match-phase selector further up, which
+// still needs the full set.
+const TRACKER_PHASES = ["GAME_STARTED", "TECHNICAL_PAUSE"];
 
 // Fallback label text for a detected moment when no /admin/moment-templates
 // row exists for its type yet — escalating kill-streak flair per an
@@ -1361,15 +1376,21 @@ export default function LiveConsolePage() {
   const [pendingBoxPhase, setPendingBoxPhase] = useState<string>("");
   const [pendingBoxField, setPendingBoxField] = useState<string>("");
   useEffect(() => {
-    if (pendingBox && !pendingBoxPhase) setPendingBoxPhase(canvasPhaseFilter || match?.state || "MATCH_NOT_STARTED");
+    if (pendingBox && !pendingBoxPhase) {
+      const fallback = match?.state && TRACKER_PHASES.includes(match.state) ? match.state : TRACKER_PHASES[0];
+      setPendingBoxPhase(canvasPhaseFilter || fallback);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingBox]);
   // Auto-follow the match's current live phase — an admin can still
   // override it manually (e.g. to calibrate a tracker ahead of time for a
   // phase that hasn't started yet), but it snaps back to the live phase
-  // whenever that changes, per the "filter should auto-follow" ask.
+  // whenever that changes, per the "filter should auto-follow" ask. Only
+  // ever snaps to one of the two tracker phases — the match itself can be
+  // in any phase (draft, finished, etc.), but there's nothing to track
+  // there, so the filter just stays wherever it already was instead.
   useEffect(() => {
-    if (match?.state) setCanvasPhaseFilter(match.state);
+    if (match?.state && TRACKER_PHASES.includes(match.state)) setCanvasPhaseFilter(match.state);
   }, [match?.state]);
 
   // ── Full-frame AI capture (no calibration) ───────────────────────────
@@ -1823,7 +1844,9 @@ export default function LiveConsolePage() {
   }
 
   // ── Tracker list: add + sortable/searchable/filterable table ─────────
-  const [newTrackerPhase, setNewTrackerPhase] = useState<string>(match?.state ?? "MATCH_NOT_STARTED");
+  const [newTrackerPhase, setNewTrackerPhase] = useState<string>(
+    match?.state && TRACKER_PHASES.includes(match.state) ? match.state : TRACKER_PHASES[0]
+  );
   const [newTrackerChoice, setNewTrackerChoice] = useState("");
   const [trackerSearch, setTrackerSearch] = useState("");
   const [trackerPhaseFilter, setTrackerPhaseFilter] = useState("");
@@ -2984,18 +3007,16 @@ export default function LiveConsolePage() {
     "MATCH_NOT_STARTED", "DRAFT_STARTED", "DRAFT_COMPLETE", "GAME_STARTED",
     "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM",
   ];
-  // What this phase's tracker area actually does — each phase behaves
-  // differently, not just a label on the same always-on tracker.
+  // What this phase's tracker area actually does — only GAME_STARTED and
+  // TECHNICAL_PAUSE have a real OCR tracker at all now (see TRACKER_PHASES
+  // above); every other match phase is driven by the admin's own manual
+  // controls, so the hint just says so via NO_TRACKER_PHASE_HINT below
+  // instead of describing a tracker that no longer exists for that phase.
   const PHASE_TRACKER_HINTS: Record<string, string> = {
-    MATCH_NOT_STARTED: "Waiting — tracker reads a pre-game countdown, shown live on the public page. No countdown found usually means TVC/caster session; use Custom if so.",
-    DRAFT_STARTED: "Drafting — reads each team's per-pick countdown, plus picks (player + hero text) from the two draft-picks regions, staged below for review before pushing. Bans stay manual — ban slots show no text, only an icon.",
-    DRAFT_COMPLETE: "Drafting finished — any picks still staged below can be reviewed and pushed. Nothing writes to the draft automatically.",
     GAME_STARTED: "Game ongoing — the main event: game timer, objectives, kills, net worth, and per-player K/D/A all track here (one region per side), applying automatically each tick. Set which side is \"left\" below.",
-    GAME_FINISHED: "Game finished — tracker optionally reads a victory/defeat banner to suggest a winner; otherwise declare the winner manually below.",
-    SERIES_FINISHED: "Match finished — capture is no longer needed for this series.",
     TECHNICAL_PAUSE: "Technical pause — tracker just looks for the word \"pause\" to confirm what you already flagged manually.",
-    CUSTOM: "Custom phase — no dedicated tracker; use the label above to describe what's actually happening.",
   };
+  const NO_TRACKER_PHASE_HINT = "No tracker for this phase — OCR capture only runs during Game ongoing or Technical pause. Everything else here is driven by the manual controls above.";
   const [customLabelDraft, setCustomLabelDraft] = useState("");
   async function setMatchPhase(newState: string) {
     if (!match) return;
@@ -3227,10 +3248,58 @@ export default function LiveConsolePage() {
           admin needs reachable no matter how far down the page they've
           scrolled (moment log, scoreboard, calibration UI are all long). */}
       <div className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
-        <h1 className="lv-heading text-lg flex items-center gap-2.5">
-          <TeamLogo url={match.team_a?.logo_url} size="sm" />
-          {match.team_a?.name} vs {match.team_b?.name}
-          <TeamLogo url={match.team_b?.logo_url} size="sm" />
+        <h1 className="lv-heading text-lg flex items-center gap-2.5 flex-wrap">
+          {/* Each team's own little "live-score box" — logo + name, with
+              the last-captured net worth pinned to its top-right corner
+              (raw last-read value, not recomputed — see formatGold) and
+              the kills score in between. Lives in the sticky header
+              (rather than only in the Team kills/Net worth sections
+              further down the page) specifically so it — and the team
+              kills count — never scrolls out of view, per the "kills
+              counter stays visible" ask. Liquipedia/Normal matches have
+              neither net worth nor a local kills tracker, so this stays
+              a plain name row for those. */}
+          {match.update_source === "local_ocr" ? (
+            <>
+              <span className="relative inline-flex items-center gap-1.5 border border-white/10 rounded px-2 py-1">
+                <TeamLogo url={match.team_a?.logo_url} size="sm" />
+                {match.team_a?.name}
+                {latestNetWorth?.team_a_gold != null && (
+                  <span
+                    className="absolute -top-2 -right-2 text-[9px] font-mono tabular-nums bg-signal text-white rounded px-1 py-0.5 leading-none shadow"
+                    title="Last-captured net worth"
+                  >
+                    {formatGold(latestNetWorth.team_a_gold)}
+                  </span>
+                )}
+              </span>
+              <span className={`text-base font-bold tabular-nums ${teamAKillsTotal > teamBKillsTotal ? "text-signal" : "text-white/70"}`}>
+                {teamAKillsTotal}
+              </span>
+              <span className="text-white/30 text-sm">–</span>
+              <span className={`text-base font-bold tabular-nums ${teamBKillsTotal > teamAKillsTotal ? "text-signal" : "text-white/70"}`}>
+                {teamBKillsTotal}
+              </span>
+              <span className="relative inline-flex items-center gap-1.5 border border-white/10 rounded px-2 py-1">
+                {match.team_b?.name}
+                <TeamLogo url={match.team_b?.logo_url} size="sm" />
+                {latestNetWorth?.team_b_gold != null && (
+                  <span
+                    className="absolute -top-2 -right-2 text-[9px] font-mono tabular-nums bg-signal text-white rounded px-1 py-0.5 leading-none shadow"
+                    title="Last-captured net worth"
+                  >
+                    {formatGold(latestNetWorth.team_b_gold)}
+                  </span>
+                )}
+              </span>
+            </>
+          ) : (
+            <>
+              <TeamLogo url={match.team_a?.logo_url} size="sm" />
+              {match.team_a?.name} vs {match.team_b?.name}
+              <TeamLogo url={match.team_b?.logo_url} size="sm" />
+            </>
+          )}
         </h1>
         <div className="flex items-center gap-3 mt-1 flex-wrap">
           <p className="text-xs text-white/50">
@@ -3383,6 +3452,623 @@ export default function LiveConsolePage() {
           </div>
         )}
       </div>
+
+      {/* Local capture (admin PC) — only drives anything when this match is on local_ocr.
+          Moved to directly under the match header (was previously the very last section
+          on the page) so the OCR tracker + calibration controls are reachable without
+          scrolling past the moment list, draft sim, and scoreboard first — see the
+          "Prioritize admin controls" ask. */}
+      <section className="space-y-3 pt-4">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Local capture (this PC)</h2>
+          {match.update_source === "local_ocr" && (
+            <button
+              onClick={captureActive ? stopCapture : startCapture}
+              disabled={!captureActive && !isEditable}
+              title={!isEditable && !captureActive ? "Not available while the match is scheduled" : undefined}
+              className={`text-xs rounded px-3 py-1.5 disabled:opacity-40 ${
+                captureActive ? "bg-red-500/20 text-red-300" : "border border-white/10 hover:bg-white/10"
+              }`}
+            >
+              {captureActive ? "Stop capture" : "Start capture"}
+            </button>
+          )}
+        </div>
+
+        {match.update_source === "local_ocr" && (
+          <p className="text-xs text-white/50 bg-white/5 border border-white/10 rounded px-3 py-2">
+            {PHASE_TRACKER_HINTS[match.state] ?? NO_TRACKER_PHASE_HINT}
+          </p>
+        )}
+
+        {/* Nothing else here makes it obvious when a phase has zero
+            regions calibrated — OCR just silently reads nothing forever
+            in that case, which looked identical to "OCR is broken" from
+            the outside. */}
+        {match.update_source === "local_ocr" && activeTrackers.length > 0 && (
+          <p
+            className={`text-xs rounded px-3 py-2 border ${
+              activeTrackers.every((t) => regions[t.field])
+                ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
+                : "text-yellow-300 border-yellow-500/30 bg-yellow-500/10"
+            }`}
+          >
+            {activeTrackers.filter((t) => regions[t.field]).length}/{activeTrackers.length} trackers calibrated for this phase
+            {!activeTrackers.every((t) => regions[t.field]) && " — uncalibrated trackers read nothing, however OCR-ready the rest looks"}
+          </p>
+        )}
+
+        {match.update_source === "local_ocr" && match.team_a && match.team_b && (
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-white/50">Which team is on the left of the broadcast overlay?</label>
+            <select
+              value={resolveLeftTeamId() ?? ""}
+              onChange={(e) => setOcrLeftTeam(e.target.value)}
+              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+            >
+              <option value={match.team_a.id}>{match.team_a.name}</option>
+              <option value={match.team_b.id}>{match.team_b.name}</option>
+            </select>
+            <span className="text-[10px] text-white/30">
+              Set this once per game if sides swap — the "left"/"right" regions below resolve to whichever team this says, no recalibration needed.
+            </span>
+          </div>
+        )}
+
+        {match.update_source !== "local_ocr" ? (
+          <p className="text-xs text-white/40">
+            This is a Normal match (Liquipedia auto). Click &quot;Normal match&quot; above to make it a Hot match
+            and take over with this PC&apos;s screen capture.
+          </p>
+        ) : (
+          <>
+            <p className="text-[10px] text-white/40 bg-white/5 border border-white/10 rounded px-2 py-1.5">
+              Manual region OCR — deterministic, runs entirely in your browser, no AI involved. Full-frame AI
+              capture is disabled for now until this manual pipeline is proven out end-to-end; the option
+              reappears here once that's done.
+            </p>
+
+            {captureMode === "ai" && (
+              <div className="flex gap-2 items-center">
+                <input
+                  value={overlayHint}
+                  onChange={(e) => setOverlayHint(e.target.value)}
+                  onBlur={saveOverlayHint}
+                  placeholder="Overlay hint (optional) — e.g. &quot;kill banners appear top-center in yellow text&quot;"
+                  className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                />
+                <button
+                  onClick={saveOverlayHintAsTournamentDefault}
+                  disabled={!overlayHint}
+                  className="text-[10px] border border-white/10 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                  title="New matches in this tournament will start with this hint already filled in"
+                >
+                  {overlayHintSavedAsDefault ? "Saved ✓" : "Save as tournament default"}
+                </button>
+              </div>
+            )}
+
+            {captureActive && (
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-3 justify-between">
+                  <span className="text-[10px] text-white/40">
+                    Any tracker, any phase, is editable from here regardless of the match's current live phase.
+                    Drag directly on the video to place a new tracker, or click an existing outlined region to
+                    move/resize it.
+                  </span>
+                  <select
+                    value={canvasPhaseFilter}
+                    onChange={(e) => setCanvasPhaseFilter(e.target.value)}
+                    className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
+                    title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
+                  >
+                    <option value="">All phases</option>
+                    {TRACKER_PHASES.map((p) => (
+                      <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                    ))}
+                  </select>
+                </div>
+                <div
+                  data-crop-container
+                  // Enlarged from a fixed 50vw to ~75vw ("6/8 full screen") —
+                  // a separate full-screen portal mode used to exist for
+                  // this (removed: its coordinate-locking broke whenever the
+                  // browser/video resized or moved mid-session). A single
+                  // bigger inline canvas needs no coordinate-locking trick at
+                  // all since there's only ever one rendered box to compute
+                  // percentages against. All the crop-box math reads
+                  // getBoundingClientRect() live at drag time, so a fixed
+                  // size needs no other code changes.
+                  className="relative w-[75vw] min-w-[480px] max-w-[1800px] border border-white/10 rounded overflow-hidden select-none"
+                  onMouseDown={(e) => {
+                    // Two draw-first flows share this canvas: pick-tracker-
+                    // then-draw (calibratingField already set, writes
+                    // draftBox) and slide-anywhere draw-then-pick (nothing
+                    // selected yet, writes pendingBox — a phase/variable
+                    // picker appears below once it's drawn). Existing region
+                    // buttons stop propagation on their own mousedown, so
+                    // clicking one to edit it never falls through to here.
+                    if (captureMode !== "manual") return;
+                    if (calibratingField && !draftBox) startBoxDrag("draw", e, "draftBox");
+                    else if (!calibratingField && !pendingBox) startBoxDrag("draw", e, "pendingBox");
+                  }}
+                >
+                  <video ref={previewRef} muted className="w-full block" />
+                  {captureMode === "manual" &&
+                    trackers
+                      .filter((t) => (canvasPhaseFilter ? t.phase === canvasPhaseFilter : true))
+                      .filter(({ field }) => field !== calibratingField)
+                      .map(({ field, label }) => {
+                        const box = regions[field];
+                        if (!box) return null;
+                        return (
+                          // Clickable straight from the video instead of
+                          // only via the small "Resize" button in the field
+                          // list below — jumps directly into edit mode for
+                          // whichever region was clicked.
+                          <button
+                            key={field}
+                            type="button"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              startCalibrating(field);
+                            }}
+                            title={`Click to edit: ${label}`}
+                            className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
+                            style={{
+                              left: `${box.xPct}%`,
+                              top: `${box.yPct}%`,
+                              width: `${box.wPct}%`,
+                              height: `${box.hPct}%`,
+                            }}
+                          />
+                        );
+                      })}
+                  {/* The region currently being calibrated — live preview,
+                      draggable body (move) and 4 corner handles (resize).
+                      Nothing here persists until "Lock" is clicked. */}
+                  {captureMode === "manual" && calibratingField && draftBox && (
+                    <div
+                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                      style={{
+                        left: `${draftBox.xPct}%`,
+                        top: `${draftBox.yPct}%`,
+                        width: `${draftBox.wPct}%`,
+                        height: `${draftBox.hPct}%`,
+                      }}
+                      onMouseDown={(e) => startBoxDrag("move", e, "draftBox")}
+                    >
+                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                        <div
+                          key={corner}
+                          onMouseDown={(e) => startBoxDrag(corner, e, "draftBox")}
+                          // 20x20px hit target centered exactly on the
+                          // corner via translate, regardless of box size —
+                          // "edge sensitivity" before this was just the
+                          // 2px border itself, easy to miss on a small
+                          // region. The visible dot inside stays small.
+                          className="absolute w-5 h-5 flex items-center justify-center"
+                          style={{
+                            left: corner.includes("w") ? 0 : "100%",
+                            top: corner.includes("n") ? 0 : "100%",
+                            transform: "translate(-50%, -50%)",
+                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                          }}
+                        >
+                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* Not yet drawn at all — a one-line hint since the empty
+                      container gives no other cue to click-drag. */}
+                  {captureMode === "manual" && calibratingField && !draftBox && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
+                    </div>
+                  )}
+
+                  {/* Slide-anywhere: a brand-new box drawn without a tracker
+                      picked yet — the phase/variable picker below assigns it
+                      once drawn. */}
+                  {captureMode === "manual" && !calibratingField && pendingBox && (
+                    <div
+                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                      style={{
+                        left: `${pendingBox.xPct}%`,
+                        top: `${pendingBox.yPct}%`,
+                        width: `${pendingBox.wPct}%`,
+                        height: `${pendingBox.hPct}%`,
+                      }}
+                      onMouseDown={(e) => startBoxDrag("move", e, "pendingBox")}
+                    >
+                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                        <div
+                          key={corner}
+                          onMouseDown={(e) => startBoxDrag(corner, e, "pendingBox")}
+                          className="absolute w-5 h-5 flex items-center justify-center"
+                          style={{
+                            left: corner.includes("w") ? 0 : "100%",
+                            top: corner.includes("n") ? 0 : "100%",
+                            transform: "translate(-50%, -50%)",
+                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                          }}
+                        >
+                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {captureMode === "manual" && !calibratingField && !pendingBox && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag anywhere to place a new tracker</span>
+                    </div>
+                  )}
+                </div>
+
+                {pendingBox && (
+                  <div className="flex flex-wrap items-center gap-2 border border-white/10 rounded px-3 py-2">
+                    <span className="text-[10px] text-white/40 uppercase tracking-wider whitespace-nowrap">New tracker</span>
+                    <select
+                      value={pendingBoxPhase}
+                      onChange={(e) => {
+                        setPendingBoxPhase(e.target.value);
+                        setPendingBoxField("");
+                      }}
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                    >
+                      {TRACKER_PHASES.map((p) => (
+                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={pendingBoxField}
+                      onChange={(e) => setPendingBoxField(e.target.value)}
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
+                    >
+                      <option value="">
+                        {pendingBoxOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
+                      </option>
+                      {pendingBoxOptions.map((opt) => (
+                        <option key={opt.field} value={opt.field}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={savePendingBox}
+                      disabled={!pendingBoxField}
+                      className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
+                    >
+                      Save
+                    </button>
+                    <button onClick={cancelPendingBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
+                {captureMode === "manual" && calibratingField && (
+                  <div className="flex gap-2">
+                    <button
+                      onClick={lockDraftBox}
+                      disabled={!draftBox}
+                      className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
+                    >
+                      🔒 Lock {trackers.find((t) => t.field === calibratingField)?.label}
+                    </button>
+                    <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
+                {captureMode === "manual" && (
+                  <div className="space-y-3">
+                    {/* Add tracker — categorized by phase, catalog already
+                        excludes whatever's tracked for that phase; the
+                        phase-scoped DB unique index is the hard backstop. */}
+                    <div className="border border-white/10 rounded p-2 flex flex-wrap gap-2 items-center">
+                      <select
+                        value={newTrackerPhase}
+                        onChange={(e) => {
+                          setNewTrackerPhase(e.target.value);
+                          setNewTrackerChoice("");
+                        }}
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      >
+                        {TRACKER_PHASES.map((p) => (
+                          <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={newTrackerChoice}
+                        onChange={(e) => setNewTrackerChoice(e.target.value)}
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs flex-1 min-w-[220px]"
+                      >
+                        <option value="">
+                          {catalogForPhase(newTrackerPhase).length === 0
+                            ? "Nothing to track in this phase"
+                            : trackerCatalogOptions.length === 0
+                            ? "Everything available is already tracked for this phase"
+                            : "Select a variable to track..."}
+                        </option>
+                        {trackerCatalogOptions.map((opt) => (
+                          <option key={opt.field} value={opt.field}>{opt.label}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={handleAddTracker}
+                        disabled={!newTrackerChoice}
+                        className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
+                      >
+                        + Add tracker
+                      </button>
+                    </div>
+
+                    {trackers.length === 0 ? (
+                      <p className="text-xs text-white/40 border border-white/10 rounded p-3">
+                        No trackers configured yet for this match — add one above for whichever phase you want to start with.
+                      </p>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap gap-2 items-center">
+                          <input
+                            value={trackerSearch}
+                            onChange={(e) => setTrackerSearch(e.target.value)}
+                            placeholder="Search trackers..."
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs flex-1 min-w-[160px]"
+                          />
+                          <select
+                            value={trackerPhaseFilter}
+                            onChange={(e) => setTrackerPhaseFilter(e.target.value)}
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                          >
+                            <option value="">All phases</option>
+                            {TRACKER_PHASES.map((p) => (
+                              <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={trackerCategoryFilter}
+                            onChange={(e) => setTrackerCategoryFilter(e.target.value)}
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                          >
+                            <option value="">All categories</option>
+                            {Array.from(new Set(trackers.map((t) => t.category))).map((c) => (
+                              <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-xs border-collapse">
+                            <thead>
+                              <tr className="text-white/40 text-left border-b border-white/10">
+                                {(["phase", "category", "label", "calibrated"] as const).map((key) => (
+                                  <th key={key} className="py-1 pr-2 font-normal cursor-pointer select-none whitespace-nowrap" onClick={() => toggleTrackerSort(key)}>
+                                    {key === "calibrated" ? "Status" : key} {trackerSort.key === key ? (trackerSort.dir === 1 ? "▲" : "▼") : ""}
+                                  </th>
+                                ))}
+                                <th className="py-1 pr-2 font-normal">Reading</th>
+                                <th className="py-1 font-normal">Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {visibleTrackers.map((t) => {
+                                const calibrated = !!regions[t.field];
+                                const isCountdownLike = t.category === "countdown" || t.category === "draft_timer";
+                                return (
+                                  <tr key={t.id} className={`border-b border-white/5 ${t.phase === match.state ? "" : "opacity-50"}`}>
+                                    <td className="py-1.5 pr-2 whitespace-nowrap">{t.phase.replace(/_/g, " ")}</td>
+                                    <td className="py-1.5 pr-2 whitespace-nowrap capitalize">{t.category.replace(/_/g, " ")}</td>
+                                    <td className="py-1.5 pr-2 min-w-[160px]">
+                                      {trackerLabelDrafts[t.id] != null ? (
+                                        <div className="flex gap-1">
+                                          <input
+                                            autoFocus
+                                            value={trackerLabelDrafts[t.id]}
+                                            onChange={(e) => setTrackerLabelDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter") renameTracker(t, trackerLabelDrafts[t.id]);
+                                            }}
+                                            className="bg-white/10 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-full"
+                                          />
+                                          <button onClick={() => renameTracker(t, trackerLabelDrafts[t.id])} className="text-emerald-400">✓</button>
+                                        </div>
+                                      ) : (
+                                        <button onClick={() => setTrackerLabelDrafts((prev) => ({ ...prev, [t.id]: t.label }))} className="text-left hover:text-signal" title="Click to rename">
+                                          {t.label}
+                                        </button>
+                                      )}
+                                    </td>
+                                    <td className="py-1.5 pr-2 whitespace-nowrap">
+                                      <span className={calibrated ? "text-emerald-400" : "text-yellow-300"}>{calibrated ? "Calibrated" : "Not calibrated"}</span>
+                                    </td>
+                                    <td className="py-1.5 pr-2 text-white/60 truncate max-w-[160px]" title={readings[t.field]}>
+                                      {readings[t.field] || "—"}
+                                    </td>
+                                    <td className="py-1.5">
+                                      <div className="flex flex-wrap gap-1 items-center">
+                                        <button
+                                          onClick={() => startCalibrating(t.field)}
+                                          disabled={calibratingField === t.field || t.phase !== match.state}
+                                          title={t.phase !== match.state ? "Switch the phase dropdown to this tracker's phase to calibrate it" : undefined}
+                                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+                                        >
+                                          {calibratingField === t.field ? "Adjusting..." : calibrated ? "Resize" : "Calibrate"}
+                                        </button>
+                                        {calibrated && (
+                                          <>
+                                            <button
+                                              onClick={() => {
+                                                clearRegionCoords(t.field);
+                                                if (calibratingField === t.field) setDraftBox(null);
+                                              }}
+                                              title="Clear calibration (keeps the tracker)"
+                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                                            >
+                                              Clear
+                                            </button>
+                                            <button
+                                              onClick={() => saveRegionAsTournamentDefault(t)}
+                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                                              title="New matches in this tournament will start with this tracker already calibrated"
+                                            >
+                                              {savedDefaultField === t.field ? "Saved ✓" : "Save as default"}
+                                            </button>
+                                          </>
+                                        )}
+                                        <button
+                                          onClick={() => removeTracker(t)}
+                                          title="Remove this tracker entirely"
+                                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
+                                        >
+                                          Remove
+                                        </button>
+                                        {isCountdownLike && (
+                                          <span className="flex gap-1">
+                                            <input
+                                              value={manualTimeInputs[t.field] ?? ""}
+                                              onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [t.field]: e.target.value }))}
+                                              placeholder="MM:SS"
+                                              className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+                                            />
+                                            <button
+                                              onClick={() => {
+                                                const value = manualTimeInputs[t.field] ?? "";
+                                                if (t.category === "countdown") setManualCountdown(value);
+                                                else {
+                                                  const { side } = fieldParts(t.field);
+                                                  const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
+                                                  const letter: "a" | "b" | null = teamId === match.team_a?.id ? "a" : teamId === match.team_b?.id ? "b" : null;
+                                                  if (letter) setManualDraftTimer(letter, value);
+                                                }
+                                              }}
+                                              title="Set this directly instead of waiting on OCR"
+                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                                            >
+                                              Set
+                                            </button>
+                                          </span>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {captureMode === "ai" && (
+                  <div className="border border-white/10 rounded p-3 space-y-1 text-xs">
+                    {aiStatus && <p className="text-red-400">{aiStatus}</p>}
+                    {aiDetection ? (
+                      <>
+                        <p>
+                          Phase: <strong>{aiDetection.phase}</strong>
+                          {aiDetection.game_timer_mm_ss && <> · Timer: <strong>{aiDetection.game_timer_mm_ss}</strong></>}
+                          {typeof aiDetection.confidence === "number" && (
+                            <span className="text-white/40"> · confidence {Math.round(aiDetection.confidence * 100)}%</span>
+                          )}
+                        </p>
+                        {aiDetection.draft_actions?.length > 0 && (
+                          <p className="text-white/60">
+                            Draft: {aiDetection.draft_actions.map((a) => `${a.type} ${a.hero_name} (${a.team_name})`).join(", ")}
+                          </p>
+                        )}
+                        {aiDetection.player_stats?.length > 0 && (
+                          <p className="text-white/60">
+                            Stats read for: {aiDetection.player_stats.map((s) => s.player_name).join(", ")}
+                          </p>
+                        )}
+                        {aiDetection.key_moment_banner !== "NONE" && (
+                          <p className="text-yellow-300">
+                            Key moment: {aiDetection.key_moment_banner}
+                            {aiDetection.key_moment_player_name ? ` — ${aiDetection.key_moment_player_name}` : ""}
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-white/40">Waiting for first frame…</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {suggestedWinner && match.team_a && match.team_b && (
+              <div className="lv-alert-warning flex flex-wrap items-center gap-3 text-sm px-4 py-3">
+                <span className="text-sm">
+                  AI detected a possible winner:{" "}
+                  <strong>{suggestedWinner === match.team_a.id ? match.team_a.name : match.team_b.name}</strong>
+                </span>
+                <button
+                  onClick={() => {
+                    declareGameWinner(suggestedWinner);
+                    setSuggestedWinner(null);
+                  }}
+                  className="lv-btn-primary"
+                >
+                  Confirm & finish game
+                </button>
+                <button onClick={() => setSuggestedWinner(null)} className="lv-btn-ghost">
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {suggestion && (
+              <div className="lv-alert-warning flex flex-wrap items-center gap-3 text-sm px-4 py-3">
+                <span className="text-sm">
+                  Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
+                  <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>
+                </span>
+                {/* Player attribution from OCR/AI-vision text-matching is a
+                    best-effort guess — left editable here so a failed match
+                    (or a wrong one) doesn't block logging the moment. */}
+                <select
+                  value={suggestion.playerId ?? ""}
+                  onChange={(e) => {
+                    const id = e.target.value || null;
+                    setSuggestion((prev) => (prev ? { ...prev, playerId: id, playerName: players.find((p) => p.id === id)?.ign ?? null } : prev));
+                  }}
+                  className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs text-white"
+                >
+                  <option value="">No player</option>
+                  {[...(match.team_a ? players.filter((p) => p.team_id === match.team_a!.id) : []), ...(match.team_b ? players.filter((p) => p.team_id === match.team_b!.id) : [])].map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.ign}
+                    </option>
+                  ))}
+                </select>
+                <button onClick={confirmSuggestion} className="lv-btn-primary">
+                  Log this
+                </button>
+                <button
+                  onClick={() => setSuggestion(null)}
+                  className="lv-btn-ghost"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
+
+            {consistencyWarning && (
+              <div className="flex flex-wrap items-center gap-3 bg-orange-500/10 border border-orange-500/30 rounded px-4 py-2">
+                <span className="text-xs text-orange-300">⚠ {consistencyWarning}</span>
+                <button onClick={() => setConsistencyWarning(null)} className="lv-btn-ghost !text-xs !py-1">
+                  Dismiss
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
 
       {!isEditable && (
         <p className="lv-alert-warning">
@@ -4485,618 +5171,6 @@ export default function LiveConsolePage() {
         </div>
       )}
 
-      {/* Local capture (admin PC) — only drives anything when this match is on local_ocr */}
-      <section className="space-y-3 border-t border-white/10 pt-6">
-        <div className="flex items-center justify-between">
-          <h2 className="font-bold">Local capture (this PC)</h2>
-          {match.update_source === "local_ocr" && (
-            <button
-              onClick={captureActive ? stopCapture : startCapture}
-              disabled={!captureActive && !isEditable}
-              title={!isEditable && !captureActive ? "Not available while the match is scheduled" : undefined}
-              className={`text-xs rounded px-3 py-1.5 disabled:opacity-40 ${
-                captureActive ? "bg-red-500/20 text-red-300" : "border border-white/10 hover:bg-white/10"
-              }`}
-            >
-              {captureActive ? "Stop capture" : "Start capture"}
-            </button>
-          )}
-        </div>
-
-        {match.update_source === "local_ocr" && (
-          <p className="text-xs text-white/50 bg-white/5 border border-white/10 rounded px-3 py-2">
-            {PHASE_TRACKER_HINTS[match.state] ?? PHASE_TRACKER_HINTS.CUSTOM}
-          </p>
-        )}
-
-        {/* Nothing else here makes it obvious when a phase has zero
-            regions calibrated — OCR just silently reads nothing forever
-            in that case, which looked identical to "OCR is broken" from
-            the outside. */}
-        {match.update_source === "local_ocr" && activeTrackers.length > 0 && (
-          <p
-            className={`text-xs rounded px-3 py-2 border ${
-              activeTrackers.every((t) => regions[t.field])
-                ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
-                : "text-yellow-300 border-yellow-500/30 bg-yellow-500/10"
-            }`}
-          >
-            {activeTrackers.filter((t) => regions[t.field]).length}/{activeTrackers.length} trackers calibrated for this phase
-            {!activeTrackers.every((t) => regions[t.field]) && " — uncalibrated trackers read nothing, however OCR-ready the rest looks"}
-          </p>
-        )}
-
-        {match.update_source === "local_ocr" && match.team_a && match.team_b && (
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-white/50">Which team is on the left of the broadcast overlay?</label>
-            <select
-              value={resolveLeftTeamId() ?? ""}
-              onChange={(e) => setOcrLeftTeam(e.target.value)}
-              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-            >
-              <option value={match.team_a.id}>{match.team_a.name}</option>
-              <option value={match.team_b.id}>{match.team_b.name}</option>
-            </select>
-            <span className="text-[10px] text-white/30">
-              Set this once per game if sides swap — the "left"/"right" regions below resolve to whichever team this says, no recalibration needed.
-            </span>
-          </div>
-        )}
-
-        {match.update_source !== "local_ocr" ? (
-          <p className="text-xs text-white/40">
-            This is a Normal match (Liquipedia auto). Click &quot;Normal match&quot; above to make it a Hot match
-            and take over with this PC&apos;s screen capture.
-          </p>
-        ) : (
-          <>
-            <p className="text-[10px] text-white/40 bg-white/5 border border-white/10 rounded px-2 py-1.5">
-              Manual region OCR — deterministic, runs entirely in your browser, no AI involved. Full-frame AI
-              capture is disabled for now until this manual pipeline is proven out end-to-end; the option
-              reappears here once that's done.
-            </p>
-
-            {captureMode === "ai" && (
-              <div className="flex gap-2 items-center">
-                <input
-                  value={overlayHint}
-                  onChange={(e) => setOverlayHint(e.target.value)}
-                  onBlur={saveOverlayHint}
-                  placeholder="Overlay hint (optional) — e.g. &quot;kill banners appear top-center in yellow text&quot;"
-                  className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                />
-                <button
-                  onClick={saveOverlayHintAsTournamentDefault}
-                  disabled={!overlayHint}
-                  className="text-[10px] border border-white/10 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
-                  title="New matches in this tournament will start with this hint already filled in"
-                >
-                  {overlayHintSavedAsDefault ? "Saved ✓" : "Save as tournament default"}
-                </button>
-              </div>
-            )}
-
-            {captureActive && (
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-3 justify-between">
-                  <span className="text-[10px] text-white/40">
-                    Any tracker, any phase, is editable from here regardless of the match's current live phase.
-                    Drag directly on the video to place a new tracker, or click an existing outlined region to
-                    move/resize it.
-                  </span>
-                  <select
-                    value={canvasPhaseFilter}
-                    onChange={(e) => setCanvasPhaseFilter(e.target.value)}
-                    className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
-                    title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
-                  >
-                    <option value="">All phases</option>
-                    {MATCH_PHASES.map((p) => (
-                      <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                    ))}
-                  </select>
-                </div>
-                <div
-                  data-crop-container
-                  // Enlarged from a fixed 50vw to ~75vw ("6/8 full screen") —
-                  // a separate full-screen portal mode used to exist for
-                  // this (removed: its coordinate-locking broke whenever the
-                  // browser/video resized or moved mid-session). A single
-                  // bigger inline canvas needs no coordinate-locking trick at
-                  // all since there's only ever one rendered box to compute
-                  // percentages against. All the crop-box math reads
-                  // getBoundingClientRect() live at drag time, so a fixed
-                  // size needs no other code changes.
-                  className="relative w-[75vw] min-w-[480px] max-w-[1800px] border border-white/10 rounded overflow-hidden select-none"
-                  onMouseDown={(e) => {
-                    // Two draw-first flows share this canvas: pick-tracker-
-                    // then-draw (calibratingField already set, writes
-                    // draftBox) and slide-anywhere draw-then-pick (nothing
-                    // selected yet, writes pendingBox — a phase/variable
-                    // picker appears below once it's drawn). Existing region
-                    // buttons stop propagation on their own mousedown, so
-                    // clicking one to edit it never falls through to here.
-                    if (captureMode !== "manual") return;
-                    if (calibratingField && !draftBox) startBoxDrag("draw", e, "draftBox");
-                    else if (!calibratingField && !pendingBox) startBoxDrag("draw", e, "pendingBox");
-                  }}
-                >
-                  <video ref={previewRef} muted className="w-full block" />
-                  {captureMode === "manual" &&
-                    trackers
-                      .filter((t) => (canvasPhaseFilter ? t.phase === canvasPhaseFilter : true))
-                      .filter(({ field }) => field !== calibratingField)
-                      .map(({ field, label }) => {
-                        const box = regions[field];
-                        if (!box) return null;
-                        return (
-                          // Clickable straight from the video instead of
-                          // only via the small "Resize" button in the field
-                          // list below — jumps directly into edit mode for
-                          // whichever region was clicked.
-                          <button
-                            key={field}
-                            type="button"
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              startCalibrating(field);
-                            }}
-                            title={`Click to edit: ${label}`}
-                            className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
-                            style={{
-                              left: `${box.xPct}%`,
-                              top: `${box.yPct}%`,
-                              width: `${box.wPct}%`,
-                              height: `${box.hPct}%`,
-                            }}
-                          />
-                        );
-                      })}
-                  {/* The region currently being calibrated — live preview,
-                      draggable body (move) and 4 corner handles (resize).
-                      Nothing here persists until "Lock" is clicked. */}
-                  {captureMode === "manual" && calibratingField && draftBox && (
-                    <div
-                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
-                      style={{
-                        left: `${draftBox.xPct}%`,
-                        top: `${draftBox.yPct}%`,
-                        width: `${draftBox.wPct}%`,
-                        height: `${draftBox.hPct}%`,
-                      }}
-                      onMouseDown={(e) => startBoxDrag("move", e, "draftBox")}
-                    >
-                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
-                        <div
-                          key={corner}
-                          onMouseDown={(e) => startBoxDrag(corner, e, "draftBox")}
-                          // 20x20px hit target centered exactly on the
-                          // corner via translate, regardless of box size —
-                          // "edge sensitivity" before this was just the
-                          // 2px border itself, easy to miss on a small
-                          // region. The visible dot inside stays small.
-                          className="absolute w-5 h-5 flex items-center justify-center"
-                          style={{
-                            left: corner.includes("w") ? 0 : "100%",
-                            top: corner.includes("n") ? 0 : "100%",
-                            transform: "translate(-50%, -50%)",
-                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
-                          }}
-                        >
-                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {/* Not yet drawn at all — a one-line hint since the empty
-                      container gives no other cue to click-drag. */}
-                  {captureMode === "manual" && calibratingField && !draftBox && (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
-                    </div>
-                  )}
-
-                  {/* Slide-anywhere: a brand-new box drawn without a tracker
-                      picked yet — the phase/variable picker below assigns it
-                      once drawn. */}
-                  {captureMode === "manual" && !calibratingField && pendingBox && (
-                    <div
-                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
-                      style={{
-                        left: `${pendingBox.xPct}%`,
-                        top: `${pendingBox.yPct}%`,
-                        width: `${pendingBox.wPct}%`,
-                        height: `${pendingBox.hPct}%`,
-                      }}
-                      onMouseDown={(e) => startBoxDrag("move", e, "pendingBox")}
-                    >
-                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
-                        <div
-                          key={corner}
-                          onMouseDown={(e) => startBoxDrag(corner, e, "pendingBox")}
-                          className="absolute w-5 h-5 flex items-center justify-center"
-                          style={{
-                            left: corner.includes("w") ? 0 : "100%",
-                            top: corner.includes("n") ? 0 : "100%",
-                            transform: "translate(-50%, -50%)",
-                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
-                          }}
-                        >
-                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {captureMode === "manual" && !calibratingField && !pendingBox && (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag anywhere to place a new tracker</span>
-                    </div>
-                  )}
-                </div>
-
-                {pendingBox && (
-                  <div className="flex flex-wrap items-center gap-2 border border-white/10 rounded px-3 py-2">
-                    <span className="text-[10px] text-white/40 uppercase tracking-wider whitespace-nowrap">New tracker</span>
-                    <select
-                      value={pendingBoxPhase}
-                      onChange={(e) => {
-                        setPendingBoxPhase(e.target.value);
-                        setPendingBoxField("");
-                      }}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                    >
-                      {MATCH_PHASES.map((p) => (
-                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={pendingBoxField}
-                      onChange={(e) => setPendingBoxField(e.target.value)}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
-                    >
-                      <option value="">
-                        {pendingBoxOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
-                      </option>
-                      {pendingBoxOptions.map((opt) => (
-                        <option key={opt.field} value={opt.field}>{opt.label}</option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={savePendingBox}
-                      disabled={!pendingBoxField}
-                      className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
-                    >
-                      Save
-                    </button>
-                    <button onClick={cancelPendingBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
-                      Cancel
-                    </button>
-                  </div>
-                )}
-
-                {captureMode === "manual" && calibratingField && (
-                  <div className="flex gap-2">
-                    <button
-                      onClick={lockDraftBox}
-                      disabled={!draftBox}
-                      className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
-                    >
-                      🔒 Lock {trackers.find((t) => t.field === calibratingField)?.label}
-                    </button>
-                    <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
-                      Cancel
-                    </button>
-                  </div>
-                )}
-
-                {captureMode === "manual" && (
-                  <div className="space-y-3">
-                    {/* Add tracker — categorized by phase, catalog already
-                        excludes whatever's tracked for that phase; the
-                        phase-scoped DB unique index is the hard backstop. */}
-                    <div className="border border-white/10 rounded p-2 flex flex-wrap gap-2 items-center">
-                      <select
-                        value={newTrackerPhase}
-                        onChange={(e) => {
-                          setNewTrackerPhase(e.target.value);
-                          setNewTrackerChoice("");
-                        }}
-                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                      >
-                        {MATCH_PHASES.map((p) => (
-                          <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={newTrackerChoice}
-                        onChange={(e) => setNewTrackerChoice(e.target.value)}
-                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs flex-1 min-w-[220px]"
-                      >
-                        <option value="">
-                          {catalogForPhase(newTrackerPhase).length === 0
-                            ? "Nothing to track in this phase"
-                            : trackerCatalogOptions.length === 0
-                            ? "Everything available is already tracked for this phase"
-                            : "Select a variable to track..."}
-                        </option>
-                        {trackerCatalogOptions.map((opt) => (
-                          <option key={opt.field} value={opt.field}>{opt.label}</option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={handleAddTracker}
-                        disabled={!newTrackerChoice}
-                        className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
-                      >
-                        + Add tracker
-                      </button>
-                    </div>
-
-                    {trackers.length === 0 ? (
-                      <p className="text-xs text-white/40 border border-white/10 rounded p-3">
-                        No trackers configured yet for this match — add one above for whichever phase you want to start with.
-                      </p>
-                    ) : (
-                      <>
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <input
-                            value={trackerSearch}
-                            onChange={(e) => setTrackerSearch(e.target.value)}
-                            placeholder="Search trackers..."
-                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs flex-1 min-w-[160px]"
-                          />
-                          <select
-                            value={trackerPhaseFilter}
-                            onChange={(e) => setTrackerPhaseFilter(e.target.value)}
-                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                          >
-                            <option value="">All phases</option>
-                            {MATCH_PHASES.map((p) => (
-                              <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                            ))}
-                          </select>
-                          <select
-                            value={trackerCategoryFilter}
-                            onChange={(e) => setTrackerCategoryFilter(e.target.value)}
-                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                          >
-                            <option value="">All categories</option>
-                            {Array.from(new Set(trackers.map((t) => t.category))).map((c) => (
-                              <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-xs border-collapse">
-                            <thead>
-                              <tr className="text-white/40 text-left border-b border-white/10">
-                                {(["phase", "category", "label", "calibrated"] as const).map((key) => (
-                                  <th key={key} className="py-1 pr-2 font-normal cursor-pointer select-none whitespace-nowrap" onClick={() => toggleTrackerSort(key)}>
-                                    {key === "calibrated" ? "Status" : key} {trackerSort.key === key ? (trackerSort.dir === 1 ? "▲" : "▼") : ""}
-                                  </th>
-                                ))}
-                                <th className="py-1 pr-2 font-normal">Reading</th>
-                                <th className="py-1 font-normal">Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {visibleTrackers.map((t) => {
-                                const calibrated = !!regions[t.field];
-                                const isCountdownLike = t.category === "countdown" || t.category === "draft_timer";
-                                return (
-                                  <tr key={t.id} className={`border-b border-white/5 ${t.phase === match.state ? "" : "opacity-50"}`}>
-                                    <td className="py-1.5 pr-2 whitespace-nowrap">{t.phase.replace(/_/g, " ")}</td>
-                                    <td className="py-1.5 pr-2 whitespace-nowrap capitalize">{t.category.replace(/_/g, " ")}</td>
-                                    <td className="py-1.5 pr-2 min-w-[160px]">
-                                      {trackerLabelDrafts[t.id] != null ? (
-                                        <div className="flex gap-1">
-                                          <input
-                                            autoFocus
-                                            value={trackerLabelDrafts[t.id]}
-                                            onChange={(e) => setTrackerLabelDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                            onKeyDown={(e) => {
-                                              if (e.key === "Enter") renameTracker(t, trackerLabelDrafts[t.id]);
-                                            }}
-                                            className="bg-white/10 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-full"
-                                          />
-                                          <button onClick={() => renameTracker(t, trackerLabelDrafts[t.id])} className="text-emerald-400">✓</button>
-                                        </div>
-                                      ) : (
-                                        <button onClick={() => setTrackerLabelDrafts((prev) => ({ ...prev, [t.id]: t.label }))} className="text-left hover:text-signal" title="Click to rename">
-                                          {t.label}
-                                        </button>
-                                      )}
-                                    </td>
-                                    <td className="py-1.5 pr-2 whitespace-nowrap">
-                                      <span className={calibrated ? "text-emerald-400" : "text-yellow-300"}>{calibrated ? "Calibrated" : "Not calibrated"}</span>
-                                    </td>
-                                    <td className="py-1.5 pr-2 text-white/60 truncate max-w-[160px]" title={readings[t.field]}>
-                                      {readings[t.field] || "—"}
-                                    </td>
-                                    <td className="py-1.5">
-                                      <div className="flex flex-wrap gap-1 items-center">
-                                        <button
-                                          onClick={() => startCalibrating(t.field)}
-                                          disabled={calibratingField === t.field || t.phase !== match.state}
-                                          title={t.phase !== match.state ? "Switch the phase dropdown to this tracker's phase to calibrate it" : undefined}
-                                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
-                                        >
-                                          {calibratingField === t.field ? "Adjusting..." : calibrated ? "Resize" : "Calibrate"}
-                                        </button>
-                                        {calibrated && (
-                                          <>
-                                            <button
-                                              onClick={() => {
-                                                clearRegionCoords(t.field);
-                                                if (calibratingField === t.field) setDraftBox(null);
-                                              }}
-                                              title="Clear calibration (keeps the tracker)"
-                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-                                            >
-                                              Clear
-                                            </button>
-                                            <button
-                                              onClick={() => saveRegionAsTournamentDefault(t)}
-                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-                                              title="New matches in this tournament will start with this tracker already calibrated"
-                                            >
-                                              {savedDefaultField === t.field ? "Saved ✓" : "Save as default"}
-                                            </button>
-                                          </>
-                                        )}
-                                        <button
-                                          onClick={() => removeTracker(t)}
-                                          title="Remove this tracker entirely"
-                                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
-                                        >
-                                          Remove
-                                        </button>
-                                        {isCountdownLike && (
-                                          <span className="flex gap-1">
-                                            <input
-                                              value={manualTimeInputs[t.field] ?? ""}
-                                              onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [t.field]: e.target.value }))}
-                                              placeholder="MM:SS"
-                                              className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
-                                            />
-                                            <button
-                                              onClick={() => {
-                                                const value = manualTimeInputs[t.field] ?? "";
-                                                if (t.category === "countdown") setManualCountdown(value);
-                                                else {
-                                                  const { side } = fieldParts(t.field);
-                                                  const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
-                                                  const letter: "a" | "b" | null = teamId === match.team_a?.id ? "a" : teamId === match.team_b?.id ? "b" : null;
-                                                  if (letter) setManualDraftTimer(letter, value);
-                                                }
-                                              }}
-                                              title="Set this directly instead of waiting on OCR"
-                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-                                            >
-                                              Set
-                                            </button>
-                                          </span>
-                                        )}
-                                      </div>
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {captureMode === "ai" && (
-                  <div className="border border-white/10 rounded p-3 space-y-1 text-xs">
-                    {aiStatus && <p className="text-red-400">{aiStatus}</p>}
-                    {aiDetection ? (
-                      <>
-                        <p>
-                          Phase: <strong>{aiDetection.phase}</strong>
-                          {aiDetection.game_timer_mm_ss && <> · Timer: <strong>{aiDetection.game_timer_mm_ss}</strong></>}
-                          {typeof aiDetection.confidence === "number" && (
-                            <span className="text-white/40"> · confidence {Math.round(aiDetection.confidence * 100)}%</span>
-                          )}
-                        </p>
-                        {aiDetection.draft_actions?.length > 0 && (
-                          <p className="text-white/60">
-                            Draft: {aiDetection.draft_actions.map((a) => `${a.type} ${a.hero_name} (${a.team_name})`).join(", ")}
-                          </p>
-                        )}
-                        {aiDetection.player_stats?.length > 0 && (
-                          <p className="text-white/60">
-                            Stats read for: {aiDetection.player_stats.map((s) => s.player_name).join(", ")}
-                          </p>
-                        )}
-                        {aiDetection.key_moment_banner !== "NONE" && (
-                          <p className="text-yellow-300">
-                            Key moment: {aiDetection.key_moment_banner}
-                            {aiDetection.key_moment_player_name ? ` — ${aiDetection.key_moment_player_name}` : ""}
-                          </p>
-                        )}
-                      </>
-                    ) : (
-                      <p className="text-white/40">Waiting for first frame…</p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {suggestedWinner && match.team_a && match.team_b && (
-              <div className="lv-alert-warning flex flex-wrap items-center gap-3 text-sm px-4 py-3">
-                <span className="text-sm">
-                  AI detected a possible winner:{" "}
-                  <strong>{suggestedWinner === match.team_a.id ? match.team_a.name : match.team_b.name}</strong>
-                </span>
-                <button
-                  onClick={() => {
-                    declareGameWinner(suggestedWinner);
-                    setSuggestedWinner(null);
-                  }}
-                  className="lv-btn-primary"
-                >
-                  Confirm & finish game
-                </button>
-                <button onClick={() => setSuggestedWinner(null)} className="lv-btn-ghost">
-                  Dismiss
-                </button>
-              </div>
-            )}
-
-            {suggestion && (
-              <div className="lv-alert-warning flex flex-wrap items-center gap-3 text-sm px-4 py-3">
-                <span className="text-sm">
-                  Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
-                  <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>
-                </span>
-                {/* Player attribution from OCR/AI-vision text-matching is a
-                    best-effort guess — left editable here so a failed match
-                    (or a wrong one) doesn't block logging the moment. */}
-                <select
-                  value={suggestion.playerId ?? ""}
-                  onChange={(e) => {
-                    const id = e.target.value || null;
-                    setSuggestion((prev) => (prev ? { ...prev, playerId: id, playerName: players.find((p) => p.id === id)?.ign ?? null } : prev));
-                  }}
-                  className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs text-white"
-                >
-                  <option value="">No player</option>
-                  {[...(match.team_a ? players.filter((p) => p.team_id === match.team_a!.id) : []), ...(match.team_b ? players.filter((p) => p.team_id === match.team_b!.id) : [])].map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.ign}
-                    </option>
-                  ))}
-                </select>
-                <button onClick={confirmSuggestion} className="lv-btn-primary">
-                  Log this
-                </button>
-                <button
-                  onClick={() => setSuggestion(null)}
-                  className="lv-btn-ghost"
-                >
-                  Dismiss
-                </button>
-              </div>
-            )}
-
-            {consistencyWarning && (
-              <div className="flex flex-wrap items-center gap-3 bg-orange-500/10 border border-orange-500/30 rounded px-4 py-2">
-                <span className="text-xs text-orange-300">⚠ {consistencyWarning}</span>
-                <button onClick={() => setConsistencyWarning(null)} className="lv-btn-ghost !text-xs !py-1">
-                  Dismiss
-                </button>
-              </div>
-            )}
-          </>
-        )}
-      </section>
     </div>
   );
 }

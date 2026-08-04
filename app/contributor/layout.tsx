@@ -14,6 +14,7 @@ export default function ContributorLayout({ children }: { children: React.ReactN
   const [checking, setChecking] = useState(true);
   const [contributor, setContributor] = useState<ContributorInfo | null>(null);
   const [noRow, setNoRow] = useState(false);
+  const [promotedToAdmin, setPromotedToAdmin] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -34,6 +35,18 @@ export default function ContributorLayout({ children }: { children: React.ReactN
         .eq("user_id", session.user.id)
         .maybeSingle();
 
+      if (!row) {
+        // Promotion deletes the contributors row once the admins row is
+        // inserted (see lib/contributorPromotion.ts) — tell a promoted
+        // user where to go instead of showing "apply as contributor."
+        const { data: adminRow } = await supabase
+          .from("admins")
+          .select("id")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (active) setPromotedToAdmin(Boolean(adminRow));
+      }
+
       if (active) {
         setContributor(row as ContributorInfo | null);
         setNoRow(!row);
@@ -52,12 +65,23 @@ export default function ContributorLayout({ children }: { children: React.ReactN
     router.push("/contributor/login");
   }
 
-  if (pathname === "/contributor/login") return <>{children}</>;
+  if (pathname === "/contributor/login" || pathname === "/contributor/set-password") return <>{children}</>;
 
   if (checking) {
     return (
       <main className="min-h-screen flex items-center justify-center text-white/50 text-sm">
         Checking access...
+      </main>
+    );
+  }
+
+  if (noRow && promotedToAdmin) {
+    return (
+      <main className="min-h-screen flex flex-col items-center justify-center gap-3 text-white text-sm text-center px-6">
+        <p>Your contributor account was promoted to Admin.</p>
+        <a href="/admin/login" className="text-signal hover:underline">
+          Sign in at /admin
+        </a>
       </main>
     );
   }

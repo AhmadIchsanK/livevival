@@ -33,10 +33,24 @@ export default function ManageContributorsPage() {
   }, []);
 
   async function revoke(id: string, name: string) {
-    if (!confirm(`Revoke "${name}"'s contributor access? This can't be undone.`)) return;
-    const { error } = await supabase.from("contributors").delete().eq("id", id);
-    if (error) {
-      setError(error.message);
+    if (!confirm(`Revoke "${name}"'s contributor access? This removes their account entirely — they'd need to reapply from scratch.`)) return;
+    setError(null);
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) {
+      setError("Not authenticated.");
+      return;
+    }
+
+    const res = await fetch("/api/admin/revoke-contributor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ contributorId: id }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(body.error ?? "Failed to revoke.");
       return;
     }
     load();

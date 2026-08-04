@@ -1,4 +1,4 @@
-name: TEMP diagnose Liquipedia page structure
+name: TEMP diagnose player roster parsing
 
 on:
   workflow_dispatch: {}
@@ -13,4 +13,4 @@ jobs:
         with:
           node-version: 22
       - run: npm install @supabase/supabase-js cheerio
-      - run: node scripts/tmp-diagnose.mjs
+      - run: node scripts/tmp-diagnose2.mjs

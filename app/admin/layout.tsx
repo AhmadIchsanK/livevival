@@ -8,11 +8,19 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 
 type AdminInfo = { email: string; role: "super_admin" | "moderator" };
 
+// The live console (/admin/matches/[id]/live) is the one page under this
+// admin-only layout that an approved contributor also needs to reach —
+// they submit finished-match correction requests through that same page
+// component in contributor mode (see its own actorType handling), rather
+// than a separate cloned route. Every other /admin/* page stays admin-only.
+const CONTRIBUTOR_LIVE_CONSOLE = /^\/admin\/matches\/[^/]+\/live/;
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const [checking, setChecking] = useState(true);
   const [admin, setAdmin] = useState<AdminInfo | null>(null);
+  const [isApprovedContributor, setIsApprovedContributor] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -32,6 +40,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         .select("email, role")
         .eq("user_id", session.user.id)
         .maybeSingle();
+
+      if (!adminRow) {
+        const { data: contributorRow } = await supabase
+          .from("contributors")
+          .select("id")
+          .eq("user_id", session.user.id)
+          .eq("status", "approved")
+          .maybeSingle();
+        if (active) setIsApprovedContributor(Boolean(contributorRow));
+      }
 
       if (active) {
         setAdmin(adminRow as AdminInfo | null);
@@ -61,9 +79,18 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   }
 
   if (!admin) {
+    // An approved contributor reaching the live console gets the page
+    // itself (no admin nav/header wrapper) — it renders its own
+    // contributor-mode UI and route guard (finished matches only). Any
+    // other /admin/* path stays fully blocked for a non-admin.
+    if (isApprovedContributor && CONTRIBUTOR_LIVE_CONSOLE.test(pathname ?? "")) {
+      return <>{children}</>;
+    }
     return (
-      <main className="min-h-screen flex items-center justify-center text-white text-sm">
-        Not authorized. This account has no admin role assigned.
+      <main className="min-h-screen flex items-center justify-center text-white text-sm text-center px-6">
+        {isApprovedContributor
+          ? "Contributors can only reach the live console for a finished match — use the link from your dashboard."
+          : "Not authorized. This account has no admin role assigned."}
       </main>
     );
   }

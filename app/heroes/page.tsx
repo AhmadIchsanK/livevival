@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import { TeamLogo } from "@/components/TeamLogo";
+import { HeroIcon } from "@/components/HeroIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
 
@@ -100,7 +100,7 @@ function HeroesIndexPageInner() {
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
           {visible.map((h) => (
             <div key={h.id} className="lv-card flex flex-col items-center gap-2 px-3 py-4 text-center">
-              <TeamLogo url={h.icon_url} size="md" />
+              <HeroIcon url={h.icon_url} name={h.name} size="lg" />
               <p className="font-semibold text-xs leading-tight">{h.name}</p>
               {h.role && <p className="text-[10px] text-white/40 uppercase tracking-wide">{h.role}</p>}
             </div>

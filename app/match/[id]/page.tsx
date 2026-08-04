@@ -3,8 +3,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { TeamLogo } from "@/components/TeamLogo";
+import { HeroIcon } from "@/components/HeroIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { BrandLockup } from "@/components/Brand";
@@ -907,16 +907,7 @@ export default function PublicMatchPage() {
                   <div className="flex flex-wrap gap-3">
                     {t.picks.map((p) => (
                       <div key={p.id} className="flex flex-col items-center gap-1 w-14">
-                        {p.hero?.icon_url ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={proxiedImageUrl(p.hero.icon_url)}
-                            alt=""
-                            className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg object-cover object-top border border-white/10"
-                          />
-                        ) : (
-                          <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-lg bg-white/5 border border-white/10" />
-                        )}
+                        <HeroIcon url={p.hero?.icon_url} name={p.hero_name} size="md" />
                         <span className="text-[10px] text-white/70 text-center leading-tight truncate w-full">{p.hero_name}</span>
                         {p.player?.ign && (
                           <span className="text-[9px] text-white/40 text-center leading-tight truncate w-full">{p.player.ign}</span>
@@ -935,24 +926,7 @@ export default function PublicMatchPage() {
                   <div className="flex flex-wrap gap-3">
                     {t.bans.map((b) => (
                       <div key={b.id} className="flex flex-col items-center gap-1 w-12">
-                        <div className="relative w-10 h-10 sm:w-11 sm:h-11 rounded-lg overflow-hidden border border-white/10">
-                          {b.hero?.icon_url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={proxiedImageUrl(b.hero.icon_url)}
-                              alt=""
-                              className="w-full h-full object-cover object-top grayscale opacity-50"
-                            />
-                          ) : (
-                            <div className="w-full h-full bg-white/5" />
-                          )}
-                          {/* Diagonal ban strike — a single rotated bar across
-                              the desaturated portrait reads as "banned" at a
-                              glance, vs. the previous plain inline text list. */}
-                          <div className="absolute inset-0 flex items-center justify-center" aria-hidden="true">
-                            <div className="w-[150%] h-[2px] bg-signal/80 rotate-45" />
-                          </div>
-                        </div>
+                        <HeroIcon url={b.hero?.icon_url} name={b.hero_name} size="sm" banned />
                         <span className="text-[9px] text-white/40 text-center leading-tight truncate w-full">{b.hero_name}</span>
                       </div>
                     ))}
@@ -1056,7 +1030,7 @@ export default function PublicMatchPage() {
                     <tr key={s.id} className="border-t border-white/10">
                       <td className="py-1.5">{s.ign}</td>
                       <td className="flex items-center gap-1.5 py-1.5">
-                        {s.heroIconUrl && <img src={proxiedImageUrl(s.heroIconUrl)} alt="" className="w-5 h-5 rounded object-cover object-top" />}
+                        {s.heroIconUrl && <HeroIcon url={s.heroIconUrl} name={s.heroName} size="xs" />}
                         {s.heroName ?? (s.heroIconUrl === null && s.heroName === null ? "—" : "")}
                       </td>
                       <td className="tabular-nums">{s.kills ?? <span className="text-white/30">TBD</span>}</td>

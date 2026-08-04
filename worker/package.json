@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Always-on Liquipedia poller: watches live/imminent matches' tournament pages every ~20s and writes schedule, score, picks/bans, and results to Supabase in near-real-time.",
+  "description": "Always-on Liquipedia poller: watches live/imminent matches' tournament pages every ~30s and writes schedule, score, picks/bans, and results to Supabase in near-real-time.",
   "scripts": {
     "start": "node src/index.mjs",
     "test": "vitest run"

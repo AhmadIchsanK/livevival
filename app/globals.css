@@ -29,6 +29,27 @@
     color-scheme: light;
   }
 
+  /* color-scheme above is the spec-correct fix, but real-world <select>
+     popup rendering is inconsistent about actually honoring it depending
+     on browser/OS — one dropdown across the whole site had already worked
+     around this with an explicit background/text color set directly on
+     its <option> elements, which browsers reliably do respect even when
+     they ignore color-scheme or the <select>'s own (often translucent,
+     bg-white/10-style) background. Applying that same explicit styling
+     globally here covers every select on the site instead of requiring
+     every one of them to repeat it by hand.  */
+  select {
+    color-scheme: dark;
+    background-color: rgb(var(--color-ink));
+  }
+  .light select {
+    color-scheme: light;
+  }
+  option {
+    background-color: rgb(var(--color-ink));
+    color: rgb(var(--color-paper));
+  }
+
   * {
     scrollbar-color: #e31e2a4d transparent;
   }

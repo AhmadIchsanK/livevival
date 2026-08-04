@@ -32,7 +32,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { apiQuery, sleep } from "./_liquipedia.mjs";
+import { apiQuery, sleep, COUNTRY_NAME_TO_CODE } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -93,6 +93,18 @@ export function extractActiveRoster($) {
     const $link = $(cells[0]).find(".inline-player a[title]").first();
     const ign = $link.text().trim() || $link.attr("title")?.replace(/\s*\(page does not exist\)\s*$/i, "").trim();
     if (!ign) return;
+    // Defends against a country/region name landing in the `ign` cell — a
+    // flag/section-header row misread as a real roster row (confirmed as
+    // the shape of 11 real production rows, e.g. ign="Indonesia" on a real
+    // team_id — see COUNTRY_NAME_TO_CODE's own comment for the full story).
+    // No currently-live team page reproduces this against this function as
+    // written, but nothing structurally prevents a future regression from
+    // doing it again, so reject an exact country-name match outright rather
+    // than relying on it never happening.
+    if (COUNTRY_NAME_TO_CODE[ign.trim().toLowerCase()]) {
+      console.warn(`  skipping roster row: ign "${ign}" looks like a country name, not a player`);
+      return;
+    }
     const roleRaw = $(cells[positionIdx]).text().trim();
     // The roster link's href is that player's own Liquipedia page slug
     // when one exists (a red link — no individual page — has no href at

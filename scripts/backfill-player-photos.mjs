@@ -40,7 +40,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { fetchRenderedPage, sleep } from "./_liquipedia.mjs";
+import { fetchRenderedPage, sleep, COUNTRY_NAME_TO_CODE } from "./_liquipedia.mjs";
 import { fetchTeamPage, extractActiveRoster, upsertPlayerRole } from "./import-team-details.mjs";
 
 const supabase = createClient(
@@ -55,76 +55,13 @@ const supabase = createClient(
 // on and gets mopped up on a later run instead.
 const BACKFILL_MAX_RETRIES = 2;
 
-// Fallback for the rare flag image whose filename doesn't follow
-// Liquipedia's standard "<Code>_hd.png" pattern (see header comment — that
-// pattern was confirmed, not assumed, across 4 distinct countries). Only
-// consulted when the filename regex comes up empty; extend as real gaps
-// turn up in job logs rather than guessing entries no fetch has confirmed.
-// Covers the SEA/ML-relevant pool the owner named plus the other regions
-// MLBB competes in (LATAM, MENA, etc).
-const COUNTRY_NAME_TO_CODE = {
-  indonesia: "ID",
-  philippines: "PH",
-  malaysia: "MY",
-  singapore: "SG",
-  myanmar: "MM",
-  cambodia: "KH",
-  thailand: "TH",
-  vietnam: "VN",
-  laos: "LA",
-  brunei: "BN",
-  "east timor": "TL",
-  brazil: "BR",
-  argentina: "AR",
-  chile: "CL",
-  peru: "PE",
-  colombia: "CO",
-  mexico: "MX",
-  bolivia: "BO",
-  ecuador: "EC",
-  paraguay: "PY",
-  uruguay: "UY",
-  venezuela: "VE",
-  "dominican republic": "DO",
-  "united states": "US",
-  "united states of america": "US",
-  canada: "CA",
-  china: "CN",
-  "south korea": "KR",
-  japan: "JP",
-  india: "IN",
-  pakistan: "PK",
-  bangladesh: "BD",
-  nepal: "NP",
-  "sri lanka": "LK",
-  turkey: "TR",
-  russia: "RU",
-  ukraine: "UA",
-  kazakhstan: "KZ",
-  uzbekistan: "UZ",
-  mongolia: "MN",
-  "saudi arabia": "SA",
-  "united arab emirates": "AE",
-  kuwait: "KW",
-  qatar: "QA",
-  egypt: "EG",
-  morocco: "MA",
-  algeria: "DZ",
-  tunisia: "TN",
-  nigeria: "NG",
-  "south africa": "ZA",
-  australia: "AU",
-  "new zealand": "NZ",
-  england: "GB",
-  "united kingdom": "GB",
-  germany: "DE",
-  france: "FR",
-  spain: "ES",
-  portugal: "PT",
-  italy: "IT",
-  poland: "PL",
-  sweden: "SE",
-};
+// COUNTRY_NAME_TO_CODE now lives in _liquipedia.mjs (shared with
+// import-team-details.mjs's roster-row country-name guard) — used here as
+// the fallback for the rare flag image whose filename doesn't follow
+// Liquipedia's standard "<Code>_hd.png" pattern (see that pattern's own
+// confirmation note where it's defined). Only consulted when the filename
+// regex comes up empty; extend as real gaps turn up in job logs rather
+// than guessing entries no fetch has confirmed.
 
 const FLAG_CODE_RE = /\/([A-Za-z]{2})_hd\.png/;
 

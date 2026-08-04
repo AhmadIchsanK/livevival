@@ -1,19 +1,37 @@
-name: Backfill player photos (one-time)
+name: Backfill player photos
 
-# Manual-only, no schedule — two-phase backfill (see
-# scripts/backfill-player-photos.mjs): first captures each rostered
-# player's own Liquipedia page slug (piggybacking on the existing
-# team-roster fetch), then fetches each newly-slugged player's own page
-# for their infobox photo. Safe to re-run; only ever touches players still
-# missing a slug or a photo, so a run cut short by a sustained Liquipedia
-# throttle window just gets mopped up on the next trigger.
+# Two-phase backfill (see scripts/backfill-player-photos.mjs): first
+# captures each rostered player's own Liquipedia page slug (piggybacking on
+# the existing team-roster fetch), then fetches each newly-slugged player's
+# own page for their infobox photo/real name/nationality/links. Safe to
+# re-run; only ever touches players still missing a slug or profile field,
+# so a run cut short by a sustained Liquipedia throttle window just gets
+# mopped up on the next trigger.
+#
+# Was manual-only/"one-time" — changed to also run on a schedule because,
+# unlike the repo's other one-time backfills (each fixing a specific past
+# bug that won't recur), this one is an ongoing need: new players keep
+# entering the roster tables via the regular tournament/roster imports, and
+# each needs its own profile fetched once. Confirmed via SQL only 52/1214
+# players had a liquipedia_slug and 14/1214 had a photo before this backfill
+# was actually run at scale — a single 60-min run can't close a gap that
+# size against Liquipedia's ~4s/request pacing, so this needs to keep
+# running periodically to converge (and stay converged as new players show
+# up) rather than only ever firing once. Runs daily, offset from the 6-
+# hourly tournament/match imports and the 3-hourly roster/match-details jobs
+# so it isn't competing for the same short-term Liquipedia rate-limit window.
 on:
+  schedule:
+    - cron: "30 5 * * *"
   workflow_dispatch: {}
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    concurrency:
+      group: backfill-player-photos
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

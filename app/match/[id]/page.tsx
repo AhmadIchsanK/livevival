@@ -77,9 +77,10 @@ type PlayerStat = {
   game_id: string;
   player_id: string;
   hero_name: string | null;
-  kills: number;
-  deaths: number;
-  assists: number;
+  // null = TBD, not yet entered — see the admin console's PlayerStat comment.
+  kills: number | null;
+  deaths: number | null;
+  assists: number | null;
   gold: number;
   hero: { icon_url: string | null } | null;
   player: { ign: string; team_id: string; is_active_roster: boolean } | null;
@@ -439,9 +440,11 @@ export default function PublicMatchPage() {
   // Once both teams have their 5-player roster decided, show it on the
   // scoreboard even before any pick/stat row exists yet for this game —
   // otherwise the scoreboard stays blank right up until the draft
-  // actually produces a KDA row.
+  // actually produces a KDA row. Still gated on Draft having started at
+  // all (see scoreRowsFor below) — before that, nobody's confirmed who's
+  // actually playing this game yet.
   const rosterDecided = teamAActiveRoster.length === 5 && teamBActiveRoster.length === 5;
-  type ScoreRow = { id: string; ign: string; heroIconUrl: string | null; heroName: string | null; kills: number; deaths: number; assists: number };
+  type ScoreRow = { id: string; ign: string; heroIconUrl: string | null; heroName: string | null; kills: number | null; deaths: number | null; assists: number | null };
   function scoreRowsFor(stats: PlayerStat[], activeRoster: RosterPlayer[]): ScoreRow[] {
     if (stats.length > 0) {
       return stats.map((s) => ({
@@ -454,10 +457,10 @@ export default function PublicMatchPage() {
         assists: s.assists,
       }));
     }
-    if (!rosterDecided) return [];
+    if (!rosterDecided || match?.state === "MATCH_NOT_STARTED") return [];
     return [...activeRoster]
       .sort((a, b) => roleIndex(a.role) - roleIndex(b.role))
-      .map((p) => ({ id: p.id, ign: p.ign, heroIconUrl: null, heroName: null, kills: 0, deaths: 0, assists: 0 }));
+      .map((p) => ({ id: p.id, ign: p.ign, heroIconUrl: null, heroName: null, kills: null, deaths: null, assists: null }));
   }
   const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
   const teamAPicks = gamePickBans
@@ -479,7 +482,9 @@ export default function PublicMatchPage() {
 
   const mvp =
     match.status === "finished" && gameStats.length > 0
-      ? [...gameStats].sort((a, b) => (b.kills + b.assists - b.deaths) - (a.kills + a.assists - a.deaths))[0]
+      ? [...gameStats].sort(
+          (a, b) => (b.kills ?? 0) + (b.assists ?? 0) - (b.deaths ?? 0) - ((a.kills ?? 0) + (a.assists ?? 0) - (a.deaths ?? 0))
+        )[0]
       : null;
 
   const gamesWonByA = games.filter((g) => g.winner_team_id === teamAId).length;
@@ -685,22 +690,13 @@ export default function PublicMatchPage() {
               </span>
             )
           )}
-          {(liveDraftTimerA || liveDraftTimerB) && (
-            <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Draft pick/ban timer">
-              ⏳{" "}
-              <span className={draftTurnTeamId === teamAId ? "text-signal font-semibold" : undefined}>
-                {match.team_a?.name}: {liveDraftTimerA ?? "—"}
-              </span>{" "}
-              ·{" "}
-              <span className={draftTurnTeamId === teamBId ? "text-signal font-semibold" : undefined}>
-                {match.team_b?.name}: {liveDraftTimerB ?? "—"}
-              </span>
-              {draftTurnTeamId && (
-                <span className="text-white/40">
-                  {" "}
-                  — {draftTurnTeamId === teamAId ? match.team_a?.name : match.team_b?.name}'s turn
-                </span>
-              )}
+          {/* Only the team actually on the clock — the other side's timer
+              isn't counting down anything real (both were decrementing
+              identically client-side before), so showing it just as "—"
+              read as broken rather than informative. */}
+          {draftTurnTeamId && (draftTurnTeamId === teamAId ? liveDraftTimerA : liveDraftTimerB) && (
+            <span className="lv-badge bg-white/10 text-signal font-semibold tabular-nums" title="Draft pick/ban timer">
+              ⏳ {draftTurnTeamId === teamAId ? match.team_a?.name : match.team_b?.name} turn - {draftTurnTeamId === teamAId ? liveDraftTimerA : liveDraftTimerB}
             </span>
           )}
           {match.update_source === "local_ocr" && (
@@ -720,7 +716,7 @@ export default function PublicMatchPage() {
 
         {mvp && (
           <p className="text-sm text-white/70">
-            Game {selectedGame?.game_number} MVP: {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills}/{mvp.deaths}/{mvp.assists}
+            Game {selectedGame?.game_number} MVP: {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills ?? "TBD"}/{mvp.deaths ?? "TBD"}/{mvp.assists ?? "TBD"}
           </p>
         )}
       </header>
@@ -1060,12 +1056,12 @@ export default function PublicMatchPage() {
                     <tr key={s.id} className="border-t border-white/10">
                       <td className="py-1.5">{s.ign}</td>
                       <td className="flex items-center gap-1.5 py-1.5">
-                        {s.heroIconUrl && <img src={proxiedImageUrl(s.heroIconUrl)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
+                        {s.heroIconUrl && <img src={proxiedImageUrl(s.heroIconUrl)} alt="" className="w-5 h-5 rounded object-cover object-top" />}
                         {s.heroName ?? (s.heroIconUrl === null && s.heroName === null ? "—" : "")}
                       </td>
-                      <td className="tabular-nums">{s.kills}</td>
-                      <td className="tabular-nums">{s.deaths}</td>
-                      <td className="tabular-nums">{s.assists}</td>
+                      <td className="tabular-nums">{s.kills ?? <span className="text-white/30">TBD</span>}</td>
+                      <td className="tabular-nums">{s.deaths ?? <span className="text-white/30">TBD</span>}</td>
+                      <td className="tabular-nums">{s.assists ?? <span className="text-white/30">TBD</span>}</td>
                     </tr>
                   ))}
                   {t.list.length === 0 && (

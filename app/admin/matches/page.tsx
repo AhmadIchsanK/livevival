@@ -801,7 +801,7 @@ export default function MatchesPage() {
                   href={`/admin/matches/${m.id}/live`}
                   className="lv-btn-primary"
                 >
-                  Open live console
+                  {m.status === "finished" ? "✏️ Edit match results" : "Open live console"}
                 </a>
                 <a
                   href={`/match/${m.id}`}

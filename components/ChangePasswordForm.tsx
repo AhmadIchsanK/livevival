@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 // Shared by /admin/change-password and /contributor/change-password — the
@@ -8,6 +9,7 @@ import { supabase } from "@/lib/supabaseClient";
 // updates on an already-authenticated session), so this re-authenticates
 // with signInWithPassword first and only proceeds if that succeeds.
 export function ChangePasswordForm() {
+  const pathname = usePathname();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
@@ -67,7 +69,9 @@ export function ChangePasswordForm() {
       setError("Not signed in.");
       return;
     }
-    const { error } = await supabase.auth.resetPasswordForEmail(email);
+    const section = pathname?.startsWith("/contributor") ? "contributor" : "admin";
+    const redirectTo = `${window.location.origin}/${section}/set-password`;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
     if (error) {
       setError(error.message);
       return;

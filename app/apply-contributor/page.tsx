@@ -41,7 +41,11 @@ export default function ApplyContributorPage() {
     // exists right away (so login/password-reset work normally), but the
     // /contributor dashboard stays locked behind `status = 'pending'` until
     // an admin approves the application below.
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({ email, password });
+    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo: `${window.location.origin}/contributor/login` },
+    });
     if (signUpError || !signUpData.user) {
       setLoading(false);
       setError(signUpError?.message ?? "Sign up failed.");

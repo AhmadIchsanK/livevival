@@ -42,6 +42,7 @@ export default function ContributorRequestsPage() {
   const [editRequests, setEditRequests] = useState<EditRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [adminId, setAdminId] = useState<string | null>(null);
 
   async function load() {
@@ -75,6 +76,7 @@ export default function ContributorRequestsPage() {
 
   async function decideApplication(id: string, status: "approved" | "rejected") {
     const note = status === "rejected" ? prompt("Optional rejection note:") ?? undefined : undefined;
+    const application = applications.find((a) => a.id === id);
     const { error } = await supabase
       .from("contributors")
       .update({ status, decided_at: new Date().toISOString(), decided_by: adminId, decision_note: note ?? null })
@@ -83,6 +85,21 @@ export default function ContributorRequestsPage() {
       setError(error.message);
       return;
     }
+
+    if (application) {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (token) {
+        const res = await fetch("/api/admin/notify-contributor-decision", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ email: application.email, name: application.name, status, note }),
+        });
+        const notifyBody = await res.json().catch(() => ({}));
+        if (!notifyBody.sent) setNotice(notifyBody.error ?? "Decision saved — email not sent.");
+      }
+    }
+
     load();
   }
 
@@ -194,6 +211,7 @@ export default function ContributorRequestsPage() {
     <div className="text-white space-y-10 max-w-4xl">
       <h1 className="text-xl font-semibold">Contributor Requests</h1>
       {error && <p className="text-sm text-red-400">{error}</p>}
+      {notice && <p className="text-sm text-white/50">{notice}</p>}
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-white/50">Applications</h2>

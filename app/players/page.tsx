@@ -1,24 +1,42 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
+import { PlayerCountryFlag } from "@/components/PlayerCountryFlag";
+import { PlayerLinks } from "@/components/PlayerLinks";
+import { countryCodeToFlagEmoji, countryCodeToName } from "@/lib/countryFlag";
 
 type Player = {
   id: string;
   ign: string;
   role: string | null;
   photo_url: string | null;
+  real_name: string | null;
+  country_codes: string[] | null;
+  links: Record<string, string> | null;
   team: { id: string; name: string; logo_url: string | null } | null;
 };
 type SortKey = "name_asc" | "name_desc" | "team_asc";
 
 export default function PlayersIndexPage() {
+  return (
+    <Suspense fallback={null}>
+      <PlayersIndexPageInner />
+    </Suspense>
+  );
+}
+
+function PlayersIndexPageInner() {
+  const searchParams = useSearchParams();
   const [players, setPlayers] = useState<Player[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  // Seeded from ?q= — the home page's global search links here with a term
+  // already typed, so it should show up pre-filled, not require retyping.
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [roleFilter, setRoleFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
   const [preview, setPreview] = useState<Player | null>(null);
@@ -27,7 +45,7 @@ export default function PlayersIndexPage() {
     async function load() {
       const { data } = await supabase
         .from("players")
-        .select("id, ign, role, photo_url, team:teams(id, name, logo_url)")
+        .select("id, ign, role, photo_url, real_name, country_codes, links, team:teams(id, name, logo_url)")
         .order("ign");
       setPlayers((data as unknown as Player[]) ?? []);
       setLoading(false);
@@ -109,8 +127,19 @@ export default function PlayersIndexPage() {
               onClick={() => setPreview(p)}
               className="lv-card flex flex-col items-center gap-2 px-3 py-4 text-center hover:border-signal/40 transition-colors"
             >
-              <TeamLogo url={p.photo_url} size="md" />
+              <div className="relative">
+                <TeamLogo url={p.photo_url} size="md" />
+                {p.country_codes && p.country_codes.length > 0 && (
+                  <span
+                    className="absolute -bottom-1 -right-1 text-sm leading-none bg-ink rounded-full px-0.5"
+                    title={p.country_codes.map(countryCodeToName).join(" / ")}
+                  >
+                    {p.country_codes.map(countryCodeToFlagEmoji).join("")}
+                  </span>
+                )}
+              </div>
               <p className="font-semibold text-sm leading-tight">{p.ign}</p>
+              {p.real_name && <p className="text-[10px] text-white/40 truncate max-w-full">{p.real_name}</p>}
               {p.role && <p className="text-[10px] text-white/40 uppercase tracking-wide">{p.role}</p>}
               {p.team && (
                 <div className="flex items-center gap-1.5 mt-1">
@@ -118,6 +147,7 @@ export default function PlayersIndexPage() {
                   <span className="text-xs text-white/60 truncate">{p.team.name}</span>
                 </div>
               )}
+              {p.links && Object.keys(p.links).length > 0 && <PlayerLinks links={p.links} className="justify-center" />}
             </button>
           ))}
           {visible.length === 0 && <p className="text-white/30 text-sm col-span-full">No players match.</p>}
@@ -125,13 +155,15 @@ export default function PlayersIndexPage() {
       )}
 
       {/* Inline preview instead of navigating anywhere — there's no
-          dedicated player page to link to, and a photo/name/team/role
-          summary is all this data supports today. */}
+          dedicated player page to link to, and a photo/name/team/role/
+          nationality/links summary is all this data supports today. */}
       {preview && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
           <div className="max-w-xs w-full lv-card flex flex-col items-center gap-3 p-6 text-center" onClick={(e) => e.stopPropagation()}>
             <TeamLogo url={preview.photo_url} size="xl" />
             <p className="font-display font-light text-xl">{preview.ign}</p>
+            {preview.real_name && <p className="text-xs text-white/50">{preview.real_name}</p>}
+            <PlayerCountryFlag codes={preview.country_codes} />
             {preview.role && <p className="text-xs text-white/40 uppercase tracking-wide">{preview.role}</p>}
             {preview.team && (
               <div className="flex items-center gap-2 mt-1">
@@ -139,6 +171,7 @@ export default function PlayersIndexPage() {
                 <span className="text-sm text-white/60">{preview.team.name}</span>
               </div>
             )}
+            <PlayerLinks links={preview.links} className="justify-center" />
             <button
               onClick={() => setPreview(null)}
               className="mt-2 px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5 text-xs"

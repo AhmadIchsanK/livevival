@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { broadcastToSlack } from "@/lib/slack";
 
 // Admin-triggered Telegram posts — the pieces the always-on worker can't
 // automate on its own: draft recaps and key moments for matches on
@@ -37,6 +38,11 @@ export async function POST(req: NextRequest) {
   if (!message || typeof message !== "string") {
     return NextResponse.json({ error: "Missing message" }, { status: 400 });
   }
+  // Screenshot capture (moment screenshots, game screenshots) passes its
+  // uploaded Storage URL here so the image reaches Telegram the same way
+  // every other auto-notification does, instead of screenshots and
+  // Telegram staying two disjoint systems.
+  const photoUrl: string | undefined = body?.photoUrl;
 
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -47,16 +53,27 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "HTML" }),
-  });
+  const res = photoUrl
+    ? await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, photo: photoUrl, caption: message, parse_mode: "HTML" }),
+      })
+    : await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: message, parse_mode: "HTML" }),
+      });
 
   if (!res.ok) {
     const errText = await res.text();
     return NextResponse.json({ error: `Telegram API error: ${errText}` }, { status: 502 });
   }
+
+  // Best-effort mirror — every Telegram post also goes to Slack (channel +
+  // any DM-opted-in user) when SLACK_BOT_TOKEN/SLACK_CHANNEL_ID are set.
+  // Never blocks or fails this response on Slack's account.
+  broadcastToSlack(message, photoUrl).catch(() => {});
 
   // entityType/entityId/notificationType are optional — only passed when
   // the caller wants this specific post logged against

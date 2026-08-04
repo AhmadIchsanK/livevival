@@ -199,6 +199,9 @@ exception when duplicate_object then null; end $$;
 alter table key_moments add column if not exists confidence numeric;
 alter table key_moments add column if not exists screenshot_url text;
 alter table key_moments add column if not exists stream_timestamp_seconds int;
+alter table key_moments add column if not exists team_id uuid references teams(id);
+alter table key_moments add column if not exists is_key_moment boolean;
+alter table key_moments add column if not exists second_mark int;
 
 -- Backfill match_id on any pre-existing rows so the dedup index and the
 -- public match page's match_id-based queries work for older data too.
@@ -207,9 +210,14 @@ set match_id = g.match_id
 from games g
 where km.game_id = g.id and km.match_id is null;
 
+-- Picks/bans are excluded from the dedup key: minute_mark is always 0
+-- during Draft (no game clock runs yet), so keying on it would let only
+-- one auto pick and one auto ban through per game. hero_picks_bans already
+-- has its own dedup, so mirroring every one of them here is intentional,
+-- not a re-detection to guard against.
 create unique index if not exists key_moments_dedup
   on key_moments (game_id, type, minute_mark)
-  where source = 'auto';
+  where source = 'auto' and type not in ('pick', 'ban');
 
 -- ── Vision detection log (brand new table) ──
 
@@ -298,6 +306,17 @@ create unique index if not exists capture_regions_match_field_key on capture_reg
 
 alter table players add column if not exists liquipedia_slug text unique;
 
+-- Fields sourced from each player's Liquipedia profile
+-- (https://liquipedia.net/mobilelegends/All_Players and their individual
+-- pages) for the players-table rebuild: real name, nationality (up to two
+-- country codes per the site-owner's own "2 country code as indicator"
+-- spec — Liquipedia lists dual nationality for some players), and social
+-- links as a flexible platform->url map rather than fixed columns since
+-- the set of platforms varies per player.
+alter table players add column if not exists real_name text;
+alter table players add column if not exists country_codes text[];
+alter table players add column if not exists links jsonb;
+
 -- ── RLS: heroes/tournament_results/capture_regions were created above
 -- without it, leaving them fully open to anon/authenticated via the REST
 -- API (flagged by Supabase's advisors). Public site reads heroes and
@@ -325,3 +344,14 @@ exception when duplicate_object then null; end $$;
 do $$ begin
   create policy "capture_regions_admin_only" on capture_regions for all to authenticated using (is_admin()) with check (is_admin());
 exception when duplicate_object then null; end $$;
+
+-- ── Slack DM opt-in/out (brand new table) ──
+
+create table if not exists slack_dm_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  slack_user_id text not null unique,
+  enabled boolean not null default true,
+  updated_at timestamptz not null default now()
+);
+
+alter table slack_dm_subscriptions enable row level security;

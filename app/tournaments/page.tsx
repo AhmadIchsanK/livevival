@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { TeamLogo } from "@/components/TeamLogo";
@@ -60,10 +61,19 @@ type SortKey = "date_desc" | "date_asc" | "name";
 const COMPLETED_DEFAULT_COUNT = 8;
 
 export default function TournamentsIndexPage() {
+  return (
+    <Suspense fallback={null}>
+      <TournamentsIndexPageInner />
+    </Suspense>
+  );
+}
+
+function TournamentsIndexPageInner() {
+  const searchParams = useSearchParams();
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [matchStatuses, setMatchStatuses] = useState<MatchStatus[]>([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [tierFilter, setTierFilter] = useState<"" | "S" | "A">("");
   const [sortKey, setSortKey] = useState<SortKey>("date_desc");
   const [showAllCompleted, setShowAllCompleted] = useState(false);

@@ -234,9 +234,13 @@ async function importMatchDetail(tournament, m) {
   );
 }
 
-export async function syncTournamentFinishedMatches(tournament) {
-  const html = await fetchRenderedPage(tournament.liquipedia_slug);
-  const $ = cheerio.load(html);
+// Accepts an optional pre-fetched `html` for the same reason documented on
+// syncTournamentSchedule in scheduleSync.mjs — index.mjs fetches each
+// tournament's page once per tick and passes it to both sync functions
+// instead of each one independently re-fetching the identical page.
+export async function syncTournamentFinishedMatches(tournament, html) {
+  const pageHtml = html ?? (await fetchRenderedPage(tournament.liquipedia_slug));
+  const $ = cheerio.load(pageHtml);
   const finished = extractFinishedMatches($);
   for (const m of finished) {
     await importMatchDetail(tournament, m);

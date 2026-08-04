@@ -3,6 +3,7 @@ import { supabase, config } from "./config.mjs";
 import { syncTournamentSchedule } from "./scheduleSync.mjs";
 import { syncTournamentFinishedMatches } from "./finishedMatchSync.mjs";
 import { maybeFillMissingVodsFromYoutube } from "./youtubeVodFallback.mjs";
+import { fetchRenderedPage } from "./liquipediaClient.mjs";
 
 // Always-on replacement for the 10-minute refresh-imminent-matches GitHub
 // Action: GitHub Actions cron cannot run faster than ~5 minutes, so getting
@@ -71,8 +72,16 @@ async function tick() {
 
   for (const tournament of due) {
     try {
-      await syncTournamentSchedule(tournament);
-      await syncTournamentFinishedMatches(tournament);
+      // Both syncs parse the SAME tournament page — fetch it once here and
+      // hand it to both instead of each one independently calling
+      // fetchRenderedPage, which was silently doubling this process's
+      // request volume against Liquipedia every tick for no benefit (the
+      // page can't have changed between the two calls, they run back to
+      // back). Production logs showed ~20 successful ticks (~2 requests
+      // each) before a 429; this halves that request count per tick.
+      const html = await fetchRenderedPage(tournament.liquipedia_slug);
+      await syncTournamentSchedule(tournament, html);
+      await syncTournamentFinishedMatches(tournament, html);
     } catch (err) {
       console.error(`Failed polling ${tournament.name}:`, err.message);
       if (err.message.includes("429")) {

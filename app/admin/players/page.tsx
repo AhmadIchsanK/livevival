@@ -92,6 +92,23 @@ export default function PlayersPage() {
     setLoading(true);
     setError(null);
 
+    // Check for an existing (team, ign) row first — a DB-level unique
+    // index now backstops this too (confirmed ~800 duplicate rows existed
+    // in production before that index existed, all identical (team_id,
+    // ign) pairs), but a friendly inline message beats a raw constraint
+    // error surfacing here.
+    const { data: existing } = await supabase
+      .from("players")
+      .select("id")
+      .eq("team_id", teamId || null)
+      .ilike("ign", ign)
+      .maybeSingle();
+    if (existing) {
+      setLoading(false);
+      setError(`"${ign}" already exists on this team.`);
+      return;
+    }
+
     const { error } = await supabase.from("players").insert({ ign, role: role || null, team_id: teamId || null });
     setLoading(false);
     if (error) {

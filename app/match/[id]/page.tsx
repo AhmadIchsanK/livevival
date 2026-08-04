@@ -171,9 +171,9 @@ export default function PublicMatchPage() {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [watchingNow, setWatchingNow] = useState(1);
   const [recapRatio, setRecapRatio] = useState<"portrait" | "landscape">("portrait");
-  const [recapMode, setRecapMode] = useState<"simple" | "advanced">("simple");
   const [copied, setCopied] = useState(false);
   const [recapPreviewOpen, setRecapPreviewOpen] = useState(false);
+  const [screenshotPreview, setScreenshotPreview] = useState<Screenshot | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
 
   useEffect(() => {
@@ -492,14 +492,6 @@ export default function PublicMatchPage() {
     seriesWinnerTeamId === teamAId ? match.team_a?.name : seriesWinnerTeamId === teamBId ? match.team_b?.name : null;
 
   const gameNumberById = new Map(games.map((g) => [g.id, g.game_number]));
-  const recapKeyMomentLines = keyMoments
-    .filter((km) => km.type === "savage" || km.type === "maniac")
-    .map((km) => {
-      const label = km.type === "savage" ? "Savage" : "Maniac";
-      const gameNumber = gameNumberById.get(km.game_id);
-      const who = km.player?.ign ?? "A player";
-      return `${who} got a ${label}${gameNumber ? ` in Game ${gameNumber}` : ""}`;
-    });
 
   // navigator.share() triggers the OS share sheet — the only way a browser
   // reaches WhatsApp/Telegram/Threads/X/IG/FB/etc. directly, since there's
@@ -521,7 +513,7 @@ export default function PublicMatchPage() {
     // no fallback double-prompt afterward.
     if (typeof navigator.canShare === "function") {
       try {
-        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}&mode=${recapMode}`);
+        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}`);
         const blob = await res.blob();
         const file = new File([blob], "livevival-recap.png", { type: "image/png" });
         if (navigator.canShare({ files: [file] })) {
@@ -551,6 +543,43 @@ export default function PublicMatchPage() {
     await navigator.clipboard.writeText(window.location.href);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  }
+
+  // Same "attach the actual image, fall back to a link" pattern as
+  // handleShare above — the screenshot itself already has the Livevival
+  // watermark + match/tournament caption baked in at capture time
+  // (app/admin/matches/[id]/live/page.tsx's drawWatermark), so sharing the
+  // image file is what actually carries that branding along with it.
+  async function handleShareScreenshot(s: Screenshot) {
+    const shareTitle = `${match?.team_a?.name} vs ${match?.team_b?.name} — Livevival`;
+    if (typeof navigator.canShare === "function") {
+      try {
+        const res = await fetch(s.image_url);
+        const blob = await res.blob();
+        const file = new File([blob], "livevival-screenshot.jpg", { type: blob.type || "image/jpeg" });
+        if (navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({ title: shareTitle, files: [file] });
+          } catch {
+            // User cancelled the share sheet — not an error worth surfacing.
+          }
+          return;
+        }
+      } catch {
+        // Image fetch failed — fall through to a plain link share instead.
+      }
+    }
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: shareTitle, url: s.image_url });
+      } catch {
+        // User cancelled the share sheet — not an error worth surfacing.
+      }
+    } else {
+      await navigator.clipboard.writeText(s.image_url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   }
 
   return (
@@ -1054,10 +1083,21 @@ export default function PublicMatchPage() {
         <div className="flex flex-wrap gap-3">
           {gameScreenshots.map((s) => (
             <div key={s.id} className="w-48 space-y-1 lv-card-flush p-2">
-              <a href={s.image_url} target="_blank" rel="noopener noreferrer">
+              {/* Opens the same preview/download/share flow as the recap
+                  card below (rather than a bare new tab) — each frame
+                  already carries a Livevival watermark + match/tournament
+                  caption baked in at capture time, so sharing it the same
+                  way the recap does is what actually gets that branding
+                  in front of anyone who reposts it. */}
+              <button
+                type="button"
+                onClick={() => setScreenshotPreview(s)}
+                className="block w-full hover:opacity-90 transition-opacity"
+                title="Click to preview full size"
+              >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
-              </a>
+              </button>
               <div className="flex items-center justify-between gap-2">
                 <p className="text-[10px] text-white/40">
                   {s.in_game_time ? `${s.in_game_time} in-game` : ""}
@@ -1077,6 +1117,39 @@ export default function PublicMatchPage() {
       </>
       )}
 
+      {screenshotPreview && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setScreenshotPreview(null)}
+        >
+          <div className="max-w-lg w-full flex flex-col items-center gap-4" onClick={(e) => e.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={screenshotPreview.image_url} alt="Screenshot preview" className="w-full rounded lv-card-flush" />
+            <div className="flex flex-wrap gap-2 justify-center">
+              <a
+                href={screenshotPreview.image_url}
+                download
+                className="lv-btn-primary inline-block !text-xs !py-1.5"
+              >
+                Download
+              </a>
+              <button
+                onClick={() => handleShareScreenshot(screenshotPreview)}
+                className="lv-btn-primary inline-block !text-xs !py-1.5 !bg-white/10 !text-white"
+              >
+                Share ↗
+              </button>
+              <button
+                onClick={() => setScreenshotPreview(null)}
+                className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {match.status === "finished" && (
         <section>
           <h2 className="lv-heading mb-2">Share recap</h2>
@@ -1090,7 +1163,7 @@ export default function PublicMatchPage() {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+                src={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
                 alt="Match recap card"
                 className="w-full rounded"
               />
@@ -1109,22 +1182,9 @@ export default function PublicMatchPage() {
                   </button>
                 ))}
               </div>
-              <div className="flex gap-2">
-                {(["simple", "advanced"] as const).map((m) => (
-                  <button
-                    key={m}
-                    onClick={() => setRecapMode(m)}
-                    className={`px-3 py-1.5 rounded border capitalize ${
-                      recapMode === m ? "border-signal text-signal" : "border-white/10 text-white/50 hover:bg-white/5"
-                    }`}
-                  >
-                    {m}
-                  </button>
-                ))}
-              </div>
               <div className="flex flex-wrap gap-2">
                 <a
-                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
                   download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
                   className="lv-btn-primary inline-block !text-xs !py-1.5"
                 >
@@ -1137,13 +1197,6 @@ export default function PublicMatchPage() {
                   {copied ? "Copied!" : "Copy link"}
                 </button>
               </div>
-              {recapMode === "advanced" && recapKeyMomentLines.length > 0 && (
-                <div className="space-y-0.5 pt-1">
-                  {recapKeyMomentLines.map((line, i) => (
-                    <p key={i} className="text-white/50">🔥 {line}</p>
-                  ))}
-                </div>
-              )}
             </div>
           </div>
         </section>
@@ -1157,13 +1210,13 @@ export default function PublicMatchPage() {
           <div className="max-w-lg w-full flex flex-col items-center gap-4" onClick={(e) => e.stopPropagation()}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+              src={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
               alt="Match recap card preview"
               className="w-full rounded lv-card-flush"
             />
             <div className="flex flex-wrap gap-2 justify-center">
               <a
-                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&mode=${recapMode}`}
+                href={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
                 download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
                 className="lv-btn-primary inline-block !text-xs !py-1.5"
               >

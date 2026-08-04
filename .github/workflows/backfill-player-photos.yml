@@ -1,0 +1,26 @@
+name: Backfill player photos (one-time)
+
+# Manual-only, no schedule — two-phase backfill (see
+# scripts/backfill-player-photos.mjs): first captures each rostered
+# player's own Liquipedia page slug (piggybacking on the existing
+# team-roster fetch), then fetches each newly-slugged player's own page
+# for their infobox photo. Safe to re-run; only ever touches players still
+# missing a slug or a photo, so a run cut short by a sustained Liquipedia
+# throttle window just gets mopped up on the next trigger.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/backfill-player-photos.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

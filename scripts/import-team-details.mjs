@@ -60,14 +60,14 @@ function normalizeRole(raw) {
   return null;
 }
 
-function extractLogoUrl($) {
+export function extractLogoUrl($) {
   let src = $(".infobox-image.lightmode img").first().attr("src");
   if (!src) src = $(".infobox-image img").first().attr("src");
   if (!src) return null;
   return src.startsWith("http") ? src : `https://liquipedia.net${src}`;
 }
 
-function extractActiveRoster($) {
+export function extractActiveRoster($) {
   const heading = $("h3#Active, h2#Active").first();
   if (heading.length === 0) return [];
   const table = heading
@@ -94,7 +94,19 @@ function extractActiveRoster($) {
     const ign = $link.text().trim() || $link.attr("title")?.replace(/\s*\(page does not exist\)\s*$/i, "").trim();
     if (!ign) return;
     const roleRaw = $(cells[positionIdx]).text().trim();
-    players.push({ ign, role: normalizeRole(roleRaw) });
+    // The roster link's href is that player's own Liquipedia page slug
+    // when one exists (a red link — no individual page — has no href at
+    // all, or points to index.php?...&redlink=1, neither of which is a
+    // usable slug). Stashing it here means backfill-player-photos.mjs can
+    // fetch each player's own infobox portrait later without an extra
+    // categorymembers-style discovery pass — one fetch per team (already
+    // happening) captures every rostered player's slug at zero extra cost.
+    const href = $link.attr("href");
+    const slug =
+      href && href.startsWith("/mobilelegends/") && !href.includes("redlink=1")
+        ? decodeURIComponent(href.replace(/^\/mobilelegends\//, ""))
+        : null;
+    players.push({ ign, role: normalizeRole(roleRaw), slug });
   });
   return players;
 }
@@ -104,18 +116,18 @@ function extractActiveRoster($) {
 // e.g. "ONIC Esports" redirecting to "ONIC"). Returns null if the page
 // genuinely doesn't exist under that slug, so the caller can skip cleanly
 // instead of importing from an empty response.
-async function fetchTeamPage(slug, attempt = 1) {
-  const data = await apiQuery({ action: "parse", page: slug, prop: "text", redirects: "1" }, attempt);
+export async function fetchTeamPage(slug, attempt = 1, maxRetries) {
+  const data = await apiQuery({ action: "parse", page: slug, prop: "text", redirects: "1" }, attempt, maxRetries);
   if (data.error) return null;
   const html = data.parse?.text?.["*"];
   if (!html) return null;
   return { html, canonicalTitle: data.parse?.title ?? slug };
 }
 
-async function upsertPlayerRole(teamId, ign, role) {
+export async function upsertPlayerRole(teamId, ign, role, slug) {
   const { data: existing, error: lookupError } = await supabase
     .from("players")
-    .select("id, role")
+    .select("id, role, liquipedia_slug")
     .eq("team_id", teamId)
     .ilike("ign", ign)
     .maybeSingle();
@@ -125,15 +137,20 @@ async function upsertPlayerRole(teamId, ign, role) {
   }
 
   if (existing) {
-    // Never clobber a role an admin already set manually.
-    if (!existing.role && role) {
-      const { error } = await supabase.from("players").update({ role }).eq("id", existing.id);
-      if (error) console.error(`Failed to backfill role for "${ign}":`, error.message);
+    // Never clobber a role an admin already set manually. liquipedia_slug
+    // is scraper-only (nothing else ever writes it), so it's always safe
+    // to backfill once missing.
+    const update = {};
+    if (!existing.role && role) update.role = role;
+    if (!existing.liquipedia_slug && slug) update.liquipedia_slug = slug;
+    if (Object.keys(update).length > 0) {
+      const { error } = await supabase.from("players").update(update).eq("id", existing.id);
+      if (error) console.error(`Failed to backfill "${ign}":`, error.message);
     }
     return;
   }
 
-  const { error } = await supabase.from("players").insert({ ign, role, team_id: teamId });
+  const { error } = await supabase.from("players").insert({ ign, role, team_id: teamId, liquipedia_slug: slug });
   if (error && !error.message.includes("duplicate key")) {
     console.error(`Failed to add player "${ign}":`, error.message);
   }
@@ -160,7 +177,7 @@ async function importTeam(team) {
   }
 
   for (const p of roster) {
-    await upsertPlayerRole(team.id, p.ign, p.role);
+    await upsertPlayerRole(team.id, p.ign, p.role, p.slug);
   }
 
   console.log(`${team.name}: ${logoUrl ? "logo found" : "no logo"}, ${roster.length} active roster row(s)`);
@@ -193,7 +210,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Guarded so backfill-player-photos.mjs can import fetchTeamPage/
+// extractActiveRoster/upsertPlayerRole above without triggering a full
+// 301-team scrape as an import side effect.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

@@ -12,7 +12,6 @@ const INK = "#0A0A0A";
 const SIGNAL = "#E31E2A";
 
 type Ratio = "portrait" | "landscape";
-type Mode = "simple" | "advanced";
 type CardMatch = {
   format: string | null;
   series_winner_team_id: string | null;
@@ -37,23 +36,35 @@ function dims(ratio: Ratio) {
   return ratio === "portrait" ? { width: 1080, height: 1920 } : { width: 1920, height: 1080 };
 }
 
+// Small angled accent ticks flanking a section title — Satori supports
+// `transform`, so this reproduces the slanted red mark motif from the
+// reference designs without needing a licensed icon asset.
+function tickMarks(scale: number) {
+  const tick = (
+    <div
+      style={{
+        display: "flex",
+        width: 14 * scale,
+        height: 4 * scale,
+        background: SIGNAL,
+        transform: "skewX(-25deg)",
+      }}
+    />
+  );
+  return { left: tick, right: tick };
+}
+
 function renderCard({
   match,
   games,
   heroPicks,
-  mvpLine,
-  keyMomentLines,
   ratio,
-  mode,
   logoUrl,
 }: {
   match: CardMatch;
   games: CardGame[];
   heroPicks: CardHeroPick[];
-  mvpLine: string | null;
-  keyMomentLines: string[];
   ratio: Ratio;
-  mode: Mode;
   logoUrl: string;
 }) {
   const teamA = match.team_a;
@@ -61,87 +72,135 @@ function renderCard({
   const winsFor = (teamId?: string) => games.filter((g) => g.winner_team_id === teamId).length;
   const aWins = winsFor(teamA?.id);
   const bWins = winsFor(teamB?.id);
-  const winnerName =
-    match.series_winner_team_id === teamA?.id
-      ? teamA?.name
-      : match.series_winner_team_id === teamB?.id
-      ? teamB?.name
-      : aWins > bWins
-      ? teamA?.name
-      : bWins > aWins
-      ? teamB?.name
-      : null;
+  const winnerId =
+    match.series_winner_team_id ?? (aWins > bWins ? teamA?.id : bWins > aWins ? teamB?.id : null) ?? null;
 
   const { width, height } = dims(ratio);
   const scale = width / 1080;
   const teamAPicks = heroPicks.filter((p) => p.team_id === teamA?.id);
   const teamBPicks = heroPicks.filter((p) => p.team_id === teamB?.id);
   const isLandscape = ratio === "landscape";
+  const ticks = tickMarks(scale);
 
-  // Redesign: hero picks now sit inside a chip (subtle card background,
-  // rounded, bordered) instead of floating bare on the arena-glow
-  // background — same "icon everywhere, name advanced-only" behavior as
-  // before (fixes "hero image doesn't show" for the simple card), but the
-  // chip gives each pick some visual weight instead of reading as loose
-  // text/icons scattered on empty space.
-  const heroPickRow = (name: string | undefined, picks: CardHeroPick[]) => (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 * scale }}>
-      {mode === "advanced" && (
-        <span style={{ fontSize: 16 * scale, color: "#ffffff55", textTransform: "uppercase", letterSpacing: 1 }}>{name}</span>
-      )}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 * scale }}>
-        {picks.length === 0 && <span style={{ fontSize: 20 * scale, color: "#ffffff40" }}>—</span>}
-        {picks.map((p, j) => (
-          <div
-            key={j}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10 * scale,
-              background: "#ffffff0d",
-              border: "1px solid #ffffff1f",
-              borderRadius: 14 * scale,
-              padding: `${8 * scale}px ${mode === "advanced" ? 16 * scale : 10 * scale}px`,
-            }}
-          >
-            {p.icon_url && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={p.icon_url} alt="" width={60 * scale} height={60 * scale} style={{ borderRadius: 999, objectFit: "cover", border: "2px solid #ffffff33" }} />
-            )}
-            {mode === "advanced" && <span style={{ fontSize: 20 * scale, color: "#ffffffdd", fontWeight: 600 }}>{p.hero_name}</span>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
-  // Bigger, poster-scale logos than before (168 vs 140) — the biggest
-  // single leverage point for "less empty space" was the logo boxes
-  // themselves, since a match recap is fundamentally "two team crests and
-  // a score." A losing side gets a subtle desaturating dim (opacity) so
-  // the winner reads as the clear focal point without needing extra text.
-  const teamBlock = (team: CardMatch["team_a"], wins: number, isWinner: boolean, hasWinner: boolean) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 * scale, flex: 1, opacity: hasWinner && !isWinner ? 0.55 : 1 }}>
+  // Every hero portrait sits on a light plate with a signal-colored ring —
+  // the same "logo/icon always gets a backing box" rule used everywhere
+  // else on the site (components/TeamLogo.tsx). That component samples the
+  // actual image's luminance client-side to decide light-vs-dark backing;
+  // Satori's edge renderer has no canvas/pixel access to replicate that
+  // here, so this always uses a light plate, which reads correctly for the
+  // overwhelming majority of real team/hero art (dark or colorful icons on
+  // white) at the cost of not inverting for the rare near-white logo.
+  const heroPortrait = (p: CardHeroPick, i: number) => (
+    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 * scale, width: 92 * scale }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 168 * scale,
-          height: 168 * scale,
-          borderRadius: 32 * scale,
-          background: isWinner ? `${SIGNAL}1f` : "#ffffff14",
-          border: `${isWinner ? 5 : 1}px solid ${isWinner ? SIGNAL : "#ffffff22"}`,
-          padding: 18 * scale,
-          boxShadow: isWinner ? `0 0 ${64 * scale}px ${SIGNAL}55` : "none",
+          width: 84 * scale,
+          height: 84 * scale,
+          borderRadius: 999,
+          background: "#f5f5f5",
+          border: `3px solid ${SIGNAL}`,
+          overflow: "hidden",
         }}
       >
-        {team?.logo_url && (
+        {p.icon_url && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={team.logo_url} alt="" width={124 * scale} height={124 * scale} style={{ objectFit: "contain" }} />
+          <img src={p.icon_url} alt="" width={84 * scale} height={84 * scale} style={{ objectFit: "cover" }} />
         )}
       </div>
-      <span style={{ fontSize: 34 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
+      <span
+        style={{
+          fontSize: 15 * scale,
+          fontWeight: 600,
+          color: "#ffffffdd",
+          textAlign: "center",
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+        }}
+      >
+        {p.hero_name}
+      </span>
+    </div>
+  );
+
+  const teamPickColumn = (name: string | undefined, picks: CardHeroPick[]) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 * scale, flex: 1 }}>
+      {/* Angled ribbon tag — both teams get the same signal-red treatment,
+          matching both reference designs (neither singles out one side). */}
+      <div
+        style={{
+          display: "flex",
+          alignSelf: "flex-start",
+          background: SIGNAL,
+          padding: `${6 * scale}px ${18 * scale}px`,
+          transform: "skewX(-12deg)",
+        }}
+      >
+        <span
+          style={{
+            display: "flex",
+            transform: "skewX(12deg)",
+            fontSize: 18 * scale,
+            fontWeight: 700,
+            color: "#ffffff",
+            textTransform: "uppercase",
+            letterSpacing: 1,
+          }}
+        >
+          {name ?? "TBD"}
+        </span>
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14 * scale }}>
+        {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
+      </div>
+    </div>
+  );
+
+  const finalPicksBlock = (teamAPicks.length > 0 || teamBPicks.length > 0) && (
+    <div style={{ display: "flex", flexDirection: "column", gap: 22 * scale }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14 * scale }}>
+        {ticks.left}
+        <span style={{ fontSize: 20 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks</span>
+        {ticks.right}
+      </div>
+      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", gap: isLandscape ? 40 * scale : 26 * scale }}>
+        {teamPickColumn(teamA?.name, teamAPicks)}
+        {teamPickColumn(teamB?.name, teamBPicks)}
+      </div>
+    </div>
+  );
+
+  // Boxed team logo (square, light-plate backing per the note above) with
+  // the name below and a per-team winner pill, matching the portrait
+  // reference exactly — the landscape reference's single centered trophy
+  // is a cosmetic variant of the same information, and a per-team badge
+  // reads unambiguously at any size, so it's used for both ratios.
+  const teamBox = (team: CardMatch["team_a"], wins: number, isWinner: boolean, hasWinner: boolean) => (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale, flex: 1, opacity: hasWinner && !isWinner ? 0.55 : 1 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 176 * scale,
+          height: 176 * scale,
+          borderRadius: 28 * scale,
+          background: "#f5f5f5",
+          border: `${isWinner ? 6 : 2}px solid ${isWinner ? SIGNAL : "#ffffff2a"}`,
+          padding: 20 * scale,
+          boxShadow: isWinner ? `0 0 ${64 * scale}px ${SIGNAL}66` : "none",
+        }}
+      >
+        {team?.logo_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={team.logo_url} alt="" width={132 * scale} height={132 * scale} style={{ objectFit: "contain" }} />
+        ) : (
+          <span style={{ fontSize: 48 * scale, fontWeight: 700, color: INK }}>{(team?.name ?? "?").slice(0, 2).toUpperCase()}</span>
+        )}
+      </div>
+      <span style={{ fontSize: 32 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
         {team?.name ?? "TBD"}
       </span>
       {isWinner && (
@@ -167,87 +226,19 @@ function renderCard({
     </div>
   );
 
-  // Score dominates the frame now (140px, up from 96) — a match recap's
-  // single most-scanned number gets the most visual weight, with the
-  // tournament line demoted to a small eyebrow above the two crests
-  // instead of competing with the score for top billing.
-  const scoreHeader = (
+  const scoreBar = (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 24 * scale }}>
       <span style={{ fontSize: 20 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 3, textAlign: "center" }}>
         {match.tournament?.name ?? ""} {match.format ? `· ${match.format}` : ""}
       </span>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 40 * scale, width: "100%" }}>
-        {teamBlock(teamA, aWins, winnerName === teamA?.name, Boolean(winnerName))}
+        {teamBox(teamA, aWins, winnerId === teamA?.id, Boolean(winnerId))}
         <div style={{ display: "flex", alignItems: "center", gap: 24 * scale, fontSize: 140 * scale, fontWeight: 700, lineHeight: 1 }}>
-          <span style={{ color: winnerName === teamA?.name ? SIGNAL : "#ffffff" }}>{aWins}</span>
+          <span style={{ color: winnerId === teamA?.id ? SIGNAL : "#ffffff" }}>{aWins}</span>
           <span style={{ color: "#ffffff33", fontSize: 80 * scale }}>–</span>
-          <span style={{ color: winnerName === teamB?.name ? SIGNAL : "#ffffff" }}>{bWins}</span>
+          <span style={{ color: winnerId === teamB?.id ? SIGNAL : "#ffffff" }}>{bWins}</span>
         </div>
-        {teamBlock(teamB, bWins, winnerName === teamB?.name, Boolean(winnerName))}
-      </div>
-    </div>
-  );
-
-  const sectionLabel = (text: string) => (
-    <span style={{ fontSize: 16 * scale, color: "#ffffff55", textTransform: "uppercase", letterSpacing: 2 }}>{text}</span>
-  );
-
-  const heroPicksBlock = (teamAPicks.length > 0 || teamBPicks.length > 0) && (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 * scale }}>
-      {sectionLabel("Final game picks")}
-      <div style={{ display: "flex", flexDirection: isLandscape ? "column" : "row", flexWrap: "wrap", gap: 16 * scale }}>
-        {heroPickRow(teamA?.name, teamAPicks)}
-        {heroPickRow(teamB?.name, teamBPicks)}
-      </div>
-    </div>
-  );
-
-  // MVP as a highlighted stat card (signal-tinted chip) instead of plain
-  // text — gives the "top performer" callout the same visual treatment
-  // real esports broadcast graphics use for a standout stat.
-  const mvpBlock = mode === "advanced" && mvpLine && (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 * scale }}>
-      {sectionLabel("Top performer")}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10 * scale,
-          background: `${SIGNAL}14`,
-          border: `1px solid ${SIGNAL}40`,
-          borderRadius: 14 * scale,
-          padding: `${12 * scale}px ${18 * scale}px`,
-          width: "fit-content",
-        }}
-      >
-        <span style={{ fontSize: 24 * scale }}>⭐</span>
-        <span style={{ fontSize: 22 * scale, color: "#ffffffee", fontWeight: 600 }}>{mvpLine}</span>
-      </div>
-    </div>
-  );
-
-  const keyMomentsBlock = mode === "advanced" && keyMomentLines.length > 0 && (
-    <div style={{ display: "flex", flexDirection: "column", gap: 10 * scale }}>
-      {sectionLabel("Key moments")}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 * scale }}>
-        {keyMomentLines.map((line, i) => (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10 * scale,
-              background: "#ffffff0d",
-              border: "1px solid #ffffff1f",
-              borderRadius: 12 * scale,
-              padding: `${10 * scale}px ${16 * scale}px`,
-              width: "fit-content",
-            }}
-          >
-            <span style={{ fontSize: 20 * scale }}>🔥</span>
-            <span style={{ fontSize: 20 * scale, color: "#ffffffcc" }}>{line}</span>
-          </div>
-        ))}
+        {teamBox(teamB, bWins, winnerId === teamB?.id, Boolean(winnerId))}
       </div>
     </div>
   );
@@ -332,31 +323,17 @@ function renderCard({
                 sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={logoUrl} alt="Livevival" width={(isLandscape ? 168 : 142) * scale} height={(isLandscape ? 48 : 40) * scale} />
+            <span style={{ fontSize: 16 * scale, color: "#ffffff55", textTransform: "uppercase", letterSpacing: 3 }}>Match recap</span>
           </div>
 
-          {/* Landscape gets a genuine two-column recomposition (score left,
-              picks/MVP/moments right) instead of the portrait stack scaled
-              up uniformly — the latter left the wide frame looking sparse. */}
-          {isLandscape ? (
-            <div style={{ display: "flex", flexGrow: 1, alignItems: "center", gap: 56 * scale, marginTop: 24 * scale }}>
-              <div style={{ display: "flex", flex: 1 }}>{scoreHeader}</div>
-              {/* Centered, not top-aligned — in simple mode this column is
-                  only heroPicksBlock (mvp/keyMoments are advanced-only), so
-                  top-aligning it left a big empty lower half of the frame. */}
-              <div style={{ display: "flex", flexDirection: "column", justifyContent: "center", flex: 1, height: "100%", gap: 28 * scale }}>
-                {heroPicksBlock}
-                {mvpBlock}
-                {keyMomentsBlock}
-              </div>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, flexShrink: 1, flexBasis: 0, justifyContent: "center", gap: 24 * scale }}>
-              {scoreHeader}
-              {heroPicksBlock}
-              {mvpBlock}
-              {keyMomentsBlock}
-            </div>
-          )}
+          {/* Landscape gets a genuine two-column recomposition for the
+              picks (each team's 5 heroes as their own row, side by side)
+              instead of the portrait's stacked rows — matches the two
+              reference layouts rather than scaling one design uniformly. */}
+          <div style={{ display: "flex", flexDirection: "column", flexGrow: 1, justifyContent: "center", gap: isLandscape ? 48 * scale : 40 * scale, marginTop: 24 * scale }}>
+            {scoreBar}
+            {finalPicksBlock}
+          </div>
 
           <div
             style={{
@@ -369,7 +346,7 @@ function renderCard({
             }}
           >
             <span style={{ fontSize: 18 * scale, color: "#ffffff55", letterSpacing: 1 }}>livevival-sigma.vercel.app</span>
-            <span style={{ fontSize: 18 * scale, color: "#ffffff33", textTransform: "uppercase", letterSpacing: 2 }}>Match recap</span>
+            <span style={{ fontSize: 18 * scale, color: "#ffffff33", textTransform: "uppercase", letterSpacing: 2 }}>Esports live score</span>
           </div>
         </div>
       </div>
@@ -381,7 +358,6 @@ function renderCard({
 export async function GET(req: Request, { params }: { params: { matchId: string } }) {
   const { searchParams, origin } = new URL(req.url);
   const ratio: Ratio = searchParams.get("ratio") === "landscape" ? "landscape" : "portrait";
-  const mode: Mode = searchParams.get("mode") === "advanced" ? "advanced" : "simple";
   // Same-origin static asset — unlike Liquipedia's CDN this needs no proxy
   // and no hotlink-protection workaround, so it's safe to fetch at render
   // time even though it's still one network hop for the edge function.
@@ -416,14 +392,7 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     .order("game_number");
 
   let heroPicks: CardHeroPick[] = [];
-  let mvpLine: string | null = null;
-  let keyMomentLines: string[] = [];
 
-  // Hero picks now render in BOTH modes (icons only in simple, icons+names
-  // in advanced) — gating the fetch itself behind mode === "advanced" was
-  // why "the hero image still doesn't show" for anyone sharing the
-  // default (simple) card: the query never ran, so there was nothing to
-  // render regardless of the JSX below.
   if (games && games.length > 0) {
     const lastGameId = games[games.length - 1].id;
     const { data: picks } = await supabase
@@ -438,38 +407,11 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     });
   }
 
-  if (mode === "advanced") {
-    const { data: keyMoments } = await supabase
-      .from("key_moments")
-      .select("type, game:games(game_number), player:players(ign)")
-      .eq("match_id", params.matchId)
-      .in("type", ["savage", "maniac"]);
-    keyMomentLines = (keyMoments ?? []).map((km) => {
-      const game = Array.isArray(km.game) ? km.game[0] : km.game;
-      const player = Array.isArray(km.player) ? km.player[0] : km.player;
-      const label = km.type === "savage" ? "Savage" : "Maniac";
-      const who = player?.ign ?? "A player";
-      return `${who} got a ${label}${game?.game_number ? ` in Game ${game.game_number}` : ""}`;
-    });
-
-    const { data: stats } = await supabase
-      .from("player_stats")
-      .select("kills, deaths, assists, hero_name, player:players(ign)")
-      .eq("match_id", params.matchId);
-    const best = (stats ?? [])
-      .map((s) => ({ ...s, player: Array.isArray(s.player) ? s.player[0] : s.player, score: s.kills + s.assists - s.deaths }))
-      .sort((a, b) => b.score - a.score)[0];
-    if (best) mvpLine = `${best.player?.ign ?? "?"} (${best.hero_name ?? "?"}) — ${best.kills}/${best.deaths}/${best.assists}`;
-  }
-
   return renderCard({
     match: { format: match.format, series_winner_team_id: match.series_winner_team_id, tournament, team_a: teamA, team_b: teamB },
     games: games ?? [],
     heroPicks,
-    mvpLine,
-    keyMomentLines,
     ratio,
-    mode,
     logoUrl,
   });
 }

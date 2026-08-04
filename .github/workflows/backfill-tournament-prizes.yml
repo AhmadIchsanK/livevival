@@ -1,0 +1,23 @@
+name: Backfill tournament prize pools (one-time)
+
+# Manual-only, no schedule — re-scrapes the prizepool table for any
+# tournament whose stored placement rows all have a null prize_usd (see
+# scripts/backfill-tournament-prizes.mjs for the full root cause). Safe to
+# re-run; only ever touches tournaments still missing prize data.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/backfill-tournament-prizes.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

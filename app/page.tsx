@@ -240,19 +240,19 @@ function MonthCalendar({
   }
 
   return (
-    <div className="lv-card-flush p-3 w-full max-w-[260px]">
+    <div className="lv-card-flush border border-white/10 p-3 w-full max-w-[260px]">
       <div className="flex items-center justify-between mb-2">
-        <button onClick={() => setMonthOffset((v) => v - 1)} className="text-xs text-white/50 hover:text-signal px-2 py-1 rounded hover:bg-white/10 transition-colors">
+        <button onClick={() => setMonthOffset((v) => v - 1)} className="text-xs text-paper/70 hover:text-signal px-2 py-1 rounded hover:bg-white/10 transition-colors">
           ←
         </button>
-        <p className="text-xs font-semibold uppercase tracking-wide">
+        <p className="text-xs font-semibold uppercase tracking-wide text-paper">
           {viewMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
         </p>
-        <button onClick={() => setMonthOffset((v) => v + 1)} className="text-xs text-white/50 hover:text-signal px-2 py-1 rounded hover:bg-white/10 transition-colors">
+        <button onClick={() => setMonthOffset((v) => v + 1)} className="text-xs text-paper/70 hover:text-signal px-2 py-1 rounded hover:bg-white/10 transition-colors">
           →
         </button>
       </div>
-      <div className="grid grid-cols-7 gap-1 text-[10px] text-white/40 mb-1">
+      <div className="grid grid-cols-7 gap-1 text-[10px] text-paper/55 mb-1">
         {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
           <div key={i} className="text-center">{d}</div>
         ))}
@@ -269,8 +269,8 @@ function MonthCalendar({
               onClick={() => hasMatch && onSelect(key)}
               disabled={!hasMatch}
               className={`aspect-square rounded text-[11px] flex flex-col items-center justify-center gap-0.5 transition ${
-                isSelected ? "bg-win text-black" : isToday ? "border border-signal/50" : ""
-              } ${hasMatch ? "hover:bg-white/10 cursor-pointer" : "text-white/35 cursor-default"}`}
+                isSelected ? "bg-win text-black" : isToday ? "border border-signal/50 text-paper" : ""
+              } ${hasMatch ? "hover:bg-white/10 cursor-pointer text-paper" : "text-paper/45 cursor-default"}`}
             >
               <span>{Number(key.slice(-2))}</span>
               {hasMatch && <span className={`w-1 h-1 rounded-full ${isSelected ? "bg-black" : "bg-win"}`} />}
@@ -278,24 +278,33 @@ function MonthCalendar({
           );
         })}
       </div>
-      <p className="text-[10px] text-white/40 mt-2">Green = at least one match that day.</p>
+      <p className="text-[10px] text-paper/55 mt-2">Green = at least one match that day.</p>
     </div>
   );
 }
 
-// Bottom-right corner badge, only for matches starting within 24h — `now`
-// is a single shared ticking clock from the parent (one setInterval for
-// the whole slider, not one per card). Signal-tinted chip (not just bare
-// text) so it actually stands out against the card instead of blending
-// into it — the plain white/40 text tried first read as barely visible
-// against .lv-card's own translucent background in both themes.
+// Only for matches starting within 24h — `now` is a single shared ticking
+// clock from the parent (one setInterval for the whole slider, not one per
+// card). Signal-tinted chip (not just bare text) so it actually stands out
+// against the card instead of blending into it — the plain white/40 text
+// tried first read as barely visible against .lv-card's own translucent
+// background in both themes.
+//
+// Rendered in normal document flow (was absolutely positioned over the
+// bottom-right corner of the card) — that overlapped the tournament/time
+// line above it whenever the badge's own box (border + padding) exceeded
+// the small reserved bottom padding that trick depended on. A flow element
+// can't overlap its siblings regardless of content length, so this is the
+// robust fix rather than re-tuning magic-number offsets again.
 function MatchCountdown({ scheduledAt, now }: { scheduledAt: string; now: number }) {
   const diff = new Date(scheduledAt).getTime() - now;
   if (diff <= 0 || diff > COUNTDOWN_WINDOW_MS) return null;
   return (
-    <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 text-[10px] font-mono font-semibold tabular-nums text-signal bg-signal/15 border border-signal/40 rounded px-1.5 py-0.5 tracking-wide">
-      ⏳ {formatCountdown(diff)}
-    </span>
+    <div className="flex justify-center">
+      <span className="flex items-center gap-1 text-[10px] font-mono font-semibold tabular-nums text-signal bg-signal/15 border border-signal/40 rounded px-1.5 py-0.5 tracking-wide">
+        ⏳ {formatCountdown(diff)}
+      </span>
+    </div>
   );
 }
 
@@ -366,7 +375,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                   <a
                     key={m.id}
                     href={`/match/${m.id}`}
-                    className="lv-card relative block px-3 py-3 pb-5 space-y-1.5"
+                    className="lv-card block px-3 py-3 space-y-1.5"
                   >
                     {/* Same centered team/VS layout as Recent results — two
                         equal columns either side of a fixed middle column

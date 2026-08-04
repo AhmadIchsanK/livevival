@@ -116,7 +116,7 @@ function renderCard({
           justifyContent: "center",
           width: 110 * scale,
           height: 110 * scale,
-          borderRadius: 999,
+          borderRadius: 20 * scale,
           background: "#f5f5f5",
           border: `4px solid ${SIGNAL}`,
           overflow: "hidden",

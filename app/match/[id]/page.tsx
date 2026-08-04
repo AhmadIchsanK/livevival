@@ -1056,7 +1056,7 @@ export default function PublicMatchPage() {
                     <tr key={s.id} className="border-t border-white/10">
                       <td className="py-1.5">{s.ign}</td>
                       <td className="flex items-center gap-1.5 py-1.5">
-                        {s.heroIconUrl && <img src={proxiedImageUrl(s.heroIconUrl)} alt="" className="w-5 h-5 rounded-full object-cover object-top" />}
+                        {s.heroIconUrl && <img src={proxiedImageUrl(s.heroIconUrl)} alt="" className="w-5 h-5 rounded object-cover object-top" />}
                         {s.heroName ?? (s.heroIconUrl === null && s.heroName === null ? "—" : "")}
                       </td>
                       <td className="tabular-nums">{s.kills ?? <span className="text-white/30">TBD</span>}</td>

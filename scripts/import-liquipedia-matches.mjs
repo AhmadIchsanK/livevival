@@ -282,13 +282,32 @@ async function main() {
     .select("id, name, liquipedia_slug, date_display, start_date, end_date");
   if (error) throw error;
 
-  // Scope to the past year (or still-upcoming/ongoing) — keeps runtime well
-  // under Liquipedia's rate limiter, and keeps the site's data focused on
-  // what's actually current.
-  const relevant = (tournaments ?? []).filter(
-    (t) => t.liquipedia_slug && isWithinPastYear(t.start_date, t.end_date)
+  // Optional manual override: TOURNAMENT_SLUGS="MPL/Indonesia/Season_18,..."
+  // re-imports just those tournaments, bypassing both the past-year window
+  // and table order entirely. Added after a real case where a handful of
+  // tournaments happened to sit late enough in table order that this job's
+  // timeout was reached before ever getting to them, run after run — even
+  // with the subpage-discovery fix (which adds real per-tournament runtime)
+  // and a raised timeout, a large enough tournament list at Liquipedia's
+  // rate-limit pacing can still not fit everything in one pass. Lets an
+  // admin (or a one-off manual dispatch) target exactly the tournament(s)
+  // that need to land right now instead of waiting on/hoping a full pass
+  // reaches them before it runs out of time.
+  const override = (process.env.TOURNAMENT_SLUGS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const relevant =
+    override.length > 0
+      ? (tournaments ?? []).filter((t) => override.includes(t.liquipedia_slug))
+      : (tournaments ?? []).filter((t) => t.liquipedia_slug && isWithinPastYear(t.start_date, t.end_date));
+
+  console.log(
+    override.length > 0
+      ? `TOURNAMENT_SLUGS override: processing ${relevant.length} of ${override.length} explicitly requested tournament(s)`
+      : `Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (past year, or upcoming/ongoing)`
   );
-  console.log(`Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (past year, or upcoming/ongoing)`);
 
   for (const t of relevant) {
     try {

@@ -42,7 +42,11 @@ async function loadActiveTournaments() {
 // fires on its own timer regardless of how long the last one took — retries
 // it again immediately, so the same page gets hammered continuously and
 // Liquipedia's throttle window never gets a chance to actually reset.
-const COOLDOWN_MS = 5 * 60 * 1000;
+// Production logs showed 5 minutes wasn't long enough — every single
+// cooldown expiry landed right back on another immediate 429, meaning
+// Liquipedia's actual throttle window here outlasts 5 minutes. 15 minutes
+// gives it real room to clear before the next attempt.
+const COOLDOWN_MS = 15 * 60 * 1000;
 const rateLimitedUntil = new Map(); // tournamentId -> timestamp
 
 async function tick() {

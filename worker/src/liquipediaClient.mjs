@@ -43,9 +43,16 @@ export async function fetchRenderedPage(pageTitle, attempt = 1) {
     headers: { "User-Agent": USER_AGENT, "Accept-Encoding": "gzip" },
   });
 
-  if (res.status === 429 && attempt <= 4) {
+  // Production logs show every one of the previous 4 escalating retries
+  // (20/40/60/80s, ~200s total) failing every single time once actually
+  // rate-limited — that in-tick retry chain wasn't recovering anything, it
+  // was just delaying how soon index.mjs's much-more-effective per-
+  // tournament cooldown kicked in. Failing fast after 2 short retries and
+  // letting that cooldown do the real backoff work stops hammering
+  // Liquipedia while still tolerating one genuinely transient 429.
+  if (res.status === 429 && attempt <= 2) {
     const waitMs = 20000 * attempt;
-    console.warn(`Rate limited on ${pageTitle}, waiting ${waitMs / 1000}s before retry ${attempt}/4...`);
+    console.warn(`Rate limited on ${pageTitle}, waiting ${waitMs / 1000}s before retry ${attempt}/2...`);
     await sleep(waitMs);
     return fetchRenderedPage(pageTitle, attempt + 1);
   }

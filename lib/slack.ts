@@ -16,11 +16,17 @@ function telegramHtmlToSlackMrkdwn(text: string): string {
   return text.replace(/<b>/g, "*").replace(/<\/b>/g, "*");
 }
 
-function slackConfigured(): { token: string; channel: string } | null {
+// SLACK_CHANNEL_ID accepts a comma-separated list — every notification
+// posts to all of them. The bot must be invited to each one
+// (/invite @<bot> in Slack) or chat:write.public is required.
+function slackConfigured(): { token: string; channels: string[] } | null {
   const token = process.env.SLACK_BOT_TOKEN;
-  const channel = process.env.SLACK_CHANNEL_ID;
-  if (!token || !channel) return null;
-  return { token, channel };
+  const channels = (process.env.SLACK_CHANNEL_ID ?? "")
+    .split(",")
+    .map((c) => c.trim())
+    .filter(Boolean);
+  if (!token || channels.length === 0) return null;
+  return { token, channels };
 }
 
 async function slackApi(method: string, token: string, body: Record<string, unknown>) {
@@ -40,13 +46,15 @@ function messageBlocks(message: string, photoUrl?: string) {
   return { text, blocks };
 }
 
-// Posts to the configured channel — the direct equivalent of
+// Posts to every configured channel — the direct equivalent of
 // postToTelegram's sendMessage/sendPhoto. Silently no-ops if unconfigured.
 export async function postToSlackChannel(message: string, photoUrl?: string): Promise<void> {
   const config = slackConfigured();
   if (!config) return;
   const { text, blocks } = messageBlocks(message, photoUrl);
-  await slackApi("chat.postMessage", config.token, { channel: config.channel, text, blocks }).catch(() => {});
+  for (const channel of config.channels) {
+    await slackApi("chat.postMessage", config.token, { channel, text, blocks }).catch(() => {});
+  }
 }
 
 async function sendSlackDM(token: string, userId: string, message: string, photoUrl?: string) {

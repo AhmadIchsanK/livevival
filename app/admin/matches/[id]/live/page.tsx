@@ -351,12 +351,22 @@ export default function LiveConsolePage() {
         const picks = pickBans
           .filter((pb) => pb.team_id === team.id && pb.type === "pick")
           .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
-          .map((pb) => `${pb.hero_name} (${players.find((p) => p.id === pb.player_id)?.ign ?? "?"})`)
-          .join(", ");
+          .map((pb) => `- ${pb.hero_name} (${players.find((p) => p.id === pb.player_id)?.ign ?? "?"})`)
+          .join("\n");
         const bans = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "ban").map((pb) => pb.hero_name).join(", ");
-        return `<b>${team.name}</b>\nPicks: ${picks || "—"}\nBans: ${bans || "—"}`;
+        return `<b>${team.name}</b>\nPicks:\n${picks || "—"}\nBans: ${bans || "—"}`;
       })
       .join("\n\n");
+  }
+
+  // Games each team has already won, excluding whichever game is in
+  // progress right now (it has no winner_team_id yet) — the "current
+  // score" line on phase-notice Telegram messages.
+  function seriesScoreLine(): string {
+    if (!match?.team_a || !match?.team_b) return "";
+    const aWins = pastGames.filter((g) => g.winner_team_id === match.team_a!.id).length;
+    const bWins = pastGames.filter((g) => g.winner_team_id === match.team_b!.id).length;
+    return `${match.team_a.name} ${aWins} - ${bWins} ${match.team_b.name}`;
   }
 
   // "All 10 players have a hero decided" — each side's starting five
@@ -2618,7 +2628,7 @@ export default function LiveConsolePage() {
       };
       const gameMsg = telegramMessageFor(
         "game_finish",
-        `🎮 <b>Game ${game.game_number} result</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${winnerName}</b>\n${match.tournament?.name}`,
+        `🎮 <b>Game ${game.game_number} result</b>\nWinner: <b>${winnerName}</b>\n<b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}`,
         vars
       );
       if (gameMsg) await postToTelegram(gameMsg, { entityType: "game", entityId: game.id, notificationType: "game_result" });
@@ -2626,7 +2636,7 @@ export default function LiveConsolePage() {
         const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
         const matchMsg = telegramMessageFor(
           "match_finish",
-          `🏆 <b>Match finished</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${seriesWinnerName}</b>\n${match.tournament?.name}`,
+          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}`,
           { ...vars, winner: seriesWinnerName ?? "" }
         );
         if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
@@ -2666,7 +2676,7 @@ export default function LiveConsolePage() {
       });
       const matchMsg = telegramMessageFor(
         "match_finish",
-        `🏆 <b>Match finished</b>\n${match.team_a?.name} vs ${match.team_b?.name}\nWinner: <b>${seriesWinnerName}</b>\n${match.tournament?.name}`,
+        `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}`,
         {
           team_a: match.team_a?.name ?? "",
           team_b: match.team_b?.name ?? "",
@@ -2882,7 +2892,7 @@ export default function LiveConsolePage() {
         const header = `${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`;
         const DEFAULT_PHASE_MESSAGES: Record<string, string> = {
           DRAFT_STARTED: `✏️ <b>Draft started — Game ${game.game_number}</b>\n${header}`,
-          DRAFT_COMPLETE: `📋 <b>Draft complete — Game ${game.game_number}</b>\n${header}\n\n${buildDraftRecap()}`,
+          DRAFT_COMPLETE: `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
           GAME_STARTED: `🎮 <b>Game ${game.game_number} ongoing</b>\n${header}`,
           TECHNICAL_PAUSE: `⏸️ <b>Technical pause</b>\n${header}`,
           STREAM_ENDED: `📴 <b>Stream ended</b>\n${header}`,
@@ -3697,7 +3707,7 @@ export default function LiveConsolePage() {
             <button
               onClick={() =>
                 postToTelegram(
-                  `📋 <b>Draft complete — Game ${game.game_number}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
+                  `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
                   { entityType: "game", entityId: game.id, notificationType: "draft_result" }
                 )
               }

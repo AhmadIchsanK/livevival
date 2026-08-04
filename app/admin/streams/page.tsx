@@ -196,7 +196,7 @@ export default function StreamsPage() {
   }
 
   return (
-    <div className="text-white space-y-8 max-w-4xl">
+    <div className="text-white space-y-8 max-w-6xl">
       <div>
         <h1 className="lv-heading text-lg mb-2">Add a livestream / VOD link</h1>
         <p className="text-xs text-white/40 mb-4">

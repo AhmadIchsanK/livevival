@@ -66,7 +66,7 @@ export default function DataSyncPage() {
   }
 
   return (
-    <div className="text-white space-y-6 max-w-2xl">
+    <div className="text-white space-y-6 max-w-4xl">
       <div>
         <h1 className="lv-heading text-lg">Data sync</h1>
         <p className="text-xs text-white/40 mt-1">
@@ -76,7 +76,7 @@ export default function DataSyncPage() {
         </p>
       </div>
 
-      <div className="space-y-4">
+      <div className="grid gap-4 md:grid-cols-2">
         {SYNC_JOBS.map((job) => (
           <div key={job.workflow} className="lv-card-flush p-4 space-y-2">
             <p className="font-semibold text-sm">{job.title}</p>

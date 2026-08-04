@@ -139,7 +139,7 @@ export default function MomentTemplatesPage() {
   }
 
   return (
-    <div className="text-white space-y-6 max-w-3xl">
+    <div className="text-white space-y-6 max-w-5xl">
       <div>
         <h1 className="lv-heading text-lg">Moment templates</h1>
         <p className="text-xs text-white/40 mt-1">

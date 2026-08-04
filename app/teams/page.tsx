@@ -45,7 +45,7 @@ function TeamsIndexPageInner() {
   }, [teams, search, sortKey]);
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-8">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
       <header className="space-y-1 flex items-start justify-between">
         <div>
           <a href="/" className="lv-nav-link">&larr; Matches</a>
@@ -78,7 +78,7 @@ function TeamsIndexPageInner() {
       {loading && <p className="text-white/40 text-sm">Loading...</p>}
 
       {!loading && view === "grid" && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
           {visible.map((t) => (
             <div key={t.id} className="lv-card flex flex-col items-center gap-2 px-4 py-5 text-center">
               <TeamLogo url={t.logo_url} size="lg" />

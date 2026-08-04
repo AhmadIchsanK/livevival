@@ -176,7 +176,7 @@ function TournamentsIndexPageInner() {
   const completed = showAllCompleted || isFiltering ? completedAll : completedAll.slice(0, COMPLETED_DEFAULT_COUNT);
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-10">
       <header className="space-y-1 flex items-start justify-between">
         <div>
           <a href="/" className="lv-nav-link">&larr; Matches</a>
@@ -255,7 +255,7 @@ function TournamentSection({
         {title}
       </h2>
       {tournaments.length === 0 && empty && <p className="text-white/30 text-sm">{empty}</p>}
-      <div className="space-y-2">
+      <div className="grid gap-2 lg:grid-cols-2">
         {tournaments.map((t) => (
           <a
             key={t.id}

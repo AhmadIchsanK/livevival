@@ -447,7 +447,7 @@ export default function MatchesPage() {
   }
 
   return (
-    <div className="text-white space-y-8 max-w-4xl">
+    <div className="text-white space-y-8 max-w-6xl">
       <div>
         <h1 className="lv-heading text-lg mb-4">Detect match from stream URL</h1>
         <div className="flex gap-2 items-end max-w-xl">

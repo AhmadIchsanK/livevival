@@ -93,7 +93,7 @@ export default function ContributorTeamsPage() {
   }
 
   return (
-    <div className="text-white space-y-4 max-w-lg">
+    <div className="text-white space-y-4 max-w-2xl">
       <h1 className="text-xl font-semibold">Teams — Edit Request</h1>
       <select
         value={selectedId}

@@ -58,7 +58,7 @@ function HeroesIndexPageInner() {
   }, [heroes, search, roleFilter, sortKey]);
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-8">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
       <header className="space-y-1 flex items-start justify-between">
         <div>
           <a href="/" className="lv-nav-link">&larr; Matches</a>
@@ -101,7 +101,7 @@ function HeroesIndexPageInner() {
       {loading && <p className="text-white/40 text-sm">Loading...</p>}
 
       {!loading && view === "grid" && (
-        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
           {visible.map((h) => (
             <div key={h.id} className="lv-card flex flex-col items-center gap-2 px-3 py-4 text-center">
               <HeroIcon url={h.icon_url} name={h.name} size="lg" />

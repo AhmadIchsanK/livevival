@@ -2,9 +2,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { PlayerCountryFlag } from "@/components/PlayerCountryFlag";
+import { PlayerLinks } from "@/components/PlayerLinks";
 
 type Option = { id: string; label: string };
-type Player = { id: string; ign: string; role: string | null; team_id: string | null; photo_url: string | null; team: { name: string } | null };
+type Player = {
+  id: string;
+  ign: string;
+  role: string | null;
+  team_id: string | null;
+  photo_url: string | null;
+  real_name: string | null;
+  country_codes: string[] | null;
+  links: Record<string, string> | null;
+  team: { name: string } | null;
+};
 type SortKey = "ign" | "team" | "role";
 
 // Standard MLBB competitive roles, ordered left-to-right as they're read on
@@ -38,7 +50,7 @@ export default function PlayersPage() {
   async function loadPlayers() {
     const { data, error } = await supabase
       .from("players")
-      .select("id, ign, role, team_id, photo_url, team:teams(name)")
+      .select("id, ign, role, team_id, photo_url, real_name, country_codes, links, team:teams(name)")
       .order("ign", { ascending: true });
     if (error) {
       setError(error.message);
@@ -243,7 +255,7 @@ export default function PlayersPage() {
   }
 
   return (
-    <div className="text-white space-y-6 max-w-3xl">
+    <div className="text-white space-y-6 max-w-5xl">
       <h1 className="lv-heading text-lg">Players</h1>
 
       <form onSubmit={handleAdd} className="grid grid-cols-3 gap-3 max-w-xl items-end">
@@ -393,7 +405,8 @@ export default function PlayersPage() {
         )}
       </div>
 
-      <table className="w-full text-sm">
+      <div className="overflow-x-auto">
+      <table className="w-full text-sm min-w-[900px]">
         <thead className="text-white/40 text-left">
           <tr>
             <th className="font-normal pb-2 w-8">
@@ -404,9 +417,12 @@ export default function PlayersPage() {
               />
             </th>
             <th className="font-normal pb-2 w-12">Photo</th>
+            <th className="font-normal pb-2 w-12">Country</th>
             <th className="font-normal pb-2">IGN</th>
+            <th className="font-normal pb-2">Real Name</th>
             <th className="font-normal pb-2">Role</th>
             <th className="font-normal pb-2">Team</th>
+            <th className="font-normal pb-2">Links</th>
             <th className="font-normal pb-2 text-right">Actions</th>
           </tr>
         </thead>
@@ -419,6 +435,9 @@ export default function PlayersPage() {
                   <td className="py-2">
                     <PlayerPhotoUpload player={p} onUpload={uploadPlayerPhoto} />
                   </td>
+                  <td className="py-2">
+                    <PlayerCountryFlag codes={p.country_codes} />
+                  </td>
                   <td className="py-2 pr-2">
                     <input
                       value={editIgn}
@@ -426,6 +445,8 @@ export default function PlayersPage() {
                       className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
+                  {/* Real name/links are Liquipedia-scraper-only fields — no manual edit UI yet, so they just carry over unchanged while other fields are edited. */}
+                  <td className="py-2 text-white/60">{p.real_name ?? "—"}</td>
                   <td className="py-2 pr-2">
                     <select
                       value={editRole}
@@ -450,6 +471,9 @@ export default function PlayersPage() {
                       ))}
                     </select>
                   </td>
+                  <td className="py-2">
+                    <PlayerLinks links={p.links} />
+                  </td>
                   <td className="py-2 text-right space-x-2">
                     <button onClick={() => saveEdit(p.id)} className="lv-btn-primary !px-2 !py-1">
                       Save
@@ -470,9 +494,16 @@ export default function PlayersPage() {
                   <td className="py-2">
                     <PlayerPhotoUpload player={p} onUpload={uploadPlayerPhoto} />
                   </td>
+                  <td className="py-2">
+                    <PlayerCountryFlag codes={p.country_codes} />
+                  </td>
                   <td className="py-2">{p.ign}</td>
+                  <td className="py-2 text-white/60">{p.real_name ?? "—"}</td>
                   <td className="py-2 text-white/60">{p.role ?? "—"}</td>
                   <td className="py-2 text-white/60">{p.team?.name ?? "—"}</td>
+                  <td className="py-2">
+                    <PlayerLinks links={p.links} />
+                  </td>
                   <td className="py-2 text-right space-x-2">
                     <button
                       onClick={() => startEdit(p)}
@@ -493,13 +524,14 @@ export default function PlayersPage() {
           ))}
           {filtered.length === 0 && (
             <tr>
-              <td colSpan={6} className="py-4 text-white/30 text-center">
+              <td colSpan={9} className="py-4 text-white/30 text-center">
                 No players match.
               </td>
             </tr>
           )}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

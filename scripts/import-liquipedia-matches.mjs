@@ -13,12 +13,33 @@
 //   - .match-info-header-scoreholder-lower          — "(BoX)" format tag
 //   - .vodlink a[href]                               — real YouTube VOD links
 //
+// IMPORTANT — multi-page tournaments: many tournaments (confirmed for every
+// MPL national league, at least Season 16 onward) split their bracket across
+// *subpages* instead of rendering it inline on the tournament's own page —
+// e.g. "MPL/Indonesia/Season_18" itself has ZERO match popups; the 72 real
+// group-stage matches live on "MPL/Indonesia/Season_18/Regular_Season", a
+// separate wiki page. This was confirmed against real rendered HTML (not
+// guessed) via a throwaway diagnostic GH Actions run: the tournament's own
+// page linked to "/Regular_Season" and "/Statistics" subpages, and only
+// "/Regular_Season" had any `.brkts-popup-container` blocks. This wasn't a
+// new-tournament-only gap either — Season 16/17 (already "working") were
+// silently stuck at 8 matches each (just the small inline playoffs bracket)
+// the entire time, because this importer only ever fetched
+// `tournament.liquipedia_slug` and never looked for subpages at all.
+//
+// Fix: for every tournament, ask the API which subpages exist under its
+// slug (MediaWiki's allpages, prefix-matched — not a hardcoded list of
+// subpage names, so a tournament that later gains a "/Playoffs" or
+// "/Group_Stage" subpage picks it up automatically too) and fetch matches
+// from the base page plus every subpage found, merging results. See
+// getTournamentPages() below.
+//
 // Respects Liquipedia's API Terms of Use: custom User-Agent, only calls
 // api.php (never scrapes a rendered page directly), 2s between requests.
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { fetchRenderedPage, sleep } from "./_liquipedia.mjs";
+import { fetchRenderedPage, apiQuery, sleep } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -150,10 +171,52 @@ async function getOrCreateStream(youtubeUrl, tournamentId, finished) {
   return created.id;
 }
 
+// Discovers every wiki subpage nested under a tournament's own slug (e.g.
+// "MPL/Indonesia/Season_18/Regular_Season", "…/Statistics") via MediaWiki's
+// allpages, prefix-matched against the tournament's slug — not a hardcoded
+// list of subpage names, so this generalizes to whatever subpage structure
+// a tournament (current or future) actually uses instead of only covering
+// today's known "Regular_Season"/"Playoffs" naming.
+//
+// allpages returns titles with spaces (MediaWiki's display form) even
+// though slugs are stored with underscores — normalized back to underscores
+// here so they're directly usable with fetchRenderedPage/liquipedia_slug
+// elsewhere in this file.
+//
+// "/Statistics" (and its own nested subpages, e.g. ".../Statistics/Playoffs")
+// is the one subpage type confirmed to never contain match popups — a
+// per-player/per-hero stats page, not a bracket — so it's excluded to avoid
+// spending a request on a page that structurally can't have what we want.
+async function getTournamentPages(tournament) {
+  const baseSlug = tournament.liquipedia_slug;
+  const pages = [baseSlug];
+  try {
+    const data = await apiQuery({ action: "query", list: "allpages", apprefix: baseSlug, aplimit: "50" });
+    const subpages = (data?.query?.allpages ?? [])
+      .map((p) => p.title.replace(/ /g, "_"))
+      .filter((title) => title !== baseSlug && title.startsWith(`${baseSlug}/`))
+      .filter((title) => !/\/Statistics(\/|$)/i.test(title));
+    pages.push(...subpages);
+  } catch (err) {
+    console.warn(`Could not discover subpages for ${tournament.name}: ${err.message} (falling back to base page only)`);
+  }
+  return pages;
+}
+
 async function importMatchesForTournament(tournament) {
-  console.log(`Fetching matches for ${tournament.name}...`);
-  const html = await fetchRenderedPage(tournament.liquipedia_slug);
-  const found = extractMatches(html);
+  const pages = await getTournamentPages(tournament);
+  console.log(`Fetching matches for ${tournament.name} across ${pages.length} page(s): ${pages.join(", ")}`);
+
+  const found = [];
+  for (let i = 0; i < pages.length; i++) {
+    try {
+      const html = await fetchRenderedPage(pages[i]);
+      found.push(...extractMatches(html));
+    } catch (err) {
+      console.error(`Failed fetching "${pages[i]}" for ${tournament.name}: ${err.message}`);
+    }
+    if (i < pages.length - 1) await sleep(2000); // extra headroom beyond the documented 1 req/2s
+  }
   console.log(`Found ${found.length} matches for ${tournament.name}`);
 
   for (const m of found) {

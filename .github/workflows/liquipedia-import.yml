@@ -66,7 +66,17 @@ jobs:
   import-matches:
     needs: import-tournaments
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Raised from 45: import-liquipedia-matches.mjs now makes one extra
+    # subpage-discovery request per tournament (plus a fetch per subpage
+    # actually found — e.g. "Regular_Season") instead of just one request
+    # for the tournament's own page, since many tournaments' real matches
+    # live entirely on a subpage rather than the tournament's own page (see
+    # that script's header comment for how this was confirmed). No
+    # resume/skip-state exists here — a cap that's too tight cuts off at the
+    # same point in table order every run instead of ever reaching the tail
+    # of the tournament list, same failure mode already fixed for
+    # import-heroes and the roster job above/in liquipedia-import-details.yml.
+    timeout-minutes: 75
     concurrency:
       group: liquipedia-import-matches
       cancel-in-progress: false

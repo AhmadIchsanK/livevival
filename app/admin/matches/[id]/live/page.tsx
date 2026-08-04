@@ -8,14 +8,19 @@ import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
+// Auto-detected moment triggers only — narrowed to the four kill-streak
+// callouts (each still requires a player name attached, extracted by the
+// kill_banner OCR handler from the text preceding whatever matched here).
+// Kill streaks/ace/lord-turtle-steal detection removed per product
+// decision — those stay available as admin-clickable moment-template
+// buttons (unaffected, not driven by this array), just no longer
+// auto-suggested from OCR. The popup-confirm UX that reads off this array
+// is unchanged — only what can trigger it got narrower.
 const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
   { pattern: /SAVAGE/i, type: "savage" },
   { pattern: /MANIAC/i, type: "maniac" },
   { pattern: /TRIPLE\s*KILL/i, type: "triple_kill" },
   { pattern: /DOUBLE\s*KILL/i, type: "double_kill" },
-  { pattern: /LORD\s*(STEAL|SLAIN)/i, type: "lord_steal" },
-  { pattern: /TURTLE\s*(STEAL|SLAIN)/i, type: "turtle_steal" },
-  { pattern: /\bACE\b/i, type: "ace" },
 ];
 
 // A contributor reaches this exact page (not a separate clone) once

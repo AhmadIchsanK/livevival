@@ -21,6 +21,7 @@ export default function PlayersIndexPage() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
+  const [preview, setPreview] = useState<Player | null>(null);
 
   useEffect(() => {
     async function load() {
@@ -102,7 +103,12 @@ export default function PlayersIndexPage() {
       {!loading && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {visible.map((p) => (
-            <div key={p.id} className="lv-card flex flex-col items-center gap-2 px-3 py-4 text-center">
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setPreview(p)}
+              className="lv-card flex flex-col items-center gap-2 px-3 py-4 text-center hover:border-signal/40 transition-colors"
+            >
               <TeamLogo url={p.photo_url} size="md" />
               <p className="font-semibold text-sm leading-tight">{p.ign}</p>
               {p.role && <p className="text-[10px] text-white/40 uppercase tracking-wide">{p.role}</p>}
@@ -112,9 +118,34 @@ export default function PlayersIndexPage() {
                   <span className="text-xs text-white/60 truncate">{p.team.name}</span>
                 </div>
               )}
-            </div>
+            </button>
           ))}
           {visible.length === 0 && <p className="text-white/30 text-sm col-span-full">No players match.</p>}
+        </div>
+      )}
+
+      {/* Inline preview instead of navigating anywhere — there's no
+          dedicated player page to link to, and a photo/name/team/role
+          summary is all this data supports today. */}
+      {preview && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
+          <div className="max-w-xs w-full lv-card flex flex-col items-center gap-3 p-6 text-center" onClick={(e) => e.stopPropagation()}>
+            <TeamLogo url={preview.photo_url} size="xl" />
+            <p className="font-display font-light text-xl">{preview.ign}</p>
+            {preview.role && <p className="text-xs text-white/40 uppercase tracking-wide">{preview.role}</p>}
+            {preview.team && (
+              <div className="flex items-center gap-2 mt-1">
+                <TeamLogo url={preview.team.logo_url} size="sm" />
+                <span className="text-sm text-white/60">{preview.team.name}</span>
+              </div>
+            )}
+            <button
+              onClick={() => setPreview(null)}
+              className="mt-2 px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5 text-xs"
+            >
+              Close
+            </button>
+          </div>
         </div>
       )}
     </main>

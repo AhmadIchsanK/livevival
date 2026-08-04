@@ -624,15 +624,44 @@ export default function LiveConsolePage() {
     const pad = Math.max(12, width * 0.015);
     const logoWidth = logo ? Math.min(width * 0.2, 200) : 0;
     const logoHeight = logo ? logoWidth * (logo.naturalHeight / logo.naturalWidth) : 0;
-    const barHeight = Math.max(logoHeight, 22) + pad;
+
+    // Right side stacks two lines instead of one: which match/tournament
+    // this frame came from (so a screenshot still identifies itself once
+    // it's been reposted elsewhere, stripped of any surrounding context),
+    // above the existing "Captured with Livevival" credit. The bar grows
+    // to fit whichever is taller — the logo, or this two-line text block.
+    const captionSize = Math.max(11, Math.round(width * 0.014));
+    const creditSize = Math.max(9, Math.round(width * 0.011));
+    const lineGap = Math.max(2, Math.round(width * 0.003));
+    const matchCaption =
+      match?.team_a?.name && match?.team_b?.name ? `${match.team_a.name} vs ${match.team_b.name}` : null;
+    const tournamentCaption = match?.tournament?.name ?? null;
+    const textBlockHeight = matchCaption ? captionSize + creditSize + lineGap : creditSize;
+
+    const barHeight = Math.max(logoHeight, textBlockHeight, 22) + pad;
+    const centerY = height - barHeight / 2;
     ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
     ctx.fillRect(0, height - barHeight, width, barHeight);
     if (logo) ctx.drawImage(logo, pad, height - logoHeight - pad / 2, logoWidth, logoHeight);
-    ctx.font = `${Math.max(11, Math.round(width * 0.014))}px sans-serif`;
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
+
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
-    ctx.fillText("Captured with Livevival", width - pad, height - barHeight / 2);
+    if (matchCaption) {
+      ctx.font = `600 ${captionSize}px sans-serif`;
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.fillText(
+        tournamentCaption ? `${matchCaption} · ${tournamentCaption}` : matchCaption,
+        width - pad,
+        centerY - (creditSize + lineGap) / 2
+      );
+      ctx.font = `${creditSize}px sans-serif`;
+      ctx.fillStyle = "rgba(255,255,255,0.65)";
+      ctx.fillText("Captured with Livevival", width - pad, centerY + (captionSize + lineGap) / 2);
+    } else {
+      ctx.font = `${creditSize}px sans-serif`;
+      ctx.fillStyle = "rgba(255,255,255,0.65)";
+      ctx.fillText("Captured with Livevival", width - pad, centerY);
+    }
   }
 
   // Captures the current shared-screen frame and uploads it straight into

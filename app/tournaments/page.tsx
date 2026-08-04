@@ -120,10 +120,26 @@ export default function TournamentsIndexPage() {
     return "upcoming";
   }
 
+  // Sorting purely on start_date pushed every tournament that only ever had
+  // a free-text date_display (start_date/end_date null — most older rows,
+  // but also some very recent ones like MLBB Women's International 2026)
+  // to the very bottom under "Newest first", since a null coerced to ""
+  // sorts before every real date string — confirmed against real data:
+  // a tournament that ended weeks ago was invisible under the default
+  // 8-item "Completed" cap because it sorted as if it were the oldest
+  // tournament on record. Falls back to the same date_display end-date
+  // parser categorize() already uses, so a tournament without parsed
+  // start_date still sorts near where it actually happened.
+  function sortableDate(t: Tournament): string {
+    if (t.start_date) return t.start_date;
+    const displayEnd = parseDateDisplayEnd(t.date_display);
+    return displayEnd ? displayEnd.toISOString().slice(0, 10) : "";
+  }
+
   function sortTournaments(list: Tournament[]) {
     const sorted = [...list];
     if (sortKey === "name") return sorted.sort((a, b) => a.name.localeCompare(b.name));
-    sorted.sort((a, b) => (a.start_date ?? "").localeCompare(b.start_date ?? ""));
+    sorted.sort((a, b) => sortableDate(a).localeCompare(sortableDate(b)));
     return sortKey === "date_desc" ? sorted.reverse() : sorted;
   }
 

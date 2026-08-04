@@ -196,7 +196,7 @@ export default function HeroesPage() {
   }
 
   return (
-    <div className="text-white space-y-6 max-w-4xl">
+    <div className="text-white space-y-6 max-w-6xl">
       <div>
         <h1 className="lv-heading text-lg">Heroes</h1>
         <p className="text-xs text-white/40 mt-1">

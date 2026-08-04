@@ -3243,7 +3243,7 @@ export default function LiveConsolePage() {
   }
 
   return (
-    <div className="text-white space-y-8 max-w-6xl">
+    <div className="text-white space-y-8 max-w-7xl">
       {/* Sticky — phase changes and the stream link are the two things an
           admin needs reachable no matter how far down the page they've
           scrolled (moment log, scoreboard, calibration UI are all long). */}

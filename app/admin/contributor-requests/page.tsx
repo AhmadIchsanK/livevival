@@ -208,7 +208,7 @@ export default function ContributorRequestsPage() {
   }
 
   return (
-    <div className="text-white space-y-10 max-w-4xl">
+    <div className="text-white space-y-10 max-w-6xl">
       <h1 className="text-xl font-semibold">Contributor Requests</h1>
       {error && <p className="text-sm text-red-400">{error}</p>}
       {notice && <p className="text-sm text-white/50">{notice}</p>}
@@ -220,7 +220,7 @@ export default function ContributorRequestsPage() {
         ) : applications.length === 0 ? (
           <p className="text-white/30 text-sm">No pending applications.</p>
         ) : (
-          <div className="space-y-2">
+          <div className="grid gap-2 md:grid-cols-2">
             {applications.map((a) => (
               <div key={a.id} className="lv-card-flush p-4 flex items-center justify-between gap-4">
                 <div>

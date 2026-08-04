@@ -187,7 +187,7 @@ export default function TeamsPage() {
   }
 
   return (
-    <div className="text-white space-y-6 max-w-2xl">
+    <div className="text-white space-y-6 max-w-5xl">
       <h1 className="lv-heading text-lg">Teams</h1>
 
       <form onSubmit={handleAdd} className="flex gap-3 items-end flex-wrap">

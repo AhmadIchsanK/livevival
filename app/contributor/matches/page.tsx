@@ -128,7 +128,7 @@ export default function ContributorMatchesPage() {
   }
 
   return (
-    <div className="text-white space-y-4 max-w-lg">
+    <div className="text-white space-y-4 max-w-2xl">
       <h1 className="text-xl font-semibold">Matches — Edit Request</h1>
       <p className="text-xs text-white/40">
         To correct a finished match's scoreboard, hero picks, or moments, open it from the public site and use the

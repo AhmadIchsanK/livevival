@@ -107,7 +107,7 @@ function MatchesPageInner() {
   }, [byStatus, tab, search, sortKey]);
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-3xl mx-auto space-y-8">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
       <header className="flex items-center justify-between">
         <BrandLockup />
         <div className="flex items-center gap-2">
@@ -152,7 +152,7 @@ function MatchesPageInner() {
       {loading ? (
         <p className="text-white/40 text-sm">Loading matches...</p>
       ) : (
-        <div className="space-y-2">
+        <div className="grid gap-2 lg:grid-cols-2">
           {list.map((m) => (
             <MatchCard
               key={m.id}

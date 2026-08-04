@@ -188,7 +188,7 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-4xl mx-auto space-y-10">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-7xl mx-auto space-y-10">
       <header className="flex items-center justify-between">
         <BrandLockup />
         <div className="flex items-center gap-2">
@@ -211,7 +211,7 @@ export default function Home() {
           {live.length === 0 && (
             <p className="text-white/30 text-sm">No matches live right now — check upcoming below.</p>
           )}
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {live.map((m) => (
               <LiveScoreCard key={m.id} m={m} score={scores[m.id]} />
             ))}
@@ -505,7 +505,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
     <section className="space-y-3">
       <h2 className="lv-heading">Recent results</h2>
       {matches.length === 0 && <p className="text-white/30 text-sm">No finished matches yet.</p>}
-      <div className="space-y-2">
+      <div className="grid gap-2 lg:grid-cols-2">
         {visible.map((m) => {
           const score = scores[m.id];
           const forfeit = isForfeitWin(m, score);

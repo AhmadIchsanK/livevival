@@ -231,7 +231,7 @@ export default function ManageAdminsPage() {
   }
 
   return (
-    <div className="text-white space-y-10 max-w-4xl">
+    <div className="text-white space-y-10 max-w-6xl">
       <h1 className="text-xl font-semibold">Manage Admins</h1>
       {error && <p className="text-sm text-red-400">{error}</p>}
       {notice && <p className="text-sm text-signal">{notice}</p>}

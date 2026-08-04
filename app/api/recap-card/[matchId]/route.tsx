@@ -20,7 +20,18 @@ type CardMatch = {
   team_b: { id: string; name: string; logo_url: string | null } | null;
 };
 type CardGame = { winner_team_id: string | null };
-type CardHeroPick = { team_id: string; hero_name: string; icon_url: string | null };
+type CardHeroPick = {
+  team_id: string;
+  hero_name: string;
+  icon_url: string | null;
+  type: "pick" | "ban";
+  // Only ever populated for Hot (OCR-tracked) matches — Liquipedia-synced
+  // picks/bans have no player_id to join a KDA row against, so this stays
+  // undefined for Normal matches and the card never reserves space for it.
+  kills?: number | null;
+  deaths?: number | null;
+  assists?: number | null;
+};
 
 // Liquipedia-hosted images need this site's own proxy (hotlink protection —
 // see lib/proxiedImageUrl.ts / app/api/image-proxy) — building the absolute
@@ -94,8 +105,10 @@ function renderCard({
   // everything down accordingly — its much wider frame is what gives the
   // two-column pick layout room, not bigger absolute pixel sizes.
   const scale = ratio === "landscape" ? height / 1920 : width / 1080;
-  const teamAPicks = heroPicks.filter((p) => p.team_id === teamA?.id);
-  const teamBPicks = heroPicks.filter((p) => p.team_id === teamB?.id);
+  const teamAPicks = heroPicks.filter((p) => p.team_id === teamA?.id && p.type === "pick");
+  const teamBPicks = heroPicks.filter((p) => p.team_id === teamB?.id && p.type === "pick");
+  const teamABans = heroPicks.filter((p) => p.team_id === teamA?.id && p.type === "ban");
+  const teamBBans = heroPicks.filter((p) => p.team_id === teamB?.id && p.type === "ban");
   const isLandscape = ratio === "landscape";
   const ticks = tickMarks(scale);
 
@@ -107,40 +120,69 @@ function renderCard({
   // here, so this always uses a light plate, which reads correctly for the
   // overwhelming majority of real team/hero art (dark or colorful icons on
   // white) at the cost of not inverting for the rare near-white logo.
-  const heroPortrait = (p: CardHeroPick, i: number) => (
-    <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 * scale, width: 118 * scale }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          width: 110 * scale,
-          height: 110 * scale,
-          borderRadius: 20 * scale,
-          background: "#f5f5f5",
-          border: `4px solid ${SIGNAL}`,
-          overflow: "hidden",
-        }}
-      >
-        {p.icon_url && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={p.icon_url} alt="" width={110 * scale} height={110 * scale} style={{ objectFit: "cover", objectPosition: "top" }} />
+  const heroPortrait = (p: CardHeroPick, i: number, boxSize: number, ringWidth: number) => {
+    const hasKda = p.kills != null && p.deaths != null && p.assists != null;
+    return (
+      <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 * scale, width: boxSize + 16 * scale }}>
+        <div
+          style={{
+            display: "flex",
+            position: "relative",
+            width: boxSize,
+            height: boxSize,
+            borderRadius: boxSize * 0.18,
+            background: "#f5f5f5",
+            border: `${ringWidth}px solid ${p.type === "ban" ? "#ffffff40" : SIGNAL}`,
+            overflow: "hidden",
+          }}
+        >
+          {p.icon_url && (
+            // Satori's `object-fit: cover` compiles straight to an SVG
+            // `preserveAspectRatio="xMidYMid slice"` (confirmed by
+            // inspecting the bundled renderer's source) — it always
+            // centers the crop on both axes and never reads
+            // `objectPosition` at all, which is why an earlier
+            // `objectPosition: "top"` attempt rendered identically to no
+            // fix. Framing on the hero's face instead of full-body art has
+            // to be done geometrically instead: cover-fit the image into a
+            // box much taller than the visible frame (so the vertical crop
+            // that cover-fit centers lands mostly below the face), pin
+            // that tall box to the top of an overflow-hidden container the
+            // real size we want, and let the container clip away
+            // everything below it.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={p.icon_url}
+              alt=""
+              width={boxSize}
+              height={boxSize * 2.4}
+              style={{ objectFit: "cover", position: "absolute", top: 0, left: 0 }}
+            />
+          )}
+          {p.type === "ban" && (
+            <div style={{ display: "flex", position: "absolute", top: 0, left: 0, right: 0, bottom: 0, background: "#0a0a0a99" }} />
+          )}
+        </div>
+        <span
+          style={{
+            fontSize: 17 * scale,
+            fontWeight: 600,
+            color: p.type === "ban" ? "#ffffff88" : "#ffffffdd",
+            textAlign: "center",
+            textTransform: "uppercase",
+            letterSpacing: 0.5,
+          }}
+        >
+          {p.hero_name}
+        </span>
+        {hasKda && (
+          <span style={{ fontSize: 15 * scale, fontWeight: 600, color: "#ffffff99", letterSpacing: 0.5 }}>
+            {p.kills}/{p.deaths}/{p.assists}
+          </span>
         )}
       </div>
-      <span
-        style={{
-          fontSize: 17 * scale,
-          fontWeight: 600,
-          color: "#ffffffdd",
-          textAlign: "center",
-          textTransform: "uppercase",
-          letterSpacing: 0.5,
-        }}
-      >
-        {p.hero_name}
-      </span>
-    </div>
-  );
+    );
+  };
 
   // Ribbon tag: a plain solid-color rounded rect, not the angled/skewed
   // shape in the reference art. Satori's layout engine (yoga) doesn't
@@ -159,8 +201,14 @@ function renderCard({
   // layout doesn't hit this; each column's cross-axis (width) is bounded
   // by the frame's own definite width, so flex-grow resolves correctly
   // there and both columns split the row evenly as intended.
-  const teamPickColumn = (name: string | undefined, picks: CardHeroPick[]) => (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
+  const subLabel = (text: string) => (
+    <span style={{ display: "flex", fontSize: 15 * scale, fontWeight: 700, color: "#ffffff55", textTransform: "uppercase", letterSpacing: 2 }}>
+      {text}
+    </span>
+  );
+
+  const teamPickColumn = (name: string | undefined, picks: CardHeroPick[], bans: CardHeroPick[]) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
       <div
         style={{
           display: "flex",
@@ -182,22 +230,34 @@ function renderCard({
           {name ?? "TBD"}
         </span>
       </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 18 * scale }}>
-        {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 * scale }}>
+        {subLabel("Picks")}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 18 * scale }}>
+          {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i, 110 * scale, 4)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
+        </div>
       </div>
+      {bans.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 * scale }}>
+          {subLabel("Bans")}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 14 * scale }}>
+            {bans.map((p, i) => heroPortrait(p, i, 78 * scale, 3))}
+          </div>
+        </div>
+      )}
     </div>
   );
 
-  const finalPicksBlock = (teamAPicks.length > 0 || teamBPicks.length > 0) && (
+  const hasAnyPickOrBan = teamAPicks.length > 0 || teamBPicks.length > 0 || teamABans.length > 0 || teamBBans.length > 0;
+  const finalPicksBlock = hasAnyPickOrBan && (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 * scale }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16 * scale }}>
         {ticks.left}
-        <span style={{ fontSize: 22 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks</span>
+        <span style={{ fontSize: 22 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks &amp; bans</span>
         {ticks.right}
       </div>
       <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", gap: isLandscape ? 56 * scale : 44 * scale }}>
-        {teamPickColumn(teamA?.name, teamAPicks)}
-        {teamPickColumn(teamB?.name, teamBPicks)}
+        {teamPickColumn(teamA?.name, teamAPicks, teamABans)}
+        {teamPickColumn(teamB?.name, teamBPicks, teamBBans)}
       </div>
     </div>
   );
@@ -371,6 +431,17 @@ function renderCard({
             {finalPicksBlock}
           </div>
 
+          {/* `marginTop: "auto"` (not `justifyContent: "space-between"` on the
+              whole padding container, and not `flex: 1` + `justifyContent:
+              "center"` on the content group above — the exact combination
+              that caused the dead-gap-above-the-tournament-line bug
+              documented above) pushes just this footer to the bottom of the
+              column, whatever height the score/picks content above happens
+              to take up. A normal match now also renders bans (not just
+              picks), so the content block itself runs taller than before —
+              between that and the footer no longer floating with a bare gap
+              underneath it, a match with fewer games/picks doesn't read as
+              an unfinished card with blank space at the bottom. */}
           <div
             style={{
               display: "flex",
@@ -378,7 +449,7 @@ function renderCard({
               justifyContent: "space-between",
               borderTop: "1px solid #ffffff1a",
               paddingTop: 20 * scale,
-              marginTop: 24 * scale,
+              marginTop: "auto",
             }}
           >
             <span style={{ fontSize: 18 * scale, color: "#ffffff55", letterSpacing: 1 }}>livevival-sigma.vercel.app</span>
@@ -404,7 +475,7 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
   const { data: match } = await supabase
     .from("matches")
     .select(
-      `id, format, status, series_winner_team_id,
+      `id, format, status, series_winner_team_id, update_source,
        tournament:tournaments(name),
        team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
        team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
@@ -428,18 +499,42 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     .order("game_number");
 
   let heroPicks: CardHeroPick[] = [];
+  // Only Hot (OCR-tracked) matches ever get a per-pick player_id logged
+  // against a KDA row — Liquipedia-synced picks never carry one — so
+  // gating on update_source here is really just an optimization; the
+  // player_id join below would come back empty for a Normal match anyway.
+  const isHotMatch = match.update_source === "local_ocr";
 
   if (games && games.length > 0) {
     const lastGameId = games[games.length - 1].id;
-    const { data: picks } = await supabase
+    const { data: picksAndBans } = await supabase
       .from("hero_picks_bans")
-      .select("team_id, hero_name, pick_order, hero:heroes(icon_url)")
+      .select("team_id, hero_name, type, pick_order, player_id, hero:heroes(icon_url)")
       .eq("game_id", lastGameId)
-      .eq("type", "pick")
+      .in("type", ["pick", "ban"])
       .order("pick_order");
-    heroPicks = (picks ?? []).map((p) => {
+
+    let kdaByPlayerId = new Map<string, { kills: number | null; deaths: number | null; assists: number | null }>();
+    if (isHotMatch) {
+      const { data: stats } = await supabase
+        .from("player_stats")
+        .select("player_id, kills, deaths, assists")
+        .eq("game_id", lastGameId);
+      kdaByPlayerId = new Map((stats ?? []).filter((s) => s.player_id).map((s) => [s.player_id as string, s]));
+    }
+
+    heroPicks = (picksAndBans ?? []).map((p) => {
       const hero = Array.isArray(p.hero) ? p.hero[0] : p.hero;
-      return { team_id: p.team_id, hero_name: p.hero_name, icon_url: proxied(origin, hero?.icon_url) };
+      const kda = p.player_id ? kdaByPlayerId.get(p.player_id) : undefined;
+      return {
+        team_id: p.team_id,
+        hero_name: p.hero_name,
+        icon_url: proxied(origin, hero?.icon_url),
+        type: p.type as "pick" | "ban",
+        kills: kda?.kills,
+        deaths: kda?.deaths,
+        assists: kda?.assists,
+      };
     });
   }
 

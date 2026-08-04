@@ -1,0 +1,26 @@
+name: Cleanup country-name player rows (one-time)
+
+# Manual-only, no schedule — removes the handful of legacy player rows
+# whose `ign` is actually a country name (e.g. "Indonesia") left over from
+# an already-deleted predecessor scraper (see
+# scripts/cleanup-country-name-players.mjs for the full root cause). Safe
+# to re-run; only ever touches rows still matching the country-name check,
+# and the parsing that caused this is now guarded against reintroducing it
+# (see COUNTRY_NAME_TO_CODE's usage in import-team-details.mjs).
+on:
+  workflow_dispatch: {}
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js
+      - run: node scripts/cleanup-country-name-players.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

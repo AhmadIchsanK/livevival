@@ -127,7 +127,7 @@ async function findMatch(tournamentId, leftName, rightName) {
 
   const { data } = await supabase
     .from("matches")
-    .select("id, format, team_a_id, team_b_id, update_source")
+    .select("id, format, team_a_id, team_b_id, update_source, notification_tier")
     .eq("tournament_id", tournamentId)
     .or(`and(team_a_id.eq.${leftId},team_b_id.eq.${rightId}),and(team_a_id.eq.${rightId},team_b_id.eq.${leftId})`)
     .maybeSingle();
@@ -200,7 +200,11 @@ async function importMatchDetail(tournament, m) {
     if (g.left) await insertPicksAndBans(gameRow.id, { picks: g.left.picks, bans: g.leftBans }, match.leftId, match.id);
     if (g.right) await insertPicksAndBans(gameRow.id, { picks: g.right.picks, bans: g.rightBans }, match.rightId, match.id);
 
-    if (gameWinnerTeamId) {
+    // Per-game "result" posts are Hot-tier-only spam per the notification_tier
+    // spec — Priority gets exactly match-started + match-finished, nothing
+    // per game. tier is read once below and reused for both checks in this
+    // function.
+    if (gameWinnerTeamId && match.notification_tier === "hot") {
       const winnerName = g.left?.won ? m.leftName : m.rightName;
       await notifyOnce(
         "game",
@@ -217,6 +221,12 @@ async function importMatchDetail(tournament, m) {
   // same tick for a normal match, not spread out live as each game ends.
   // notifyOnce's own dedup (not a local check here — findMatch()'s select
   // doesn't fetch status/state) is what stops this firing every tick.
+  //
+  // notification_tier gates this the same way as match_live in
+  // scheduleSync.mjs: 'normal' (the default) sends nothing automatically;
+  // 'priority' and 'hot' both get this match-finished recap.
+  if (match.notification_tier === "normal") return;
+
   const winnerName = m.leftWon ? m.leftName : m.rightName;
   const leftWins = m.games.filter((g) => g.left?.won).length;
   const rightWins = m.games.filter((g) => g.right?.won).length;

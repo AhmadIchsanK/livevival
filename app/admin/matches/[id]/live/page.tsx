@@ -40,6 +40,7 @@ type Match = {
   state: string;
   custom_state_label: string | null;
   update_source: "liquipedia" | "local_ocr";
+  notification_tier: "normal" | "hot" | "priority";
   series_winner_team_id: string | null;
   tournament_id: string | null;
   ocr_left_team_id: string | null;
@@ -242,7 +243,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number, status, state, custom_state_label, update_source, series_winner_team_id, tournament_id, ocr_left_team_id,
+        `id, youtube_url, format, current_game_number, status, state, custom_state_label, update_source, notification_tier, series_winner_team_id, tournament_id, ocr_left_team_id,
          tournament:tournaments(name, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
@@ -409,6 +410,35 @@ export default function LiveConsolePage() {
         return `<b>${team.name}</b>\nPicks:\n${picks || "—"}\nBans: ${bans || "—"}`;
       })
       .join("\n\n");
+  }
+
+  // Full-series hero-picks recap for the automatic match-finished
+  // notification (Priority and Hot tiers both get this) — same
+  // team->picks textual convention as buildDraftRecap above, but pulled
+  // fresh per game across the whole series rather than just the
+  // currently-loaded game's pickBans state, since by the time a series
+  // finishes every earlier game's picks need to show up too.
+  async function buildSeriesHeroRecap(): Promise<string> {
+    if (!match?.team_a || !match?.team_b) return "";
+    const { data: seriesGames } = await supabase
+      .from("games")
+      .select("id, game_number, map")
+      .eq("match_id", match.id)
+      .order("game_number");
+    if (!seriesGames || seriesGames.length === 0) return "";
+
+    const blocks: string[] = [];
+    for (const g of seriesGames as { id: string; game_number: number; map: string | null }[]) {
+      const { data: pbs } = await supabase
+        .from("hero_picks_bans")
+        .select("team_id, hero_name, type")
+        .eq("game_id", g.id)
+        .eq("type", "pick");
+      const aPicks = (pbs ?? []).filter((pb) => pb.team_id === match.team_a!.id).map((pb) => pb.hero_name).join(", ") || "—";
+      const bPicks = (pbs ?? []).filter((pb) => pb.team_id === match.team_b!.id).map((pb) => pb.hero_name).join(", ") || "—";
+      blocks.push(`<b>Game ${g.game_number}</b>${g.map ? ` (${g.map})` : ""}\n${match.team_a!.name}: ${aPicks}\n${match.team_b!.name}: ${bPicks}`);
+    }
+    return blocks.join("\n\n");
   }
 
   // Games each team has already won, excluding whichever game is in
@@ -2713,10 +2743,15 @@ export default function LiveConsolePage() {
       }
     }
 
-    // The worker posts this automatically for Liquipedia-sourced matches,
-    // but never sees local_ocr matches at all — post it here instead so
-    // those results still reach Telegram.
+    // The worker posts these automatically for Liquipedia-sourced matches,
+    // but never sees local_ocr matches at all — post from here instead so
+    // those results still reach Telegram. notification_tier gates which of
+    // the two actually go out: per-game "result" posts are Hot-only (the
+    // spec calls this out as "no per-game update spam" for Priority);
+    // match-finished (with the hero-picks recap below) goes to both
+    // Priority and Hot. Normal tier gets neither, same as everywhere else.
     if (match.update_source === "local_ocr") {
+      const tier = match.notification_tier ?? "normal";
       const winnerName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
       const vars = {
         team_a: match.team_a?.name ?? "",
@@ -2725,17 +2760,20 @@ export default function LiveConsolePage() {
         winner: winnerName ?? "",
         timestamp: mmssTimestamp(),
       };
-      const gameMsg = telegramMessageFor(
-        "game_finish",
-        `🎮 <b>Game ${game.game_number} result</b>\nWinner: <b>${winnerName}</b>\n<b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}`,
-        vars
-      );
-      if (gameMsg) await postToTelegram(gameMsg, { entityType: "game", entityId: game.id, notificationType: "game_result" });
-      if (seriesWinner) {
+      if (tier === "hot") {
+        const gameMsg = telegramMessageFor(
+          "game_finish",
+          `🎮 <b>Game ${game.game_number} result</b>\nWinner: <b>${winnerName}</b>\n<b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}`,
+          vars
+        );
+        if (gameMsg) await postToTelegram(gameMsg, { entityType: "game", entityId: game.id, notificationType: "game_result" });
+      }
+      if (seriesWinner && (tier === "hot" || tier === "priority")) {
         const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+        const recap = await buildSeriesHeroRecap();
         const matchMsg = telegramMessageFor(
           "match_finish",
-          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}`,
+          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
           { ...vars, winner: seriesWinnerName ?? "" }
         );
         if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
@@ -2762,6 +2800,7 @@ export default function LiveConsolePage() {
       return;
     }
     if (match.update_source === "local_ocr") {
+      const tier = match.notification_tier ?? "normal";
       const seriesWinnerName = seriesWinner === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
       await supabase.from("key_moments").insert({
         game_id: game.id,
@@ -2773,18 +2812,21 @@ export default function LiveConsolePage() {
         source: "manual",
         is_key_moment: true,
       });
-      const matchMsg = telegramMessageFor(
-        "match_finish",
-        `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}`,
-        {
-          team_a: match.team_a?.name ?? "",
-          team_b: match.team_b?.name ?? "",
-          tournament: match.tournament?.name ?? "",
-          winner: seriesWinnerName ?? "",
-          timestamp: mmssTimestamp(),
-        }
-      );
-      if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
+      if (tier === "hot" || tier === "priority") {
+        const recap = await buildSeriesHeroRecap();
+        const matchMsg = telegramMessageFor(
+          "match_finish",
+          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
+          {
+            team_a: match.team_a?.name ?? "",
+            team_b: match.team_b?.name ?? "",
+            tournament: match.tournament?.name ?? "",
+            winner: seriesWinnerName ?? "",
+            timestamp: mmssTimestamp(),
+          }
+        );
+        if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
+      }
     }
     loadAll();
   }
@@ -2965,9 +3007,30 @@ export default function LiveConsolePage() {
       setError(error.message);
       return;
     }
-    // Only Hot matches get a moment log at all (Normal matches hide that
-    // section entirely — see the update_source check further down), so
-    // only they get phase transitions recorded into it.
+    // "Match started" — the Priority-tier baseline notification (Hot gets
+    // it too, alongside its own extra triggers below). The worker owns this
+    // for Liquipedia-sourced matches (scheduleSync.mjs's match_live, fired
+    // on the scheduled->live transition); it never sees local_ocr matches,
+    // so this is the equivalent moment for those — the first time the
+    // phase actually moves off MATCH_NOT_STARTED. Fires once, independent
+    // of the Hot-only granular triggers further down, and independent of
+    // whether this match even has a moment log (that's update_source-gated
+    // below, not tier-gated).
+    if (
+      match.update_source === "local_ocr" &&
+      previousState === "MATCH_NOT_STARTED" &&
+      newState !== "MATCH_NOT_STARTED" &&
+      (match.notification_tier === "priority" || match.notification_tier === "hot")
+    ) {
+      const startMsg =
+        `🟢 <b>Match started</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}` +
+        (match.youtube_url ? `\n${match.youtube_url}` : "");
+      await postToTelegram(startMsg, { entityType: "match", entityId: match.id, notificationType: "match_started" });
+    }
+
+    // Only Hot matches get a moment log at all (Normal/Priority matches
+    // hide that section entirely — see the update_source check further
+    // down), so only they get phase transitions recorded into it.
     if (game && match.update_source === "local_ocr" && newState !== previousState) {
       await supabase.from("key_moments").insert({
         game_id: game.id,
@@ -2979,14 +3042,19 @@ export default function LiveConsolePage() {
         source: "manual",
       });
 
-      // Hot matches get a handful of phase transitions auto-shared to
-      // Telegram — the worker never sees local_ocr matches at all (see the
-      // postToTelegram comment above), so nothing else announces these.
+      // Hot-TIER matches (not just Hot/local_ocr data-source ones — see the
+      // notification_tier check below) get a handful of phase transitions
+      // auto-shared to Telegram — the worker never sees local_ocr matches
+      // at all (see the postToTelegram comment above), so nothing else
+      // announces these. A local_ocr match downgraded to Priority/Normal
+      // tier still gets the moment-log entry just above, just not this
+      // Telegram spam — Priority's whole point is exactly two automatic
+      // posts (match-started, match-finished), not per-phase updates.
       // Which transitions actually post, and with what message, is
       // config-driven via the "phase_notice" rows on /admin/moment-templates
       // instead of hardcoded here — falls back to a sensible default message
       // per phase if a row exists but has no custom template text.
-      if (newState !== previousState && game) {
+      if (newState !== previousState && game && match.notification_tier === "hot") {
         const noticeTemplate = momentTemplates.find((t) => t.type === "phase_notice" && t.phase === newState);
         const header = `${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`;
         const DEFAULT_PHASE_MESSAGES: Record<string, string> = {

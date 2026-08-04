@@ -14,6 +14,7 @@ type MatchRow = {
   scheduled_at: string | null;
   format: string | null;
   update_source: "liquipedia" | "local_ocr";
+  notification_tier: "normal" | "hot" | "priority";
   tournament: { name: string; tier: string; liquipedia_slug: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
@@ -22,7 +23,7 @@ type GameRow = { match_id: string; winner_team_id: string | null };
 
 // Same fields as the home page's own MATCH_SELECT — this page reuses the
 // home page's match-card component, so it needs the same data to render it.
-const MATCH_SELECT = `id, status, scheduled_at, format, update_source,
+const MATCH_SELECT = `id, status, scheduled_at, format, update_source, notification_tier,
   tournament:tournaments(name, tier, liquipedia_slug),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
@@ -166,6 +167,7 @@ function MatchesPageInner() {
               tournamentName={m.tournament?.name}
               tournamentSlug={m.tournament?.liquipedia_slug}
               updateSource={m.update_source}
+              notificationTier={m.notification_tier}
             />
           ))}
           {list.length === 0 && <p className="text-white/30 text-sm text-center py-8">No matches here.</p>}

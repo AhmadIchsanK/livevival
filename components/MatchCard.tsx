@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HotBadge } from "@/components/HotBadge";
+import { TierBadge } from "@/components/TierBadge";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 
 type CardTeam = { name: string | null | undefined; logo_url?: string | null } | null | undefined;
@@ -23,6 +24,7 @@ export function MatchCard({
   tournamentName,
   tournamentSlug,
   updateSource,
+  notificationTier,
 }: {
   href: string;
   status: string;
@@ -37,6 +39,9 @@ export function MatchCard({
   tournamentName?: string | null;
   tournamentSlug?: string | null;
   updateSource?: "liquipedia" | "local_ocr";
+  // notification_tier — a separate axis from updateSource above (see
+  // TierBadge.tsx). Optional since not every caller has loaded it.
+  notificationTier?: "normal" | "hot" | "priority" | null;
 }) {
   const scoreLabel = score ? `${score.a}–${score.b}` : null;
   const isFinished = status === "finished";
@@ -55,6 +60,7 @@ export function MatchCard({
         <div className="flex items-center gap-2">
           <p className="lv-badge-live">Live</p>
           <HotBadge updateSource={updateSource ?? "liquipedia"} />
+          <TierBadge tier={notificationTier} updateSource={updateSource} />
         </div>
       )}
 
@@ -90,6 +96,7 @@ export function MatchCard({
         scheduledAt={scheduledAt}
         showHot={!isLive}
         updateSource={updateSource}
+        notificationTier={notificationTier}
       />
     </a>
   );
@@ -103,6 +110,7 @@ function MatchCardMeta({
   scheduledAt,
   showHot,
   updateSource,
+  notificationTier,
 }: {
   tournamentName?: string | null;
   tournamentSlug?: string | null;
@@ -111,6 +119,7 @@ function MatchCardMeta({
   scheduledAt?: string | null;
   showHot: boolean;
   updateSource?: "liquipedia" | "local_ocr";
+  notificationTier?: "normal" | "hot" | "priority" | null;
 }) {
   const bits: ReactNode[] = [];
   if (tournamentName) {
@@ -148,7 +157,12 @@ function MatchCardMeta({
           ))}
         </p>
       )}
-      {showHot && updateSource && <HotBadge updateSource={updateSource} />}
+      {showHot && (
+        <div className="flex items-center gap-1.5">
+          {updateSource && <HotBadge updateSource={updateSource} />}
+          <TierBadge tier={notificationTier} updateSource={updateSource} />
+        </div>
+      )}
     </div>
   );
 }

@@ -21,6 +21,7 @@ type Match = {
   youtube_url: string | null;
   series_winner_team_id: string | null;
   update_source: "liquipedia" | "local_ocr";
+  notification_tier: "normal" | "hot" | "priority";
   scheduled_at: string | null;
   countdown_seconds: number | null;
   countdown_updated_at: string | null;
@@ -208,7 +209,7 @@ export default function PublicMatchPage() {
     const { data: matchData, error: matchError } = await supabase
       .from("matches")
       .select(
-        `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source, scheduled_at,
+        `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source, notification_tier, scheduled_at,
          countdown_seconds, countdown_updated_at, draft_timer_a_seconds, draft_timer_b_seconds, draft_timer_updated_at,
          tournament:tournaments(name, tier, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
@@ -727,6 +728,26 @@ export default function PublicMatchPage() {
               title="Fully admin-tracked: live KDA, items, and moment log"
             >
               🔥 HOT
+            </span>
+          )}
+          {/* notification_tier badge — separate axis from update_source
+              above (see the migration comment). Hot only shows its own
+              badge here when it disagrees with update_source, to avoid
+              repeating the 🔥 HOT badge. */}
+          {match.notification_tier === "priority" && (
+            <span
+              className="lv-badge bg-amber-400/20 text-amber-300 border border-amber-400/40"
+              title="Priority notifications: automatic match-started and match-finished alerts"
+            >
+              🔔 PRIORITY
+            </span>
+          )}
+          {match.notification_tier === "hot" && match.update_source !== "local_ocr" && (
+            <span
+              className="lv-badge bg-signal/20 text-signal border border-signal/40"
+              title="Hot notification tier: full automatic Telegram/Slack alerts"
+            >
+              🔥 HOT ALERTS
             </span>
           )}
           {match.status === "live" && (

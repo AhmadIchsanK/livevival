@@ -115,6 +115,7 @@ type Match = {
   state: string;
   stream_id: string | null;
   update_source: "liquipedia" | "local_ocr";
+  notification_tier: "normal" | "hot" | "priority";
   tournament_id: string | null;
   team_a_id: string | null;
   team_b_id: string | null;
@@ -240,7 +241,7 @@ export default function MatchesPage() {
     let query = supabase
       .from("matches")
       .select(
-        `id, scheduled_at, format, status, youtube_url, state, stream_id, update_source,
+        `id, scheduled_at, format, status, youtube_url, state, stream_id, update_source, notification_tier,
          tournament_id, team_a_id, team_b_id,
          tournament:tournaments(name),
          team_a:teams!matches_team_a_id_fkey(name),
@@ -315,6 +316,7 @@ export default function MatchesPage() {
       youtube_url: string;
       stream_id: string | null;
       update_source: "liquipedia" | "local_ocr";
+      notification_tier: "normal" | "hot" | "priority";
       tournament_id: string;
       team_a_id: string;
       team_b_id: string;
@@ -760,6 +762,28 @@ export default function MatchesPage() {
                 >
                   <option value="liquipedia">📡 Normal match</option>
                   <option value="local_ocr">🔥 Hot match</option>
+                </select>
+                {/* notification_tier is a separate axis from update_source
+                    above (which governs where live DATA comes from) — this
+                    governs automatic Telegram/Slack traffic only. Normal:
+                    none. Priority: match-started + match-finished, nothing
+                    else. Hot: those two plus every existing Hot-match
+                    trigger (game-result, draft-complete, etc.). */}
+                <select
+                  value={m.notification_tier}
+                  onChange={(e) => updateMatch(m.id, { notification_tier: e.target.value as "normal" | "hot" | "priority" })}
+                  title="Notification tier — separate from the data-source toggle above. Normal: no automatic Telegram/Slack posts. Priority (🔔): match-started + match-finished only. Hot: those two plus every other automatic trigger."
+                  className={`text-xs rounded px-2 py-1.5 border ${
+                    m.notification_tier === "hot"
+                      ? "border-signal/50 text-signal bg-white/10"
+                      : m.notification_tier === "priority"
+                      ? "border-amber-400/50 text-amber-300 bg-white/10"
+                      : "border-white/10 text-white/50 bg-white/10"
+                  }`}
+                >
+                  <option value="normal">🔕 Normal notifications</option>
+                  <option value="priority">🔔 Priority notifications</option>
+                  <option value="hot">🔥 Hot notifications</option>
                 </select>
               </div>
 

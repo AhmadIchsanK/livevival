@@ -15,6 +15,7 @@ type MatchRow = {
   scheduled_at: string | null;
   format: string | null;
   update_source: "liquipedia" | "local_ocr";
+  notification_tier: "normal" | "hot" | "priority";
   tournament: { name: string; tier: string; liquipedia_slug: string | null; logo_url: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
@@ -25,14 +26,17 @@ const PAGE_SIZE = 30;
 const UPCOMING_DAYS_RANGE = 30;
 const FINISHED_FETCH_CAP = 300; // generous, but bounded — see note below
 
-const MATCH_SELECT = `id, status, scheduled_at, format, update_source,
+const MATCH_SELECT = `id, status, scheduled_at, format, update_source, notification_tier,
   tournament:tournaments(name, tier, liquipedia_slug, logo_url),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
 
 // Hot = fully admin/OCR-controlled (KDA, items, moment log all available).
 // Normal = Liquipedia auto-sync only (score, picks/bans, VOD). Shown so
-// fans know which matches will have the deeper coverage.
+// fans know which matches will have the deeper coverage. Separate from —
+// and shown alongside — the notification_tier badge below: this one is
+// about depth of on-site coverage, that one is about who gets Telegram/
+// Slack pinged.
 function HotBadge({ updateSource }: { updateSource: "liquipedia" | "local_ocr" }) {
   if (updateSource !== "local_ocr") return null;
   return (
@@ -40,6 +44,29 @@ function HotBadge({ updateSource }: { updateSource: "liquipedia" | "local_ocr" }
       🔥 HOT
     </span>
   );
+}
+
+// notification_tier badge — independent axis from update_source above (see
+// the migration). Priority gets a bell (🔔) per spec. Hot only gets its own
+// badge here when it *disagrees* with update_source (a Liquipedia-synced
+// match manually escalated to Hot notifications without switching to OCR
+// capture) — otherwise it would just repeat the 🔥 HOT badge above.
+function TierBadge({ tier, updateSource }: { tier: "normal" | "hot" | "priority"; updateSource: "liquipedia" | "local_ocr" }) {
+  if (tier === "priority") {
+    return (
+      <span className="lv-badge bg-amber-400/20 text-amber-300 border border-amber-400/40 shrink-0" title="Priority notifications: automatic match-started and match-finished alerts">
+        🔔 PRIORITY
+      </span>
+    );
+  }
+  if (tier === "hot" && updateSource !== "local_ocr") {
+    return (
+      <span className="lv-badge bg-signal/20 text-signal border border-signal/40 shrink-0" title="Hot notification tier: full automatic Telegram/Slack alerts">
+        🔥 HOT ALERTS
+      </span>
+    );
+  }
+  return null;
 }
 
 function dateKey(iso: string) {
@@ -196,6 +223,7 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
       <div className="flex items-center gap-2 mb-3">
         <p className="lv-badge-live">Live</p>
         <HotBadge updateSource={m.update_source} />
+        <TierBadge tier={m.notification_tier} updateSource={m.update_source} />
       </div>
       {/* Grid with two equal 1fr columns — keeps the score dead-center
           regardless of the two team names' relative length, instead of a
@@ -399,6 +427,12 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                     <p className="text-[11px] text-white/40 truncate text-center">
                       {m.tournament?.name} · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
+                    {(m.update_source === "local_ocr" || m.notification_tier !== "normal") && (
+                      <div className="flex justify-center gap-1.5">
+                        <HotBadge updateSource={m.update_source} />
+                        <TierBadge tier={m.notification_tier} updateSource={m.update_source} />
+                      </div>
+                    )}
                     {m.scheduled_at && <MatchCountdown scheduledAt={m.scheduled_at} now={now} />}
                   </a>
                 ))}
@@ -463,7 +497,11 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   · {m.tournament?.tier}-Tier · {m.format}
                   {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
                 </p>
-                <HotBadge updateSource={m.update_source} />
+                <div className="flex gap-1.5">
+                  <HotBadge updateSource={m.update_source} />
+                  <TierBadge tier={m.notification_tier} updateSource={m.update_source} />
+                </div>
+        <TierBadge tier={m.notification_tier} updateSource={m.update_source} />
               </div>
             </a>
           );

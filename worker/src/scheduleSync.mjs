@@ -124,7 +124,7 @@ export async function syncTournamentSchedule(tournament, html) {
 
     const { data: existing } = await supabase
       .from("matches")
-      .select("id, status, update_source")
+      .select("id, status, update_source, notification_tier")
       .eq("liquipedia_match_key", key)
       .maybeSingle();
 
@@ -153,27 +153,23 @@ export async function syncTournamentSchedule(tournament, html) {
       if (error) console.error(`Failed to update match schedule: ${error.message}`);
     }
 
-    if (payload.status === "live" && existing.status === "scheduled") {
+    // notification_tier (a separate axis from update_source — see the
+    // migration and worker/README) gates every automatic notification
+    // below: 'normal' (the default) sends none at all, 'priority' and
+    // 'hot' both get exactly one "match started" post the moment a match
+    // flips scheduled -> live, stream link included if one's known yet.
+    // The old unconditional 15-minute-before reminder is retired in favor
+    // of this — neither tier the spec calls for wants it (Priority
+    // explicitly not; Hot never had it, since Hot matches were always
+    // local_ocr and skipped by this function entirely until tiers existed).
+    const tier = existing.notification_tier ?? "normal";
+    if (payload.status === "live" && existing.status === "scheduled" && tier !== "normal") {
       await notifyOnce(
         "match",
         existing.id,
         "match_live",
         `🔴 <b>LIVE NOW</b>\n${m.teamAName} vs ${m.teamBName}\n${tournament.name}` +
           (linkUrl ? `\n${linkUrl}` : "")
-      );
-    }
-
-    // "Upcoming match" reminder — fires once, for matches still scheduled
-    // and starting within the next 15 minutes. Uses the same
-    // notifyOnce/telegram_notifications dedup as every other notification
-    // type, so it's safe to re-evaluate on every tick without spamming.
-    const minutesUntilStart = (m.timestamp * 1000 - Date.now()) / 60000;
-    if (!m.finished && existing.status === "scheduled" && minutesUntilStart > 0 && minutesUntilStart <= 15) {
-      await notifyOnce(
-        "match",
-        existing.id,
-        "match_reminder",
-        `⏰ <b>Starting soon</b> (~${Math.max(1, Math.round(minutesUntilStart))} min)\n${m.teamAName} vs ${m.teamBName}\n${tournament.name}`
       );
     }
   }

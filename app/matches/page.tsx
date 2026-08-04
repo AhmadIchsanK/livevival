@@ -13,13 +13,14 @@ type MatchRow = {
   status: string;
   scheduled_at: string | null;
   update_source: "liquipedia" | "local_ocr";
+  notification_tier: "normal" | "hot" | "priority";
   tournament: { name: string } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
 };
 type GameRow = { match_id: string; winner_team_id: string | null };
 
-const MATCH_SELECT = `id, status, scheduled_at, update_source,
+const MATCH_SELECT = `id, status, scheduled_at, update_source, notification_tier,
   tournament:tournaments(name),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
@@ -42,6 +43,27 @@ function HotBadge({ updateSource }: { updateSource: "liquipedia" | "local_ocr" }
   );
 }
 
+// notification_tier badge — a separate axis from update_source (see the
+// migration comment). Hot only shows its own badge here when it disagrees
+// with update_source, to avoid repeating the 🔥 HOT badge above.
+function TierBadge({ tier, updateSource }: { tier: "normal" | "hot" | "priority"; updateSource: "liquipedia" | "local_ocr" }) {
+  if (tier === "priority") {
+    return (
+      <span className="lv-badge bg-amber-400/20 text-amber-300 border border-amber-400/40 shrink-0" title="Priority notifications: automatic match-started and match-finished alerts">
+        🔔 PRIORITY
+      </span>
+    );
+  }
+  if (tier === "hot" && updateSource !== "local_ocr") {
+    return (
+      <span className="lv-badge bg-signal/20 text-signal border border-signal/40 shrink-0" title="Hot notification tier: full automatic Telegram/Slack alerts">
+        🔥 HOT ALERTS
+      </span>
+    );
+  }
+  return null;
+}
+
 function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: number } }) {
   return (
     <a href={`/match/${m.id}`} className="lv-card-flush flex items-center justify-between gap-4 p-4 hover:border-signal/40 transition-colors">
@@ -59,6 +81,7 @@ function MatchRowCard({ m, score }: { m: MatchRow; score?: { a: number; b: numbe
           </span>
         )}
         <HotBadge updateSource={m.update_source} />
+        <TierBadge tier={m.notification_tier} updateSource={m.update_source} />
         <span className="text-xs text-white/40 hidden sm:inline">{m.tournament?.name}</span>
         <span className="text-xs text-white/40 tabular-nums">
           {m.scheduled_at ? new Date(m.scheduled_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}

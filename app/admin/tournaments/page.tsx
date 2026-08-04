@@ -15,6 +15,7 @@ type Tournament = {
   logo_url: string | null;
   fmvp_player_id: string | null;
   fmvp_player: { ign: string } | null;
+  default_notification_tier: "normal" | "hot" | "priority";
 };
 
 type Status = "ongoing" | "upcoming" | "completed";
@@ -64,9 +65,34 @@ export default function TournamentsAdminPage() {
   async function loadTournaments() {
     const { data } = await supabase
       .from("tournaments")
-      .select("id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, fmvp_player_id, fmvp_player:players(ign)")
+      .select(
+        "id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, fmvp_player_id, fmvp_player:players(ign), default_notification_tier"
+      )
       .order("start_date", { ascending: false, nullsFirst: false });
     setTournaments((data as unknown as Tournament[]) ?? []);
+  }
+
+  // Changing a tournament's default cascades to its matches — but only
+  // future/in-progress ones (status != 'finished'); an already-finished
+  // match's notification history shouldn't be reinterpreted retroactively,
+  // and there's nothing left to notify about for it anyway.
+  const [cascadingTierId, setCascadingTierId] = useState<string | null>(null);
+  async function changeDefaultTier(id: string, tier: "normal" | "hot" | "priority") {
+    setCascadingTierId(id);
+    setTournaments((prev) => prev.map((t) => (t.id === id ? { ...t, default_notification_tier: tier } : t)));
+    const { error: tError } = await supabase.from("tournaments").update({ default_notification_tier: tier }).eq("id", id);
+    if (tError) {
+      setError(tError.message);
+      setCascadingTierId(null);
+      return;
+    }
+    const { error: mError } = await supabase
+      .from("matches")
+      .update({ notification_tier: tier })
+      .eq("tournament_id", id)
+      .neq("status", "finished");
+    if (mError) setError(mError.message);
+    setCascadingTierId(null);
   }
 
   useEffect(() => {
@@ -384,6 +410,9 @@ export default function TournamentsAdminPage() {
                   <th className="font-normal pb-2">Tier</th>
                   <th className="font-normal pb-2">Dates</th>
                   <th className="font-normal pb-2">Slug</th>
+                  <th className="font-normal pb-2" title="Default notification tier for new matches — changing it also cascades to this tournament's future/in-progress matches (finished ones are left alone).">
+                    Notifications
+                  </th>
                   <th className="font-normal pb-2 text-right">Actions</th>
                 </tr>
               </thead>
@@ -445,6 +474,7 @@ export default function TournamentsAdminPage() {
                             ))}
                           </datalist>
                         </td>
+                        <td className="py-2" />
                         <td className="py-2 text-right space-x-2">
                           <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
                             Save
@@ -479,6 +509,25 @@ export default function TournamentsAdminPage() {
                           {t.liquipedia_slug ?? "—"}
                           {t.fmvp_player?.ign && <div className="text-white/30">FMVP: {t.fmvp_player.ign}</div>}
                         </td>
+                        <td className="py-2">
+                          <select
+                            value={t.default_notification_tier}
+                            disabled={cascadingTierId === t.id}
+                            onChange={(e) => changeDefaultTier(t.id, e.target.value as "normal" | "hot" | "priority")}
+                            title="New matches for this tournament default to this tier. Changing it also updates every future/in-progress match already created here (finished matches are never touched)."
+                            className={`text-xs rounded px-2 py-1 border disabled:opacity-40 ${
+                              t.default_notification_tier === "hot"
+                                ? "border-signal/50 text-signal bg-white/10"
+                                : t.default_notification_tier === "priority"
+                                ? "border-amber-400/50 text-amber-300 bg-white/10"
+                                : "border-white/10 text-white/50 bg-white/10"
+                            }`}
+                          >
+                            <option value="normal">🔕 Normal</option>
+                            <option value="priority">🔔 Priority</option>
+                            <option value="hot">🔥 Hot</option>
+                          </select>
+                        </td>
                         <td className="py-2 text-right space-x-2">
                           <button
                             onClick={() => startEdit(t)}
@@ -499,7 +548,7 @@ export default function TournamentsAdminPage() {
                 ))}
                 {items.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="py-4 text-white/30 text-center">
+                    <td colSpan={7} className="py-4 text-white/30 text-center">
                       None.
                     </td>
                   </tr>

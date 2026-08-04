@@ -9,6 +9,8 @@ import { NavMenu } from "@/components/NavMenu";
 import { PlayerCountryFlag } from "@/components/PlayerCountryFlag";
 import { PlayerLinks } from "@/components/PlayerLinks";
 import { countryCodeToFlagEmoji, countryCodeToName } from "@/lib/countryFlag";
+import { ViewToggle } from "@/components/ViewToggle";
+import { useViewMode } from "@/lib/useViewMode";
 
 type Player = {
   id: string;
@@ -40,6 +42,7 @@ function PlayersIndexPageInner() {
   const [roleFilter, setRoleFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
   const [preview, setPreview] = useState<Player | null>(null);
+  const [view, setView] = useViewMode("lv-view-players");
 
   useEffect(() => {
     async function load() {
@@ -114,11 +117,12 @@ function PlayersIndexPageInner() {
           <option value="name_desc">Name Z→A</option>
           <option value="team_asc">Team A→Z</option>
         </select>
+        <ViewToggle mode={view} onChange={setView} />
       </div>
 
       {loading && <p className="text-white/40 text-sm">Loading...</p>}
 
-      {!loading && (
+      {!loading && view === "grid" && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {visible.map((p) => (
             <button
@@ -151,6 +155,57 @@ function PlayersIndexPageInner() {
             </button>
           ))}
           {visible.length === 0 && <p className="text-white/30 text-sm col-span-full">No players match.</p>}
+        </div>
+      )}
+
+      {!loading && view === "list" && (
+        <div className="lv-card-flush overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="text-white/40 text-left bg-white/[0.03]">
+              <tr>
+                <th className="pb-2 pt-3 px-4">Player</th>
+                <th className="pb-2 pt-3 px-4">Role</th>
+                <th className="pb-2 pt-3 px-4">Team</th>
+                <th className="pb-2 pt-3 px-4">Nationality</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((p) => (
+                <tr
+                  key={p.id}
+                  onClick={() => setPreview(p)}
+                  className="border-t border-white/10 hover:bg-white/[0.03] transition-colors cursor-pointer"
+                >
+                  <td className="py-2 px-4">
+                    <div className="flex items-center gap-2.5">
+                      <TeamLogo url={p.photo_url} size="sm" />
+                      <div>
+                        <p className="font-semibold leading-tight">{p.ign}</p>
+                        {p.real_name && <p className="text-[11px] text-white/40 leading-tight">{p.real_name}</p>}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-2 px-4 text-white/50 text-xs uppercase tracking-wide">{p.role ?? "—"}</td>
+                  <td className="py-2 px-4">
+                    {p.team ? (
+                      <div className="flex items-center gap-1.5">
+                        <TeamLogo url={p.team.logo_url} size="sm" />
+                        <span className="text-white/60 truncate">{p.team.name}</span>
+                      </div>
+                    ) : (
+                      <span className="text-white/30">—</span>
+                    )}
+                  </td>
+                  <td className="py-2 px-4 text-white/60">
+                    {p.country_codes && p.country_codes.length > 0
+                      ? p.country_codes.map(countryCodeToFlagEmoji).join("")
+                      : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {visible.length === 0 && <p className="text-white/30 text-sm px-4 py-6">No players match.</p>}
         </div>
       )}
 

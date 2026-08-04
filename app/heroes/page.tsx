@@ -6,6 +6,8 @@ import { supabase } from "@/lib/supabaseClient";
 import { HeroIcon } from "@/components/HeroIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
+import { ViewToggle } from "@/components/ViewToggle";
+import { useViewMode } from "@/lib/useViewMode";
 
 type Hero = { id: string; name: string; role: string | null; icon_url: string | null };
 type SortKey = "name_asc" | "name_desc";
@@ -25,6 +27,7 @@ function HeroesIndexPageInner() {
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [roleFilter, setRoleFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
+  const [view, setView] = useViewMode("lv-view-heroes");
 
   useEffect(() => {
     async function load() {
@@ -92,11 +95,12 @@ function HeroesIndexPageInner() {
           <option value="name_asc">Name A→Z</option>
           <option value="name_desc">Name Z→A</option>
         </select>
+        <ViewToggle mode={view} onChange={setView} />
       </div>
 
       {loading && <p className="text-white/40 text-sm">Loading...</p>}
 
-      {!loading && (
+      {!loading && view === "grid" && (
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">
           {visible.map((h) => (
             <div key={h.id} className="lv-card flex flex-col items-center gap-2 px-3 py-4 text-center">
@@ -106,6 +110,33 @@ function HeroesIndexPageInner() {
             </div>
           ))}
           {visible.length === 0 && <p className="text-white/30 text-sm col-span-full">No heroes match.</p>}
+        </div>
+      )}
+
+      {!loading && view === "list" && (
+        <div className="lv-card-flush overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="text-white/40 text-left bg-white/[0.03]">
+              <tr>
+                <th className="pb-2 pt-3 px-4">Hero</th>
+                <th className="pb-2 pt-3 px-4">Role</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((h) => (
+                <tr key={h.id} className="border-t border-white/10 hover:bg-white/[0.03] transition-colors">
+                  <td className="py-2 px-4">
+                    <div className="flex items-center gap-2.5">
+                      <HeroIcon url={h.icon_url} name={h.name} size="xs" />
+                      <span className="font-semibold">{h.name}</span>
+                    </div>
+                  </td>
+                  <td className="py-2 px-4 text-white/50 text-xs uppercase tracking-wide">{h.role ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {visible.length === 0 && <p className="text-white/30 text-sm px-4 py-6">No heroes match.</p>}
         </div>
       )}
     </main>

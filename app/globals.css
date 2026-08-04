@@ -14,12 +14,19 @@
     --color-paper: 255 255 255; /* #FFFFFF */
     --color-white: 255 255 255;
     --bg-glow-opacity: 1;
+    /* Native form controls (a <select>'s dropdown popup, scrollbars, etc.)
+       otherwise default to the browser's own light chrome regardless of
+       our own dark theme — the <option> text still inherits our white
+       color, so every dropdown option was rendering white-on-white except
+       whichever one the browser's own hover highlight was covering. */
+    color-scheme: dark;
   }
   .light {
     --color-ink: 250 250 251; /* near-white background */
     --color-paper: 10 10 10; /* near-black text on the light background */
     --color-white: 10 10 10; /* every bg-white/NN & text-white/NN becomes dark-on-light */
     --bg-glow-opacity: 0.4; /* the red ambient glow is subtler on a light page */
+    color-scheme: light;
   }
 
   * {

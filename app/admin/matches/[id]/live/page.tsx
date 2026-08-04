@@ -144,6 +144,13 @@ export default function LiveConsolePage() {
   const [match, setMatch] = useState<Match | null>(null);
   const [game, setGame] = useState<Game | null>(null);
   const [pastGames, setPastGames] = useState<FinishedGame[]>([]);
+  // Which game_number the console is actually viewing/editing — defaults to
+  // the match's live current_game_number on first load, but the admin can
+  // switch it to any finished/ongoing/upcoming game via the selector below.
+  // Everything that operates on "game" (moment list, scoreboard, hero
+  // picks/bans, net worth, screenshots) follows whichever one this is set
+  // to, not necessarily the live one.
+  const [selectedGameNumber, setSelectedGameNumber] = useState<number | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [pickBans, setPickBans] = useState<PickBan[]>([]);
   const [stats, setStats] = useState<PlayerStat[]>([]);
@@ -249,17 +256,28 @@ export default function LiveConsolePage() {
     const m = matchData as unknown as Match;
     setMatch(m);
 
+    // First load has no explicit selection yet — default to the match's
+    // live game, same as before this selector existed. Once the admin
+    // picks a different one, reloads (loadAll re-runs after every write)
+    // keep following that choice instead of snapping back to current.
+    const targetGameNumber = selectedGameNumber ?? m.current_game_number;
+    if (selectedGameNumber === null) setSelectedGameNumber(m.current_game_number);
+
     let { data: gameRow } = await supabase
       .from("games")
       .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override")
       .eq("match_id", matchId)
-      .eq("game_number", m.current_game_number)
+      .eq("game_number", targetGameNumber)
       .maybeSingle();
 
     if (!gameRow) {
+      // Only the live game_number starts "live" — anything else picked
+      // from the selector before it's actually been reached is a genuine
+      // placeholder (an admin pre-staging a future game's picks/bans),
+      // not something the public page should treat as in progress.
       const { data: created, error: createErr } = await supabase
         .from("games")
-        .insert({ match_id: matchId, game_number: m.current_game_number, status: "live" })
+        .insert({ match_id: matchId, game_number: targetGameNumber, status: targetGameNumber === m.current_game_number ? "live" : "scheduled" })
         .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override")
         .single();
       if (createErr) {
@@ -302,7 +320,7 @@ export default function LiveConsolePage() {
       setScreenshots((ss as Screenshot[]) ?? []);
       setNetWorth((nw as NetWorthSnapshot[]) ?? []);
     }
-  }, [matchId]);
+  }, [matchId, selectedGameNumber]);
 
   useEffect(() => {
     loadAll();
@@ -532,7 +550,7 @@ export default function LiveConsolePage() {
         table: "player_stats",
         action: "insert",
         before: null,
-        after: { game_id: game.id, player_id: playerId, kills: null, deaths: null, assists: null } as unknown as Record<string, unknown>,
+        after: { game_id: game.id, match_id: matchId, player_id: playerId, kills: null, deaths: null, assists: null } as unknown as Record<string, unknown>,
       });
       setStats((prev) => [...prev, newRow]);
       return newRow;
@@ -540,10 +558,14 @@ export default function LiveConsolePage() {
     // Explicit nulls, not the table's own default-0 — a freshly-created row
     // (e.g. from syncing a draft pick's hero) should read TBD until kills/
     // deaths/assists actually get set, not silently show "0" for a stat
-    // nobody's entered yet.
+    // nobody's entered yet. match_id is required too — the public match
+    // page's player_stats query filters on it (as does its realtime
+    // subscription), so a row missing it was invisible there forever, not
+    // just delayed, even though the admin console itself never noticed
+    // since its own query only filters on game_id.
     const { data } = await supabase
       .from("player_stats")
-      .insert({ game_id: game.id, player_id: playerId, kills: null, deaths: null, assists: null })
+      .insert({ game_id: game.id, match_id: matchId, player_id: playerId, kills: null, deaths: null, assists: null })
       .select("id, player_id, hero_name, kills, deaths, assists, gold")
       .single();
     if (data) setStats((prev) => [...prev, data as PlayerStat]);
@@ -1419,6 +1441,43 @@ export default function LiveConsolePage() {
   function stopDraftSimulation() {
     setDraftSim(null);
     setSimHeroSearch("");
+  }
+  // Rewinds exactly one step — the last-logged hero_picks_bans row (highest
+  // pick_order for this game) plus the matching auto-logged Moment list
+  // entry, both fetched fresh from the DB rather than trusting client
+  // state, since pick_order is the actual source of truth for "last."
+  // Repeatable back to stepIndex 0 (undo does nothing before the first
+  // pick/ban of the draft).
+  async function undoLastDraftStep() {
+    if (!draftSim || !game || draftSim.stepIndex === 0) return;
+    const lastCommitted = draftSim.committed[draftSim.committed.length - 1];
+    if (!lastCommitted) return;
+    if (!confirm(`Undo "${lastCommitted.heroName}" (${lastCommitted.type})? This removes it from Hero picks & bans and the Moment list.`)) return;
+
+    const { data: lastPb } = await supabase
+      .from("hero_picks_bans")
+      .select("id")
+      .eq("game_id", game.id)
+      .order("pick_order", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastPb) await supabase.from("hero_picks_bans").delete().eq("id", (lastPb as { id: string }).id);
+
+    const { data: lastKm } = await supabase
+      .from("key_moments")
+      .select("id")
+      .eq("game_id", game.id)
+      .eq("type", lastCommitted.type)
+      .eq("team_id", lastCommitted.teamId)
+      .eq("source", "auto")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (lastKm) await supabase.from("key_moments").delete().eq("id", (lastKm as { id: string }).id);
+
+    setDraftSim({ ...draftSim, stepIndex: draftSim.stepIndex - 1, committed: draftSim.committed.slice(0, -1) });
+    setSimHeroSearch("");
+    loadAll();
   }
   async function resetDraftSimulation() {
     if (!game) return;
@@ -3243,10 +3302,54 @@ export default function LiveConsolePage() {
         </div>
       )}
 
+      {/* Game selector — everything below (moment list, scoreboard, hero
+          picks/bans, net worth, screenshots) operates on whichever game is
+          selected here, not necessarily the live one. Lets an admin fix up
+          a finished game's data, or stage picks for a game that hasn't
+          started yet, without that game ever having been "current". */}
+      {game && (() => {
+        const MAX_GAMES_FOR_FORMAT: Record<string, number> = { BO1: 1, BO2: 2, BO3: 3, BO5: 5, BO7: 7 };
+        const maxGames = MAX_GAMES_FOR_FORMAT[match.format ?? "BO3"] ?? 3;
+        const knownNumbers = new Set([...pastGames.map((g) => g.game_number), game.game_number]);
+        const allNumbers = Array.from({ length: Math.max(maxGames, ...knownNumbers) }, (_, i) => i + 1);
+        const gameLabel = (n: number) => {
+          if (n === match.current_game_number) return `Game ${n} — Live`;
+          const found = pastGames.find((g) => g.game_number === n);
+          if (found?.winner_team_id) {
+            const winnerName = found.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+            return `Game ${n} — Finished (${winnerName})`;
+          }
+          if (found) return `Game ${n} — Finished`;
+          if (n === game.game_number) return `Game ${n} — Editing`;
+          return `Game ${n} — Upcoming`;
+        };
+        return (
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="text-xs text-white/50">Viewing / editing</label>
+            <select
+              value={game.game_number}
+              onChange={(e) => setSelectedGameNumber(Number(e.target.value))}
+              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
+            >
+              {allNumbers.map((n) => (
+                <option key={n} value={n}>
+                  {gameLabel(n)}
+                </option>
+              ))}
+            </select>
+            {game.game_number !== match.current_game_number && (
+              <span className="lv-badge bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                Not the live game — phase controls below still act on the live match state
+              </span>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Game history — the per-game results that previously showed nowhere in this console */}
       {pastGames.length > 0 && (
         <section className="space-y-2">
-          <h2 className="font-bold text-sm text-white/60">Previous games</h2>
+          <h2 className="font-bold text-sm text-white/60">Other games</h2>
           <div className="flex flex-wrap gap-2 text-xs">
             {pastGames.map((g) => (
               <span key={g.id} className="px-3 py-1.5 rounded bg-white/5 border border-white/10 inline-flex items-center gap-1.5">
@@ -3504,11 +3607,12 @@ export default function LiveConsolePage() {
             )}
           </div>
         )}
-        {/* Vertical, not a wrapping row of chips — sized to show ~10
-            moments before scrolling, newest first (the query orders by
-            minute_mark ascending, so this reverses it for display), same
-            pattern as the public page's own Moment list. */}
-        <div className="flex flex-col gap-1.5 text-xs max-h-[420px] overflow-y-auto pr-1">
+        {/* Vertical, not a wrapping row of chips — sized to show ~6
+            moments before scrolling (a tall unbounded list was pushing
+            everything below it too far down the page), newest first (the
+            query orders by minute_mark ascending, so this reverses it for
+            display), same pattern as the public page's own Moment list. */}
+        <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
           {[...keyMoments].reverse().map((km) => {
             const player = players.find((p) => p.id === km.player_id);
             const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
@@ -3793,6 +3897,14 @@ export default function LiveConsolePage() {
                     <span className="text-white/30 text-xs"> ({draftSim.stepIndex + 1}/{DRAFT_SEQUENCE.length})</span>
                   </p>
                   <div className="flex gap-2">
+                    <button
+                      onClick={undoLastDraftStep}
+                      disabled={draftSim.stepIndex === 0}
+                      title="Undo the last pick/ban — removes it from Hero picks & bans and the Moment list"
+                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      ↩ Undo
+                    </button>
                     <button onClick={stopDraftSimulation} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
                       Stop
                     </button>

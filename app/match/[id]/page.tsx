@@ -46,6 +46,32 @@ const PHASE_LABELS: Record<string, string> = {
   SERIES_FINISHED: "Match finished",
   TECHNICAL_PAUSE: "Technical pause",
 };
+
+// The site owner's "One page. Three layouts." spec, expressed as a pure
+// function of match.state — nothing here reads component state, so it's
+// automatically correct on every Realtime-driven re-render with no extra
+// effect/mount logic of its own. Three buckets over the match_state enum
+// (MATCH_NOT_STARTED, DRAFT_STARTED, DRAFT_COMPLETE, GAME_STARTED,
+// GAME_FINISHED, SERIES_FINISHED, TECHNICAL_PAUSE, CUSTOM — same set the
+// admin live console uses):
+//  - "draft": MATCH_NOT_STARTED (nothing to show yet, pre-draft), plus the
+//    two actual draft states. Grouping MATCH_NOT_STARTED here (rather than
+//    a 4th bucket) matches what data exists at that point — no picks, no
+//    scoreboard, nothing "game" about it yet.
+//  - "game": GAME_STARTED, TECHNICAL_PAUSE, CUSTOM, and GAME_FINISHED — the
+//    last one is the "waiting for the next game" in-between state once one
+//    game of a Bo3+ ends but the series hasn't (mirrors this file's own
+//    existing per-game vs per-series split: games.winner_team_id vs
+//    match.series_winner_team_id). It still has a scoreboard worth showing
+//    (the just-finished game's), so it stays in "game" rather than jumping
+//    to "draft" or "finished".
+//  - "finished": SERIES_FINISHED only — the one state that's actually terminal.
+type LayoutBucket = "draft" | "game" | "finished";
+function layoutBucketFor(state: string): LayoutBucket {
+  if (state === "SERIES_FINISHED") return "finished";
+  if (state === "MATCH_NOT_STARTED" || state === "DRAFT_STARTED" || state === "DRAFT_COMPLETE") return "draft";
+  return "game";
+}
 type Game = {
   id: string;
   game_number: number;
@@ -154,6 +180,114 @@ function youtubeChatEmbedUrl(url: string | null) {
   if (!idMatch) return null;
   const domain = typeof window !== "undefined" ? window.location.hostname : "livevival-sigma.vercel.app";
   return `https://www.youtube.com/live_chat?v=${idMatch[1]}&embed_domain=${domain}`;
+}
+
+// Public-page-only "hero portraits replace player avatars, top to bottom,
+// as picks land" board (the Draft-bucket "Draft BIG" requirement). Built
+// directly in this file rather than by touching the shared
+// components/DraftOverlay.tsx (also imported by the admin live console,
+// owned by a different concurrent agent) — this keeps the same broadcast
+// idea (swap a player's avatar for their hero's icon once it locks in,
+// keep the name label) without risking any behavior change for that other
+// caller.
+//
+// hero_picks_bans rows never carry a real player_id while a draft is
+// actually in progress (the admin's draft simulation logs `player_id:
+// null` for every step — see logSimulationStep in the live console — and
+// only assigns real players after the fact, once DRAFT_COMPLETE). So there
+// is no reliable "this exact player picked this exact hero" signal to key
+// off while picks are landing live. Instead this positionally maps each
+// team's Nth completed pick (ordered by pick_order) onto the Nth roster
+// player in the same fixed top-to-bottom role order every other draft
+// view on this page already sorts by (ROLE_ORDER/roleIndex) — so slots
+// fill top-to-bottom in real time as picks come in, one at a time, exactly
+// as they're logged, without waiting for a post-draft assignment step.
+function PublicPlayerAvatar({ url, name }: { url: string | null | undefined; name: string }) {
+  if (!url) {
+    const initials = name.trim().slice(0, 2).toUpperCase();
+    return (
+      <span className="w-10 h-10 rounded-lg bg-white/5 border border-white/10 shrink-0 flex items-center justify-center text-white/30 font-display font-bold text-xs">
+        {initials || "?"}
+      </span>
+    );
+  }
+  return (
+    <span className="w-10 h-10 rounded-lg overflow-hidden border border-white/10 shrink-0 block">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={url} alt={name} className="w-full h-full object-cover object-top" />
+    </span>
+  );
+}
+
+function PublicDraftTeamPanel({
+  teamName,
+  logoUrl,
+  roster,
+  picksAndBans,
+  onClock,
+  timerLabel,
+}: {
+  teamName: string | null | undefined;
+  logoUrl: string | null | undefined;
+  roster: RosterPlayer[];
+  picksAndBans: PickBan[];
+  onClock: boolean;
+  timerLabel: string | null;
+}) {
+  const sortedRoster = [...roster].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
+  const picks = picksAndBans.filter((p) => p.type === "pick").sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
+  const bans = picksAndBans.filter((p) => p.type === "ban").sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
+  return (
+    <div
+      className={`lv-card-flush p-3 sm:p-4 space-y-3 transition-colors duration-300 ${
+        onClock ? "border-signal/50 ring-1 ring-signal/40 bg-signal/5" : ""
+      }`}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-white/80 font-semibold text-sm flex items-center gap-2 min-w-0">
+          <TeamLogo url={logoUrl} size="sm" />
+          <span className="truncate">{teamName}</span>
+        </p>
+        {onClock && timerLabel && (
+          <span className="lv-badge bg-signal/15 text-signal text-[10px] font-mono tabular-nums shrink-0">⏳ {timerLabel}</span>
+        )}
+      </div>
+      <div className="space-y-2">
+        {sortedRoster.length === 0 ? (
+          <p className="text-xs text-white/30">Roster not confirmed yet.</p>
+        ) : (
+          sortedRoster.map((p, i) => {
+            // Top-to-bottom positional match: this team's i-th roster slot
+            // (in role order) gets this team's i-th locked-in pick (in pick
+            // order) — see the function comment above for why player_id
+            // itself can't be used here.
+            const pick = picks[i];
+            return (
+              <div key={p.id} className="flex items-center gap-3">
+                {pick ? (
+                  <HeroIcon url={pick.hero?.icon_url} name={pick.hero_name} size="sm" />
+                ) : (
+                  <PublicPlayerAvatar url={p.photo_url} name={p.ign} />
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold truncate">{p.ign}</p>
+                  <p className="text-[10px] text-white/40 uppercase tracking-wide truncate">{pick ? pick.hero_name : p.role ?? "—"}</p>
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+      {bans.length > 0 && (
+        <div className="flex items-center gap-1.5 pt-2 border-t border-white/10 flex-wrap">
+          <span className="text-[9px] uppercase tracking-wide text-white/30 mr-1">Bans</span>
+          {bans.map((b) => (
+            <HeroIcon key={b.id} url={b.hero?.icon_url} name={b.hero_name} size="xs" banned />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function PublicMatchPage() {
@@ -331,6 +465,12 @@ export default function PublicMatchPage() {
   }
   if (!match) return <main className="min-h-screen flex items-center justify-center text-white/50 text-sm">Loading...</main>;
 
+  // Drives which of the three layouts renders below — recomputed on every
+  // render straight from match.state (itself kept fresh by the Realtime
+  // subscription above), so a state transition reflows the page the moment
+  // the row changes with no reload and no separate effect to keep in sync.
+  const layoutBucket = layoutBucketFor(match.state);
+
   const teamAId = match.team_a?.id;
   const teamBId = match.team_b?.id;
 
@@ -507,6 +647,13 @@ export default function PublicMatchPage() {
     // this is a rough lean, not a precise probability split.
     momentumTeamAPct = Math.max(8, Math.min(92, 50 + lean * 50));
   }
+  // Explicit numeric "Win %" figure on top of the same bar/calc above —
+  // whichever side the lean currently favors, expressed as "62% — Team A"
+  // rather than making people read bar-width by eye. Still the same rough
+  // lean, still clearly labeled as an estimate; no new modelling.
+  const momentumLeaderIsA = momentumTeamAPct >= 50;
+  const momentumLeaderPct = Math.round(momentumLeaderIsA ? momentumTeamAPct : 100 - momentumTeamAPct);
+  const momentumLeaderName = momentumLeaderIsA ? match.team_a?.name : match.team_b?.name;
 
   const mvp =
     match.status === "finished" && gameStats.length > 0
@@ -871,7 +1018,9 @@ export default function PublicMatchPage() {
       {match.update_source === "local_ocr" && (
         <section>
           <div className="flex items-center gap-3 mb-2 flex-wrap">
-            <h2 className="lv-heading">Moment list</h2>
+            {/* "Moment list" during Draft/Game, "Timeline" once the series
+                is done — same underlying feed, per-bucket framing only. */}
+            <h2 className="lv-heading">{layoutBucket === "finished" ? "Timeline" : "Moment list"}</h2>
             {/* Header badges above can wrap/scroll out of view on mobile —
                 repeating the live clock + phase here, bigger, means the
                 status is still visible without scrolling back up while
@@ -887,8 +1036,15 @@ export default function PublicMatchPage() {
           </div>
           {/* Sized to show ~10 moments before scrolling — newest always on
               top (query is sorted created_at desc), older ones scroll into
-              view instead of being cut off. */}
-          <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+              view instead of being cut off. Draft layout keeps this
+              deliberately small ("Moment list small" per spec) since the
+              Draft board above is the star there; Finished gets more room
+              as a proper Timeline replay. */}
+          <div
+            className={`space-y-2 overflow-y-auto pr-1 ${
+              layoutBucket === "draft" ? "max-h-[220px]" : layoutBucket === "finished" ? "max-h-[640px]" : "max-h-[420px]"
+            }`}
+          >
             {keyMoments.map((km, i) => {
               // Sorted newest-first, so a separator belongs above the first
               // moment of each game (i.e. whenever the game changes from the
@@ -939,7 +1095,39 @@ export default function PublicMatchPage() {
         </section>
       )}
 
-      {selectedGame?.map && (
+      {/* Draft bucket ("During Draft: Video / Draft BIG / Moment list small
+          / No scoreboard") — the public hero-portrait board, prominent
+          and right under the video, replacing both the Map line and the
+          standard-size Draft recap below for this bucket. See
+          PublicDraftTeamPanel above for why this can't key off player_id. */}
+      {layoutBucket === "draft" && (
+        <section>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <h2 className="lv-heading">Draft {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+            {match.state === "DRAFT_STARTED" && <span className="text-xs text-white/50">Picks lock in live, top to bottom.</span>}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <PublicDraftTeamPanel
+              teamName={match.team_a?.name}
+              logoUrl={match.team_a?.logo_url}
+              roster={teamAActiveRoster.length > 0 ? teamAActiveRoster : roster.filter((p) => p.team_id === teamAId)}
+              picksAndBans={gamePickBans.filter((p) => p.team_id === teamAId)}
+              onClock={Boolean(draftTurnTeamId) && draftTurnTeamId === teamAId}
+              timerLabel={liveDraftTimerA}
+            />
+            <PublicDraftTeamPanel
+              teamName={match.team_b?.name}
+              logoUrl={match.team_b?.logo_url}
+              roster={teamBActiveRoster.length > 0 ? teamBActiveRoster : roster.filter((p) => p.team_id === teamBId)}
+              picksAndBans={gamePickBans.filter((p) => p.team_id === teamBId)}
+              onClock={Boolean(draftTurnTeamId) && draftTurnTeamId === teamBId}
+              timerLabel={liveDraftTimerB}
+            />
+          </div>
+        </section>
+      )}
+
+      {layoutBucket !== "draft" && selectedGame?.map && (
         <p className="text-base text-white/50">Map: <span className="text-white/80 font-semibold">{selectedGame.map}</span></p>
       )}
 
@@ -947,6 +1135,14 @@ export default function PublicMatchPage() {
           last-captured-value readout (see the badge on each team's
           Scoreboard card below), not a plotted history. */}
 
+      {/* Standard-size Draft recap: always in the Finished layout, and also
+          during Game for matches with no live Scoreboard to show hero picks
+          another way (Liquipedia/Normal matches — their Scoreboard-derived
+          "Player stats" don't exist, so this is their only hero-pick view
+          once Draft's own big board is gone). Skipped during Game for
+          local_ocr matches since the Scoreboard's own hero column already
+          covers it — no point duplicating the same picks twice. */}
+      {(layoutBucket === "finished" || (layoutBucket === "game" && match.update_source !== "local_ocr")) && (
       <section>
         <h2 className="lv-heading mb-3">Draft recap {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
@@ -995,8 +1191,9 @@ export default function PublicMatchPage() {
           ))}
         </div>
       </section>
+      )}
 
-      {match.update_source !== "local_ocr" && (
+      {match.update_source !== "local_ocr" && layoutBucket !== "draft" && (
         <section>
           <h2 className="lv-heading mb-2">Players</h2>
           <div className="grid grid-cols-2 gap-4 text-sm">
@@ -1034,7 +1231,11 @@ export default function PublicMatchPage() {
         </section>
       )}
 
-      {match.update_source === "local_ocr" && (
+      {/* Objectives + Scoreboard — the "During Game: ... Scoreboard / Player
+          stats" and "Finished: ... Statistics" buckets share this exact
+          block (see the dynamic Statistics/Scoreboard heading above);
+          hidden entirely during Draft ("No scoreboard" per spec). */}
+      {match.update_source === "local_ocr" && (layoutBucket === "game" || layoutBucket === "finished") && (
       <>
       <section>
         <h2 className="lv-heading mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
@@ -1060,7 +1261,9 @@ export default function PublicMatchPage() {
 
       <section>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="lv-heading">Scoreboard {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+          <h2 className="lv-heading">
+            {layoutBucket === "finished" ? "Statistics" : "Scoreboard"} {games.length > 1 && `— Game ${selectedGame?.game_number}`}
+          </h2>
         </div>
         {/* Team-kill score — large, above the scoreboard itself, not a
             small line sharing the heading row. */}
@@ -1074,13 +1277,19 @@ export default function PublicMatchPage() {
         )}
         {/* Momentum — approximate lean from live net worth + kills only,
             see the derivation above. Deliberately small/muted and labeled
-            "rough estimate" so it doesn't read as a precise stat. */}
+            "rough estimate" so it doesn't read as a precise stat. Now also
+            spells out an explicit numeric Win % on the bar itself
+            (momentumLeaderPct/momentumLeaderName, derived from the exact
+            same momentumTeamAPct calc — no second system) instead of
+            leaving it to eyeballing the bar width. */}
         {showMomentum && (
           <div className="mb-4">
             <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-white/40 mb-1">
-              <span className="truncate max-w-[35%]">{match.team_a?.name}</span>
-              <span className="normal-case tracking-normal shrink-0 px-1">Momentum · rough estimate</span>
-              <span className="truncate max-w-[35%] text-right">{match.team_b?.name}</span>
+              <span className="truncate max-w-[30%]">{match.team_a?.name}</span>
+              <span className="normal-case tracking-normal shrink-0 px-1 text-center text-white/70">
+                {momentumLeaderPct}% — {momentumLeaderName ?? "—"} <span className="text-white/40">· rough estimate</span>
+              </span>
+              <span className="truncate max-w-[30%] text-right">{match.team_b?.name}</span>
             </div>
             <div className="flex h-2 rounded-full overflow-hidden bg-white/10" role="img" aria-label={`Momentum lean, approximate: ${Math.round(momentumTeamAPct)}% ${match.team_a?.name ?? "Team A"}, ${Math.round(100 - momentumTeamAPct)}% ${match.team_b?.name ?? "Team B"}`}>
               <div className="bg-signal transition-all duration-500" style={{ width: `${momentumTeamAPct}%` }} />
@@ -1132,8 +1341,23 @@ export default function PublicMatchPage() {
             </div>
           ))}
         </div>
+        {/* Only in the During-Game layout — this is about the live read,
+            not the finished/"Statistics" replay of the same table. */}
+        {layoutBucket === "game" && (
+          <p className="text-[10px] text-white/35 italic text-center mt-3">
+            This match is covered using a manual vision tracker. Numbers might not be accurate. We will keep improving our system for better data.
+          </p>
+        )}
       </section>
+      </>
+      )}
 
+      {/* Screenshots — Finished layout only ("Result / Timeline / Draft /
+          Statistics / Screenshots" per spec). Individual key moments still
+          carry their own inline screenshot in the Moment list/Timeline
+          above during Draft/Game; this standalone gallery is the
+          post-series highlights reel. */}
+      {match.update_source === "local_ocr" && layoutBucket === "finished" && (
       <section>
         <h2 className="lv-heading mb-2">Screenshots {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
         <div className="flex flex-wrap gap-3">
@@ -1170,7 +1394,6 @@ export default function PublicMatchPage() {
           {gameScreenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots yet.</span>}
         </div>
       </section>
-      </>
       )}
 
       {screenshotPreview && (
@@ -1206,7 +1429,12 @@ export default function PublicMatchPage() {
         </div>
       )}
 
-      {match.status === "finished" && (
+      {/* Same layoutBucket as everything else above (SERIES_FINISHED),
+          rather than the separate match.status field — the two are always
+          set together by the admin's "finish match" actions, but driving
+          this off match.state too keeps the whole page reacting to one
+          single source of truth for "which layout is this". */}
+      {layoutBucket === "finished" && (
         <section>
           <h2 className="lv-heading mb-2">Share recap</h2>
           <div className="flex flex-wrap items-start gap-4">

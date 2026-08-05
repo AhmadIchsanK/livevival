@@ -1305,9 +1305,27 @@ export default function LiveConsolePage() {
       case "GAME_STARTED": {
         const items: { category: TrackerCategory; field: string; label: string }[] = [
           { category: "game_timer", field: "game_timer", label: "Game timer" },
+          // Center-screen SAVAGE/MANIAC/etc. banner — the OCR side of this
+          // (regex match + player-name extraction) already existed; it just
+          // had no way to actually be added as a tracker until now.
+          { category: "kill_banner", field: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)" },
         ];
         for (const side of SIDES) items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}` });
         for (const side of SIDES) items.push({ category: "net_worth", field: `net_worth_${side.key}`, label: `Net worth — ${side.label}` });
+        // Tower/lord/turtle counts, one field per objective type per side —
+        // fieldParts' objectiveType suffix match (`_tower`/`_lord`/`_turtle`)
+        // is what routes each field's OCR read to applySingleObjectiveReading
+        // for the right team+type, same as team_kills/net_worth route on the
+        // `_left`/`_right` side substring.
+        for (const side of SIDES) {
+          for (const type of OBJECTIVE_TYPES) {
+            items.push({
+              category: "objective",
+              field: `objective_${side.key}_${type}`,
+              label: `Objective — ${side.label} ${type[0].toUpperCase()}${type.slice(1)}`,
+            });
+          }
+        }
         for (const side of SIDES) {
           for (let n = 1; n <= 5; n++) {
             items.push({
@@ -1844,8 +1862,14 @@ export default function LiveConsolePage() {
     }
   }
 
+  // Set once the tournament-defaults/match-regions fetch below has actually
+  // resolved (success or not) — gates autoPlaceDefaultTrackers further down
+  // so it never fires against the transient "trackers is still []" state
+  // that's true for an instant on every load, before this effect's fetch
+  // has had a chance to come back with whatever's really configured.
+  const [trackersLoaded, setTrackersLoaded] = useState(false);
   useEffect(() => {
-    if (!matchId || !match?.tournament_id) return;
+    if (!matchId) return;
     (async () => {
       // Tournament-wide defaults first, then match-specific rows layered on
       // top — a match that was never calibrated inherits the tournament's
@@ -1855,7 +1879,9 @@ export default function LiveConsolePage() {
       // dedicated one.
       const cols = "id, field, phase, category, label, x_pct, y_pct, w_pct, h_pct, hint_text";
       const [{ data: tournamentDefaults }, { data: matchRegions }] = await Promise.all([
-        supabase.from("capture_regions").select(cols).eq("tournament_id", match.tournament_id),
+        match?.tournament_id
+          ? supabase.from("capture_regions").select(cols).eq("tournament_id", match.tournament_id)
+          : Promise.resolve({ data: [] as { id: string; field: string; phase: string; category: string; label: string | null; x_pct: number | null; y_pct: number | null; w_pct: number | null; h_pct: number | null; hint_text: string | null }[] }),
         supabase.from("capture_regions").select(cols).eq("match_id", matchId),
       ]);
       const nextTrackers: Tracker[] = [];
@@ -1873,6 +1899,7 @@ export default function LiveConsolePage() {
       const tournamentHint = tournamentDefaults?.find((r) => r.category === "overlay_hint")?.hint_text;
       const matchHint = matchRegions?.find((r) => r.category === "overlay_hint")?.hint_text;
       if (matchHint ?? tournamentHint) setOverlayHint(matchHint ?? tournamentHint ?? "");
+      setTrackersLoaded(true);
     })();
   }, [matchId, match?.tournament_id]);
 
@@ -1998,6 +2025,104 @@ export default function LiveConsolePage() {
     setTrackers((prev) => [...prev, { id: data.id, phase, category, field, label }]);
     setRegions((prev) => ({ ...prev, [field]: box }));
   }
+
+  // ── Auto-placed default trackers (standard MLBB broadcast layout) ────
+  // Sensible percentage-based starting positions for every GAME_STARTED
+  // tracker, based on how MLBB tournament broadcasts consistently lay out
+  // their HUD: net worth in the far top corners, the game clock top-center,
+  // each team's kill/tower/lord/turtle counts in a small cluster just below
+  // their team name near top-center, five KDA rows down each side edge
+  // (one per player portrait), and the kill-streak banner region roughly
+  // center screen. Purely a starting point — every box below is exactly as
+  // draggable/resizable afterward as one placed by hand, since this writes
+  // the same capture_regions rows the manual flow does (see
+  // autoPlaceDefaultTrackers). Broadcast overlays vary slightly tournament
+  // to tournament, so these are deliberately generous boxes meant to be
+  // nudged, not pixel-exact crops.
+  function defaultTrackerLayout(): { category: TrackerCategory; field: string; label: string; box: RegionBox }[] {
+    const items: { category: TrackerCategory; field: string; label: string; box: RegionBox }[] = [];
+    items.push({ category: "net_worth", field: "net_worth_left", label: "Net worth — Left", box: { xPct: 1, yPct: 1, wPct: 11, hPct: 4.5 } });
+    items.push({ category: "net_worth", field: "net_worth_right", label: "Net worth — Right", box: { xPct: 88, yPct: 1, wPct: 11, hPct: 4.5 } });
+    items.push({ category: "game_timer", field: "game_timer", label: "Game timer", box: { xPct: 45, yPct: 1, wPct: 10, hPct: 4.5 } });
+    // Team kills + tower/lord/turtle counts sit as a small horizontal
+    // cluster just below the team name, left cluster hugging center-left
+    // and right cluster hugging center-right of the top-center HUD.
+    const objectiveCluster: { type: string; dx: number }[] = [
+      { type: "kills", dx: 0 },
+      { type: "tower", dx: 5.5 },
+      { type: "lord", dx: 11 },
+      { type: "turtle", dx: 16.5 },
+    ];
+    for (const side of SIDES) {
+      const baseX = side.key === "left" ? 24 : 56;
+      for (const { type, dx } of objectiveCluster) {
+        const x = side.key === "left" ? baseX + dx : baseX + (16.5 - dx);
+        if (type === "kills") {
+          items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}`, box: { xPct: x, yPct: 6, wPct: 4.5, hPct: 3.5 } });
+        } else {
+          items.push({
+            category: "objective",
+            field: `objective_${side.key}_${type}`,
+            label: `Objective — ${side.label} ${type[0].toUpperCase()}${type.slice(1)}`,
+            box: { xPct: x, yPct: 6, wPct: 4.5, hPct: 3.5 },
+          });
+        }
+      }
+    }
+    // Ten KDA regions, five down each edge — evenly spaced top-to-bottom
+    // under where each player's portrait renders on a standard overlay.
+    for (const side of SIDES) {
+      const x = side.key === "left" ? 1 : 84;
+      for (let n = 1; n <= 5; n++) {
+        const y = 14 + (n - 1) * 12;
+        items.push({
+          category: "player_kda",
+          field: `player_kda_${side.key}_${n}`,
+          label: `K/D/A — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
+          box: { xPct: x, yPct: y, wPct: 15, hPct: 6 },
+        });
+      }
+    }
+    items.push({ category: "kill_banner", field: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)", box: { xPct: 32, yPct: 42, wPct: 36, hPct: 10 } });
+    return items;
+  }
+  const [autoPlacingTrackers, setAutoPlacingTrackers] = useState(false);
+  // Only ever fills in whatever's missing — a field that's already tracked
+  // (whether from a previous auto-place, a tournament default, or a manual
+  // placement) is left completely alone, so this is safe to re-run any
+  // time as a "restore anything I deleted back to a sane starting point"
+  // action, not just a first-run-only migration.
+  async function autoPlaceDefaultTrackers() {
+    setAutoPlacingTrackers(true);
+    try {
+      const existingGameStarted = new Set(trackers.filter((t) => t.phase === "GAME_STARTED").map((t) => t.field));
+      const missing = defaultTrackerLayout().filter((item) => !existingGameStarted.has(item.field));
+      for (const item of missing) {
+        await addTrackerWithRegion("GAME_STARTED", item.category, item.field, item.label, item.box);
+      }
+    } finally {
+      setAutoPlacingTrackers(false);
+    }
+  }
+  // Fires once per match, the first time it has zero GAME_STARTED trackers
+  // after the tournament-defaults/match-regions load effect has actually
+  // resolved (trackersLoaded guards against firing on the transient empty
+  // state before that fetch returns) — gives every match a populated
+  // starting layout automatically instead of an empty canvas, without ever
+  // clobbering a match that already has its own trackers (tournament
+  // default or manual) configured.
+  const autoPlacedForMatch = useRef<string | null>(null);
+  useEffect(() => {
+    if (!trackersLoaded || !matchId || !match) return;
+    if (autoPlacedForMatch.current === matchId) return;
+    if (trackers.some((t) => t.phase === "GAME_STARTED")) {
+      autoPlacedForMatch.current = matchId; // already has some — never auto-place over it
+      return;
+    }
+    autoPlacedForMatch.current = matchId;
+    autoPlaceDefaultTrackers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackersLoaded, matchId, match?.id]);
 
   // Same "already tracked" filter as trackerCatalogOptions, just
   // parameterized by the slide-anywhere picker's own phase pick instead of
@@ -4084,6 +4209,20 @@ export default function LiveConsolePage() {
 
                 {captureMode === "manual" && (
                   <div className="space-y-3">
+                    {/* Fires automatically once per match the first time it
+                        has zero GAME_STARTED trackers (see the
+                        autoPlacedForMatch effect) — this button is only for
+                        re-running it later, e.g. after clearing everything
+                        out, since it only ever fills in fields that aren't
+                        already tracked. */}
+                    <button
+                      onClick={autoPlaceDefaultTrackers}
+                      disabled={autoPlacingTrackers}
+                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
+                      title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
+                    >
+                      {autoPlacingTrackers ? "Placing default trackers…" : "⊞ Auto-place default trackers"}
+                    </button>
                     {/* Add tracker — categorized by phase, catalog already
                         excludes whatever's tracked for that phase; the
                         phase-scoped DB unique index is the hard backstop. */}

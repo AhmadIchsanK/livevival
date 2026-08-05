@@ -68,6 +68,32 @@ const SIZE_CLASSES = {
   xl: "w-24 h-24 sm:w-32 sm:h-32 p-3",
 };
 
+// Manual backing-box overrides an admin can pick per team/tournament
+// (persisted as teams.logo_bg_override / tournaments.logo_bg_override),
+// for the rare logo the auto luminance sampler gets wrong (e.g. a mostly-
+// transparent mark, or one that reads ambiguously at 24x24). Deliberately
+// literal hex, not the ink/paper theme variables — an admin's explicit
+// pick should render the same regardless of which theme the viewer is in,
+// unlike the auto-detected backing which is theme-aware by design. Every
+// value is already in the brand palette (tailwind.config.js / brand guide):
+// paper white, mid-grey (muted), near-black (ink), and the panel charcoal
+// (surface) — no new colors invented.
+export const LOGO_BG_OVERRIDES = [
+  { value: "white", label: "White", swatch: "#FFFFFF" },
+  { value: "grey", label: "Grey", swatch: "#8A8A8A" },
+  { value: "ink", label: "Ink (dark)", swatch: "#0A0A0A" },
+  { value: "surface", label: "Surface (charcoal)", swatch: "#141414" },
+] as const;
+
+export type LogoBgOverride = (typeof LOGO_BG_OVERRIDES)[number]["value"];
+
+const OVERRIDE_BG_CLASSES: Record<LogoBgOverride, string> = {
+  white: "bg-[#FFFFFF]",
+  grey: "bg-[#8A8A8A]",
+  ink: "bg-[#0A0A0A]",
+  surface: "bg-[#141414]",
+};
+
 export function TeamLogo({
   url,
   alt = "",
@@ -75,6 +101,7 @@ export function TeamLogo({
   highlight = false,
   glow = false,
   className = "",
+  bgOverride = null,
 }: {
   url: string | null | undefined;
   alt?: string;
@@ -85,6 +112,9 @@ export function TeamLogo({
   // per-team accent-color extraction from the source logo).
   glow?: boolean;
   className?: string;
+  // Admin manual override — see LOGO_BG_OVERRIDES above. null/undefined
+  // (the default) keeps today's auto luminance-based detection.
+  bgOverride?: LogoBgOverride | null;
 }) {
   const proxied = proxiedImageUrl(url);
   const isDark = useIsDarkLogo(proxied);
@@ -100,8 +130,27 @@ export function TeamLogo({
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   const isLightTheme = mounted && resolvedTheme === "light";
-  const wantsSolidBacking = isLightTheme ? !isDark : isDark;
-  const solidBg = isLightTheme ? "bg-ink" : "bg-white";
+  const overrideBg = bgOverride ? OVERRIDE_BG_CLASSES[bgOverride] : null;
+  // A manual override always gets a solid backing (that's the point of
+  // picking one) and skips the auto light/dark pairing entirely. The auto
+  // path is gated on actually having a logo to sample — without one,
+  // isDark just sits at its default `false`, and light theme's `!isDark`
+  // read that as "definitely wants a solid backing", forcing the "?"
+  // placeholder onto a solid box (and making it near-unreadable once the
+  // solid color above was fixed to be genuinely dark). No logo means
+  // nothing was ever classified dark or light, so it stays on the
+  // ever-present translucent box instead, same as before this override
+  // feature existed.
+  const wantsSolidBacking = overrideBg ? true : !proxied ? false : isLightTheme ? !isDark : isDark;
+  // Literal hex, not the ink/paper/white theme tokens — those flip meaning
+  // between themes (ink is "page background", near-white in light mode),
+  // so using bg-ink here for a light theme's "needs a dark backing" case
+  // resolved to a near-white box on a near-white page: the solid backing
+  // this branch exists to add all but disappeared. The actual colors this
+  // pairing needs (solid white behind a dark logo, solid near-black behind
+  // a light logo) are fixed regardless of theme, so they're spelled out
+  // directly instead of routed through a variable that isn't.
+  const solidBg = overrideBg ?? (isLightTheme ? "bg-[#0A0A0A]" : "bg-[#FFFFFF]");
   const translucentBg = isLightTheme ? "bg-black/10" : "bg-white/10";
   return (
     <div className={`relative flex items-center justify-center shrink-0 ${glow ? "" : className}`}>

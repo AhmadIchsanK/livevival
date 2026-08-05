@@ -484,6 +484,30 @@ export default function PublicMatchPage() {
     return `${(n / 1000).toFixed(1)}K`;
   }
 
+  // "Momentum" bar — a rough, clearly-labeled lean indicator built purely
+  // from data this page already fetches for a live game: the latest net
+  // worth snapshot and each team's current kill count. No new querying or
+  // tracking, no real win-probability modelling — just enough signal to
+  // answer "who's ahead right now" at a glance. Net worth is weighted
+  // higher (0.65) since it updates continuously through the game; kills
+  // move in coarser, streakier jumps so count for less (0.35). Only shown
+  // once the game is actually live AND a net worth snapshot exists — Normal
+  // matches (Liquipedia-sourced, no OCR) never get net worth data, so this
+  // stays hidden for them rather than rendering an empty/fake bar.
+  const latestNetWorth = gameNetWorth[gameNetWorth.length - 1] ?? null;
+  const showMomentum = match.state === "GAME_STARTED" && latestNetWorth != null;
+  let momentumTeamAPct = 50;
+  if (showMomentum && latestNetWorth) {
+    const goldTotal = latestNetWorth.team_a_gold + latestNetWorth.team_b_gold;
+    const goldLean = goldTotal > 0 ? (latestNetWorth.team_a_gold - latestNetWorth.team_b_gold) / goldTotal : 0;
+    const killTotal = teamAKills + teamBKills;
+    const killLean = killTotal > 0 ? (teamAKills - teamBKills) / killTotal : 0;
+    const lean = Math.max(-1, Math.min(1, goldLean * 0.65 + killLean * 0.35));
+    // Clamped to 8-92% so the trailing side's sliver never fully vanishes —
+    // this is a rough lean, not a precise probability split.
+    momentumTeamAPct = Math.max(8, Math.min(92, 50 + lean * 50));
+  }
+
   const mvp =
     match.status === "finished" && gameStats.length > 0
       ? [...gameStats].sort(
@@ -1046,6 +1070,22 @@ export default function PublicMatchPage() {
             <span className={teamBKills > teamAKills ? "text-signal" : "text-white/70"}>{teamBKills}</span>
             <span className="text-white/40 text-sm font-normal block mt-1">team kills</span>
           </p>
+        )}
+        {/* Momentum — approximate lean from live net worth + kills only,
+            see the derivation above. Deliberately small/muted and labeled
+            "rough estimate" so it doesn't read as a precise stat. */}
+        {showMomentum && (
+          <div className="mb-4">
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-white/40 mb-1">
+              <span className="truncate max-w-[35%]">{match.team_a?.name}</span>
+              <span className="normal-case tracking-normal shrink-0 px-1">Momentum · rough estimate</span>
+              <span className="truncate max-w-[35%] text-right">{match.team_b?.name}</span>
+            </div>
+            <div className="flex h-2 rounded-full overflow-hidden bg-white/10" role="img" aria-label={`Momentum lean, approximate: ${Math.round(momentumTeamAPct)}% ${match.team_a?.name ?? "Team A"}, ${Math.round(100 - momentumTeamAPct)}% ${match.team_b?.name ?? "Team B"}`}>
+              <div className="bg-signal transition-all duration-500" style={{ width: `${momentumTeamAPct}%` }} />
+              <div className="bg-win transition-all duration-500" style={{ width: `${100 - momentumTeamAPct}%` }} />
+            </div>
+          </div>
         )}
         <div className="grid grid-cols-2 gap-4">
           {[

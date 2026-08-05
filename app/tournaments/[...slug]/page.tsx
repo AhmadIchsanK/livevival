@@ -317,6 +317,11 @@ export default function TournamentPage() {
         </section>
       )}
 
+      {/* TODO: re-enable once Hot-match automation is production-ready.
+          "Player performances" hidden per owner call — data loading
+          (the `performances` state + its fetch/aggregation above) is left
+          intact, only this render is disabled, so flipping it back on is
+          a one-line change once Hot-match automation matures.
       {performances.length > 0 && (
         <section className="space-y-3">
           <h2 className="lv-heading">Player performances</h2>
@@ -345,6 +350,7 @@ export default function TournamentPage() {
           </div>
         </section>
       )}
+      */}
 
       <section className="space-y-3">
         <h2 className="lv-heading">Upcoming &amp; live</h2>

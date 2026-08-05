@@ -72,13 +72,37 @@ type Game = {
   team_b_kills_override: number | null;
 };
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
-type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
+// custom_player_name/custom_player_role: a match-local player who isn't in
+// the `players` table roster at all (last-minute sub, scrim player, etc.) —
+// set instead of player_id, never both. See the note by isCustomPlayerId
+// below for how this flows into the scoreboard.
+type PickBan = {
+  id: string;
+  team_id: string;
+  player_id: string | null;
+  hero_name: string;
+  type: "pick" | "ban";
+  pick_order: number | null;
+  custom_player_name: string | null;
+  custom_player_role: string | null;
+};
 // kills/deaths/assists are nullable — null means "TBD, not yet entered" so
 // the scoreboard can tell "genuinely 0" apart from "nobody's typed
 // anything here yet." The headline team score never depends on these being
 // filled in — team_a/b_kills_override (the team_kills tracker, or a manual
 // edit) is always preferred over summing per-player rows when present.
-type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number | null; deaths: number | null; assists: number | null; gold: number };
+// player_id is null (with custom_player_name set instead) for a match-local
+// custom player's stat row — see the note by PickBan's custom_player_name.
+type PlayerStat = {
+  id: string;
+  player_id: string | null;
+  hero_name: string | null;
+  kills: number | null;
+  deaths: number | null;
+  assists: number | null;
+  gold: number;
+  custom_player_name: string | null;
+};
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null; created_at: string };
 type NetWorthSnapshot = { minute_mark: number; team_a_gold: number; team_b_gold: number };
 type KeyMoment = {
@@ -385,8 +409,8 @@ export default function LiveConsolePage() {
     if (gameRow) {
       const gid = (gameRow as Game).id;
       const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: ss }, { data: nw }] = await Promise.all([
-        supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
-        supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
+        supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order, custom_player_name, custom_player_role").eq("game_id", gid).order("pick_order"),
+        supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold, custom_player_name").eq("game_id", gid),
         supabase.from("objectives").select("id, team_id, type, minute_mark, created_at").eq("game_id", gid).order("minute_mark"),
         supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark, is_key_moment, screenshot_url").eq("game_id", gid).order("minute_mark"),
         supabase.from("game_screenshots").select("id, image_url, in_game_time, note, created_at").eq("game_id", gid).order("created_at"),
@@ -478,10 +502,14 @@ export default function LiveConsolePage() {
     return [match.team_a, match.team_b]
       .map((team) => {
         if (!team) return "";
+        // Falls back to the pick-ban row's own custom_player_role/name for
+        // a match-local custom player (no `players` row to look up).
+        const roleFor = (pb: PickBan) => players.find((p) => p.id === pb.player_id)?.role ?? pb.custom_player_role ?? null;
+        const nameFor = (pb: PickBan) => players.find((p) => p.id === pb.player_id)?.ign ?? pb.custom_player_name ?? "?";
         const picks = pickBans
           .filter((pb) => pb.team_id === team.id && pb.type === "pick")
-          .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
-          .map((pb) => `- ${pb.hero_name} (${players.find((p) => p.id === pb.player_id)?.ign ?? "?"})`)
+          .sort((a, b) => roleIndex(roleFor(a)) - roleIndex(roleFor(b)))
+          .map((pb) => `- ${pb.hero_name} (${nameFor(pb)})`)
           .join("\n");
         const bans = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "ban").map((pb) => pb.hero_name).join(", ");
         return `<b>${team.name}</b>\nPicks:\n${picks || "—"}\nBans: ${bans || "—"}`;
@@ -574,13 +602,17 @@ export default function LiveConsolePage() {
     const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
     const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
 
+    // effectivePlayers so a custom player (player_id null, custom_player_name
+    // set instead) still resolves to a name/team here — see buildLiveScoreboardMessage.
+    const ownerOf = (s: PlayerStat) =>
+      s.player_id ? effectivePlayers.find((p) => p.id === s.player_id) : effectivePlayers.find((p) => p.ign === s.custom_player_name);
     const kdaLines = [match.team_a, match.team_b]
       .map((team) => {
         if (!team) return "";
         const lines = stats
-          .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === team.id)
+          .filter((s) => ownerOf(s)?.team_id === team.id)
           .map((s) => {
-            const p = players.find((pl) => pl.id === s.player_id);
+            const p = ownerOf(s);
             return `${p?.ign ?? "?"} (${s.hero_name ?? "?"}): ${s.kills}/${s.deaths}/${s.assists}`;
           })
           .join("\n");
@@ -666,6 +698,8 @@ export default function LiveConsolePage() {
       hero_id: heroes.find((h) => h.name === pbHero)?.id ?? null,
       type: pbType,
       pick_order: pickBans.length + 1,
+      custom_player_name: null as string | null,
+      custom_player_role: null as string | null,
     };
     if (isContributor) {
       const newRow = { id: fakeId(), ...payload };
@@ -732,11 +766,48 @@ export default function LiveConsolePage() {
   }
 
   // ── Scoreboard ──────────────────────────────────────────────────────
+  // A match-local custom player (added in Hero picks & bans — see
+  // addCustomPlayerToPick below) has no `players` row, so nothing here can
+  // key off a real player_id for them. Every call-site that takes a
+  // "playerId" string instead accepts this synthetic id — `custom:<pick-
+  // ban row id>` — so the rest of the scoreboard code (KDA inputs, hero
+  // picker, etc.) doesn't need two parallel sets of handlers, just this one
+  // branch point. The pick-ban row's own custom_player_name is the actual
+  // identity; the row id is only there to keep the synthetic id unique and
+  // traceable back to which pick it came from.
+  function isCustomPlayerId(id: string): boolean {
+    return id.startsWith("custom:");
+  }
+  function customPlayerNameFor(id: string): string | null {
+    const pbId = id.slice("custom:".length);
+    return pickBans.find((pb) => pb.id === pbId)?.custom_player_name ?? null;
+  }
   async function ensureStatRow(playerId: string) {
+    if (isCustomPlayerId(playerId)) {
+      const name = customPlayerNameFor(playerId);
+      if (!name || !game) return undefined;
+      const existing = stats.find((s) => s.custom_player_name === name);
+      if (existing) return existing;
+      // onConflict targets the partial unique index on (game_id,
+      // custom_player_name) added alongside this column — same
+      // "insert-or-return-existing" shape as a real player's row below,
+      // just keyed by name instead of player_id since there's no players
+      // row to key off.
+      const { data } = await supabase
+        .from("player_stats")
+        .upsert(
+          { game_id: game.id, match_id: matchId, player_id: null, custom_player_name: name, kills: null, deaths: null, assists: null },
+          { onConflict: "game_id,custom_player_name" }
+        )
+        .select("id, player_id, hero_name, kills, deaths, assists, gold, custom_player_name")
+        .single();
+      if (data) setStats((prev) => [...prev, data as PlayerStat]);
+      return data as PlayerStat | undefined;
+    }
     const existing = stats.find((s) => s.player_id === playerId);
     if (existing || !game) return existing;
     if (isContributor) {
-      const newRow: PlayerStat = { id: fakeId(), player_id: playerId, hero_name: null, kills: null, deaths: null, assists: null, gold: 0 };
+      const newRow: PlayerStat = { id: fakeId(), player_id: playerId, hero_name: null, kills: null, deaths: null, assists: null, gold: 0, custom_player_name: null };
       pushPendingEdit({
         table: "player_stats",
         action: "insert",
@@ -757,18 +828,21 @@ export default function LiveConsolePage() {
     const { data } = await supabase
       .from("player_stats")
       .insert({ game_id: game.id, match_id: matchId, player_id: playerId, kills: null, deaths: null, assists: null })
-      .select("id, player_id, hero_name, kills, deaths, assists, gold")
+      .select("id, player_id, hero_name, kills, deaths, assists, gold, custom_player_name")
       .single();
     if (data) setStats((prev) => [...prev, data as PlayerStat]);
     return data as PlayerStat | undefined;
   }
   async function updateStat(playerId: string, field: keyof PlayerStat, value: number | string) {
-    let row = stats.find((s) => s.player_id === playerId);
+    const custom = isCustomPlayerId(playerId);
+    let row = custom
+      ? stats.find((s) => s.custom_player_name === customPlayerNameFor(playerId))
+      : stats.find((s) => s.player_id === playerId);
     if (!row) row = await ensureStatRow(playerId);
     if (!row) return;
     const payload: Record<string, number | string | null> = { [field]: value };
     if (field === "hero_name") payload.hero_id = matchHeroId(value as string);
-    if (isContributor) {
+    if (isContributor && !custom) {
       pushPendingEdit({ table: "player_stats", action: "update", before: { id: row.id }, after: { id: row.id, ...payload } });
       setStats((prev) => prev.map((s) => (s.id === row!.id ? { ...s, [field]: value } : s)));
       return;
@@ -813,7 +887,26 @@ export default function LiveConsolePage() {
   }, [game?.id]);
   async function saveScoreboardPlayerEdit(playerId: string) {
     if (!editingScoreboardIgn.trim() || isContributor) return;
-    const { error } = await supabase.from("players").update({ ign: editingScoreboardIgn.trim() }).eq("id", playerId);
+    const newName = editingScoreboardIgn.trim();
+    // A custom player has no `players` row to update — the pick-ban row's
+    // custom_player_name is the identity, and any existing player_stats
+    // row is keyed off that same name (see the partial unique index), so
+    // both need the rename or the KDA row silently orphans under the old
+    // name.
+    if (isCustomPlayerId(playerId)) {
+      const pbId = playerId.slice("custom:".length);
+      const oldName = pickBans.find((row) => row.id === pbId)?.custom_player_name ?? null;
+      const { error } = await supabase.from("hero_picks_bans").update({ custom_player_name: newName }).eq("id", pbId);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      if (oldName) await supabase.from("player_stats").update({ custom_player_name: newName }).eq("custom_player_name", oldName).is("player_id", null);
+      setEditingScoreboardPlayerId(null);
+      loadAll();
+      return;
+    }
+    const { error } = await supabase.from("players").update({ ign: newName }).eq("id", playerId);
     if (error) setError(error.message);
     else {
       setEditingScoreboardPlayerId(null);
@@ -822,6 +915,20 @@ export default function LiveConsolePage() {
   }
   async function deleteScoreboardPlayer(playerId: string, ign: string) {
     if (isContributor) return;
+    // Custom players were never a `players` row — "deleting" them just
+    // clears the custom name/role off their pick-ban row (reverting it to
+    // unassigned, same as any other pick that hasn't had a player
+    // assigned yet) and drops their KDA row, rather than a real DELETE
+    // against the players table.
+    if (isCustomPlayerId(playerId)) {
+      if (!confirm(`Remove custom player "${ign}" from this match? Their K/D/A entry for this game will be deleted too.`)) return;
+      const pbId = playerId.slice("custom:".length);
+      const customName = pickBans.find((row) => row.id === pbId)?.custom_player_name ?? null;
+      await supabase.from("hero_picks_bans").update({ custom_player_name: null, custom_player_role: null }).eq("id", pbId);
+      if (customName) await supabase.from("player_stats").delete().eq("custom_player_name", customName).is("player_id", null);
+      loadAll();
+      return;
+    }
     if (!confirm(`Delete player "${ign}"? This can't be undone.`)) return;
     const { error } = await supabase.from("players").delete().eq("id", playerId);
     if (error) {
@@ -835,11 +942,17 @@ export default function LiveConsolePage() {
     loadAll();
   }
   function buildLiveScoreboardMessage(): string {
+    // effectivePlayers (players + synthetic custom-player rows, see
+    // activeFive above) instead of raw `players` — otherwise a custom
+    // player's stat row (player_id null, custom_player_name set) never
+    // resolves to a name here and just shows as "?".
+    const lookup = (s: PlayerStat) =>
+      s.player_id ? effectivePlayers.find((p) => p.id === s.player_id) : effectivePlayers.find((p) => p.ign === s.custom_player_name);
     const lines = [match?.team_a, match?.team_b].map((team) => {
       if (!team) return "";
-      const teamStats = stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === team.id);
+      const teamStats = stats.filter((s) => lookup(s)?.team_id === team.id);
       const rows = teamStats
-        .map((s) => `${players.find((p) => p.id === s.player_id)?.ign ?? "?"} (${s.hero_name ?? "?"}): ${s.kills}/${s.deaths}/${s.assists}`)
+        .map((s) => `${lookup(s)?.ign ?? "?"} (${s.hero_name ?? "?"}): ${s.kills}/${s.deaths}/${s.assists}`)
         .join("\n");
       return rows ? `<b>${team.name}</b>\n${rows}` : "";
     });
@@ -1824,6 +1937,27 @@ export default function LiveConsolePage() {
     if (targetPb && sourcePlayerId) {
       await assignHeroToPlayer(targetPb.id, sourcePlayerId, targetPb.hero_name);
     }
+  }
+
+  // Adds a match-local custom player (a sub not in the `players` table at
+  // all) directly onto an already-logged pick — sets custom_player_name/
+  // custom_player_role on that hero_picks_bans row instead of player_id,
+  // scoped to this one match/game since the row itself is match-scoped.
+  // Everything downstream (Live Scoreboard, KDA entry) picks this up
+  // through the `custom:<pick-ban id>` synthetic id — see isCustomPlayerId.
+  async function addCustomPlayerToPick(pickBanId: string) {
+    const name = prompt("Custom player name (in-game name):")?.trim();
+    if (!name) return;
+    const role = prompt("Role (optional — exp/jungle/mid/gold/roam):")?.trim() || null;
+    const { error } = await supabase
+      .from("hero_picks_bans")
+      .update({ player_id: null, custom_player_name: name, custom_player_role: role })
+      .eq("id", pickBanId);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    loadAll();
   }
 
   async function applyAiDetection(detection: AiDetection) {
@@ -3570,14 +3704,48 @@ export default function LiveConsolePage() {
   // substitute who came in without a hero pick ever being logged for
   // them. Both always sort left-to-right by role: exp lane, jungler, mid
   // laner, gold laner, roamer.
+  // Match-local custom players (added in Hero picks & bans, see
+  // addCustomPlayerToPick) as synthetic Player-shaped rows — id is
+  // `custom:<pick-ban row id>` (see isCustomPlayerId), never a real
+  // players.id, so they never collide with an actual roster player and
+  // every consumer that branches on that prefix (updateStat/ensureStatRow)
+  // treats them consistently. This is what makes the Live Scoreboard's
+  // player list driven by who's actually in this game's Hero picks & bans
+  // instead of only the `players` table roster — a custom player who was
+  // never added to that table still shows up here because they have a
+  // pickBans row for this game.
+  const customPlayers: Player[] = pickBans
+    .filter((pb) => pb.type === "pick" && pb.custom_player_name)
+    .map((pb) => ({
+      id: `custom:${pb.id}`,
+      team_id: pb.team_id,
+      ign: pb.custom_player_name!,
+      role: pb.custom_player_role,
+      photo_url: null,
+      is_active_roster: true,
+    }));
+  const effectivePlayers: Player[] = [...players, ...customPlayers];
   function activeFive(teamId: string | undefined) {
     if (!teamId) return [];
     // Before the draft has actually started there's no "who's playing"
     // decided yet — the Live Scoreboard should show nothing rather than a
     // preset roster guess that may not match who ends up picked.
     if (match?.state === "MATCH_NOT_STARTED") return [];
-    const pickedIds = new Set(pickBans.filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id).map((pb) => pb.player_id));
-    const statIds = new Set(stats.map((s) => s.player_id));
+    const pickedIds = new Set(
+      pickBans
+        .filter((pb) => pb.type === "pick" && pb.team_id === teamId && (pb.player_id || pb.custom_player_name))
+        .map((pb) => pb.player_id ?? `custom:${pb.id}`)
+    );
+    const statIds = new Set(
+      stats
+        .map((s) => {
+          if (s.player_id) return s.player_id;
+          if (!s.custom_player_name) return null;
+          const pb = pickBans.find((row) => row.custom_player_name === s.custom_player_name);
+          return pb ? `custom:${pb.id}` : null;
+        })
+        .filter((id): id is string => !!id)
+    );
     // is_active_roster is the roster editor's own "which 5" decision — a
     // player flagged active shows here even before any pick/stat row
     // exists, which is what makes the roster show up on the Live
@@ -3586,15 +3754,29 @@ export default function LiveConsolePage() {
     // too so a genuine mid-game substitution (added via "+ Add" below,
     // which isn't itself an is_active_roster flip) still renders — a
     // benched sub who's neither flagged active nor actually in the game
-    // is the only thing this excludes.
-    const activeRosterIds = new Set(players.filter((p) => p.team_id === teamId && p.is_active_roster).map((p) => p.id));
-    const included = players.filter((p) => p.team_id === teamId && (activeRosterIds.has(p.id) || pickedIds.has(p.id) || statIds.has(p.id)));
-    const base = included.length > 0 ? included : players.filter((p) => p.team_id === teamId);
+    // is the only thing this excludes. Custom players are always
+    // is_active_roster: true by construction, so they fall into the same
+    // branch as a flagged real roster player.
+    const activeRosterIds = new Set(effectivePlayers.filter((p) => p.team_id === teamId && p.is_active_roster).map((p) => p.id));
+    const included = effectivePlayers.filter((p) => p.team_id === teamId && (activeRosterIds.has(p.id) || pickedIds.has(p.id) || statIds.has(p.id)));
+    const base = included.length > 0 ? included : effectivePlayers.filter((p) => p.team_id === teamId);
     return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
   }
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
+  // Same custom-vs-real branch as ensureStatRow/updateStat, for the read
+  // side — every scoreboard row's stat lookup goes through this instead of
+  // a raw `stats.find(s => s.player_id === p.id)`, which would never match
+  // a custom player (their stat rows carry custom_player_name, not
+  // player_id).
+  function statForPlayer(p: Player): PlayerStat | undefined {
+    if (isCustomPlayerId(p.id)) {
+      const name = customPlayerNameFor(p.id);
+      return stats.find((s) => s.custom_player_name === name);
+    }
+    return stats.find((s) => s.player_id === p.id);
+  }
 
   // ── Draft overlay (broadcast-style) derived values ────────────────────
   // Left/right follows the draft simulation's own Blue/Red assignment once
@@ -3651,12 +3833,19 @@ export default function LiveConsolePage() {
   // once it's read anything — falls back to summing player_stats.kills
   // (the only source before that tracker existed, and still the only
   // source for Normal/Liquipedia-sourced matches).
+  // effectivePlayers (not raw `players`) so a custom player's kills still
+  // count toward their team's total — their stat row has no player_id to
+  // match against a `players` row.
+  function statOwnerTeamId(s: PlayerStat): string | undefined {
+    if (s.player_id) return effectivePlayers.find((p) => p.id === s.player_id)?.team_id;
+    return effectivePlayers.find((p) => p.ign === s.custom_player_name)?.team_id;
+  }
   const teamAKillsTotal =
     game?.team_a_kills_override ??
-    stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+    stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const teamBKillsTotal =
     game?.team_b_kills_override ??
-    stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+    stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   async function addScoreboardPlayer(playerId: string) {
     await ensureStatRow(playerId);
     loadAll();
@@ -4841,14 +5030,17 @@ export default function LiveConsolePage() {
             needing its own "already assigned" filter logic. */}
         {match.state === "DRAFT_COMPLETE" &&
           [match.team_a, match.team_b].some(
-            (team) => team && pickBans.some((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id)
+            (team) => team && pickBans.some((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id && !pb.custom_player_name)
           ) && (
             <div className="border border-white/10 rounded-lg p-3 space-y-3">
-              <p className="text-xs text-white/50">Assign each picked hero to the player actually playing it:</p>
+              <p className="text-xs text-white/50">
+                Assign each picked hero to the player actually playing it — or add a custom player (a sub who&apos;s not
+                in the roster) scoped to just this match:
+              </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {[match.team_a, match.team_b].map((team, idx) => {
                   if (!team) return <span key={idx} />;
-                  const unassigned = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id);
+                  const unassigned = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id && !pb.custom_player_name);
                   if (unassigned.length === 0) return <span key={team.id} />;
                   const activeRoster = rosterFor(team.id).filter((p) => p.is_active_roster);
                   return (
@@ -4862,7 +5054,13 @@ export default function LiveConsolePage() {
                             <span className="text-xs w-24 truncate">{pb.hero_name}</span>
                             <select
                               defaultValue=""
-                              onChange={(e) => e.target.value && assignHeroToPlayer(pb.id, e.target.value, pb.hero_name)}
+                              onChange={(e) => {
+                                if (e.target.value === "__custom__") {
+                                  addCustomPlayerToPick(pb.id);
+                                } else if (e.target.value) {
+                                  assignHeroToPlayer(pb.id, e.target.value, pb.hero_name);
+                                }
+                              }}
                               className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                             >
                               <option value="">Assign player...</option>
@@ -4871,6 +5069,7 @@ export default function LiveConsolePage() {
                                 .map((p) => (
                                   <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
                                 ))}
+                              <option value="__custom__">+ Custom player (not in roster)...</option>
                             </select>
                           </div>
                         );
@@ -5661,7 +5860,7 @@ export default function LiveConsolePage() {
               <span className="w-14">A</span>
             </div>
             {teamPlayers.map((p) => {
-              const stat = stats.find((s) => s.player_id === p.id);
+              const stat = statForPlayer(p);
               const isEditingRoster = editingScoreboardPlayerId === p.id;
               return (
                 <div key={p.id} className="flex gap-2 items-center text-sm min-w-max">

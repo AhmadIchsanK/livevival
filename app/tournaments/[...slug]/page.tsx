@@ -8,6 +8,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { MatchCard } from "@/components/MatchCard";
 import { FollowButton } from "@/components/FollowButton";
+import { TierBadge } from "@/components/TierBadge";
 
 type Tournament = {
   id: string;
@@ -18,6 +19,7 @@ type Tournament = {
   end_date: string | null;
   logo_url: string | null;
   fmvp_player: { ign: string; team: { name: string; logo_url: string | null } | null } | null;
+  default_notification_tier: "normal" | "hot" | "priority" | null;
 };
 type MatchRow = {
   id: string;
@@ -80,7 +82,9 @@ export default function TournamentPage() {
     async function load() {
       const { data: t } = await supabase
         .from("tournaments")
-        .select("id, name, tier, date_display, start_date, end_date, logo_url, fmvp_player:players(ign, team:teams(name, logo_url))")
+        .select(
+          "id, name, tier, date_display, start_date, end_date, logo_url, fmvp_player:players(ign, team:teams(name, logo_url)), default_notification_tier"
+        )
         .eq("liquipedia_slug", slug)
         .maybeSingle();
 
@@ -237,6 +241,7 @@ export default function TournamentPage() {
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="lv-badge bg-white/10 text-white/60">{tournament.tier}-Tier</span>
+            <TierBadge tier={tournament.default_notification_tier} />
             <FollowButton entityType="tournament" entityId={tournament.id} />
           </div>
           <h1 className="font-display font-light text-3xl tracking-tight mt-2">{tournament.name}</h1>

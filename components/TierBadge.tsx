@@ -34,3 +34,26 @@ export function TierBadge({
   }
   return null;
 }
+
+// Same tier/color convention as TierBadge above, but a bare icon instead of
+// a bordered badge box — for tournaments.default_notification_tier shown
+// inline in a truncated single-line meta row (e.g. next to a tournament
+// name in a match card list) where a full badge box doesn't fit. Tournament-
+// level, so there's no updateSource axis to check against here.
+export function TournamentTierIcon({ tier }: { tier?: "normal" | "hot" | "priority" | null }) {
+  if (tier === "priority") {
+    return (
+      <span className="text-amber-300 shrink-0" title="Priority tournament: automatic match-started and match-finished alerts">
+        🔔
+      </span>
+    );
+  }
+  if (tier === "hot") {
+    return (
+      <span className="text-signal shrink-0" title="Hot notification tier tournament: full automatic Telegram/Slack alerts">
+        🔥
+      </span>
+    );
+  }
+  return null;
+}

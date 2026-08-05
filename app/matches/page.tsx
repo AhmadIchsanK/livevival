@@ -13,6 +13,7 @@ type MatchRow = {
   status: string;
   scheduled_at: string | null;
   format: string | null;
+  stage: string | null;
   update_source: "liquipedia" | "local_ocr";
   notification_tier: "normal" | "hot" | "priority";
   tournament: { name: string; tier: string; liquipedia_slug: string | null; default_notification_tier: "normal" | "hot" | "priority" | null } | null;
@@ -23,7 +24,7 @@ type GameRow = { match_id: string; winner_team_id: string | null };
 
 // Same fields as the home page's own MATCH_SELECT — this page reuses the
 // home page's match-card component, so it needs the same data to render it.
-const MATCH_SELECT = `id, status, scheduled_at, format, update_source, notification_tier,
+const MATCH_SELECT = `id, status, scheduled_at, format, stage, update_source, notification_tier,
   tournament:tournaments(name, tier, liquipedia_slug, default_notification_tier),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
@@ -163,6 +164,7 @@ function MatchesPageInner() {
               score={scores[m.id]}
               scheduledAt={m.scheduled_at}
               format={m.format}
+              stage={m.stage}
               tier={m.tournament?.tier}
               tournamentName={m.tournament?.name}
               tournamentSlug={m.tournament?.liquipedia_slug}

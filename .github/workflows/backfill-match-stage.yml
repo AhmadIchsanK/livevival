@@ -1,0 +1,33 @@
+name: Backfill match stage (one-time)
+
+# Manual-only, no schedule — fills `matches.stage` for existing rows that
+# predate stage derivation (all 1316 rows in production had stage IS NULL
+# at the time this was written, confirmed via direct SQL). The regular
+# recurring import (liquipedia-import.yml) never backfills this by design —
+# see scripts/import-liquipedia-matches.mjs's comment on why stage is only
+# set on INSERT, never UPDATE. Safe to re-run: only ever fills rows still
+# null, and re-running only reprocesses tournaments that still have at
+# least one such row (see scripts/backfill-match-stage.mjs).
+#
+# Same per-tournament Liquipedia pacing as import-matches, so this can hit
+# the same "large tournament list doesn't fit in one pass" limit that
+# import-matches documents — that's fine here too, just re-trigger this
+# workflow again later to pick up whatever tournaments are still left with
+# a null-stage match.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/backfill-match-stage.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

@@ -106,15 +106,19 @@ type Screenshot = { id: string; image_url: string; in_game_time: string | null; 
 // still appears in the same feed, just styled as a regular line item.
 const KEY_MOMENT_TYPES = ["savage", "maniac", "double_kill", "triple_kill", "lord_steal", "turtle_steal", "ace"];
 
-// Only these two phases ever have an OCR tracker worth running — the game
+// Only GAME_STARTED ever has an OCR tracker worth running — the game
 // clock, kills, net worth, and K/D/A only exist on screen once the game has
-// actually started, and Technical pause just needs the "pause" word
-// confirmed. Every other phase (draft, pre-game countdown, finished, custom)
-// is driven by the admin's own manual controls instead, so the phase
-// dropdowns below (add tracker / canvas filter / phase filter) never offer
-// them — narrower than the general match-phase selector further up, which
-// still needs the full set.
-const TRACKER_PHASES = ["GAME_STARTED", "TECHNICAL_PAUSE"];
+// actually started. Every other phase (draft, pre-game countdown,
+// technical pause, finished, custom) is driven by the admin's own manual
+// controls instead, so the phase dropdowns below (add tracker / canvas
+// filter / phase filter) never offer them — narrower than the general
+// match-phase selector further up, which still needs the full set.
+// TECHNICAL_PAUSE previously appeared here too (a "pause" word tracker was
+// planned) but catalogForPhase never actually offered anything for it —
+// the broadcast HUD trackers are calibrated against isn't even on screen
+// during a pause, so it's been removed rather than left as a phase that
+// looks trackable but never has anything to add.
+const TRACKER_PHASES = ["GAME_STARTED"];
 
 // Fallback label text for a detected moment when no /admin/moment-templates
 // row exists for its type yet — escalating kill-streak flair per an
@@ -1328,6 +1332,19 @@ export default function LiveConsolePage() {
     const slot = slotMatch ? Number(slotMatch[1]) : null;
     const objectiveType = OBJECTIVE_TYPES.find((t) => field.endsWith(`_${t}`)) ?? null;
     return { side, slot, objectiveType };
+  }
+  // Where to float the variable-name label + Save/Cancel controls for a
+  // region being placed/edited — directly above or below the box itself so
+  // an admin never has to look away from what they just drew/selected to
+  // find the controls that act on it. The canvas container clips overflow
+  // (rounded corners on the video), so both axes are clamped to stay
+  // within its bounds rather than letting a box near an edge push the
+  // panel out and get cut off.
+  function regionOverlayPos(box: RegionBox): { top: number; left: number; below: boolean } {
+    const below = box.yPct + box.hPct <= 85;
+    const top = below ? Math.min(96, box.yPct + box.hPct + 1) : Math.max(2, box.yPct - 10);
+    const left = Math.min(Math.max(box.xPct, 1), 55);
+    return { top, left, below };
   }
   type RegionBox = { xPct: number; yPct: number; wPct: number; hPct: number };
 
@@ -3757,7 +3774,20 @@ export default function LiveConsolePage() {
               </div>
             )}
 
-            {captureActive && (
+            {/* Tracker placement/editing only ever makes sense while the game
+                is actually ongoing — the broadcast HUD trackers are calibrated
+                against isn't even on screen during a Technical Pause (usually
+                a "please stand by" card or nothing at all), so there's nothing
+                real to place or adjust here. Capture itself can still be left
+                running (harmless — activeTrackers filters by match.state, so
+                a Technical Pause tick reads nothing anyway), just no UI to
+                place/edit trackers while paused. */}
+            {captureActive && match.state === "TECHNICAL_PAUSE" && (
+              <p className="text-xs text-white/40 border border-white/10 rounded p-3">
+                Tracker placement is hidden during Technical Pause — switch the match back to "Match Ongoing" to place or adjust trackers.
+              </p>
+            )}
+            {captureActive && match.state !== "TECHNICAL_PAUSE" && (
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <span className="text-[10px] text-white/40">
@@ -3920,6 +3950,29 @@ export default function LiveConsolePage() {
                       ))}
                     </div>
                   )}
+                  {/* Floating label + Lock/Cancel, positioned right above or
+                      below the box itself (see regionOverlayPos) instead of
+                      only in a control strip below the whole canvas — the
+                      variable name is shown here inline, not just via the
+                      box's hover title, so selecting/placing a tracker is
+                      immediately legible without a scroll or a hover. */}
+                  {captureMode === "manual" && calibratingField && draftBox && (
+                    <div
+                      className="absolute z-10 flex items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg whitespace-nowrap"
+                      style={{ left: `${regionOverlayPos(draftBox).left}%`, top: `${regionOverlayPos(draftBox).top}%` }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <span className="text-[11px] font-semibold text-white">
+                        {trackers.find((t) => t.field === calibratingField)?.label ?? calibratingField}
+                      </span>
+                      <button onClick={lockDraftBox} className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10">
+                        🔒 Lock
+                      </button>
+                      <button onClick={cancelDraftBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                   {/* Not yet drawn at all — a one-line hint since the empty
                       container gives no other cue to click-drag. */}
                   {captureMode === "manual" && calibratingField && !draftBox && (
@@ -3959,6 +4012,54 @@ export default function LiveConsolePage() {
                       ))}
                     </div>
                   )}
+                  {/* Floating variable picker + Save/Cancel, positioned right
+                      next to the freshly-drawn box (see regionOverlayPos)
+                      instead of only in a strip below the whole canvas —
+                      same "controls live next to what they act on" fix as
+                      the calibratingField panel above. */}
+                  {captureMode === "manual" && !calibratingField && pendingBox && (
+                    <div
+                      className="absolute z-10 flex flex-wrap items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg"
+                      style={{ left: `${regionOverlayPos(pendingBox).left}%`, top: `${regionOverlayPos(pendingBox).top}%`, maxWidth: "44%" }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <span className="text-[10px] text-white/50 uppercase tracking-wider whitespace-nowrap">New tracker</span>
+                      <select
+                        value={pendingBoxPhase}
+                        onChange={(e) => {
+                          setPendingBoxPhase(e.target.value);
+                          setPendingBoxField("");
+                        }}
+                        className="bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+                      >
+                        {TRACKER_PHASES.map((p) => (
+                          <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={pendingBoxField}
+                        onChange={(e) => setPendingBoxField(e.target.value)}
+                        className="bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px] min-w-[140px]"
+                      >
+                        <option value="">
+                          {pendingBoxOptions.length === 0 ? "Nothing left to track" : "Select a variable..."}
+                        </option>
+                        {pendingBoxOptions.map((opt) => (
+                          <option key={opt.field} value={opt.field}>{opt.label}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={savePendingBox}
+                        disabled={!pendingBoxField}
+                        className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 disabled:opacity-40"
+                      >
+                        Save
+                      </button>
+                      <button onClick={cancelPendingBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                   {captureMode === "manual" && !calibratingField && !pendingBox && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                       <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag anywhere to place a new tracker</span>
@@ -3966,55 +4067,15 @@ export default function LiveConsolePage() {
                   )}
                 </div>
 
-                {pendingBox && (
-                  <div className="flex flex-wrap items-center gap-2 border border-white/10 rounded px-3 py-2">
-                    <span className="text-[10px] text-white/40 uppercase tracking-wider whitespace-nowrap">New tracker</span>
-                    <select
-                      value={pendingBoxPhase}
-                      onChange={(e) => {
-                        setPendingBoxPhase(e.target.value);
-                        setPendingBoxField("");
-                      }}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                    >
-                      {TRACKER_PHASES.map((p) => (
-                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={pendingBoxField}
-                      onChange={(e) => setPendingBoxField(e.target.value)}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
-                    >
-                      <option value="">
-                        {pendingBoxOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
-                      </option>
-                      {pendingBoxOptions.map((opt) => (
-                        <option key={opt.field} value={opt.field}>{opt.label}</option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={savePendingBox}
-                      disabled={!pendingBoxField}
-                      className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
-                    >
-                      Save
-                    </button>
-                    <button onClick={cancelPendingBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
-                      Cancel
-                    </button>
-                  </div>
-                )}
-
-                {captureMode === "manual" && calibratingField && (
+                {/* Only shown pre-draw (nothing to float a positioned panel
+                    next to yet) — once draftBox exists, the floating
+                    label + Lock/Cancel on the canvas itself (see
+                    regionOverlayPos above) takes over and this is hidden,
+                    so there's exactly one set of Save/Cancel controls
+                    visible at a time, not two. */}
+                {captureMode === "manual" && calibratingField && !draftBox && (
                   <div className="flex gap-2">
-                    <button
-                      onClick={lockDraftBox}
-                      disabled={!draftBox}
-                      className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
-                    >
-                      🔒 Lock {trackers.find((t) => t.field === calibratingField)?.label}
-                    </button>
+                    <span className="text-xs text-white/50 self-center">{trackers.find((t) => t.field === calibratingField)?.label}</span>
                     <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
                       Cancel
                     </button>

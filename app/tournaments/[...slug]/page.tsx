@@ -7,6 +7,7 @@ import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { MatchCard } from "@/components/MatchCard";
+import { FollowButton } from "@/components/FollowButton";
 
 type Tournament = {
   id: string;
@@ -234,7 +235,10 @@ export default function TournamentPage() {
       <header className="flex items-start gap-4">
         {tournament.logo_url && <TeamLogo url={tournament.logo_url} size="md" />}
         <div>
-          <span className="lv-badge bg-white/10 text-white/60">{tournament.tier}-Tier</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="lv-badge bg-white/10 text-white/60">{tournament.tier}-Tier</span>
+            <FollowButton entityType="tournament" entityId={tournament.id} />
+          </div>
           <h1 className="font-display font-light text-3xl tracking-tight mt-2">{tournament.name}</h1>
           {(tournament.start_date || tournament.end_date) ? (
             <p className="text-sm text-white/40 mt-1">

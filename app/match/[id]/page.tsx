@@ -8,6 +8,7 @@ import { HeroIcon } from "@/components/HeroIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { BrandLockup } from "@/components/Brand";
+import { FollowButton } from "@/components/FollowButton";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 
@@ -781,6 +782,7 @@ export default function PublicMatchPage() {
               👀 {watchingNow} watching
             </span>
           )}
+          <FollowButton entityType="match" entityId={matchId} />
         </div>
 
         {isForfeitWin && seriesWinnerName && (

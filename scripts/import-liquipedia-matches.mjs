@@ -53,7 +53,9 @@ function parseFormat(text) {
   return ["1", "2", "3", "5", "7"].includes(n) ? `BO${n}` : null;
 }
 
-function extractMatches(html) {
+// Exported so scripts/backfill-match-stage.mjs can re-derive the exact same
+// match list (and stage) per page without duplicating this parsing.
+export function extractMatches(html) {
   const $ = cheerio.load(html);
   const matches = [];
 
@@ -164,7 +166,9 @@ async function getOrCreateStream(youtubeUrl, tournamentId, finished) {
 // is the one subpage type confirmed to never contain match popups — a
 // per-player/per-hero stats page, not a bracket — so it's excluded to avoid
 // spending a request on a page that structurally can't have what we want.
-async function getTournamentPages(tournament) {
+// Exported so scripts/backfill-match-stage.mjs can enumerate the same pages
+// instead of duplicating subpage discovery.
+export async function getTournamentPages(tournament) {
   const baseSlug = tournament.liquipedia_slug;
   const pages = [baseSlug];
   try {
@@ -188,7 +192,9 @@ async function getTournamentPages(tournament) {
 // base page (pages[0]) carries no stage info of its own (a flat schedule,
 // a bracket overview, or just duplicates of the subpages) so it's left
 // null rather than guessed at.
-function deriveStageFromPage(baseSlug, pageSlug) {
+// Exported so scripts/backfill-match-stage.mjs can derive the same stage
+// label for the one-time backfill of rows that predate this column.
+export function deriveStageFromPage(baseSlug, pageSlug) {
   if (pageSlug === baseSlug) return null;
   const lastSegment = pageSlug.slice(baseSlug.length + 1).split("/").pop();
   if (!lastSegment) return null;
@@ -253,6 +259,11 @@ async function importMatchesForTournament(tournament) {
       // derived one — same reasoning as stream_id above: an admin may have
       // hand-edited it (e.g. to something more specific than the raw
       // subpage name), and a re-import shouldn't silently clobber that.
+      // Every match row that predates this column falls into this branch
+      // forever (they already exist, so they're always an update, never an
+      // insert) and so never gets a stage from this script by design — see
+      // scripts/backfill-match-stage.mjs for the one-time pass that closes
+      // that gap (only filling rows still null, same non-clobber rule).
       const { error } = await supabase.from("matches").update(payload).eq("id", existing.id);
       if (error) console.error(`Failed to update match: ${error.message}`);
     } else {

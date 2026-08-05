@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HotBadge } from "@/components/HotBadge";
-import { TierBadge } from "@/components/TierBadge";
+import { TierBadge, TournamentTierIcon } from "@/components/TierBadge";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 
 type CardTeam = { name: string | null | undefined; logo_url?: string | null } | null | undefined;
@@ -23,6 +23,7 @@ export function MatchCard({
   tier,
   tournamentName,
   tournamentSlug,
+  tournamentDefaultTier,
   updateSource,
   notificationTier,
 }: {
@@ -38,6 +39,11 @@ export function MatchCard({
   // tournament line entirely instead of showing a redundant self-link.
   tournamentName?: string | null;
   tournamentSlug?: string | null;
+  // tournaments.default_notification_tier — separate from the match's own
+  // notificationTier below (see TierBadge.tsx); shown as a small icon next
+  // to the tournament name to flag "this whole tournament is Priority/Hot",
+  // not just this one match.
+  tournamentDefaultTier?: "normal" | "hot" | "priority" | null;
   updateSource?: "liquipedia" | "local_ocr";
   // notification_tier — a separate axis from updateSource above (see
   // TierBadge.tsx). Optional since not every caller has loaded it.
@@ -91,6 +97,7 @@ export function MatchCard({
       <MatchCardMeta
         tournamentName={tournamentName}
         tournamentSlug={tournamentSlug}
+        tournamentDefaultTier={tournamentDefaultTier}
         tier={tier}
         format={format}
         scheduledAt={scheduledAt}
@@ -105,6 +112,7 @@ export function MatchCard({
 function MatchCardMeta({
   tournamentName,
   tournamentSlug,
+  tournamentDefaultTier,
   tier,
   format,
   scheduledAt,
@@ -114,6 +122,7 @@ function MatchCardMeta({
 }: {
   tournamentName?: string | null;
   tournamentSlug?: string | null;
+  tournamentDefaultTier?: "normal" | "hot" | "priority" | null;
   tier?: string | null;
   format?: string | null;
   scheduledAt?: string | null;
@@ -124,18 +133,20 @@ function MatchCardMeta({
   const bits: ReactNode[] = [];
   if (tournamentName) {
     bits.push(
-      tournamentSlug ? (
-        <a
-          key="tournament"
-          href={`/tournaments/${tournamentSlug}`}
-          onClick={(e) => e.stopPropagation()}
-          className="hover:text-white/70 underline"
-        >
-          {tournamentName}
-        </a>
-      ) : (
-        tournamentName
-      )
+      <span key="tournament" className="inline-flex items-center gap-1">
+        {tournamentSlug ? (
+          <a
+            href={`/tournaments/${tournamentSlug}`}
+            onClick={(e) => e.stopPropagation()}
+            className="hover:text-white/70 underline"
+          >
+            {tournamentName}
+          </a>
+        ) : (
+          tournamentName
+        )}
+        <TournamentTierIcon tier={tournamentDefaultTier} />
+      </span>
     );
   }
   if (tier) bits.push(`${tier}-Tier`);

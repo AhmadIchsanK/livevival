@@ -77,20 +77,12 @@ function extractMatches(html) {
     const teamBName = teamBLink.attr("title");
     if (!teamAName || !teamBName) return;
 
-    // The anchor's title attribute is the full team name; its visible text
-    // is usually the short/abbreviated form Liquipedia's team template
-    // displays (e.g. title="RRQ Hoshi", text="RRQ") — capture both.
-    const teamAShort = teamALink.text().trim() || null;
-    const teamBShort = teamBLink.text().trim() || null;
-
     const format = parseFormat($el.find(".match-info-header-scoreholder-lower").text());
     const vodHrefs = $el.find(".vodlink a[href]").map((_, a) => $(a).attr("href")).get();
 
     matches.push({
       teamAName,
       teamBName,
-      teamAShort,
-      teamBShort,
       timestamp: Number(timestamp),
       finished,
       format,
@@ -102,39 +94,24 @@ function extractMatches(html) {
 }
 
 const teamIdCache = new Map();
-async function getOrCreateTeamId(name, shortName = null) {
+async function getOrCreateTeamId(name) {
   const key = name.trim().toLowerCase();
   if (teamIdCache.has(key)) return teamIdCache.get(key);
 
   const { data: existing } = await supabase
     .from("teams")
-    .select("id, short_name")
+    .select("id")
     .ilike("name", name.trim())
     .maybeSingle();
 
-  const resolvedShortName =
-    shortName && shortName.toLowerCase() !== name.trim().toLowerCase() && shortName.length <= 10
-      ? shortName
-      : null;
-
   if (existing) {
     teamIdCache.set(key, existing.id);
-    // Backfill short_name for teams created before this field was captured,
-    // or before the short-name fix existed — never overwrite a value that's
-    // already set (could be a manual admin edit).
-    if (!existing.short_name && resolvedShortName) {
-      const { error: updateError } = await supabase
-        .from("teams")
-        .update({ short_name: resolvedShortName })
-        .eq("id", existing.id);
-      if (updateError) console.error(`Failed to backfill short_name for "${name}":`, updateError.message);
-    }
     return existing.id;
   }
 
   const { data: created, error } = await supabase
     .from("teams")
-    .insert({ name: name.trim(), short_name: resolvedShortName })
+    .insert({ name: name.trim() })
     .select("id")
     .single();
 
@@ -220,8 +197,8 @@ async function importMatchesForTournament(tournament) {
   console.log(`Found ${found.length} matches for ${tournament.name}`);
 
   for (const m of found) {
-    const teamAId = await getOrCreateTeamId(m.teamAName, m.teamAShort);
-    const teamBId = await getOrCreateTeamId(m.teamBName, m.teamBShort);
+    const teamAId = await getOrCreateTeamId(m.teamAName);
+    const teamBId = await getOrCreateTeamId(m.teamBName);
     if (!teamAId || !teamBId) continue;
 
     const key = `${tournament.liquipedia_slug}__${teamAId}__${teamBId}__${m.timestamp}`;

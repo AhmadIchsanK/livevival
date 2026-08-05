@@ -40,6 +40,7 @@ function PlayersIndexPageInner() {
   // already typed, so it should show up pre-filled, not require retyping.
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [roleFilter, setRoleFilter] = useState("");
+  const [countryFilter, setCountryFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("name_asc");
   const [preview, setPreview] = useState<Player | null>(null);
   const [view, setView] = useViewMode("lv-view-players");
@@ -63,10 +64,21 @@ function PlayersIndexPageInner() {
     [players]
   );
 
+  // Country codes actually present in the current roster set, not a fixed
+  // list — same "derive from what's real" approach as `roles` above.
+  const countries = useMemo(
+    () =>
+      Array.from(new Set(players.flatMap((p) => p.country_codes ?? []))).sort((a, b) =>
+        countryCodeToName(a).localeCompare(countryCodeToName(b))
+      ),
+    [players]
+  );
+
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filtered = players.filter((p) => {
       if (roleFilter && p.role !== roleFilter) return false;
+      if (countryFilter && !(p.country_codes ?? []).includes(countryFilter)) return false;
       if (q && !p.ign.toLowerCase().includes(q) && !(p.team?.name ?? "").toLowerCase().includes(q)) return false;
       return true;
     });
@@ -76,7 +88,7 @@ function PlayersIndexPageInner() {
       return [...filtered].sort((a, b) => (a.team?.name ?? "").localeCompare(b.team?.name ?? "") || a.ign.localeCompare(b.ign));
     }
     return sorted;
-  }, [players, search, roleFilter, sortKey]);
+  }, [players, search, roleFilter, countryFilter, sortKey]);
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
@@ -99,6 +111,18 @@ function PlayersIndexPageInner() {
           className="flex-1 min-w-[200px] bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal/60"
         />
         <select
+          value={countryFilter}
+          onChange={(e) => setCountryFilter(e.target.value)}
+          className="bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
+        >
+          <option value="">All nationalities</option>
+          {countries.map((c) => (
+            <option key={c} value={c}>
+              {countryCodeToFlagEmoji(c)} {countryCodeToName(c)}
+            </option>
+          ))}
+        </select>
+        <select
           value={roleFilter}
           onChange={(e) => setRoleFilter(e.target.value)}
           className="bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
@@ -119,6 +143,12 @@ function PlayersIndexPageInner() {
         </select>
         <ViewToggle mode={view} onChange={setView} />
       </div>
+
+      {!loading && (
+        <p className="text-xs text-white/40">
+          {visible.length} of {players.length} players shown
+        </p>
+      )}
 
       {loading && <p className="text-white/40 text-sm">Loading...</p>}
 
@@ -163,10 +193,10 @@ function PlayersIndexPageInner() {
           <table className="w-full text-sm">
             <thead className="text-white/40 text-left bg-white/[0.03]">
               <tr>
+                <th className="pb-2 pt-3 px-4">Nationality</th>
                 <th className="pb-2 pt-3 px-4">Player</th>
                 <th className="pb-2 pt-3 px-4">Role</th>
                 <th className="pb-2 pt-3 px-4">Team</th>
-                <th className="pb-2 pt-3 px-4">Nationality</th>
               </tr>
             </thead>
             <tbody>
@@ -176,6 +206,15 @@ function PlayersIndexPageInner() {
                   onClick={() => setPreview(p)}
                   className="border-t border-white/10 hover:bg-white/[0.03] transition-colors cursor-pointer"
                 >
+                  <td className="py-2 px-4 text-white/60">
+                    {p.country_codes && p.country_codes.length > 0 ? (
+                      <span title={p.country_codes.map(countryCodeToName).join(" / ")}>
+                        {p.country_codes.map(countryCodeToFlagEmoji).join("")}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
+                  </td>
                   <td className="py-2 px-4">
                     <div className="flex items-center gap-2.5">
                       <TeamLogo url={p.photo_url} size="sm" />
@@ -196,11 +235,6 @@ function PlayersIndexPageInner() {
                       <span className="text-white/30">—</span>
                     )}
                   </td>
-                  <td className="py-2 px-4 text-white/60">
-                    {p.country_codes && p.country_codes.length > 0
-                      ? p.country_codes.map(countryCodeToFlagEmoji).join("")
-                      : "—"}
-                  </td>
                 </tr>
               ))}
             </tbody>
@@ -217,8 +251,8 @@ function PlayersIndexPageInner() {
           <div className="max-w-xs w-full lv-card flex flex-col items-center gap-3 p-6 text-center" onClick={(e) => e.stopPropagation()}>
             <TeamLogo url={preview.photo_url} size="xl" />
             <p className="font-display font-light text-xl">{preview.ign}</p>
-            {preview.real_name && <p className="text-xs text-white/50">{preview.real_name}</p>}
             <PlayerCountryFlag codes={preview.country_codes} />
+            {preview.real_name && <p className="text-xs text-white/50">{preview.real_name}</p>}
             {preview.role && <p className="text-xs text-white/40 uppercase tracking-wide">{preview.role}</p>}
             {preview.team && (
               <div className="flex items-center gap-2 mt-1">

@@ -32,7 +32,15 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { apiQuery, sleep, COUNTRY_NAME_TO_CODE } from "./_liquipedia.mjs";
+import {
+  apiQuery,
+  sleep,
+  COUNTRY_NAME_TO_CODE,
+  REGION_BY_COUNTRY_CODE,
+  extractCountryCodes,
+  getInfoboxRows,
+  extractInfoboxIconLinks,
+} from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -123,6 +131,124 @@ export function extractActiveRoster($) {
   return players;
 }
 
+// Team infoboxes list a "Location:" row (occasionally "Country:" on older
+// pages) the same `.infobox-description` / next-sibling shape confirmed for
+// player infoboxes (see backfill-player-photos.mjs's header comment) — free
+// text, e.g. "Jakarta, Indonesia", sometimes with an inline flag icon next
+// to it. Region has no equivalent direct infobox field on team pages (unlike
+// tournament/hero infoboxes), so it's derived from the same location value:
+// first via the flag icon's own ISO code (most reliable — same
+// extractCountryCodes helper used for player nationality), falling back to
+// a plain country-name match inside the location text when there's no flag
+// to read. Either the flag or the name-match coming up empty just leaves
+// region null rather than guessing — most reliably-derivable case is a
+// single-country market matching COUNTRY_NAME_TO_CODE (see
+// REGION_BY_COUNTRY_CODE's own comment in _liquipedia.mjs for what "region"
+// means here).
+export function extractLocationAndRegion($) {
+  const rows = getInfoboxRows($);
+  const cell = rows.get("location") || rows.get("country");
+  if (!cell || cell.length === 0) return { location: null, region: null };
+
+  const location = cell.text().trim().replace(/\s+/g, " ") || null;
+  if (!location) return { location: null, region: null };
+
+  const codes = extractCountryCodes($, cell);
+  let code = codes && codes.length > 0 ? codes[0] : null;
+  if (!code) {
+    // No flag icon in the cell (some older team pages just list plain
+    // text) — fall back to matching a known country name inside the
+    // location text itself. Longest names first so "united arab emirates"
+    // wins over any shorter name that happens to be a substring of it.
+    const lower = location.toLowerCase();
+    const names = Object.keys(COUNTRY_NAME_TO_CODE).sort((a, b) => b.length - a.length);
+    const matched = names.find((name) =>
+      new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(lower)
+    );
+    if (matched) code = COUNTRY_NAME_TO_CODE[matched];
+  }
+
+  const region = code ? REGION_BY_COUNTRY_CODE[code] ?? null : null;
+  return { location, region };
+}
+
+// Domains that unambiguously identify a specific social platform — checked
+// before anything icon-class-based since a link's own href is a much more
+// stable signal than an icon filename/CSS class that Liquipedia could
+// restyle at any time (e.g. the X/Twitter rebrand already happened once).
+const SOCIAL_DOMAIN_TO_COLUMN = [
+  [/(^|\.)x\.com$/i, "twitter_url"],
+  [/(^|\.)twitter\.com$/i, "twitter_url"],
+  [/(^|\.)instagram\.com$/i, "instagram_url"],
+  [/(^|\.)facebook\.com$/i, "facebook_url"],
+  [/(^|\.)fb\.com$/i, "facebook_url"],
+  [/(^|\.)youtube\.com$/i, "youtube_url"],
+  [/(^|\.)youtu\.be$/i, "youtube_url"],
+  [/(^|\.)discord\.gg$/i, "discord_url"],
+  [/(^|\.)discord\.com$/i, "discord_url"],
+];
+
+// Platforms Liquipedia's icon-links block commonly includes that this
+// schema has no column for (Twitch, TikTok, Reddit, VK, Weibo, Bilibili,
+// plus the wiki's own self-links) — recognized explicitly so an unmatched
+// link from one of these never gets misfiled into website_url below.
+const KNOWN_NON_WEBSITE_DOMAINS = [
+  /(^|\.)twitch\.tv$/i,
+  /(^|\.)tiktok\.com$/i,
+  /(^|\.)reddit\.com$/i,
+  /(^|\.)vk\.com$/i,
+  /(^|\.)weibo\.com$/i,
+  /(^|\.)bilibili\.com$/i,
+  /(^|\.)liquipedia\.net$/i,
+  /(^|\.)wikipedia\.org$/i,
+];
+
+// Fallback only for when the href's own domain doesn't decide it — the icon
+// class name Liquipedia actually uses for a team's homepage link varies
+// ("lp-link", "lp-website", "lp-home" have all been seen across different
+// wikis' skins), so this covers whichever of those shows up without
+// depending on any single one.
+const WEBSITE_ICON_CLASSES = new Set(["website", "link", "home", "homepage", "site", "official"]);
+
+function columnForLink(platform, href) {
+  let host;
+  try {
+    host = new URL(href).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return null; // not a real absolute URL — nothing usable to store
+  }
+
+  for (const [re, column] of SOCIAL_DOMAIN_TO_COLUMN) {
+    if (re.test(host)) return column;
+  }
+  if (KNOWN_NON_WEBSITE_DOMAINS.some((re) => re.test(host))) return null;
+  if (platform && WEBSITE_ICON_CLASSES.has(platform)) return "website_url";
+
+  // Domain isn't a recognized social platform and isn't a recognized
+  // non-website platform either — Liquipedia's Links section conventionally
+  // opens with the team's own official-site link, so treat an otherwise
+  // unclassified icon-links entry as that.
+  return "website_url";
+}
+
+// Reclassifies the generic {platform: href} map from
+// extractInfoboxIconLinks (shared with player-page parsing) into this
+// table's actual column names, using each href's own domain as the primary
+// signal (see columnForLink). Returns null if the page's Links section
+// yielded nothing at all.
+export function extractSocialLinks($) {
+  const iconLinks = extractInfoboxIconLinks($);
+  if (!iconLinks) return null;
+
+  const result = {};
+  for (const [platform, href] of Object.entries(iconLinks)) {
+    if (!href || !href.startsWith("http")) continue;
+    const column = columnForLink(platform.toLowerCase(), href);
+    if (column && !result[column]) result[column] = href;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
 // Fetches a team's page by slug, following redirects (handles cases like
 // an older-imported team name that Liquipedia has since renamed/merged —
 // e.g. "ONIC Esports" redirecting to "ONIC"). Returns null if the page
@@ -179,10 +305,22 @@ async function importTeam(team) {
   const $ = cheerio.load(page.html);
   const logoUrl = extractLogoUrl($);
   const roster = extractActiveRoster($);
+  const { location, region } = extractLocationAndRegion($);
+  const socialLinks = extractSocialLinks($);
 
   const teamUpdate = {};
   if (!team.liquipedia_slug) teamUpdate.liquipedia_slug = page.canonicalTitle;
   if (!team.logo_url && logoUrl) teamUpdate.logo_url = logoUrl;
+  // Same "only fill a gap, never overwrite" rule as logo_url/liquipedia_slug
+  // above (and heroes.role/lane/region) — an admin's manual edit on any of
+  // these is never clobbered by a re-scrape.
+  if (!team.location && location) teamUpdate.location = location;
+  if (!team.region && region) teamUpdate.region = region;
+  if (socialLinks) {
+    for (const column of SOCIAL_COLUMNS) {
+      if (!team[column] && socialLinks[column]) teamUpdate[column] = socialLinks[column];
+    }
+  }
   if (Object.keys(teamUpdate).length > 0) {
     const { error } = await supabase.from("teams").update(teamUpdate).eq("id", team.id);
     if (error) console.error(`Failed to update team "${team.name}":`, error.message);
@@ -192,11 +330,19 @@ async function importTeam(team) {
     await upsertPlayerRole(team.id, p.ign, p.role, p.slug);
   }
 
-  console.log(`${team.name}: ${logoUrl ? "logo found" : "no logo"}, ${roster.length} active roster row(s)`);
+  console.log(
+    `${team.name}: ${logoUrl ? "logo found" : "no logo"}, ${roster.length} active roster row(s), ` +
+      `${location ? `location "${location}"` : "no location"}${region ? ` (region "${region}")` : ""}, ` +
+      `${socialLinks ? Object.keys(socialLinks).length : 0} social link(s)`
+  );
 }
 
+const SOCIAL_COLUMNS = ["website_url", "twitter_url", "instagram_url", "facebook_url", "youtube_url", "discord_url"];
+
 async function main() {
-  const { data: teams, error } = await supabase.from("teams").select("id, name, liquipedia_slug, logo_url");
+  const { data: teams, error } = await supabase
+    .from("teams")
+    .select(`id, name, liquipedia_slug, logo_url, location, region, ${SOCIAL_COLUMNS.join(", ")}`);
   if (error) throw error;
 
   const { data: players, error: playersError } = await supabase.from("players").select("team_id, role");
@@ -208,9 +354,29 @@ async function main() {
   // routinely blew past GitHub Actions' 6h hard job cap and got force-
   // cancelled before reaching the back half of the team list — confirmed
   // via the last two scheduled runs of this workflow, both "cancelled" at
-  // ~6h05m. Skip teams that already have a logo and a fully-roled known
-  // roster; only re-fetch when a new player shows up with no role yet.
-  const needsFetch = teams.filter((t) => !t.logo_url || teamsWithMissingRole.has(t.id));
+  // ~6h05m. Skip teams that already have a logo, a fully-roled known
+  // roster, a location/region, and every social column; only re-fetch when
+  // a new player shows up with no role yet or one of those team-level
+  // fields is still a gap. location/region/socials are 100% null across
+  // all 318 teams as of this field's introduction, so the very first run
+  // after deploying it necessarily reprocesses close to the full team list
+  // regardless — same shape of one-time cost the roster/logo backfill
+  // already went through, and it converges the same way: each run only
+  // re-touches teams still missing something, and the job's own
+  // timeout-minutes/cron-interval combination (180 min, every 6h, no
+  // overlapping runs) already tolerates spreading that convergence across
+  // several scheduled cycles instead of finishing in one. Note this can
+  // never fully "converge to zero" for a team whose real Liquipedia page
+  // genuinely has no Location field or Links section — same accepted
+  // tradeoff logo_url already has for a team with no logo on its page.
+  const needsFetch = teams.filter(
+    (t) =>
+      !t.logo_url ||
+      teamsWithMissingRole.has(t.id) ||
+      !t.location ||
+      !t.region ||
+      SOCIAL_COLUMNS.some((c) => !t[c])
+  );
   console.log(`Processing ${needsFetch.length} of ${teams.length} team(s) (rest already complete)...`);
   for (const team of needsFetch) {
     try {

@@ -107,6 +107,146 @@ export const COUNTRY_NAME_TO_CODE = {
   sweden: "SE",
 };
 
+// Coarser geographic/competitive grouping derived from a COUNTRY_NAME_TO_CODE
+// country code — used to fill teams.region from teams.location when a
+// team's Liquipedia infobox has no explicit "Region" field of its own
+// (unlike tournament/hero infoboxes, team infoboxes typically don't list
+// one directly). Deliberately mirrors the shape of the two example values
+// already documented on the region column itself (see
+// add_team_social_location_fields.sql's comment: "Indonesia", "Philippines",
+// "MENA") — single-country MLBB markets big enough to run their own
+// national league keep their own name as their region, everything else
+// groups into a widely-recognized geographic bloc. This is a deterministic
+// function of the scraped location, not a per-team guess, and it only ever
+// fills teams.region when that column is still null — an admin can always
+// override it by hand afterward (see import-team-details.mjs's needsFetch/
+// "only fill a gap" pattern). Extend as real gaps turn up rather than
+// guessing entries for countries with no scraped team location yet.
+export const REGION_BY_COUNTRY_CODE = {
+  ID: "Indonesia",
+  PH: "Philippines",
+  MY: "Malaysia",
+  SG: "Singapore",
+  BN: "Brunei",
+  MM: "Myanmar",
+  KH: "Cambodia",
+  TH: "Thailand",
+  VN: "Vietnam",
+  LA: "Laos",
+  TL: "Southeast Asia",
+  SA: "MENA",
+  AE: "MENA",
+  KW: "MENA",
+  QA: "MENA",
+  EG: "MENA",
+  MA: "MENA",
+  DZ: "MENA",
+  TN: "MENA",
+  TR: "MENA",
+  BR: "Latin America",
+  AR: "Latin America",
+  CL: "Latin America",
+  PE: "Latin America",
+  CO: "Latin America",
+  MX: "Latin America",
+  BO: "Latin America",
+  EC: "Latin America",
+  PY: "Latin America",
+  UY: "Latin America",
+  VE: "Latin America",
+  DO: "Latin America",
+  US: "North America",
+  CA: "North America",
+  CN: "East Asia",
+  KR: "East Asia",
+  JP: "East Asia",
+  IN: "South Asia",
+  PK: "South Asia",
+  BD: "South Asia",
+  NP: "South Asia",
+  LK: "South Asia",
+  RU: "CIS",
+  UA: "CIS",
+  KZ: "CIS",
+  UZ: "CIS",
+  MN: "CIS",
+  AU: "Oceania",
+  NZ: "Oceania",
+  GB: "Europe",
+  DE: "Europe",
+  FR: "Europe",
+  ES: "Europe",
+  PT: "Europe",
+  IT: "Europe",
+  PL: "Europe",
+  SE: "Europe",
+  NG: "Africa",
+  ZA: "Africa",
+};
+
+// Confirmed against real rendered HTML for 5 players (see
+// backfill-player-photos.mjs's header comment) — a nationality/location
+// value's flag <img> src encodes the ISO code in its filename
+// ("Ar_hd.png" = AR, "Id_hd.png" = ID, ...). Shared here since both
+// backfill-player-photos.mjs (player nationality) and
+// import-team-details.mjs (team location, for deriving region) read a
+// flag-bearing infobox value cell the same way.
+export const FLAG_CODE_RE = /\/([A-Za-z]{2})_hd\.png/;
+
+/** Reads every flag icon inside an infobox value cell, returning ISO codes (falls back to COUNTRY_NAME_TO_CODE via the flag's alt/title when the filename doesn't follow the standard pattern). Returns null if the cell has no flag at all. */
+export function extractCountryCodes($, valueCell) {
+  const codes = [];
+  valueCell.find("span.flag img").each((_, img) => {
+    const $img = $(img);
+    const src = $img.attr("src") || "";
+    const match = src.match(FLAG_CODE_RE);
+    let code = match ? match[1].toUpperCase() : null;
+    const flagName = ($img.attr("alt") || $img.attr("title") || "").trim();
+    if (!code && flagName) {
+      code = COUNTRY_NAME_TO_CODE[flagName.toLowerCase()] || null;
+      if (!code) console.warn(`  unrecognized flag "${flagName}" (src: ${src}) — add it to COUNTRY_NAME_TO_CODE`);
+    }
+    if (code) codes.push(code);
+  });
+  return codes.length > 0 ? Array.from(new Set(codes)) : null;
+}
+
+/** Maps every `<label>: value` infobox row (the `.infobox-description` / next-sibling pattern used across player, team, hero, etc. infoboxes) by lowercased label text, e.g. rows.get("location"). */
+export function getInfoboxRows($) {
+  const rows = new Map();
+  $(".infobox-description").each((_, el) => {
+    const label = $(el).text().trim().replace(/:$/, "").toLowerCase();
+    rows.set(label, $(el).next());
+  });
+  return rows;
+}
+
+/**
+ * Reads Liquipedia's icon-based links block — confirmed (see
+ * backfill-player-photos.mjs's header comment) as
+ * `.infobox-icons a[href]` wrapping an `<i class="lp-icon lp-<platform>">`,
+ * one anchor per platform, on player pages; team pages use the same
+ * Module:Links-based markup for their own "Links" section. Returns a
+ * {platform: href} map keyed by the icon's own lp-* class name (e.g.
+ * "instagram", "twitter", "discord") — callers that need specific DB
+ * columns (see import-team-details.mjs's extractSocialLinks) reclassify
+ * from there, since a bare platform key isn't guaranteed to line up with
+ * any particular schema's column names.
+ */
+export function extractInfoboxIconLinks($) {
+  const links = {};
+  $(".infobox-icons a[href]").each((_, a) => {
+    const $a = $(a);
+    const href = $a.attr("href");
+    if (!href) return;
+    const iconClasses = ($a.find("i").first().attr("class") || "").split(/\s+/);
+    const platformClass = iconClasses.find((c) => c.startsWith("lp-") && c !== "lp-icon");
+    const platform = platformClass ? platformClass.replace(/^lp-/, "") : null;
+    if (platform) links[platform] = href;
+  });
+  return Object.keys(links).length > 0 ? links : null;
+}
+
 const REQUEST_TIMEOUT_MS = 20000;
 
 async function requestJson(url, label, attempt, maxRetries) {

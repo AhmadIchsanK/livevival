@@ -106,15 +106,19 @@ type Screenshot = { id: string; image_url: string; in_game_time: string | null; 
 // still appears in the same feed, just styled as a regular line item.
 const KEY_MOMENT_TYPES = ["savage", "maniac", "double_kill", "triple_kill", "lord_steal", "turtle_steal", "ace"];
 
-// Only these two phases ever have an OCR tracker worth running — the game
+// Only GAME_STARTED ever has an OCR tracker worth running — the game
 // clock, kills, net worth, and K/D/A only exist on screen once the game has
-// actually started, and Technical pause just needs the "pause" word
-// confirmed. Every other phase (draft, pre-game countdown, finished, custom)
-// is driven by the admin's own manual controls instead, so the phase
-// dropdowns below (add tracker / canvas filter / phase filter) never offer
-// them — narrower than the general match-phase selector further up, which
-// still needs the full set.
-const TRACKER_PHASES = ["GAME_STARTED", "TECHNICAL_PAUSE"];
+// actually started. Every other phase (draft, pre-game countdown,
+// technical pause, finished, custom) is driven by the admin's own manual
+// controls instead, so the phase dropdowns below (add tracker / canvas
+// filter / phase filter) never offer them — narrower than the general
+// match-phase selector further up, which still needs the full set.
+// TECHNICAL_PAUSE previously appeared here too (a "pause" word tracker was
+// planned) but catalogForPhase never actually offered anything for it —
+// the broadcast HUD trackers are calibrated against isn't even on screen
+// during a pause, so it's been removed rather than left as a phase that
+// looks trackable but never has anything to add.
+const TRACKER_PHASES = ["GAME_STARTED"];
 
 // Fallback label text for a detected moment when no /admin/moment-templates
 // row exists for its type yet — escalating kill-streak flair per an
@@ -1301,9 +1305,27 @@ export default function LiveConsolePage() {
       case "GAME_STARTED": {
         const items: { category: TrackerCategory; field: string; label: string }[] = [
           { category: "game_timer", field: "game_timer", label: "Game timer" },
+          // Center-screen SAVAGE/MANIAC/etc. banner — the OCR side of this
+          // (regex match + player-name extraction) already existed; it just
+          // had no way to actually be added as a tracker until now.
+          { category: "kill_banner", field: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)" },
         ];
         for (const side of SIDES) items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}` });
         for (const side of SIDES) items.push({ category: "net_worth", field: `net_worth_${side.key}`, label: `Net worth — ${side.label}` });
+        // Tower/lord/turtle counts, one field per objective type per side —
+        // fieldParts' objectiveType suffix match (`_tower`/`_lord`/`_turtle`)
+        // is what routes each field's OCR read to applySingleObjectiveReading
+        // for the right team+type, same as team_kills/net_worth route on the
+        // `_left`/`_right` side substring.
+        for (const side of SIDES) {
+          for (const type of OBJECTIVE_TYPES) {
+            items.push({
+              category: "objective",
+              field: `objective_${side.key}_${type}`,
+              label: `Objective — ${side.label} ${type[0].toUpperCase()}${type.slice(1)}`,
+            });
+          }
+        }
         for (const side of SIDES) {
           for (let n = 1; n <= 5; n++) {
             items.push({
@@ -1328,6 +1350,19 @@ export default function LiveConsolePage() {
     const slot = slotMatch ? Number(slotMatch[1]) : null;
     const objectiveType = OBJECTIVE_TYPES.find((t) => field.endsWith(`_${t}`)) ?? null;
     return { side, slot, objectiveType };
+  }
+  // Where to float the variable-name label + Save/Cancel controls for a
+  // region being placed/edited — directly above or below the box itself so
+  // an admin never has to look away from what they just drew/selected to
+  // find the controls that act on it. The canvas container clips overflow
+  // (rounded corners on the video), so both axes are clamped to stay
+  // within its bounds rather than letting a box near an edge push the
+  // panel out and get cut off.
+  function regionOverlayPos(box: RegionBox): { top: number; left: number; below: boolean } {
+    const below = box.yPct + box.hPct <= 85;
+    const top = below ? Math.min(96, box.yPct + box.hPct + 1) : Math.max(2, box.yPct - 10);
+    const left = Math.min(Math.max(box.xPct, 1), 55);
+    return { top, left, below };
   }
   type RegionBox = { xPct: number; yPct: number; wPct: number; hPct: number };
 
@@ -1431,6 +1466,14 @@ export default function LiveConsolePage() {
   // moved mid-session), so it now lives directly on the enlarged inline
   // canvas instead.
   const [canvasPhaseFilter, setCanvasPhaseFilter] = useState<string>("");
+  // Explicit toggle for "am I dragging tracker boxes, or interacting with
+  // whatever's playing underneath" — replaces any gesture-based tap-vs-drag
+  // guessing (fragile, fights the video's own click handling) with a plain
+  // on/off switch. OFF (default): the canvas' own onMouseDown never starts a
+  // drag, and existing tracker boxes render as a thin, non-interactive
+  // outline. ON: full drag/resize/click-to-edit behavior, unchanged from
+  // before this toggle existed.
+  const [trackerEditMode, setTrackerEditMode] = useState(false);
   const [pendingBox, setPendingBox] = useState<RegionBox | null>(null);
   const [pendingBoxPhase, setPendingBoxPhase] = useState<string>("");
   const [pendingBoxField, setPendingBoxField] = useState<string>("");
@@ -1819,8 +1862,14 @@ export default function LiveConsolePage() {
     }
   }
 
+  // Set once the tournament-defaults/match-regions fetch below has actually
+  // resolved (success or not) — gates autoPlaceDefaultTrackers further down
+  // so it never fires against the transient "trackers is still []" state
+  // that's true for an instant on every load, before this effect's fetch
+  // has had a chance to come back with whatever's really configured.
+  const [trackersLoaded, setTrackersLoaded] = useState(false);
   useEffect(() => {
-    if (!matchId || !match?.tournament_id) return;
+    if (!matchId) return;
     (async () => {
       // Tournament-wide defaults first, then match-specific rows layered on
       // top — a match that was never calibrated inherits the tournament's
@@ -1830,7 +1879,9 @@ export default function LiveConsolePage() {
       // dedicated one.
       const cols = "id, field, phase, category, label, x_pct, y_pct, w_pct, h_pct, hint_text";
       const [{ data: tournamentDefaults }, { data: matchRegions }] = await Promise.all([
-        supabase.from("capture_regions").select(cols).eq("tournament_id", match.tournament_id),
+        match?.tournament_id
+          ? supabase.from("capture_regions").select(cols).eq("tournament_id", match.tournament_id)
+          : Promise.resolve({ data: [] as { id: string; field: string; phase: string; category: string; label: string | null; x_pct: number | null; y_pct: number | null; w_pct: number | null; h_pct: number | null; hint_text: string | null }[] }),
         supabase.from("capture_regions").select(cols).eq("match_id", matchId),
       ]);
       const nextTrackers: Tracker[] = [];
@@ -1848,6 +1899,7 @@ export default function LiveConsolePage() {
       const tournamentHint = tournamentDefaults?.find((r) => r.category === "overlay_hint")?.hint_text;
       const matchHint = matchRegions?.find((r) => r.category === "overlay_hint")?.hint_text;
       if (matchHint ?? tournamentHint) setOverlayHint(matchHint ?? tournamentHint ?? "");
+      setTrackersLoaded(true);
     })();
   }, [matchId, match?.tournament_id]);
 
@@ -1973,6 +2025,104 @@ export default function LiveConsolePage() {
     setTrackers((prev) => [...prev, { id: data.id, phase, category, field, label }]);
     setRegions((prev) => ({ ...prev, [field]: box }));
   }
+
+  // ── Auto-placed default trackers (standard MLBB broadcast layout) ────
+  // Sensible percentage-based starting positions for every GAME_STARTED
+  // tracker, based on how MLBB tournament broadcasts consistently lay out
+  // their HUD: net worth in the far top corners, the game clock top-center,
+  // each team's kill/tower/lord/turtle counts in a small cluster just below
+  // their team name near top-center, five KDA rows down each side edge
+  // (one per player portrait), and the kill-streak banner region roughly
+  // center screen. Purely a starting point — every box below is exactly as
+  // draggable/resizable afterward as one placed by hand, since this writes
+  // the same capture_regions rows the manual flow does (see
+  // autoPlaceDefaultTrackers). Broadcast overlays vary slightly tournament
+  // to tournament, so these are deliberately generous boxes meant to be
+  // nudged, not pixel-exact crops.
+  function defaultTrackerLayout(): { category: TrackerCategory; field: string; label: string; box: RegionBox }[] {
+    const items: { category: TrackerCategory; field: string; label: string; box: RegionBox }[] = [];
+    items.push({ category: "net_worth", field: "net_worth_left", label: "Net worth — Left", box: { xPct: 1, yPct: 1, wPct: 11, hPct: 4.5 } });
+    items.push({ category: "net_worth", field: "net_worth_right", label: "Net worth — Right", box: { xPct: 88, yPct: 1, wPct: 11, hPct: 4.5 } });
+    items.push({ category: "game_timer", field: "game_timer", label: "Game timer", box: { xPct: 45, yPct: 1, wPct: 10, hPct: 4.5 } });
+    // Team kills + tower/lord/turtle counts sit as a small horizontal
+    // cluster just below the team name, left cluster hugging center-left
+    // and right cluster hugging center-right of the top-center HUD.
+    const objectiveCluster: { type: string; dx: number }[] = [
+      { type: "kills", dx: 0 },
+      { type: "tower", dx: 5.5 },
+      { type: "lord", dx: 11 },
+      { type: "turtle", dx: 16.5 },
+    ];
+    for (const side of SIDES) {
+      const baseX = side.key === "left" ? 24 : 56;
+      for (const { type, dx } of objectiveCluster) {
+        const x = side.key === "left" ? baseX + dx : baseX + (16.5 - dx);
+        if (type === "kills") {
+          items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}`, box: { xPct: x, yPct: 6, wPct: 4.5, hPct: 3.5 } });
+        } else {
+          items.push({
+            category: "objective",
+            field: `objective_${side.key}_${type}`,
+            label: `Objective — ${side.label} ${type[0].toUpperCase()}${type.slice(1)}`,
+            box: { xPct: x, yPct: 6, wPct: 4.5, hPct: 3.5 },
+          });
+        }
+      }
+    }
+    // Ten KDA regions, five down each edge — evenly spaced top-to-bottom
+    // under where each player's portrait renders on a standard overlay.
+    for (const side of SIDES) {
+      const x = side.key === "left" ? 1 : 84;
+      for (let n = 1; n <= 5; n++) {
+        const y = 14 + (n - 1) * 12;
+        items.push({
+          category: "player_kda",
+          field: `player_kda_${side.key}_${n}`,
+          label: `K/D/A — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
+          box: { xPct: x, yPct: y, wPct: 15, hPct: 6 },
+        });
+      }
+    }
+    items.push({ category: "kill_banner", field: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)", box: { xPct: 32, yPct: 42, wPct: 36, hPct: 10 } });
+    return items;
+  }
+  const [autoPlacingTrackers, setAutoPlacingTrackers] = useState(false);
+  // Only ever fills in whatever's missing — a field that's already tracked
+  // (whether from a previous auto-place, a tournament default, or a manual
+  // placement) is left completely alone, so this is safe to re-run any
+  // time as a "restore anything I deleted back to a sane starting point"
+  // action, not just a first-run-only migration.
+  async function autoPlaceDefaultTrackers() {
+    setAutoPlacingTrackers(true);
+    try {
+      const existingGameStarted = new Set(trackers.filter((t) => t.phase === "GAME_STARTED").map((t) => t.field));
+      const missing = defaultTrackerLayout().filter((item) => !existingGameStarted.has(item.field));
+      for (const item of missing) {
+        await addTrackerWithRegion("GAME_STARTED", item.category, item.field, item.label, item.box);
+      }
+    } finally {
+      setAutoPlacingTrackers(false);
+    }
+  }
+  // Fires once per match, the first time it has zero GAME_STARTED trackers
+  // after the tournament-defaults/match-regions load effect has actually
+  // resolved (trackersLoaded guards against firing on the transient empty
+  // state before that fetch returns) — gives every match a populated
+  // starting layout automatically instead of an empty canvas, without ever
+  // clobbering a match that already has its own trackers (tournament
+  // default or manual) configured.
+  const autoPlacedForMatch = useRef<string | null>(null);
+  useEffect(() => {
+    if (!trackersLoaded || !matchId || !match) return;
+    if (autoPlacedForMatch.current === matchId) return;
+    if (trackers.some((t) => t.phase === "GAME_STARTED")) {
+      autoPlacedForMatch.current = matchId; // already has some — never auto-place over it
+      return;
+    }
+    autoPlacedForMatch.current = matchId;
+    autoPlaceDefaultTrackers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackersLoaded, matchId, match?.id]);
 
   // Same "already tracked" filter as trackerCatalogOptions, just
   // parameterized by the slide-anywhere picker's own phase pick instead of
@@ -2587,7 +2737,24 @@ export default function LiveConsolePage() {
 
   async function startCapture() {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      // preferCurrentTab + displaySurface:"browser" captures this admin
+      // tab directly, skipping the OS-level "share your screen" picker
+      // entirely in browsers that support it (Chrome/Edge as of this
+      // writing) — this is what fixes single-monitor capture: a tab
+      // captured this way keeps delivering real, live frames even while
+      // the OS focus moves to another app, since the capture happens at
+      // the browser/tab level rather than the OS window level (a captured
+      // *window* on a single monitor commonly stops refreshing once the
+      // OS stops compositing it as the focused window). preferCurrentTab
+      // isn't in TypeScript's lib.dom types yet on many TS versions, hence
+      // the cast. Both options are safe to pass unconditionally: a browser
+      // that doesn't recognize them (Firefox, Safari) just ignores the
+      // unsupported keys per the getDisplayMedia spec and falls back to
+      // its normal picker — no feature-detection needed.
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: "browser" },
+        preferCurrentTab: true,
+      } as any);
       streamRef.current = stream;
       // previewRef.current is null here — the <video> only exists in the
       // DOM once captureActive is true, and this runs before that state
@@ -2785,6 +2952,11 @@ export default function LiveConsolePage() {
   function startCalibrating(field: string) {
     setCalibratingField(field);
     setDraftBox(regions[field] ?? null);
+    // Clicking "Calibrate"/"Resize" in the tracker table is an explicit
+    // request to edit — turn edit mode on so the canvas actually responds
+    // to the drag that's about to happen, rather than requiring a second
+    // manual toggle click right after.
+    setTrackerEditMode(true);
   }
 
   async function confirmSuggestion() {
@@ -3727,25 +3899,56 @@ export default function LiveConsolePage() {
               </div>
             )}
 
-            {captureActive && (
+            {/* Tracker placement/editing only ever makes sense while the game
+                is actually ongoing — the broadcast HUD trackers are calibrated
+                against isn't even on screen during a Technical Pause (usually
+                a "please stand by" card or nothing at all), so there's nothing
+                real to place or adjust here. Capture itself can still be left
+                running (harmless — activeTrackers filters by match.state, so
+                a Technical Pause tick reads nothing anyway), just no UI to
+                place/edit trackers while paused. */}
+            {captureActive && match.state === "TECHNICAL_PAUSE" && (
+              <p className="text-xs text-white/40 border border-white/10 rounded p-3">
+                Tracker placement is hidden during Technical Pause — switch the match back to "Match Ongoing" to place or adjust trackers.
+              </p>
+            )}
+            {captureActive && match.state !== "TECHNICAL_PAUSE" && (
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <span className="text-[10px] text-white/40">
-                    Any tracker, any phase, is editable from here regardless of the match's current live phase.
-                    Drag directly on the video to place a new tracker, or click an existing outlined region to
-                    move/resize it.
+                    {trackerEditMode
+                      ? "Tracker edit mode is ON — drag directly on the video to place a new tracker, or click an existing outlined region to move/resize it."
+                      : "Tracker edit mode is OFF — tracker boxes are shown but inert; turn it on to place or adjust them."}
                   </span>
-                  <select
-                    value={canvasPhaseFilter}
-                    onChange={(e) => setCanvasPhaseFilter(e.target.value)}
-                    className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
-                    title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
-                  >
-                    <option value="">All phases</option>
-                    {TRACKER_PHASES.map((p) => (
-                      <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                    ))}
-                  </select>
+                  <div className="flex items-center gap-2">
+                    {/* Explicit toggle instead of guessing "tap to play" vs.
+                        "drag to place a tracker" from the gesture itself —
+                        see the note on trackerEditMode above. Deliberately
+                        loud (filled background when on) since it silently
+                        changes what a click on the video does. */}
+                    <button
+                      type="button"
+                      onClick={() => setTrackerEditMode((v) => !v)}
+                      aria-pressed={trackerEditMode}
+                      className={`text-xs rounded px-3 py-1.5 border whitespace-nowrap ${
+                        trackerEditMode ? "bg-signal text-ink border-signal font-semibold" : "border-white/20 text-white/70 hover:bg-white/10"
+                      }`}
+                      title="When off, clicks pass through to the video instead of placing/editing tracker boxes"
+                    >
+                      {trackerEditMode ? "✏️ Tracker edit mode: ON" : "Tracker edit mode: OFF"}
+                    </button>
+                    <select
+                      value={canvasPhaseFilter}
+                      onChange={(e) => setCanvasPhaseFilter(e.target.value)}
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
+                      title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
+                    >
+                      <option value="">All phases</option>
+                      {TRACKER_PHASES.map((p) => (
+                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
                 <div
                   data-crop-container
@@ -3777,6 +3980,7 @@ export default function LiveConsolePage() {
                     // buttons stop propagation on their own mousedown, so
                     // clicking one to edit it never falls through to here.
                     if (captureMode !== "manual") return;
+                    if (!trackerEditMode) return; // edit mode off — clicks pass through, no drag starts
                     if (calibratingField && !draftBox) startBoxDrag("draw", e, "draftBox");
                     else if (!calibratingField && !pendingBox) startBoxDrag("draw", e, "pendingBox");
                   }}
@@ -3789,6 +3993,28 @@ export default function LiveConsolePage() {
                       .map(({ field, label }) => {
                         const box = regions[field];
                         if (!box) return null;
+                        // Tracker edit mode OFF: present but inert — a thin
+                        // outline only, no click handler, no drag handles, so
+                        // it never intercepts a click meant for whatever's
+                        // playing underneath. ON: same clickable box as
+                        // before (jumps straight into edit mode for the
+                        // region clicked), just gated behind the toggle now
+                        // instead of always-on gesture guessing.
+                        if (!trackerEditMode) {
+                          return (
+                            <div
+                              key={field}
+                              title={label}
+                              className="absolute border border-white/25 pointer-events-none"
+                              style={{
+                                left: `${box.xPct}%`,
+                                top: `${box.yPct}%`,
+                                width: `${box.wPct}%`,
+                                height: `${box.hPct}%`,
+                              }}
+                            />
+                          );
+                        }
                         return (
                           // Clickable straight from the video instead of
                           // only via the small "Resize" button in the field
@@ -3849,6 +4075,29 @@ export default function LiveConsolePage() {
                       ))}
                     </div>
                   )}
+                  {/* Floating label + Lock/Cancel, positioned right above or
+                      below the box itself (see regionOverlayPos) instead of
+                      only in a control strip below the whole canvas — the
+                      variable name is shown here inline, not just via the
+                      box's hover title, so selecting/placing a tracker is
+                      immediately legible without a scroll or a hover. */}
+                  {captureMode === "manual" && calibratingField && draftBox && (
+                    <div
+                      className="absolute z-10 flex items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg whitespace-nowrap"
+                      style={{ left: `${regionOverlayPos(draftBox).left}%`, top: `${regionOverlayPos(draftBox).top}%` }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <span className="text-[11px] font-semibold text-white">
+                        {trackers.find((t) => t.field === calibratingField)?.label ?? calibratingField}
+                      </span>
+                      <button onClick={lockDraftBox} className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10">
+                        🔒 Lock
+                      </button>
+                      <button onClick={cancelDraftBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                   {/* Not yet drawn at all — a one-line hint since the empty
                       container gives no other cue to click-drag. */}
                   {captureMode === "manual" && calibratingField && !draftBox && (
@@ -3888,6 +4137,54 @@ export default function LiveConsolePage() {
                       ))}
                     </div>
                   )}
+                  {/* Floating variable picker + Save/Cancel, positioned right
+                      next to the freshly-drawn box (see regionOverlayPos)
+                      instead of only in a strip below the whole canvas —
+                      same "controls live next to what they act on" fix as
+                      the calibratingField panel above. */}
+                  {captureMode === "manual" && !calibratingField && pendingBox && (
+                    <div
+                      className="absolute z-10 flex flex-wrap items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg"
+                      style={{ left: `${regionOverlayPos(pendingBox).left}%`, top: `${regionOverlayPos(pendingBox).top}%`, maxWidth: "44%" }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <span className="text-[10px] text-white/50 uppercase tracking-wider whitespace-nowrap">New tracker</span>
+                      <select
+                        value={pendingBoxPhase}
+                        onChange={(e) => {
+                          setPendingBoxPhase(e.target.value);
+                          setPendingBoxField("");
+                        }}
+                        className="bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+                      >
+                        {TRACKER_PHASES.map((p) => (
+                          <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={pendingBoxField}
+                        onChange={(e) => setPendingBoxField(e.target.value)}
+                        className="bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px] min-w-[140px]"
+                      >
+                        <option value="">
+                          {pendingBoxOptions.length === 0 ? "Nothing left to track" : "Select a variable..."}
+                        </option>
+                        {pendingBoxOptions.map((opt) => (
+                          <option key={opt.field} value={opt.field}>{opt.label}</option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={savePendingBox}
+                        disabled={!pendingBoxField}
+                        className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 disabled:opacity-40"
+                      >
+                        Save
+                      </button>
+                      <button onClick={cancelPendingBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
+                        Cancel
+                      </button>
+                    </div>
+                  )}
                   {captureMode === "manual" && !calibratingField && !pendingBox && (
                     <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
                       <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag anywhere to place a new tracker</span>
@@ -3895,55 +4192,15 @@ export default function LiveConsolePage() {
                   )}
                 </div>
 
-                {pendingBox && (
-                  <div className="flex flex-wrap items-center gap-2 border border-white/10 rounded px-3 py-2">
-                    <span className="text-[10px] text-white/40 uppercase tracking-wider whitespace-nowrap">New tracker</span>
-                    <select
-                      value={pendingBoxPhase}
-                      onChange={(e) => {
-                        setPendingBoxPhase(e.target.value);
-                        setPendingBoxField("");
-                      }}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                    >
-                      {TRACKER_PHASES.map((p) => (
-                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
-                    <select
-                      value={pendingBoxField}
-                      onChange={(e) => setPendingBoxField(e.target.value)}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs min-w-[220px]"
-                    >
-                      <option value="">
-                        {pendingBoxOptions.length === 0 ? "Nothing left to track in this phase" : "Select a variable to track..."}
-                      </option>
-                      {pendingBoxOptions.map((opt) => (
-                        <option key={opt.field} value={opt.field}>{opt.label}</option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={savePendingBox}
-                      disabled={!pendingBoxField}
-                      className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
-                    >
-                      Save
-                    </button>
-                    <button onClick={cancelPendingBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
-                      Cancel
-                    </button>
-                  </div>
-                )}
-
-                {captureMode === "manual" && calibratingField && (
+                {/* Only shown pre-draw (nothing to float a positioned panel
+                    next to yet) — once draftBox exists, the floating
+                    label + Lock/Cancel on the canvas itself (see
+                    regionOverlayPos above) takes over and this is hidden,
+                    so there's exactly one set of Save/Cancel controls
+                    visible at a time, not two. */}
+                {captureMode === "manual" && calibratingField && !draftBox && (
                   <div className="flex gap-2">
-                    <button
-                      onClick={lockDraftBox}
-                      disabled={!draftBox}
-                      className="text-xs border border-signal/50 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
-                    >
-                      🔒 Lock {trackers.find((t) => t.field === calibratingField)?.label}
-                    </button>
+                    <span className="text-xs text-white/50 self-center">{trackers.find((t) => t.field === calibratingField)?.label}</span>
                     <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
                       Cancel
                     </button>
@@ -3952,6 +4209,20 @@ export default function LiveConsolePage() {
 
                 {captureMode === "manual" && (
                   <div className="space-y-3">
+                    {/* Fires automatically once per match the first time it
+                        has zero GAME_STARTED trackers (see the
+                        autoPlacedForMatch effect) — this button is only for
+                        re-running it later, e.g. after clearing everything
+                        out, since it only ever fills in fields that aren't
+                        already tracked. */}
+                    <button
+                      onClick={autoPlaceDefaultTrackers}
+                      disabled={autoPlacingTrackers}
+                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
+                      title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
+                    >
+                      {autoPlacingTrackers ? "Placing default trackers…" : "⊞ Auto-place default trackers"}
+                    </button>
                     {/* Add tracker — categorized by phase, catalog already
                         excludes whatever's tracked for that phase; the
                         phase-scoped DB unique index is the hard backstop. */}
@@ -4442,16 +4713,11 @@ export default function LiveConsolePage() {
           the stream preview and clock controls into two ~180px columns on a
           phone. Stacked below md (768px, unchanged from desktop's real
           window width) fixes that; nothing changes at md and up. */}
+      {/* Stream embed moved to the bottom of this panel (was first) — the
+          site owner called it out as distracting sitting where the admin's
+          eye lands first; the OCR clock controls are what actually needs
+          glancing at repeatedly during a broadcast. */}
       <div className={`grid gap-6 ${match.update_source === "local_ocr" ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
-        {embedUrl && (
-          <iframe
-            src={embedUrl}
-            className="w-full aspect-video rounded"
-            allow="autoplay; encrypted-media"
-            allowFullScreen
-          />
-        )}
-
         {match.update_source === "local_ocr" && (
           <div className="space-y-2">
             <p className="text-xs text-white/50">
@@ -4532,6 +4798,15 @@ export default function LiveConsolePage() {
               {" "}Whichever source is selected above is what the public page shows.
             </p>
           </div>
+        )}
+
+        {embedUrl && (
+          <iframe
+            src={embedUrl}
+            className="w-full aspect-video rounded"
+            allow="autoplay; encrypted-media"
+            allowFullScreen
+          />
         )}
       </div>
 

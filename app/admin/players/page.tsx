@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { PlayerCountryFlag } from "@/components/PlayerCountryFlag";
 import { PlayerLinks } from "@/components/PlayerLinks";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type Option = { id: string; label: string };
 type Player = {
@@ -537,11 +538,18 @@ export default function PlayersPage() {
 }
 
 function PlayerPhotoUpload({ player, onUpload }: { player: Player; onUpload: (playerId: string, file: File) => void }) {
+  // Every player.photo_url in production is a liquipedia.net URL (the
+  // Liquipedia backfill scraper is the only thing that ever sets this
+  // field), and Liquipedia blocks direct cross-origin <img src> hotlinking
+  // — this rendered as a broken image here even though the public players
+  // page (which already routes through the same proxy via TeamLogo) shows
+  // it fine. Same proxiedImageUrl pattern as TeamLogo/hero icons elsewhere.
+  const proxied = proxiedImageUrl(player.photo_url);
   return (
     <label className="cursor-pointer block w-8 h-8" title="Click to upload a photo">
-      {player.photo_url ? (
+      {proxied ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={player.photo_url} alt="" className="w-8 h-8 rounded-full object-cover border border-white/10" />
+        <img src={proxied} alt="" className="w-8 h-8 rounded-full object-cover border border-white/10" />
       ) : (
         <span className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center text-[10px] text-white/40">+</span>
       )}

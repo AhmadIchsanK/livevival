@@ -3530,7 +3530,12 @@ export default function LiveConsolePage() {
                   onClick={() => updateMatchStatus(s)}
                   disabled={statusSaving || match.status === s || (s === "live" && !match.youtube_url)}
                   title={s === "live" && !match.youtube_url ? "Add a stream link first — a match can't go live without one" : undefined}
-                  className={`text-[10px] px-2 py-0.5 rounded border uppercase tracking-wide disabled:opacity-40 ${
+                  // Slightly taller tap target below sm — scheduled/live/
+                  // finished is one of the most-tapped controls while
+                  // covering a match, and py-0.5 (2px) reads fine on a
+                  // mouse but is a genuinely hard target on touch. sm:
+                  // restores the exact original py-0.5.
+                  className={`text-[10px] px-2 py-1.5 sm:py-0.5 rounded border uppercase tracking-wide disabled:opacity-40 ${
                     match.status === s
                       ? s === "live"
                         ? "border-signal bg-signal/20 text-signal"
@@ -3689,7 +3694,7 @@ export default function LiveConsolePage() {
             </p>
 
             {captureMode === "ai" && (
-              <div className="flex gap-2 items-center">
+              <div className="flex flex-wrap gap-2 items-center">
                 <input
                   value={overlayHint}
                   onChange={(e) => setOverlayHint(e.target.value)}
@@ -3739,7 +3744,16 @@ export default function LiveConsolePage() {
                   // percentages against. All the crop-box math reads
                   // getBoundingClientRect() live at drag time, so a fixed
                   // size needs no other code changes.
-                  className="relative w-[75vw] min-w-[480px] max-w-[1800px] border border-white/10 rounded overflow-hidden select-none"
+                  // min-w-[480px] used to apply unconditionally, which forced
+                  // this whole box (and everything below it, since nothing
+                  // wrapping it constrains overflow) wider than any phone
+                  // viewport — the page would horizontally scroll just to
+                  // accommodate a calibration canvas a phone can't even
+                  // screen-share into. Full width below sm, unchanged 75vw/
+                  // 480px min at sm and up (real desktop use is always
+                  // ≥640px), so the drag-to-calibrate math (reads
+                  // getBoundingClientRect live) is completely unaffected.
+                  className="relative w-full sm:w-[75vw] sm:min-w-[480px] max-w-[1800px] border border-white/10 rounded overflow-hidden select-none"
                   onMouseDown={(e) => {
                     // Two draw-first flows share this canvas: pick-tracker-
                     // then-draw (calibratingField already set, writes
@@ -4410,7 +4424,11 @@ export default function LiveConsolePage() {
         )}
       </section>
 
-      <div className={`grid gap-6 ${match.update_source === "local_ocr" ? "grid-cols-2" : "grid-cols-1"}`}>
+      {/* grid-cols-2 used to apply unconditionally for a Hot match, squeezing
+          the stream preview and clock controls into two ~180px columns on a
+          phone. Stacked below md (768px, unchanged from desktop's real
+          window width) fixes that; nothing changes at md and up. */}
+      <div className={`grid gap-6 ${match.update_source === "local_ocr" ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
         {embedUrl && (
           <iframe
             src={embedUrl}
@@ -4657,12 +4675,17 @@ export default function LiveConsolePage() {
             📢 Share to Telegram
           </button>
         </div>
-        <div className="flex gap-8">
+        {/* Both rows below used to be a single unwrapped flex row — with two
+            teams x 3 objective types x (a labeled button + an undo button)
+            that never fit a phone width, forcing the whole page to scroll
+            horizontally. flex-wrap fixes that with zero effect at desktop
+            widths, where everything already fit on one line. */}
+        <div className="flex flex-wrap gap-6 sm:gap-8">
           {[match.team_a, match.team_b].map((team, idx) =>
             team ? (
               <div key={team.id} className="space-y-1.5">
                 <p className="text-xs text-white/50">{team.name}</p>
-                <div className="flex gap-4">
+                <div className="flex flex-wrap gap-2 sm:gap-4">
                   {OBJECTIVE_TYPES.map((type) => (
                     <div key={type} className="flex items-center gap-1.5">
                       {/* One-click "+" is the primary action (also logs a
@@ -4672,7 +4695,7 @@ export default function LiveConsolePage() {
                         onClick={() => incrementObjective(team.id, type)}
                         disabled={!objectivesEditable}
                         title={`${team.name} takes a ${type}`}
-                        className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
+                        className="text-xs border border-white/10 rounded px-2.5 py-1.5 sm:px-2 sm:py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
                       >
                         <span>{OBJECTIVE_ICONS[type]}</span>
                         <span className="capitalize">{type}</span>
@@ -4682,7 +4705,7 @@ export default function LiveConsolePage() {
                         onClick={() => decrementObjective(team.id, type)}
                         disabled={!objectivesEditable}
                         title="Undo last"
-                        className="w-5 h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
+                        className="w-7 h-7 sm:w-5 sm:h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
                       >
                         −
                       </button>
@@ -5002,9 +5025,16 @@ export default function LiveConsolePage() {
             </div>
           )}
 
+        {/* Reused by the DraftOverlay's click-a-slot correction flow (see
+            onCorrectPick={openHeroPickerForCorrection} above), not just the
+            plain form below — so this modal is squarely in the "does the
+            draft overlay actually work on a phone" path. Outer padding
+            shrunk below sm so the hero grid gets its full width back
+            instead of losing 48px to backdrop padding it doesn't need on
+            a screen that's already narrow; sm: restores the original p-6. */}
         {showHeroPicker && (
           <div
-            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-6"
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3 sm:p-6"
             onClick={closeHeroPicker}
           >
             <div
@@ -5140,7 +5170,11 @@ export default function LiveConsolePage() {
       {/* Team kills — derived from K/D/A, same as the public page */}
       <section className="space-y-2">
         <h2 className="font-bold">Team kills</h2>
-        <div className="flex gap-8 text-3xl font-bold tabular-nums">
+        {/* flex-wrap + a smaller mobile base size — two full team names at
+            text-3xl unwrapped could run past a phone's width with nowhere
+            to go; sm: restores the exact original size/gap once there's
+            room for it. */}
+        <div className="flex flex-wrap gap-4 sm:gap-8 text-2xl sm:text-3xl font-bold tabular-nums">
           <span className={teamAKillsTotal > teamBKillsTotal ? "text-signal" : "text-white"}>
             {match.team_a?.name}: {teamAKillsTotal}
           </span>
@@ -5153,7 +5187,7 @@ export default function LiveConsolePage() {
       {/* Net worth — OCR-fed each tick, but directly editable too */}
       <section className="space-y-2">
         <h2 className="font-bold">Net worth</h2>
-        <div className="flex gap-4 items-end">
+        <div className="flex flex-wrap gap-4 items-end">
           {[
             { team: match.team_a, key: "team_a_gold" as const, other: latestNetWorth?.team_b_gold ?? 0 },
             { team: match.team_b, key: "team_b_gold" as const, other: latestNetWorth?.team_a_gold ?? 0 },
@@ -5215,10 +5249,19 @@ export default function LiveConsolePage() {
             </button>
           </div>
         </div>
+        {/* Each player row is ~10 fixed-width fields wide (photo, name,
+            hero picker, K/D/A, action icons) — comfortably fits a desktop
+            window but not a phone screen, and there's no good way to stack
+            a K/D/A entry row without turning every field into its own
+            labeled block. Rather than a wholesale redesign, this scrolls
+            horizontally as one unit (same pattern as the tracker readings
+            table above) — min-w-max on every row keeps columns aligned
+            with the header while scrolling. Zero effect at desktop widths,
+            where the row already fits and overflow-x-auto never engages. */}
         {[teamAPlayers, teamBPlayers].map((teamPlayers, idx) => (
-          <div key={idx} className="space-y-1">
+          <div key={idx} className="space-y-1 overflow-x-auto">
             <p className="text-xs text-white/50">{idx === 0 ? match.team_a?.name : match.team_b?.name}</p>
-            <div className="flex gap-2 items-center text-[10px] text-white/40 pl-8">
+            <div className="flex gap-2 items-center text-[10px] text-white/40 pl-8 min-w-max">
               <span className="w-24">Player</span>
               <span className="w-24">Hero</span>
               <span className="w-14">K</span>
@@ -5229,7 +5272,7 @@ export default function LiveConsolePage() {
               const stat = stats.find((s) => s.player_id === p.id);
               const isEditingRoster = editingScoreboardPlayerId === p.id;
               return (
-                <div key={p.id} className="flex gap-2 items-center text-sm">
+                <div key={p.id} className="flex gap-2 items-center text-sm min-w-max">
                   {p.photo_url ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={proxiedImageUrl(p.photo_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10 shrink-0" />

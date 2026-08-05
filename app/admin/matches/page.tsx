@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { formatMatchDate } from "@/lib/formatMatchDate";
+import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
 
 type Option = { id: string; label: string };
 
@@ -763,40 +764,30 @@ export default function MatchesPage() {
                     );
                   })}
                 </select>
+                {/* Unified Normal / Priority / Hot dropdown — sets both
+                    update_source (where live DATA comes from) and
+                    notification_tier (automatic Telegram/Slack traffic)
+                    together, see lib/matchTier.ts for the exact mapping.
+                    Normal: Liquipedia auto-sync, no automatic posts.
+                    Priority: Liquipedia auto-sync, match-started +
+                    match-finished posts only. Hot: fully admin/OCR-
+                    controlled (adds KDA, items, moment log) plus every
+                    existing Hot-match notification trigger. */}
                 <select
-                  value={m.update_source}
-                  onChange={(e) => updateMatch(m.id, { update_source: e.target.value as "liquipedia" | "local_ocr" })}
-                  title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
+                  value={displayMatchTier(m)}
+                  onChange={(e) => updateMatch(m.id, matchTierFields(e.target.value as MatchTier))}
+                  title="Normal: Liquipedia auto-sync, no automatic posts. Priority: Liquipedia auto-sync, match-started/finished posts only. Hot: fully admin/OCR-controlled, every automatic trigger."
                   className={`text-xs rounded px-2 py-1.5 border ${
-                    m.update_source === "liquipedia"
-                      ? "border-emerald-500/40 text-emerald-400 bg-white/10"
-                      : "border-signal/50 text-signal bg-white/10"
-                  }`}
-                >
-                  <option value="liquipedia">📡 Normal match</option>
-                  <option value="local_ocr">🔥 Hot match</option>
-                </select>
-                {/* notification_tier is a separate axis from update_source
-                    above (which governs where live DATA comes from) — this
-                    governs automatic Telegram/Slack traffic only. Normal:
-                    none. Priority: match-started + match-finished, nothing
-                    else. Hot: those two plus every existing Hot-match
-                    trigger (game-result, draft-complete, etc.). */}
-                <select
-                  value={m.notification_tier}
-                  onChange={(e) => updateMatch(m.id, { notification_tier: e.target.value as "normal" | "hot" | "priority" })}
-                  title="Notification tier — separate from the data-source toggle above. Normal: no automatic Telegram/Slack posts. Priority (🔔): match-started + match-finished only. Hot: those two plus every other automatic trigger."
-                  className={`text-xs rounded px-2 py-1.5 border ${
-                    m.notification_tier === "hot"
+                    displayMatchTier(m) === "hot"
                       ? "border-signal/50 text-signal bg-white/10"
-                      : m.notification_tier === "priority"
+                      : displayMatchTier(m) === "priority"
                       ? "border-amber-400/50 text-amber-300 bg-white/10"
-                      : "border-white/10 text-white/50 bg-white/10"
+                      : "border-emerald-500/40 text-emerald-400 bg-white/10"
                   }`}
                 >
-                  <option value="normal">🔕 Normal notifications</option>
-                  <option value="priority">🔔 Priority notifications</option>
-                  <option value="hot">🔥 Hot notifications</option>
+                  {(Object.keys(MATCH_TIER_LABELS) as MatchTier[]).map((tier) => (
+                    <option key={tier} value={tier}>{MATCH_TIER_LABELS[tier]}</option>
+                  ))}
                 </select>
               </div>
 

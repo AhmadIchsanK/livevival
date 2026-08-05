@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
+import { TeamLogo, LOGO_BG_OVERRIDES, type LogoBgOverride } from "@/components/TeamLogo";
 
 type Tournament = {
   id: string;
@@ -13,6 +13,7 @@ type Tournament = {
   start_date: string | null;
   end_date: string | null;
   logo_url: string | null;
+  logo_bg_override: LogoBgOverride | null;
   fmvp_player_id: string | null;
   fmvp_player: { ign: string } | null;
   default_notification_tier: "normal" | "hot" | "priority";
@@ -59,6 +60,7 @@ export default function TournamentsAdminPage() {
   const [editStartDate, setEditStartDate] = useState("");
   const [editEndDate, setEditEndDate] = useState("");
   const [editLogoUrl, setEditLogoUrl] = useState("");
+  const [editLogoBgOverride, setEditLogoBgOverride] = useState<LogoBgOverride | "">("");
   const [editFmvpIgn, setEditFmvpIgn] = useState("");
   const [allPlayerIgns, setAllPlayerIgns] = useState<string[]>([]);
 
@@ -66,7 +68,7 @@ export default function TournamentsAdminPage() {
     const { data } = await supabase
       .from("tournaments")
       .select(
-        "id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, fmvp_player_id, fmvp_player:players(ign), default_notification_tier"
+        "id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, logo_bg_override, fmvp_player_id, fmvp_player:players(ign), default_notification_tier"
       )
       .order("start_date", { ascending: false, nullsFirst: false });
     setTournaments((data as unknown as Tournament[]) ?? []);
@@ -179,6 +181,7 @@ export default function TournamentsAdminPage() {
     setEditStartDate(t.start_date ?? "");
     setEditEndDate(t.end_date ?? "");
     setEditLogoUrl(t.logo_url ?? "");
+    setEditLogoBgOverride(t.logo_bg_override ?? "");
     setEditFmvpIgn(t.fmvp_player?.ign ?? "");
   }
 
@@ -210,6 +213,7 @@ export default function TournamentsAdminPage() {
         start_date: editStartDate || null,
         end_date: editEndDate || null,
         logo_url: editLogoUrl || null,
+        logo_bg_override: editLogoBgOverride || null,
         fmvp_player_id: fmvpPlayerId,
       })
       .eq("id", id);
@@ -219,6 +223,17 @@ export default function TournamentsAdminPage() {
     }
     setEditingId(null);
     loadTournaments();
+  }
+
+  // Applies instantly from the read-only row's own select (no need to enter
+  // edit mode just to flip the logo backing).
+  async function setLogoBgOverride(id: string, value: LogoBgOverride | "") {
+    setTournaments((prev) => prev.map((t) => (t.id === id ? { ...t, logo_bg_override: value || null } : t)));
+    const { error } = await supabase
+      .from("tournaments")
+      .update({ logo_bg_override: value || null })
+      .eq("id", id);
+    if (error) setError(error.message);
   }
 
   function friendlyDeleteError(message: string, label: string) {
@@ -410,6 +425,9 @@ export default function TournamentsAdminPage() {
                   <th className="font-normal pb-2">Tier</th>
                   <th className="font-normal pb-2">Dates</th>
                   <th className="font-normal pb-2">Slug</th>
+                  <th className="font-normal pb-2" title="Manual backing-color override for this tournament's logo box — leave on Auto to keep the automatic light/dark detection.">
+                    Logo backing
+                  </th>
                   <th className="font-normal pb-2" title="Default notification tier for new matches — changing it also cascades to this tournament's future/in-progress matches (finished ones are left alone).">
                     Notifications
                   </th>
@@ -422,7 +440,9 @@ export default function TournamentsAdminPage() {
                     {editingId === t.id ? (
                       <>
                         <td className="py-2" />
-                        <td className="py-2" />
+                        <td className="py-2 pr-2">
+                          <TeamLogo url={editLogoUrl} alt="" size="sm" bgOverride={editLogoBgOverride || null} />
+                        </td>
                         <td className="py-2 pr-2">
                           <input
                             value={editName}
@@ -474,6 +494,18 @@ export default function TournamentsAdminPage() {
                             ))}
                           </datalist>
                         </td>
+                        <td className="py-2 pr-2">
+                          <select
+                            value={editLogoBgOverride}
+                            onChange={(e) => setEditLogoBgOverride(e.target.value as LogoBgOverride | "")}
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                          >
+                            <option value="">Auto</option>
+                            {LOGO_BG_OVERRIDES.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
+                        </td>
                         <td className="py-2" />
                         <td className="py-2 text-right space-x-2">
                           <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
@@ -493,12 +525,7 @@ export default function TournamentsAdminPage() {
                           <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelected(t.id)} />
                         </td>
                         <td className="py-2">
-                          {t.logo_url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={proxiedImageUrl(t.logo_url)} alt="" className="w-6 h-6 rounded object-contain" />
-                          ) : (
-                            <span className="text-white/20">—</span>
-                          )}
+                          <TeamLogo url={t.logo_url} alt="" size="sm" bgOverride={t.logo_bg_override} />
                         </td>
                         <td className="py-2">{t.name}</td>
                         <td className="py-2 text-white/60">{t.tier}-Tier</td>
@@ -508,6 +535,19 @@ export default function TournamentsAdminPage() {
                         <td className="py-2 text-white/40 text-xs">
                           {t.liquipedia_slug ?? "—"}
                           {t.fmvp_player?.ign && <div className="text-white/30">FMVP: {t.fmvp_player.ign}</div>}
+                        </td>
+                        <td className="py-2">
+                          <select
+                            value={t.logo_bg_override ?? ""}
+                            onChange={(e) => setLogoBgOverride(t.id, e.target.value as LogoBgOverride | "")}
+                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                            title="Manual logo backing color override"
+                          >
+                            <option value="">Auto</option>
+                            {LOGO_BG_OVERRIDES.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
                         </td>
                         <td className="py-2">
                           <select
@@ -548,7 +588,7 @@ export default function TournamentsAdminPage() {
                 ))}
                 {items.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-4 text-white/30 text-center">
+                    <td colSpan={8} className="py-4 text-white/30 text-center">
                       None.
                     </td>
                   </tr>

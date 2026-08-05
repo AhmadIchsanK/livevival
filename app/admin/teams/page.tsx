@@ -2,9 +2,15 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
-import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
+import { TeamLogo, LOGO_BG_OVERRIDES, type LogoBgOverride } from "@/components/TeamLogo";
 
-type Team = { id: string; name: string; short_name: string | null; logo_url: string | null };
+type Team = {
+  id: string;
+  name: string;
+  short_name: string | null;
+  logo_url: string | null;
+  logo_bg_override: LogoBgOverride | null;
+};
 type SortKey = "name" | "name_desc";
 
 export default function TeamsPage() {
@@ -23,6 +29,7 @@ export default function TeamsPage() {
   const [editName, setEditName] = useState("");
   const [editShortName, setEditShortName] = useState("");
   const [editLogoUrl, setEditLogoUrl] = useState("");
+  const [editLogoBgOverride, setEditLogoBgOverride] = useState<LogoBgOverride | "">("");
 
   const [mergeTargetId, setMergeTargetId] = useState("");
   const [merging, setMerging] = useState(false);
@@ -30,7 +37,7 @@ export default function TeamsPage() {
   async function loadTeams() {
     const { data, error } = await supabase
       .from("teams")
-      .select("id, name, short_name, logo_url")
+      .select("id, name, short_name, logo_url, logo_bg_override")
       .order("name", { ascending: true });
     if (error) {
       setError(error.message);
@@ -94,12 +101,18 @@ export default function TeamsPage() {
     setEditName(t.name);
     setEditShortName(t.short_name ?? "");
     setEditLogoUrl(t.logo_url ?? "");
+    setEditLogoBgOverride(t.logo_bg_override ?? "");
   }
 
   async function saveEdit(id: string) {
     const { error } = await supabase
       .from("teams")
-      .update({ name: editName, short_name: editShortName || null, logo_url: editLogoUrl || null })
+      .update({
+        name: editName,
+        short_name: editShortName || null,
+        logo_url: editLogoUrl || null,
+        logo_bg_override: editLogoBgOverride || null,
+      })
       .eq("id", id);
     if (error) {
       setError(error.message);
@@ -107,6 +120,18 @@ export default function TeamsPage() {
     }
     setEditingId(null);
     loadTeams();
+  }
+
+  // Applies instantly from the read-only row's own select (no need to enter
+  // edit mode just to flip the logo backing) — every other field still goes
+  // through the full edit/save flow above.
+  async function setLogoBgOverride(id: string, value: LogoBgOverride | "") {
+    setTeams((prev) => prev.map((t) => (t.id === id ? { ...t, logo_bg_override: value || null } : t)));
+    const { error } = await supabase
+      .from("teams")
+      .update({ logo_bg_override: value || null })
+      .eq("id", id);
+    if (error) setError(error.message);
   }
 
   function friendlyDeleteError(message: string, label: string) {
@@ -292,6 +317,9 @@ export default function TeamsPage() {
             <th className="font-normal pb-2 w-10">Logo</th>
             <th className="font-normal pb-2">Name</th>
             <th className="font-normal pb-2">Short</th>
+            <th className="font-normal pb-2" title="Manual backing-color override for this team's logo box — leave on Auto to keep the automatic light/dark detection.">
+              Logo backing
+            </th>
             <th className="font-normal pb-2 text-right">Actions</th>
           </tr>
         </thead>
@@ -302,12 +330,7 @@ export default function TeamsPage() {
                 <>
                   <td className="py-2" />
                   <td className="py-2 pr-2">
-                    {editLogoUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={proxiedImageUrl(editLogoUrl)} alt="" className="w-6 h-6 rounded object-cover" />
-                    ) : (
-                      <span className="text-white/20">—</span>
-                    )}
+                    <TeamLogo url={editLogoUrl} alt="" size="sm" bgOverride={editLogoBgOverride || null} />
                   </td>
                   <td className="py-2 pr-2">
                     <input
@@ -329,6 +352,18 @@ export default function TeamsPage() {
                       placeholder="Logo URL"
                       className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                     />
+                  </td>
+                  <td className="py-2 pr-2">
+                    <select
+                      value={editLogoBgOverride}
+                      onChange={(e) => setEditLogoBgOverride(e.target.value as LogoBgOverride | "")}
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                    >
+                      <option value="">Auto</option>
+                      {LOGO_BG_OVERRIDES.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
                   </td>
                   <td className="py-2 text-right space-x-2">
                     <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
@@ -352,15 +387,23 @@ export default function TeamsPage() {
                     />
                   </td>
                   <td className="py-2">
-                    {t.logo_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={proxiedImageUrl(t.logo_url)} alt="" className="w-6 h-6 rounded object-cover" />
-                    ) : (
-                      <span className="text-white/20">—</span>
-                    )}
+                    <TeamLogo url={t.logo_url} alt="" size="sm" bgOverride={t.logo_bg_override} />
                   </td>
                   <td className="py-2">{t.name}</td>
                   <td className="py-2 text-white/60">{t.short_name ?? "—"}</td>
+                  <td className="py-2">
+                    <select
+                      value={t.logo_bg_override ?? ""}
+                      onChange={(e) => setLogoBgOverride(t.id, e.target.value as LogoBgOverride | "")}
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      title="Manual logo backing color override"
+                    >
+                      <option value="">Auto</option>
+                      {LOGO_BG_OVERRIDES.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  </td>
                   <td className="py-2 text-right space-x-2">
                     <button
                       onClick={() => startEdit(t)}
@@ -380,7 +423,7 @@ export default function TeamsPage() {
             </tr>
           ))}
           {filtered.length === 0 && (
-            <tr><td colSpan={5} className="py-4 text-white/30 text-center">No teams match.</td></tr>
+            <tr><td colSpan={6} className="py-4 text-white/30 text-center">No teams match.</td></tr>
           )}
         </tbody>
       </table>

@@ -145,8 +145,15 @@
   .lv-btn-ghost {
     @apply lv-btn border border-white/15 text-white/70 hover:border-signal/50 hover:text-white hover:bg-signal/10;
   }
+  /* text-red-300 reads fine on this site's default dark background but
+     washes out to near-illegible on light mode's white page — the light
+     override below swaps to a darker, more saturated red that keeps the
+     same "danger" identity at usable contrast on a light background. */
   .lv-btn-danger {
     @apply lv-btn border border-red-500/30 text-red-300 hover:bg-red-500/10;
+  }
+  .light .lv-btn-danger {
+    @apply border-red-600/40 text-red-600 hover:bg-red-600/10;
   }
 
   /* Status badges */
@@ -163,6 +170,9 @@
   }
   .lv-badge-scheduled {
     @apply lv-badge bg-yellow-500/15 text-yellow-400;
+  }
+  .light .lv-badge-scheduled {
+    @apply text-yellow-700;
   }
   .lv-badge-finished {
     @apply lv-badge bg-white/10 text-white/50;
@@ -193,6 +203,9 @@
      (a full outline) repeated at each call site in the live console. */
   .lv-alert-warning {
     @apply text-xs text-yellow-300 bg-yellow-500/10 border-l-4 border-yellow-500/70 rounded-r px-3 py-2;
+  }
+  .light .lv-alert-warning {
+    @apply text-yellow-800;
   }
 
   /* Very subtle alternating-row tint for real data tables (admin scoreboard

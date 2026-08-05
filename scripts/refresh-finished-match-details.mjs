@@ -59,10 +59,34 @@ async function main() {
     .select("id, name, liquipedia_slug, date_display, start_date, end_date");
   if (error) throw error;
 
-  const relevant = (tournaments ?? []).filter(
-    (t) => t.liquipedia_slug && isWithinPastYear(t.start_date, t.end_date)
+  // Optional manual override: TOURNAMENT_SLUGS="MPL/Indonesia/Season_18,..."
+  // processes just those tournaments, bypassing both the past-year window and
+  // table order entirely — same fix already applied to
+  // import-liquipedia-matches.mjs for the identical failure mode. Confirmed
+  // via job logs (runs cancelled/interrupted well before finishing a full
+  // pass, repeatedly) that this script's fixed table-order, no-resume-state
+  // walk over ~150 tournaments means whichever ones sit late in the list
+  // effectively never get their finished-match details (games/picks/
+  // bans/VODs) populated, run after run — e.g. every MPL national league's
+  // most recent 1-2 seasons sat at 0 games rows for dozens of already-
+  // finished matches despite the matches themselves importing fine. Lets a
+  // one-off manual dispatch target exactly the tournament(s) that need to
+  // land right now instead of waiting on/hoping a full pass reaches them.
+  const override = (process.env.TOURNAMENT_SLUGS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const relevant =
+    override.length > 0
+      ? (tournaments ?? []).filter((t) => override.includes(t.liquipedia_slug))
+      : (tournaments ?? []).filter((t) => t.liquipedia_slug && isWithinPastYear(t.start_date, t.end_date));
+
+  console.log(
+    override.length > 0
+      ? `TOURNAMENT_SLUGS override: processing ${relevant.length} of ${override.length} explicitly requested tournament(s)`
+      : `Processing finished-match details + results for ${relevant.length} tournament(s) (past year, or upcoming/ongoing)`
   );
-  console.log(`Processing finished-match details + results for ${relevant.length} tournament(s) (past year, or upcoming/ongoing)`);
 
   for (const t of relevant) {
     try {
@@ -78,7 +102,12 @@ async function main() {
       console.log(`Checking ${pagesToCheck.length} page(s) for match details: ${pagesToCheck.join(", ")}`);
 
       for (const page of pagesToCheck) {
-        await importTournament(page);
+        // Pass t.id directly — see import-finished-match-details.mjs's
+        // importTournament() header comment for why relying on it to
+        // re-resolve a stage subpage's tournament by exact slug match
+        // silently skipped every subpage (the bug that left most
+        // multi-page tournaments' finished matches without games rows).
+        await importTournament(page, t.id);
         await sleep(5000);
       }
     } catch (err) {

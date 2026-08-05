@@ -40,7 +40,13 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { fetchRenderedPage, sleep, COUNTRY_NAME_TO_CODE } from "./_liquipedia.mjs";
+import {
+  fetchRenderedPage,
+  sleep,
+  extractCountryCodes,
+  extractInfoboxIconLinks,
+  getInfoboxRows,
+} from "./_liquipedia.mjs";
 import { fetchTeamPage, extractActiveRoster, upsertPlayerRole } from "./import-team-details.mjs";
 
 const supabase = createClient(
@@ -55,55 +61,11 @@ const supabase = createClient(
 // on and gets mopped up on a later run instead.
 const BACKFILL_MAX_RETRIES = 2;
 
-// COUNTRY_NAME_TO_CODE now lives in _liquipedia.mjs (shared with
-// import-team-details.mjs's roster-row country-name guard) — used here as
-// the fallback for the rare flag image whose filename doesn't follow
-// Liquipedia's standard "<Code>_hd.png" pattern (see that pattern's own
-// confirmation note where it's defined). Only consulted when the filename
-// regex comes up empty; extend as real gaps turn up in job logs rather
-// than guessing entries no fetch has confirmed.
-
-const FLAG_CODE_RE = /\/([A-Za-z]{2})_hd\.png/;
-
-function extractCountryCodes($, valueCell) {
-  const codes = [];
-  valueCell.find("span.flag img").each((_, img) => {
-    const $img = $(img);
-    const src = $img.attr("src") || "";
-    const match = src.match(FLAG_CODE_RE);
-    let code = match ? match[1].toUpperCase() : null;
-    const flagName = ($img.attr("alt") || $img.attr("title") || "").trim();
-    if (!code && flagName) {
-      code = COUNTRY_NAME_TO_CODE[flagName.toLowerCase()] || null;
-      if (!code) console.warn(`  unrecognized flag "${flagName}" (src: ${src}) — add it to COUNTRY_NAME_TO_CODE`);
-    }
-    if (code) codes.push(code);
-  });
-  return codes.length > 0 ? Array.from(new Set(codes)) : null;
-}
-
-function extractLinks($) {
-  const links = {};
-  $(".infobox-icons a[href]").each((_, a) => {
-    const $a = $(a);
-    const href = $a.attr("href");
-    if (!href) return;
-    const iconClasses = ($a.find("i").first().attr("class") || "").split(/\s+/);
-    const platformClass = iconClasses.find((c) => c.startsWith("lp-") && c !== "lp-icon");
-    const platform = platformClass ? platformClass.replace(/^lp-/, "") : null;
-    if (platform) links[platform] = href;
-  });
-  return Object.keys(links).length > 0 ? links : null;
-}
-
-function getInfoboxRows($) {
-  const rows = new Map();
-  $(".infobox-description").each((_, el) => {
-    const label = $(el).text().trim().replace(/:$/, "").toLowerCase();
-    rows.set(label, $(el).next());
-  });
-  return rows;
-}
+// extractCountryCodes/extractInfoboxIconLinks/getInfoboxRows now live in
+// _liquipedia.mjs — moved there so import-team-details.mjs's own team
+// location/region/social-link extraction can reuse the exact same
+// confirmed selectors instead of duplicating them (see that file's
+// extractLocationAndRegion/extractSocialLinks).
 
 async function fetchPlayerProfile(title) {
   const html = await fetchRenderedPage(title, 1, BACKFILL_MAX_RETRIES);
@@ -123,7 +85,7 @@ async function fetchPlayerProfile(title) {
   const nationalityCell = rows.get("nationality");
   const countryCodes = nationalityCell ? extractCountryCodes($, nationalityCell) : null;
 
-  const links = extractLinks($);
+  const links = extractInfoboxIconLinks($);
 
   return { photoUrl: photoUrl || null, realName, countryCodes, links };
 }

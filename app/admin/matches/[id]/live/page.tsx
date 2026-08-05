@@ -190,6 +190,53 @@ export default function LiveConsolePage() {
   const mmssTimestamp = () => `${String(minute).padStart(2, "0")}:${String(secondOfMinute).padStart(2, "0")}`;
   const [error, setError] = useState<string | null>(null);
 
+  // ── Undo (Ctrl+Z) for the most recently logged event ──────────────────
+  // Deliberately single-level, not a full undo stack — every write site
+  // that wires in just overwrites whatever was here before, so Ctrl+Z
+  // always undoes only the single most recent action, per the "keep this
+  // simple" ask. "insert" deletes the row outright; "update" restores
+  // whatever the field held immediately before that write. Wired into the
+  // handful of write paths that represent a genuine "logged event" an
+  // operator would actually want to walk back (key moments, objectives) —
+  // not every write on the page.
+  type LastAction =
+    | { table: string; id: string; label: string; kind: "insert" }
+    | { table: string; id: string; label: string; kind: "update"; column: string; previousValue: unknown };
+  const [lastAction, setLastAction] = useState<LastAction | null>(null);
+  const [undoStatus, setUndoStatus] = useState<string | null>(null);
+  async function undoLastAction() {
+    if (!lastAction) return;
+    const { error: undoError } =
+      lastAction.kind === "insert"
+        ? await supabase.from(lastAction.table).delete().eq("id", lastAction.id)
+        : await supabase.from(lastAction.table).update({ [lastAction.column]: lastAction.previousValue }).eq("id", lastAction.id);
+    if (undoError) {
+      setError(undoError.message);
+      return;
+    }
+    setUndoStatus(`Undid: ${lastAction.label}`);
+    setTimeout(() => setUndoStatus(null), 3000);
+    setLastAction(null);
+    loadAll();
+  }
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      // Ctrl+Z on Windows/Linux, Cmd+Z on Mac — skipped entirely while
+      // focus is in a text input/textarea so it doesn't fight the
+      // browser's own native undo inside whatever field is being typed
+      // into (e.g. correcting a moment description).
+      const target = e.target as HTMLElement | null;
+      const isTyping = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !isTyping) {
+        e.preventDefault();
+        undoLastAction();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastAction]);
+
   // Defaults to "admin" — this page lives under /admin, so every existing
   // write call-site's behavior is unchanged unless this flips. It only
   // flips for a session with an approved contributors row and no admins
@@ -848,8 +895,13 @@ export default function LiveConsolePage() {
       pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: momentPayload });
       return;
     }
-    await supabase.from("objectives").insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute });
+    const { data: insertedObjective } = await supabase
+      .from("objectives")
+      .insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute })
+      .select("id")
+      .single();
     await supabase.from("key_moments").insert(momentPayload);
+    if (insertedObjective) setLastAction({ table: "objectives", id: insertedObjective.id, label: momentPayload.description, kind: "insert" });
     loadAll();
   }
   async function decrementObjective(teamId: string, type: string) {
@@ -1119,19 +1171,23 @@ export default function LiveConsolePage() {
 
     const screenshotUrl = (kmAttachScreenshot || autoScreenshot) && captureActive ? await uploadMomentScreenshot() : null;
 
-    const { error: insertError } = await supabase.from("key_moments").insert({
-      game_id: game.id,
-      match_id: matchId,
-      type: selectedTemplate.type,
-      description,
-      player_id: kmPlayer || null,
-      team_id: kmTeam || null,
-      minute_mark: minute,
-      second_mark: secondOfMinute,
-      source: "manual",
-      is_key_moment: isKeyMoment,
-      screenshot_url: screenshotUrl,
-    });
+    const { data: inserted, error: insertError } = await supabase
+      .from("key_moments")
+      .insert({
+        game_id: game.id,
+        match_id: matchId,
+        type: selectedTemplate.type,
+        description,
+        player_id: kmPlayer || null,
+        team_id: kmTeam || null,
+        minute_mark: minute,
+        second_mark: secondOfMinute,
+        source: "manual",
+        is_key_moment: isKeyMoment,
+        screenshot_url: screenshotUrl,
+      })
+      .select("id")
+      .single();
     // Was previously unchecked — a rejected insert (e.g. a template type
     // the key_moments type CHECK constraint didn't allow) failed with no
     // feedback at all, which read as "the moment log button does nothing."
@@ -1139,6 +1195,7 @@ export default function LiveConsolePage() {
       setError(insertError.message);
       return;
     }
+    if (inserted) setLastAction({ table: "key_moments", id: inserted.id, label: description, kind: "insert" });
     // Securing Lord/Turtle is also an objective — logging the moment
     // shouldn't require a second trip to the Objectives counters below to
     // make the scoreboard agree with what the moment list just said.
@@ -3824,12 +3881,22 @@ export default function LiveConsolePage() {
         )}
       </div>
 
-      {/* Local capture (admin PC) — only drives anything when this match is on local_ocr.
-          Moved to directly under the match header (was previously the very last section
-          on the page) so the OCR tracker + calibration controls are reachable without
-          scrolling past the moment list, draft sim, and scoreboard first — see the
-          "Prioritize admin controls" ask. */}
-      <section className="space-y-3 pt-4">
+      {/* Left column ("Live Feed"): broadcast/capture stays pinned on
+          screen on wide-enough viewports instead of scrolling away with
+          everything else — the one thing an operator needs visible at all
+          times. Below lg it just stacks like every other section (a phone
+          screen has no room to spare for a permanently-pinned column).
+          Right of it: everything else (draft tool, match control, kill
+          tracking, objectives, moment log, scoreboard) in normal document
+          flow. */}
+      <div className="lg:flex lg:items-start lg:gap-6">
+        <aside className="lg:sticky lg:top-24 lg:w-[26rem] lg:shrink-0 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:pr-1">
+          {/* Local capture (admin PC) — only drives anything when this match is on local_ocr.
+              Moved to directly under the match header (was previously the very last section
+              on the page) so the OCR tracker + calibration controls are reachable without
+              scrolling past the moment list, draft sim, and scoreboard first — see the
+              "Prioritize admin controls" ask. */}
+          <section className="space-y-3 pt-4">
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Local capture (this PC)</h2>
           {match.update_source === "local_ocr" && (
@@ -4542,11 +4609,16 @@ export default function LiveConsolePage() {
           </>
         )}
       </section>
+        </aside>
 
-      {/* Draft tool moved here, directly below the tracking canvas — the
-          site owner runs this on a single monitor, so having the OCR
-          canvas and the drafting UI stacked vertically instead of
-          competing for the same scroll region matters more than the
+        <div className="flex-1 min-w-0 space-y-8">
+
+      {/* Draft tool sits first in the center column, directly beside/below
+          the tracking canvas — the site owner runs this on a single
+          monitor, so having the OCR canvas and the drafting UI stacked
+          vertically (true on narrow/stacked layouts; side-by-side at the
+          top of the center column on wide ones) instead of competing for
+          the same scroll region matters more than the
           "which comes textually first" grouping that used to place this
           next to the game/map selector further down. */}
       {/* Hero picks/bans */}
@@ -5045,6 +5117,14 @@ export default function LiveConsolePage() {
         </div>
       )}
 
+      {/* Grouped into one visual block per the layout ask: the Game N
+          selector, Declare Game Winner, and the "add a moment" / Objectives
+          / Screenshot controls all live in the same row/area now instead of
+          being separately-bordered sections an admin has to hunt across —
+          faster access without scrolling. The Moment list's actual output
+          (the rendered timeline) stays out of this block — see "Moment
+          Timeline" further down, physically separated from these controls. */}
+      <div className="border border-white/10 rounded-lg p-3 space-y-4">
       {/* Game selector — everything below (moment list, scoreboard, hero
           picks/bans, net worth, screenshots) operates on whichever game is
           selected here, not necessarily the live one. Lets an admin fix up
@@ -5358,70 +5438,10 @@ export default function LiveConsolePage() {
             )}
           </div>
         )}
-        {/* Vertical, not a wrapping row of chips — sized to show ~6
-            moments before scrolling (a tall unbounded list was pushing
-            everything below it too far down the page), newest first (the
-            query orders by minute_mark ascending, so this reverses it for
-            display), same pattern as the public page's own Moment list. */}
-        <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
-          {[...keyMoments].reverse().map((km) => {
-            const player = players.find((p) => p.id === km.player_id);
-            const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
-            if (editingMomentId === km.id) {
-              return (
-                <div key={km.id} className="px-3 py-2 rounded bg-signal/20 flex items-center gap-1.5">
-                  <input
-                    value={editingMomentText}
-                    onChange={(e) => setEditingMomentText(e.target.value)}
-                    className="bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
-                    autoFocus
-                  />
-                  <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
-                  <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-                </div>
-              );
-            }
-            return (
-              <div
-                key={km.id}
-                className={`px-3 py-2 rounded flex items-center gap-1.5 ${
-                  km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
-                }`}
-              >
-                <span className="flex-1 min-w-0 truncate">
-                  {km.is_key_moment && "⭐ "}
-                  {km.minute_mark}&apos; {label}
-                  {km.screenshot_url && " 📸"}
-                </span>
-                <button
-                  onClick={() => {
-                    setEditingMomentId(km.id);
-                    setEditingMomentText(label);
-                  }}
-                  className="text-white/30 hover:text-white/70 normal-case shrink-0"
-                  title="Edit"
-                >
-                  ✎
-                </button>
-                <button
-                  onClick={() =>
-                    postToTelegram(
-                      `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
-                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" },
-                      km.screenshot_url ?? undefined
-                    )
-                  }
-                  className="text-white/30 hover:text-signal normal-case shrink-0"
-                  title="Post to Telegram"
-                >
-                  📢
-                </button>
-                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case shrink-0">✕</button>
-              </div>
-            );
-          })}
-          {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
-        </div>
+        {/* The actual rendered list moved to the "Moment Timeline" panel
+            near the bottom of this column — this section now only holds
+            the controls that add to it, per the "separate add-a-moment
+            controls from the view-logged-moments list" ask. */}
       </section>
 
       {/* Objectives (counters) */}
@@ -5527,6 +5547,7 @@ export default function LiveConsolePage() {
       </section>
         </>
       )}
+      </div>
 
       {match.update_source !== "local_ocr" && (
         <p className="text-xs text-white/40 border border-white/10 rounded px-3 py-2">
@@ -5763,12 +5784,107 @@ export default function LiveConsolePage() {
           </div>
         ))}
       </section>
+
+      {/* Moment Timeline — the actual output (what's already been logged),
+          physically separated from the "add a moment" controls above,
+          which stay next to the map selector/objectives/screenshot
+          controls further up. Living at the bottom of this column, right
+          after the scoreboard, is where an operator's eye lands after
+          every other control on this page — the newest logged action is
+          always the last thing rendered here. */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Moment Timeline</h2>
+          {lastAction && (
+            <button
+              onClick={undoLastAction}
+              title="Ctrl+Z also does this — undoes only the single most recent logged action"
+              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 text-white/60 hover:text-white"
+            >
+              ⎌ Undo: {lastAction.label} (Ctrl+Z)
+            </button>
+          )}
+        </div>
+        {/* Vertical, not a wrapping row of chips — sized to show ~6
+            moments before scrolling (a tall unbounded list was pushing
+            everything below it too far down the page), newest first (the
+            query orders by minute_mark ascending, so this reverses it for
+            display), same pattern as the public page's own Moment list. */}
+        <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
+          {[...keyMoments].reverse().map((km) => {
+            const player = players.find((p) => p.id === km.player_id);
+            const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
+            if (editingMomentId === km.id) {
+              return (
+                <div key={km.id} className="px-3 py-2 rounded bg-signal/20 flex items-center gap-1.5">
+                  <input
+                    value={editingMomentText}
+                    onChange={(e) => setEditingMomentText(e.target.value)}
+                    className="bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
+                    autoFocus
+                  />
+                  <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
+                  <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
+                </div>
+              );
+            }
+            return (
+              <div
+                key={km.id}
+                className={`px-3 py-2 rounded flex items-center gap-1.5 ${
+                  km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
+                }`}
+              >
+                <span className="flex-1 min-w-0 truncate">
+                  {km.is_key_moment && "⭐ "}
+                  {km.minute_mark}&apos; {label}
+                  {km.screenshot_url && " 📸"}
+                </span>
+                <button
+                  onClick={() => {
+                    setEditingMomentId(km.id);
+                    setEditingMomentText(label);
+                  }}
+                  className="text-white/30 hover:text-white/70 normal-case shrink-0"
+                  title="Edit"
+                >
+                  ✎
+                </button>
+                <button
+                  onClick={() =>
+                    postToTelegram(
+                      `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
+                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" },
+                      km.screenshot_url ?? undefined
+                    )
+                  }
+                  className="text-white/30 hover:text-signal normal-case shrink-0"
+                  title="Post to Telegram"
+                >
+                  📢
+                </button>
+                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case shrink-0">✕</button>
+              </div>
+            );
+          })}
+          {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
+        </div>
+      </section>
         </>
       )}
+
+        </div>
+      </div>
 
       {telegramStatus && (
         <p className="text-xs text-white/50 fixed bottom-4 right-4 bg-black/80 border border-white/10 rounded px-3 py-2 z-50">
           {telegramStatus}
+        </p>
+      )}
+
+      {undoStatus && (
+        <p className="text-xs text-emerald-300 fixed bottom-16 right-4 bg-black/80 border border-emerald-500/30 rounded px-3 py-2 z-50">
+          {undoStatus}
         </p>
       )}
 

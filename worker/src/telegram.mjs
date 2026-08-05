@@ -17,6 +17,7 @@
 
 import { supabase } from "./config.mjs";
 import { broadcastToSlack } from "./slack.mjs";
+import { sendPushNotifications } from "./webPush.mjs";
 
 let warnedMissingConfig = false;
 
@@ -82,4 +83,15 @@ export async function notifyOnce(entityType, entityId, notificationType, text) {
   }
 
   await sendTelegramMessage(text);
+
+  // Native Web Push to every browser that tapped "follow" on this match —
+  // deliberately not nested inside sendTelegramMessage (whose Slack mirror
+  // only fires once Telegram itself succeeds): push has its own, unrelated
+  // config (VAPID_* env vars) and should reach followers on a deployment
+  // that never set up Telegram at all. Gated by the exact same
+  // notifyOnce dedup as Telegram/Slack, so it fires exactly once per
+  // (entityType, entityId, notificationType) too.
+  await sendPushNotifications(entityType, entityId, text).catch((err) =>
+    console.error("Push notification send failed:", err.message)
+  );
 }

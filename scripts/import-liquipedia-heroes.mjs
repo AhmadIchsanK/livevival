@@ -51,12 +51,56 @@
 // never overwrites it, so re-runs stay cheap: after the first full pass
 // over the existing roster, only genuinely new heroes need the extra
 // infobox fetch this does for metadata.
+//
+// SUSTAINED-THROTTLE FIX (confirmed via job 30967015229's real logs, run
+// 2026-08-05T01:39Z, cancelled at the 90-minute cap): the "only fill a gap"
+// logic above was never actually shrinking the backlog. 129 of 133 heroes'
+// icon_url values still match the old /infobox/i pattern (never resolved
+// to a small icon — see `needsUpgrade`) and 117 still have a null role/
+// lane/region, so effectively the *entire* roster (132 of 133) needs at
+// least one fetch every single run, not the handful "only new heroes"
+// implied. Once Liquipedia's rate limiter engages a sustained block partway
+// through a run (confirmed live: after ~15-20 clean requests, every
+// following request — icon *and* metadata, for 5+ heroes straight — 429'd
+// through all 6 of the shared client's default retries, ~7 minutes wasted
+// per request with zero successes, for the rest of the run), the default
+// retry budget can't ride it out: it just burns the 90-minute timeout on a
+// handful of heroes without saving any of them, so the backlog barely
+// moves. Two changes fix this, both already-established patterns in this
+// repo (see backfill-hero-icons.mjs's BACKFILL_MAX_RETRIES, added for the
+// identical symptom): a much smaller per-call retry budget so a throttled
+// hero fails in ~1 minute instead of ~7 and the run can get through many
+// more heroes instead of stalling on a few, and a hard per-run cap on how
+// many heroes actually get fetched so a run can never again gamble its
+// whole timeout on finishing the entire backlog in one pass — it just makes
+// steady, bounded progress every 6 hours instead.
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
 import { apiQuery, fetchRenderedPage, sleep } from "./_liquipedia.mjs";
 
 const CATEGORY = process.env.LIQUIPEDIA_HERO_CATEGORY || "Category:Hero";
+
+// Matches backfill-hero-icons.mjs's BACKFILL_MAX_RETRIES exactly (same
+// failure mode, same fix): worst case per apiQuery/fetchRenderedPage call
+// is 20s + 40s = 60s instead of the shared client's default ~7-minute/
+// 6-retry budget. This script is safe to re-run indefinitely (every write
+// is per-hero, immediate, and only fills a still-null/still-old-style
+// field), so failing a throttled hero fast and letting the next 6-hourly
+// run retry it (likely from a fresh runner/IP, so a fresh rate-limit
+// window) beats burning the whole job timeout retrying the same handful of
+// heroes.
+const SAFE_RETRY_BUDGET = 2;
+
+// Hard cap on how many heroes get an actual Liquipedia fetch (icon and/or
+// metadata) in one run. Worst case if every attempted hero needs both
+// fetches *and* both are fully throttled through SAFE_RETRY_BUDGET: 30 *
+// ((60s retry wait + 4s pacing sleep) * 2 fetches) ≈ 64 minutes — well
+// inside the 90-minute job timeout even with setup/checkout overhead, and
+// far below it on any run that isn't fully throttled. Heroes beyond the cap
+// are simply left for the next scheduled run (they stay in
+// needsIconFetch/needsMetadataFetch since nothing was written for them).
+const MAX_HEROES_PER_RUN = 30;
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -85,12 +129,16 @@ async function fetchAllHeroTitles() {
 
 async function fetchHeroSmallIcon(heroName) {
   const filename = `ML_icon_${heroName.replace(/ /g, "_")}.png`;
-  const data = await apiQuery({
-    action: "query",
-    titles: `File:${filename}`,
-    prop: "imageinfo",
-    iiprop: "url",
-  });
+  const data = await apiQuery(
+    {
+      action: "query",
+      titles: `File:${filename}`,
+      prop: "imageinfo",
+      iiprop: "url",
+    },
+    1,
+    SAFE_RETRY_BUDGET
+  );
   const pages = data.query?.pages ?? {};
   const page = Object.values(pages)[0];
   if (!page || page.missing !== undefined) return null;
@@ -98,7 +146,7 @@ async function fetchHeroSmallIcon(heroName) {
 }
 
 async function fetchHeroInfoboxPortrait(title) {
-  const html = await fetchRenderedPage(title);
+  const html = await fetchRenderedPage(title, 1, SAFE_RETRY_BUDGET);
   const $ = cheerio.load(html);
   // Same infobox structure confirmed on team pages: light/dark image
   // variants both under .infobox-image, light listed first. Try that
@@ -157,7 +205,7 @@ function extractHeroMetadata($) {
 }
 
 async function fetchHeroMetadata(title) {
-  const html = await fetchRenderedPage(title);
+  const html = await fetchRenderedPage(title, 1, SAFE_RETRY_BUDGET);
   const $ = cheerio.load(html);
   return extractHeroMetadata($);
 }
@@ -243,15 +291,28 @@ async function main() {
     (existingHeroes ?? []).filter((h) => !h.role || !h.lane || !h.region).map((h) => h.name)
   );
   const knownNames = new Set((existingHeroes ?? []).map((h) => h.name));
-  const needsIconFetch = titles.filter((t) => !knownNames.has(t) || needsUpgrade.has(t));
-  const needsMetadataFetch = titles.filter((t) => !knownNames.has(t) || needsMetadata.has(t));
+  const needsIconFetch = new Set(titles.filter((t) => !knownNames.has(t) || needsUpgrade.has(t)));
+  const needsMetadataFetch = new Set(titles.filter((t) => !knownNames.has(t) || needsMetadata.has(t)));
 
-  console.log(`${needsIconFetch.length} of ${titles.length} hero(es) need an icon fetch this run`);
-  console.log(`${needsMetadataFetch.length} of ${titles.length} hero(es) need a role/lane/region fetch this run`);
+  console.log(`${needsIconFetch.size} of ${titles.length} hero(es) need an icon fetch this run`);
+  console.log(`${needsMetadataFetch.size} of ${titles.length} hero(es) need a role/lane/region fetch this run`);
+
+  // Cap actual fetching to MAX_HEROES_PER_RUN (see header comment) — titles
+  // are processed in the same order every run, so this naturally advances
+  // through the roster over successive scheduled runs rather than always
+  // reattempting a fixed subset. Anything past the cap still gets upserted
+  // below (so a brand-new hero's row exists even before its own fetch
+  // happens) but with no network fetch, leaving it flagged as needing one
+  // on the next run.
+  const needsAnyFetch = titles.filter((t) => needsIconFetch.has(t) || needsMetadataFetch.has(t));
+  const fetchableThisRun = new Set(needsAnyFetch.slice(0, MAX_HEROES_PER_RUN));
+  console.log(
+    `${fetchableThisRun.size} of ${needsAnyFetch.length} hero(es) needing work will actually be fetched this run (capped at ${MAX_HEROES_PER_RUN})`
+  );
 
   for (const title of titles) {
     let iconUrl = null;
-    if (needsIconFetch.includes(title)) {
+    if (needsIconFetch.has(title) && fetchableThisRun.has(title)) {
       try {
         iconUrl = await fetchHeroIcon(title);
       } catch (err) {
@@ -261,7 +322,7 @@ async function main() {
     }
 
     let metadata = null;
-    if (needsMetadataFetch.includes(title)) {
+    if (needsMetadataFetch.has(title) && fetchableThisRun.has(title)) {
       try {
         metadata = await fetchHeroMetadata(title);
       } catch (err) {

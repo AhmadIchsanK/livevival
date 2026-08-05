@@ -4,15 +4,14 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { buildFieldDiff, getCurrentContributorId, submitEditRequest } from "@/lib/editRequests";
 
-type Team = { id: string; name: string; short_name: string | null; logo_url: string | null };
-const FIELDS = ["name", "short_name", "logo_url"];
+type Team = { id: string; name: string; logo_url: string | null };
+const FIELDS = ["name", "logo_url"];
 
 export default function ContributorTeamsPage() {
   const [teams, setTeams] = useState<Team[]>([]);
   const [selectedId, setSelectedId] = useState<string>("new");
   const [original, setOriginal] = useState<Record<string, unknown>>({});
   const [name, setName] = useState("");
-  const [shortName, setShortName] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +20,7 @@ export default function ContributorTeamsPage() {
   useEffect(() => {
     supabase
       .from("teams")
-      .select("id, name, short_name, logo_url")
+      .select("id, name, logo_url")
       .order("name")
       .then(({ data }) => setTeams((data as Team[]) ?? []));
   }, []);
@@ -30,7 +29,6 @@ export default function ContributorTeamsPage() {
     setSelectedId("new");
     setOriginal({});
     setName("");
-    setShortName("");
     setLogoUrl("");
   }
 
@@ -39,15 +37,13 @@ export default function ContributorTeamsPage() {
     if (id === "new") {
       setOriginal({});
       setName("");
-      setShortName("");
       setLogoUrl("");
       return;
     }
     const t = teams.find((x) => x.id === id);
     if (!t) return;
-    setOriginal({ name: t.name, short_name: t.short_name, logo_url: t.logo_url });
+    setOriginal({ name: t.name, logo_url: t.logo_url });
     setName(t.name);
-    setShortName(t.short_name ?? "");
     setLogoUrl(t.logo_url ?? "");
   }
 
@@ -64,10 +60,10 @@ export default function ContributorTeamsPage() {
       return;
     }
 
-    const after = { name, short_name: shortName || null, logo_url: logoUrl || null };
+    const after = { name, logo_url: logoUrl || null };
     const isNew = selectedId === "new";
     const diff = isNew
-      ? buildFieldDiff({ name: null, short_name: null, logo_url: null }, after, FIELDS)
+      ? buildFieldDiff({ name: null, logo_url: null }, after, FIELDS)
       : buildFieldDiff(original, after, FIELDS);
 
     if (Object.keys(diff).length === 0) {
@@ -115,14 +111,6 @@ export default function ContributorTeamsPage() {
             required
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm text-white outline-none focus:border-signal"
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs text-white/50">Short name</label>
-          <input
-            value={shortName}
-            onChange={(e) => setShortName(e.target.value)}
             className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm text-white outline-none focus:border-signal"
           />
         </div>

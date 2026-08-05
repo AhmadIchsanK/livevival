@@ -495,7 +495,6 @@ export default function PublicMatchPage() {
   // once the game is actually live AND a net worth snapshot exists — Normal
   // matches (Liquipedia-sourced, no OCR) never get net worth data, so this
   // stays hidden for them rather than rendering an empty/fake bar.
-  const latestNetWorth = gameNetWorth[gameNetWorth.length - 1] ?? null;
   const showMomentum = match.state === "GAME_STARTED" && latestNetWorth != null;
   let momentumTeamAPct = 50;
   if (showMomentum && latestNetWorth) {

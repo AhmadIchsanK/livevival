@@ -63,6 +63,21 @@ jobs:
     # request count on the very first cold run after this changed, still
     # comfortably inside this budget; every run after that only re-fetches
     # for genuinely new heroes.
+    #
+    # 90 min still wasn't enough (confirmed via run 30967015229, cancelled
+    # at exactly 90:00): the "only re-fetch for new heroes" assumption above
+    # didn't hold — 132 of 133 heroes still needed an icon upgrade and/or
+    # metadata fetch every run, and once Liquipedia's rate limiter engaged a
+    # sustained block partway through, the script's default 6-retry/~7-min
+    # budget just burned the rest of the timeout retry-looping on a handful
+    # of heroes without saving any of them. Fixed in the script itself (see
+    # import-liquipedia-heroes.mjs's header comment): a much smaller
+    # per-call retry budget so a throttled hero fails fast instead of
+    # eating minutes, and a hard per-run cap on how many heroes get fetched
+    # so a run can never again gamble this whole timeout on finishing the
+    # backlog in one pass. Left at 90 as comfortable headroom over the
+    # script's own new worst-case (~65 min), not because it needs raising
+    # further.
     timeout-minutes: 90
     concurrency:
       group: liquipedia-import-heroes

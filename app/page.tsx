@@ -8,6 +8,7 @@ import { NavMenu } from "@/components/NavMenu";
 import { TeamLogo } from "@/components/TeamLogo";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
+import { TournamentTierIcon } from "@/components/TierBadge";
 
 type MatchRow = {
   id: string;
@@ -17,7 +18,13 @@ type MatchRow = {
   update_source: "liquipedia" | "local_ocr";
   notification_tier: "normal" | "hot" | "priority";
   series_winner_team_id: string | null;
-  tournament: { name: string; tier: string; liquipedia_slug: string | null; logo_url: string | null } | null;
+  tournament: {
+    name: string;
+    tier: string;
+    liquipedia_slug: string | null;
+    logo_url: string | null;
+    default_notification_tier: "normal" | "hot" | "priority" | null;
+  } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
 };
@@ -28,7 +35,7 @@ const UPCOMING_DAYS_RANGE = 30;
 const FINISHED_FETCH_CAP = 300; // generous, but bounded — see note below
 
 const MATCH_SELECT = `id, status, scheduled_at, format, update_source, notification_tier, series_winner_team_id,
-  tournament:tournaments(name, tier, liquipedia_slug, logo_url),
+  tournament:tournaments(name, tier, liquipedia_slug, logo_url, default_notification_tier),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
 
@@ -280,6 +287,7 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
         ) : (
           m.tournament?.name
         )}{" "}
+        <TournamentTierIcon tier={m.tournament?.default_notification_tier} />{" "}
         · {m.tournament?.tier}-Tier · {m.format}
       </p>
     </a>
@@ -476,6 +484,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                       ) : (
                         m.tournament?.name
                       )}{" "}
+                      <TournamentTierIcon tier={m.tournament?.default_notification_tier} />{" "}
                       · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
                     {(m.update_source === "local_ocr" || m.notification_tier !== "normal") && (
@@ -555,6 +564,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   ) : (
                     m.tournament?.name
                   )}{" "}
+                  <TournamentTierIcon tier={m.tournament?.default_notification_tier} />{" "}
                   · {m.tournament?.tier}-Tier · {m.format}
                   {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
                 </p>

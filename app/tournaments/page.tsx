@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { TeamLogo } from "@/components/TeamLogo";
 import { NavMenu } from "@/components/NavMenu";
+import { TierBadge } from "@/components/TierBadge";
 
 type Tournament = {
   id: string;
@@ -16,6 +17,7 @@ type Tournament = {
   start_date: string | null;
   end_date: string | null;
   logo_url: string | null;
+  default_notification_tier: "normal" | "hot" | "priority" | null;
 };
 
 // date_display free text ("Feb 10-16, 2025", "Nov 27 - Dec 06, 2020") is the
@@ -83,7 +85,7 @@ function TournamentsIndexPageInner() {
       const [{ data: t }, { data: m }] = await Promise.all([
         supabase
           .from("tournaments")
-          .select("id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url")
+          .select("id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, default_notification_tier")
           .order("name"),
         supabase.from("matches").select("tournament_id, status"),
       ]);
@@ -275,7 +277,10 @@ function TournamentSection({
                 )}
               </div>
             </div>
-            <span className="lv-badge bg-white/10 text-white/60 shrink-0">{t.tier}-Tier</span>
+            <span className="flex items-center gap-1.5 shrink-0">
+              <TierBadge tier={t.default_notification_tier} />
+              <span className="lv-badge bg-white/10 text-white/60 shrink-0">{t.tier}-Tier</span>
+            </span>
           </a>
         ))}
       </div>

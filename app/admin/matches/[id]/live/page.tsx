@@ -292,10 +292,19 @@ export default function LiveConsolePage() {
       // Only the live game_number starts "live" — anything else picked
       // from the selector before it's actually been reached is a genuine
       // placeholder (an admin pre-staging a future game's picks/bans),
-      // not something the public page should treat as in progress.
+      // not something the public page should treat as in progress. "draft"
+      // (not "scheduled") is the only other value games_status_check
+      // allows, matching the state column's own 'DRAFT_STARTED' default.
+      // upsert with onConflict (not a plain insert) so a second loadAll()
+      // firing for the same match/game before this one lands — two tabs,
+      // a double-invoked effect — reconciles instead of hitting
+      // games_match_id_game_number_key.
       const { data: created, error: createErr } = await supabase
         .from("games")
-        .insert({ match_id: matchId, game_number: targetGameNumber, status: targetGameNumber === m.current_game_number ? "live" : "scheduled" })
+        .upsert(
+          { match_id: matchId, game_number: targetGameNumber, status: targetGameNumber === m.current_game_number ? "live" : "draft" },
+          { onConflict: "match_id,game_number" }
+        )
         .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override")
         .single();
       if (createErr) {

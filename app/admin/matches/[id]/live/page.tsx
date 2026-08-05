@@ -72,13 +72,37 @@ type Game = {
   team_b_kills_override: number | null;
 };
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
-type PickBan = { id: string; team_id: string; player_id: string | null; hero_name: string; type: "pick" | "ban"; pick_order: number | null };
+// custom_player_name/custom_player_role: a match-local player who isn't in
+// the `players` table roster at all (last-minute sub, scrim player, etc.) —
+// set instead of player_id, never both. See the note by isCustomPlayerId
+// below for how this flows into the scoreboard.
+type PickBan = {
+  id: string;
+  team_id: string;
+  player_id: string | null;
+  hero_name: string;
+  type: "pick" | "ban";
+  pick_order: number | null;
+  custom_player_name: string | null;
+  custom_player_role: string | null;
+};
 // kills/deaths/assists are nullable — null means "TBD, not yet entered" so
 // the scoreboard can tell "genuinely 0" apart from "nobody's typed
 // anything here yet." The headline team score never depends on these being
 // filled in — team_a/b_kills_override (the team_kills tracker, or a manual
 // edit) is always preferred over summing per-player rows when present.
-type PlayerStat = { id: string; player_id: string; hero_name: string | null; kills: number | null; deaths: number | null; assists: number | null; gold: number };
+// player_id is null (with custom_player_name set instead) for a match-local
+// custom player's stat row — see the note by PickBan's custom_player_name.
+type PlayerStat = {
+  id: string;
+  player_id: string | null;
+  hero_name: string | null;
+  kills: number | null;
+  deaths: number | null;
+  assists: number | null;
+  gold: number;
+  custom_player_name: string | null;
+};
 type Objective = { id: string; team_id: string; type: string; minute_mark: number | null; created_at: string };
 type NetWorthSnapshot = { minute_mark: number; team_a_gold: number; team_b_gold: number };
 type KeyMoment = {
@@ -189,6 +213,53 @@ export default function LiveConsolePage() {
   const [secondOfMinute, setSecondOfMinute] = useState(0);
   const mmssTimestamp = () => `${String(minute).padStart(2, "0")}:${String(secondOfMinute).padStart(2, "0")}`;
   const [error, setError] = useState<string | null>(null);
+
+  // ── Undo (Ctrl+Z) for the most recently logged event ──────────────────
+  // Deliberately single-level, not a full undo stack — every write site
+  // that wires in just overwrites whatever was here before, so Ctrl+Z
+  // always undoes only the single most recent action, per the "keep this
+  // simple" ask. "insert" deletes the row outright; "update" restores
+  // whatever the field held immediately before that write. Wired into the
+  // handful of write paths that represent a genuine "logged event" an
+  // operator would actually want to walk back (key moments, objectives) —
+  // not every write on the page.
+  type LastAction =
+    | { table: string; id: string; label: string; kind: "insert" }
+    | { table: string; id: string; label: string; kind: "update"; column: string; previousValue: unknown };
+  const [lastAction, setLastAction] = useState<LastAction | null>(null);
+  const [undoStatus, setUndoStatus] = useState<string | null>(null);
+  async function undoLastAction() {
+    if (!lastAction) return;
+    const { error: undoError } =
+      lastAction.kind === "insert"
+        ? await supabase.from(lastAction.table).delete().eq("id", lastAction.id)
+        : await supabase.from(lastAction.table).update({ [lastAction.column]: lastAction.previousValue }).eq("id", lastAction.id);
+    if (undoError) {
+      setError(undoError.message);
+      return;
+    }
+    setUndoStatus(`Undid: ${lastAction.label}`);
+    setTimeout(() => setUndoStatus(null), 3000);
+    setLastAction(null);
+    loadAll();
+  }
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      // Ctrl+Z on Windows/Linux, Cmd+Z on Mac — skipped entirely while
+      // focus is in a text input/textarea so it doesn't fight the
+      // browser's own native undo inside whatever field is being typed
+      // into (e.g. correcting a moment description).
+      const target = e.target as HTMLElement | null;
+      const isTyping = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !isTyping) {
+        e.preventDefault();
+        undoLastAction();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastAction]);
 
   // Defaults to "admin" — this page lives under /admin, so every existing
   // write call-site's behavior is unchanged unless this flips. It only
@@ -338,8 +409,8 @@ export default function LiveConsolePage() {
     if (gameRow) {
       const gid = (gameRow as Game).id;
       const [{ data: pb }, { data: ps }, { data: obj }, { data: km }, { data: ss }, { data: nw }] = await Promise.all([
-        supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order").eq("game_id", gid).order("pick_order"),
-        supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gid),
+        supabase.from("hero_picks_bans").select("id, team_id, player_id, hero_name, type, pick_order, custom_player_name, custom_player_role").eq("game_id", gid).order("pick_order"),
+        supabase.from("player_stats").select("id, player_id, hero_name, kills, deaths, assists, gold, custom_player_name").eq("game_id", gid),
         supabase.from("objectives").select("id, team_id, type, minute_mark, created_at").eq("game_id", gid).order("minute_mark"),
         supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark, is_key_moment, screenshot_url").eq("game_id", gid).order("minute_mark"),
         supabase.from("game_screenshots").select("id, image_url, in_game_time, note, created_at").eq("game_id", gid).order("created_at"),
@@ -431,10 +502,14 @@ export default function LiveConsolePage() {
     return [match.team_a, match.team_b]
       .map((team) => {
         if (!team) return "";
+        // Falls back to the pick-ban row's own custom_player_role/name for
+        // a match-local custom player (no `players` row to look up).
+        const roleFor = (pb: PickBan) => players.find((p) => p.id === pb.player_id)?.role ?? pb.custom_player_role ?? null;
+        const nameFor = (pb: PickBan) => players.find((p) => p.id === pb.player_id)?.ign ?? pb.custom_player_name ?? "?";
         const picks = pickBans
           .filter((pb) => pb.team_id === team.id && pb.type === "pick")
-          .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
-          .map((pb) => `- ${pb.hero_name} (${players.find((p) => p.id === pb.player_id)?.ign ?? "?"})`)
+          .sort((a, b) => roleIndex(roleFor(a)) - roleIndex(roleFor(b)))
+          .map((pb) => `- ${pb.hero_name} (${nameFor(pb)})`)
           .join("\n");
         const bans = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "ban").map((pb) => pb.hero_name).join(", ");
         return `<b>${team.name}</b>\nPicks:\n${picks || "—"}\nBans: ${bans || "—"}`;
@@ -485,6 +560,28 @@ export default function LiveConsolePage() {
   // (same deterministic role-ordered slots the draft_hero_pick trackers
   // resolve against) must have a logged pick for this game, regardless of
   // whether that pick came from OCR, AI vision, or a manual edit.
+  // SAVE — the single "I'm done with the draft" action: (a) posts the same
+  // draft recap "Announce draft" already sends (via postToTelegram, which
+  // itself mirrors to Slack server-side — see /api/telegram/notify — no
+  // separate Slack call needed here), then (b) advances match.state to
+  // GAME_STARTED through the existing setMatchPhase transition function
+  // rather than a raw update, so it picks up the same phase-notice
+  // Telegram post and key_moments phase_change log every other transition
+  // already gets, instead of a one-off that skips those side effects.
+  async function saveDraftAndStartGame() {
+    if (!match || !game) return;
+    if (!draftFullyResolved()) {
+      setError("Can't save the draft yet — not all 10 players have a hero assigned.");
+      return;
+    }
+    if (!confirm("Save this draft and start the game? This posts the draft recap to Telegram/Slack and moves the match to Game ongoing.")) return;
+    await postToTelegram(
+      `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
+      { entityType: "game", entityId: game.id, notificationType: "draft_result" }
+    );
+    await setMatchPhase("GAME_STARTED");
+  }
+
   function draftFullyResolved(): boolean {
     if (!match?.team_a || !match?.team_b) return false;
     for (const teamId of [match.team_a.id, match.team_b.id]) {
@@ -505,13 +602,17 @@ export default function LiveConsolePage() {
     const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
     const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
 
+    // effectivePlayers so a custom player (player_id null, custom_player_name
+    // set instead) still resolves to a name/team here — see buildLiveScoreboardMessage.
+    const ownerOf = (s: PlayerStat) =>
+      s.player_id ? effectivePlayers.find((p) => p.id === s.player_id) : effectivePlayers.find((p) => p.ign === s.custom_player_name);
     const kdaLines = [match.team_a, match.team_b]
       .map((team) => {
         if (!team) return "";
         const lines = stats
-          .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === team.id)
+          .filter((s) => ownerOf(s)?.team_id === team.id)
           .map((s) => {
-            const p = players.find((pl) => pl.id === s.player_id);
+            const p = ownerOf(s);
             return `${p?.ign ?? "?"} (${s.hero_name ?? "?"}): ${s.kills}/${s.deaths}/${s.assists}`;
           })
           .join("\n");
@@ -597,6 +698,8 @@ export default function LiveConsolePage() {
       hero_id: heroes.find((h) => h.name === pbHero)?.id ?? null,
       type: pbType,
       pick_order: pickBans.length + 1,
+      custom_player_name: null as string | null,
+      custom_player_role: null as string | null,
     };
     if (isContributor) {
       const newRow = { id: fakeId(), ...payload };
@@ -663,11 +766,48 @@ export default function LiveConsolePage() {
   }
 
   // ── Scoreboard ──────────────────────────────────────────────────────
+  // A match-local custom player (added in Hero picks & bans — see
+  // addCustomPlayerToPick below) has no `players` row, so nothing here can
+  // key off a real player_id for them. Every call-site that takes a
+  // "playerId" string instead accepts this synthetic id — `custom:<pick-
+  // ban row id>` — so the rest of the scoreboard code (KDA inputs, hero
+  // picker, etc.) doesn't need two parallel sets of handlers, just this one
+  // branch point. The pick-ban row's own custom_player_name is the actual
+  // identity; the row id is only there to keep the synthetic id unique and
+  // traceable back to which pick it came from.
+  function isCustomPlayerId(id: string): boolean {
+    return id.startsWith("custom:");
+  }
+  function customPlayerNameFor(id: string): string | null {
+    const pbId = id.slice("custom:".length);
+    return pickBans.find((pb) => pb.id === pbId)?.custom_player_name ?? null;
+  }
   async function ensureStatRow(playerId: string) {
+    if (isCustomPlayerId(playerId)) {
+      const name = customPlayerNameFor(playerId);
+      if (!name || !game) return undefined;
+      const existing = stats.find((s) => s.custom_player_name === name);
+      if (existing) return existing;
+      // onConflict targets the partial unique index on (game_id,
+      // custom_player_name) added alongside this column — same
+      // "insert-or-return-existing" shape as a real player's row below,
+      // just keyed by name instead of player_id since there's no players
+      // row to key off.
+      const { data } = await supabase
+        .from("player_stats")
+        .upsert(
+          { game_id: game.id, match_id: matchId, player_id: null, custom_player_name: name, kills: null, deaths: null, assists: null },
+          { onConflict: "game_id,custom_player_name" }
+        )
+        .select("id, player_id, hero_name, kills, deaths, assists, gold, custom_player_name")
+        .single();
+      if (data) setStats((prev) => [...prev, data as PlayerStat]);
+      return data as PlayerStat | undefined;
+    }
     const existing = stats.find((s) => s.player_id === playerId);
     if (existing || !game) return existing;
     if (isContributor) {
-      const newRow: PlayerStat = { id: fakeId(), player_id: playerId, hero_name: null, kills: null, deaths: null, assists: null, gold: 0 };
+      const newRow: PlayerStat = { id: fakeId(), player_id: playerId, hero_name: null, kills: null, deaths: null, assists: null, gold: 0, custom_player_name: null };
       pushPendingEdit({
         table: "player_stats",
         action: "insert",
@@ -688,18 +828,21 @@ export default function LiveConsolePage() {
     const { data } = await supabase
       .from("player_stats")
       .insert({ game_id: game.id, match_id: matchId, player_id: playerId, kills: null, deaths: null, assists: null })
-      .select("id, player_id, hero_name, kills, deaths, assists, gold")
+      .select("id, player_id, hero_name, kills, deaths, assists, gold, custom_player_name")
       .single();
     if (data) setStats((prev) => [...prev, data as PlayerStat]);
     return data as PlayerStat | undefined;
   }
   async function updateStat(playerId: string, field: keyof PlayerStat, value: number | string) {
-    let row = stats.find((s) => s.player_id === playerId);
+    const custom = isCustomPlayerId(playerId);
+    let row = custom
+      ? stats.find((s) => s.custom_player_name === customPlayerNameFor(playerId))
+      : stats.find((s) => s.player_id === playerId);
     if (!row) row = await ensureStatRow(playerId);
     if (!row) return;
     const payload: Record<string, number | string | null> = { [field]: value };
     if (field === "hero_name") payload.hero_id = matchHeroId(value as string);
-    if (isContributor) {
+    if (isContributor && !custom) {
       pushPendingEdit({ table: "player_stats", action: "update", before: { id: row.id }, after: { id: row.id, ...payload } });
       setStats((prev) => prev.map((s) => (s.id === row!.id ? { ...s, [field]: value } : s)));
       return;
@@ -744,7 +887,26 @@ export default function LiveConsolePage() {
   }, [game?.id]);
   async function saveScoreboardPlayerEdit(playerId: string) {
     if (!editingScoreboardIgn.trim() || isContributor) return;
-    const { error } = await supabase.from("players").update({ ign: editingScoreboardIgn.trim() }).eq("id", playerId);
+    const newName = editingScoreboardIgn.trim();
+    // A custom player has no `players` row to update — the pick-ban row's
+    // custom_player_name is the identity, and any existing player_stats
+    // row is keyed off that same name (see the partial unique index), so
+    // both need the rename or the KDA row silently orphans under the old
+    // name.
+    if (isCustomPlayerId(playerId)) {
+      const pbId = playerId.slice("custom:".length);
+      const oldName = pickBans.find((row) => row.id === pbId)?.custom_player_name ?? null;
+      const { error } = await supabase.from("hero_picks_bans").update({ custom_player_name: newName }).eq("id", pbId);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      if (oldName) await supabase.from("player_stats").update({ custom_player_name: newName }).eq("custom_player_name", oldName).is("player_id", null);
+      setEditingScoreboardPlayerId(null);
+      loadAll();
+      return;
+    }
+    const { error } = await supabase.from("players").update({ ign: newName }).eq("id", playerId);
     if (error) setError(error.message);
     else {
       setEditingScoreboardPlayerId(null);
@@ -753,6 +915,20 @@ export default function LiveConsolePage() {
   }
   async function deleteScoreboardPlayer(playerId: string, ign: string) {
     if (isContributor) return;
+    // Custom players were never a `players` row — "deleting" them just
+    // clears the custom name/role off their pick-ban row (reverting it to
+    // unassigned, same as any other pick that hasn't had a player
+    // assigned yet) and drops their KDA row, rather than a real DELETE
+    // against the players table.
+    if (isCustomPlayerId(playerId)) {
+      if (!confirm(`Remove custom player "${ign}" from this match? Their K/D/A entry for this game will be deleted too.`)) return;
+      const pbId = playerId.slice("custom:".length);
+      const customName = pickBans.find((row) => row.id === pbId)?.custom_player_name ?? null;
+      await supabase.from("hero_picks_bans").update({ custom_player_name: null, custom_player_role: null }).eq("id", pbId);
+      if (customName) await supabase.from("player_stats").delete().eq("custom_player_name", customName).is("player_id", null);
+      loadAll();
+      return;
+    }
     if (!confirm(`Delete player "${ign}"? This can't be undone.`)) return;
     const { error } = await supabase.from("players").delete().eq("id", playerId);
     if (error) {
@@ -766,11 +942,17 @@ export default function LiveConsolePage() {
     loadAll();
   }
   function buildLiveScoreboardMessage(): string {
+    // effectivePlayers (players + synthetic custom-player rows, see
+    // activeFive above) instead of raw `players` — otherwise a custom
+    // player's stat row (player_id null, custom_player_name set) never
+    // resolves to a name here and just shows as "?".
+    const lookup = (s: PlayerStat) =>
+      s.player_id ? effectivePlayers.find((p) => p.id === s.player_id) : effectivePlayers.find((p) => p.ign === s.custom_player_name);
     const lines = [match?.team_a, match?.team_b].map((team) => {
       if (!team) return "";
-      const teamStats = stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === team.id);
+      const teamStats = stats.filter((s) => lookup(s)?.team_id === team.id);
       const rows = teamStats
-        .map((s) => `${players.find((p) => p.id === s.player_id)?.ign ?? "?"} (${s.hero_name ?? "?"}): ${s.kills}/${s.deaths}/${s.assists}`)
+        .map((s) => `${lookup(s)?.ign ?? "?"} (${s.hero_name ?? "?"}): ${s.kills}/${s.deaths}/${s.assists}`)
         .join("\n");
       return rows ? `<b>${team.name}</b>\n${rows}` : "";
     });
@@ -826,8 +1008,13 @@ export default function LiveConsolePage() {
       pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: momentPayload });
       return;
     }
-    await supabase.from("objectives").insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute });
+    const { data: insertedObjective } = await supabase
+      .from("objectives")
+      .insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute })
+      .select("id")
+      .single();
     await supabase.from("key_moments").insert(momentPayload);
+    if (insertedObjective) setLastAction({ table: "objectives", id: insertedObjective.id, label: momentPayload.description, kind: "insert" });
     loadAll();
   }
   async function decrementObjective(teamId: string, type: string) {
@@ -1097,19 +1284,23 @@ export default function LiveConsolePage() {
 
     const screenshotUrl = (kmAttachScreenshot || autoScreenshot) && captureActive ? await uploadMomentScreenshot() : null;
 
-    const { error: insertError } = await supabase.from("key_moments").insert({
-      game_id: game.id,
-      match_id: matchId,
-      type: selectedTemplate.type,
-      description,
-      player_id: kmPlayer || null,
-      team_id: kmTeam || null,
-      minute_mark: minute,
-      second_mark: secondOfMinute,
-      source: "manual",
-      is_key_moment: isKeyMoment,
-      screenshot_url: screenshotUrl,
-    });
+    const { data: inserted, error: insertError } = await supabase
+      .from("key_moments")
+      .insert({
+        game_id: game.id,
+        match_id: matchId,
+        type: selectedTemplate.type,
+        description,
+        player_id: kmPlayer || null,
+        team_id: kmTeam || null,
+        minute_mark: minute,
+        second_mark: secondOfMinute,
+        source: "manual",
+        is_key_moment: isKeyMoment,
+        screenshot_url: screenshotUrl,
+      })
+      .select("id")
+      .single();
     // Was previously unchecked — a rejected insert (e.g. a template type
     // the key_moments type CHECK constraint didn't allow) failed with no
     // feedback at all, which read as "the moment log button does nothing."
@@ -1117,6 +1308,7 @@ export default function LiveConsolePage() {
       setError(insertError.message);
       return;
     }
+    if (inserted) setLastAction({ table: "key_moments", id: inserted.id, label: description, kind: "insert" });
     // Securing Lord/Turtle is also an objective — logging the moment
     // shouldn't require a second trip to the Objectives counters below to
     // make the scoreboard agree with what the moment list just said.
@@ -1260,6 +1452,10 @@ export default function LiveConsolePage() {
   // branches per side per slot.
   type TrackerCategory =
     | "countdown"
+    // Kept only so a pre-existing capture_regions row with this category
+    // (if any admin ever added one) still types-checks when loaded —
+    // draft timers are otherwise fully removed: no catalog entry, no
+    // capture-tick handler, no manual-set UI. See the note by parseMmSs.
     | "draft_timer"
     | "draft_hero_pick"
     | "map_setting"
@@ -1297,10 +1493,10 @@ export default function LiveConsolePage() {
       case "MATCH_NOT_STARTED":
         return [{ category: "countdown", field: "countdown", label: "Pre-game countdown" }];
       case "DRAFT_STARTED": {
-        const items: { category: TrackerCategory; field: string; label: string }[] = [];
-        for (const side of SIDES) items.push({ category: "draft_timer", field: `draft_timer_${side.key}`, label: `Draft timer — ${side.label}` });
-        items.push({ category: "map_setting", field: "map_setting", label: "Map setting (one-time, auto-selects the map)" });
-        return items;
+        // Draft timers removed per product decision — see the note by
+        // parseMmSs above. map_setting is the only DRAFT_STARTED tracker
+        // left.
+        return [{ category: "map_setting", field: "map_setting", label: "Map setting (one-time, auto-selects the map)" }];
       }
       case "GAME_STARTED": {
         const items: { category: TrackerCategory; field: string; label: string }[] = [
@@ -1722,6 +1918,45 @@ export default function LiveConsolePage() {
       return;
     }
     await updateStat(playerId, "hero_name", heroName);
+    loadAll();
+  }
+
+  // Drag-and-drop hero/player re-assignment, post-draft — sits entirely on
+  // top of assignHeroToPlayer above (same write path the dropdown-based
+  // "Assign each picked hero" flow already uses), no separate write logic.
+  // Dropping player A's hero onto player B: B's pick row gets A's hero; if B
+  // already had a hero of their own, that pick row gets reassigned to A in
+  // the same gesture (a real swap, two calls to the same function) — if B
+  // had none yet, only the first call happens (a plain move).
+  async function handleHeroDropOnPlayer(draggedPickBanId: string, targetPlayerId: string) {
+    const draggedPb = pickBans.find((pb) => pb.id === draggedPickBanId);
+    if (!draggedPb || draggedPb.player_id === targetPlayerId) return;
+    const sourcePlayerId = draggedPb.player_id;
+    const targetPb = pickBans.find((pb) => pb.type === "pick" && pb.player_id === targetPlayerId);
+    await assignHeroToPlayer(draggedPb.id, targetPlayerId, draggedPb.hero_name);
+    if (targetPb && sourcePlayerId) {
+      await assignHeroToPlayer(targetPb.id, sourcePlayerId, targetPb.hero_name);
+    }
+  }
+
+  // Adds a match-local custom player (a sub not in the `players` table at
+  // all) directly onto an already-logged pick — sets custom_player_name/
+  // custom_player_role on that hero_picks_bans row instead of player_id,
+  // scoped to this one match/game since the row itself is match-scoped.
+  // Everything downstream (Live Scoreboard, KDA entry) picks this up
+  // through the `custom:<pick-ban id>` synthetic id — see isCustomPlayerId.
+  async function addCustomPlayerToPick(pickBanId: string) {
+    const name = prompt("Custom player name (in-game name):")?.trim();
+    if (!name) return;
+    const role = prompt("Role (optional — exp/jungle/mid/gold/roam):")?.trim() || null;
+    const { error } = await supabase
+      .from("hero_picks_bans")
+      .update({ player_id: null, custom_player_name: name, custom_player_role: role })
+      .eq("id", pickBanId);
+    if (error) {
+      setError(error.message);
+      return;
+    }
     loadAll();
   }
 
@@ -2335,23 +2570,17 @@ export default function LiveConsolePage() {
       .eq("id", match.id);
   }
 
-  const lastPersistedDraftTimers = useRef<{ a: number | null; b: number | null }>({ a: null, b: null });
-  async function updateDraftTimer(side: "a" | "b", totalSeconds: number) {
-    if (!match) return;
-    if (totalSeconds === lastPersistedDraftTimers.current[side]) return;
-    lastPersistedDraftTimers.current[side] = totalSeconds;
-    const column = side === "a" ? "draft_timer_a_seconds" : "draft_timer_b_seconds";
-    await supabase
-      .from("matches")
-      .update({ [column]: totalSeconds, draft_timer_updated_at: new Date().toISOString() })
-      .eq("id", match.id);
-  }
-
-  // Manual fallback for countdown/draft-timer fields — both are one-way
-  // countdowns the public page already decays client-side from a single
-  // (value, updated_at) pair, so unlike the game clock these don't need a
+  // Manual fallback for the countdown field — a one-way countdown the
+  // public page already decays client-side from a single (value,
+  // updated_at) pair, so unlike the game clock this doesn't need a
   // running/paused state machine, just a way to set the starting value
   // when OCR hasn't been calibrated yet or the overlay text isn't legible.
+  // Draft timers (draft_timer_a_seconds/b_seconds) used to have the exact
+  // same manual-set + OCR-tick plumbing here — removed per product
+  // decision to drop draft timers from this console entirely (the DB
+  // columns stay; nothing here writes to them anymore, and the
+  // draft_timer tracker category has no catalog entry or capture-tick
+  // handler left to drive it).
   function parseMmSs(input: string): number | null {
     const m = input.trim().match(/^(\d{1,3}):(\d{2})$/);
     if (!m) return null;
@@ -2365,16 +2594,6 @@ export default function LiveConsolePage() {
       .from("matches")
       .update({ countdown_seconds: totalSeconds, countdown_updated_at: new Date().toISOString() })
       .eq("id", match?.id);
-  }
-  async function setManualDraftTimer(side: "a" | "b", input: string) {
-    const totalSeconds = parseMmSs(input);
-    if (totalSeconds == null || !match) return;
-    lastPersistedDraftTimers.current[side] = totalSeconds;
-    const column = side === "a" ? "draft_timer_a_seconds" : "draft_timer_b_seconds";
-    await supabase
-      .from("matches")
-      .update({ [column]: totalSeconds, draft_timer_updated_at: new Date().toISOString() })
-      .eq("id", match.id);
   }
 
   function guessWinnerFromText(text: string): string | null {
@@ -2530,7 +2749,18 @@ export default function LiveConsolePage() {
             break;
           }
           case "game_timer": {
-            if (mmss) {
+            const newSeconds = mmss ? Number(mmss[1]) * 60 + Number(mmss[2]) : null;
+            const knownSeconds = lastPersistedSeconds.current ?? game?.current_time_seconds ?? null;
+            // Never-decreases — the timer only counts up during live play,
+            // so a reading smaller than what's already recorded is always a
+            // garbled OCR read, never a real value (a genuine mid-game
+            // clock reset isn't a thing MLBB does). A low Tesseract
+            // confidence score would make this call even easier, but the
+            // guard is unconditional either way — treated exactly like a
+            // blank/unreadable tick below, not a rejected-but-otherwise-
+            // normal one.
+            const isGarbledDecrease = newSeconds != null && knownSeconds != null && newSeconds < knownSeconds;
+            if (mmss && !isGarbledDecrease) {
               unreadableTimerSince.current = null;
               pauseSuggested.current = false;
               setMinute(Number(mmss[1]));
@@ -2554,14 +2784,6 @@ export default function LiveConsolePage() {
             else if (secondsOnly) updateCountdown(0, Number(secondsOnly[1]));
             break;
           }
-          case "draft_timer": {
-            if (!sideTeamId) break;
-            const teamLetter: "a" | "b" | null = sideTeamId === match?.team_a?.id ? "a" : sideTeamId === match?.team_b?.id ? "b" : null;
-            if (!teamLetter) break;
-            if (mmss) updateDraftTimer(teamLetter, Number(mmss[1]) * 60 + Number(mmss[2]));
-            else if (secondsOnly) updateDraftTimer(teamLetter, Number(secondsOnly[1]));
-            break;
-          }
           case "team_kills": {
             if (!sideTeamId || !game) break;
             // Digits only — this is the tracker the admin called out as
@@ -2575,6 +2797,12 @@ export default function LiveConsolePage() {
             const kills = Number(digitsOnly);
             if (!Number.isFinite(kills) || kills < 0 || kills > 300) break;
             const column = sideTeamId === match?.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+            // Never-decreases — a noisy read lower than what's already
+            // recorded is always a misread (kill counts only go up); the
+            // manual scoreboard edit is the way to actually correct a
+            // wrong count downward.
+            const currentKills = column === "team_a_kills_override" ? game.team_a_kills_override : game.team_b_kills_override;
+            if (currentKills != null && kills < currentKills) break;
             await supabase.from("games").update({ [column]: kills }).eq("id", game.id);
             break;
           }
@@ -2632,7 +2860,16 @@ export default function LiveConsolePage() {
     if (networthLeft != null && networthRight != null && game && match) {
       const teamAGold = leftTeamId === match.team_a?.id ? networthLeft : networthRight;
       const teamBGold = leftTeamId === match.team_a?.id ? networthRight : networthLeft;
-      await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: teamAGold, team_b_gold: teamBGold });
+      // Never-decreases, per side independently — net worth only grows
+      // during live play, so a reading lower than the last confirmed
+      // snapshot is a garbled OCR read, not a real dip. Clamps just the
+      // side that misread rather than discarding the whole tick, so a
+      // correctly-read side still lands even if the other side glitched.
+      const knownAGold = latestNetWorth?.team_a_gold ?? null;
+      const knownBGold = latestNetWorth?.team_b_gold ?? null;
+      const safeTeamAGold = knownAGold != null && teamAGold < knownAGold ? knownAGold : teamAGold;
+      const safeTeamBGold = knownBGold != null && teamBGold < knownBGold ? knownBGold : teamBGold;
+      await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: safeTeamAGold, team_b_gold: safeTeamBGold });
     }
 
     // K/D/A: same auto-upsert precedent already used by the AI-vision path
@@ -2646,8 +2883,19 @@ export default function LiveConsolePage() {
     // same hero).
     if (game) {
       for (const row of kdaParsed) {
+        // Never-decreases, per stat independently — kills/deaths/assists
+        // only ever go up during a live game, so a noisy read lower than
+        // what's already stored for this player is a misread, not a real
+        // correction (that's what the manual Live scoreboard edit is for).
+        // Clamped per-field rather than rejecting the whole reading, so a
+        // correctly-read higher kill count still lands even if deaths or
+        // assists misread low on the same tick.
+        const existing = stats.find((s) => s.player_id === row.playerId);
+        const kills = existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills;
+        const deaths = existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths;
+        const assists = existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists;
         await supabase.from("player_stats").upsert(
-          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills: row.kills, deaths: row.deaths, assists: row.assists },
+          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills, deaths, assists },
           { onConflict: "game_id,player_id" }
         );
       }
@@ -3493,14 +3741,48 @@ export default function LiveConsolePage() {
   // substitute who came in without a hero pick ever being logged for
   // them. Both always sort left-to-right by role: exp lane, jungler, mid
   // laner, gold laner, roamer.
+  // Match-local custom players (added in Hero picks & bans, see
+  // addCustomPlayerToPick) as synthetic Player-shaped rows — id is
+  // `custom:<pick-ban row id>` (see isCustomPlayerId), never a real
+  // players.id, so they never collide with an actual roster player and
+  // every consumer that branches on that prefix (updateStat/ensureStatRow)
+  // treats them consistently. This is what makes the Live Scoreboard's
+  // player list driven by who's actually in this game's Hero picks & bans
+  // instead of only the `players` table roster — a custom player who was
+  // never added to that table still shows up here because they have a
+  // pickBans row for this game.
+  const customPlayers: Player[] = pickBans
+    .filter((pb) => pb.type === "pick" && pb.custom_player_name)
+    .map((pb) => ({
+      id: `custom:${pb.id}`,
+      team_id: pb.team_id,
+      ign: pb.custom_player_name!,
+      role: pb.custom_player_role,
+      photo_url: null,
+      is_active_roster: true,
+    }));
+  const effectivePlayers: Player[] = [...players, ...customPlayers];
   function activeFive(teamId: string | undefined) {
     if (!teamId) return [];
     // Before the draft has actually started there's no "who's playing"
     // decided yet — the Live Scoreboard should show nothing rather than a
     // preset roster guess that may not match who ends up picked.
     if (match?.state === "MATCH_NOT_STARTED") return [];
-    const pickedIds = new Set(pickBans.filter((pb) => pb.type === "pick" && pb.team_id === teamId && pb.player_id).map((pb) => pb.player_id));
-    const statIds = new Set(stats.map((s) => s.player_id));
+    const pickedIds = new Set(
+      pickBans
+        .filter((pb) => pb.type === "pick" && pb.team_id === teamId && (pb.player_id || pb.custom_player_name))
+        .map((pb) => pb.player_id ?? `custom:${pb.id}`)
+    );
+    const statIds = new Set(
+      stats
+        .map((s) => {
+          if (s.player_id) return s.player_id;
+          if (!s.custom_player_name) return null;
+          const pb = pickBans.find((row) => row.custom_player_name === s.custom_player_name);
+          return pb ? `custom:${pb.id}` : null;
+        })
+        .filter((id): id is string => !!id)
+    );
     // is_active_roster is the roster editor's own "which 5" decision — a
     // player flagged active shows here even before any pick/stat row
     // exists, which is what makes the roster show up on the Live
@@ -3509,15 +3791,29 @@ export default function LiveConsolePage() {
     // too so a genuine mid-game substitution (added via "+ Add" below,
     // which isn't itself an is_active_roster flip) still renders — a
     // benched sub who's neither flagged active nor actually in the game
-    // is the only thing this excludes.
-    const activeRosterIds = new Set(players.filter((p) => p.team_id === teamId && p.is_active_roster).map((p) => p.id));
-    const included = players.filter((p) => p.team_id === teamId && (activeRosterIds.has(p.id) || pickedIds.has(p.id) || statIds.has(p.id)));
-    const base = included.length > 0 ? included : players.filter((p) => p.team_id === teamId);
+    // is the only thing this excludes. Custom players are always
+    // is_active_roster: true by construction, so they fall into the same
+    // branch as a flagged real roster player.
+    const activeRosterIds = new Set(effectivePlayers.filter((p) => p.team_id === teamId && p.is_active_roster).map((p) => p.id));
+    const included = effectivePlayers.filter((p) => p.team_id === teamId && (activeRosterIds.has(p.id) || pickedIds.has(p.id) || statIds.has(p.id)));
+    const base = included.length > 0 ? included : effectivePlayers.filter((p) => p.team_id === teamId);
     return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
   }
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
+  // Same custom-vs-real branch as ensureStatRow/updateStat, for the read
+  // side — every scoreboard row's stat lookup goes through this instead of
+  // a raw `stats.find(s => s.player_id === p.id)`, which would never match
+  // a custom player (their stat rows carry custom_player_name, not
+  // player_id).
+  function statForPlayer(p: Player): PlayerStat | undefined {
+    if (isCustomPlayerId(p.id)) {
+      const name = customPlayerNameFor(p.id);
+      return stats.find((s) => s.custom_player_name === name);
+    }
+    return stats.find((s) => s.player_id === p.id);
+  }
 
   // ── Draft overlay (broadcast-style) derived values ────────────────────
   // Left/right follows the draft simulation's own Blue/Red assignment once
@@ -3574,12 +3870,19 @@ export default function LiveConsolePage() {
   // once it's read anything — falls back to summing player_stats.kills
   // (the only source before that tracker existed, and still the only
   // source for Normal/Liquipedia-sourced matches).
+  // effectivePlayers (not raw `players`) so a custom player's kills still
+  // count toward their team's total — their stat row has no player_id to
+  // match against a `players` row.
+  function statOwnerTeamId(s: PlayerStat): string | undefined {
+    if (s.player_id) return effectivePlayers.find((p) => p.id === s.player_id)?.team_id;
+    return effectivePlayers.find((p) => p.ign === s.custom_player_name)?.team_id;
+  }
   const teamAKillsTotal =
     game?.team_a_kills_override ??
-    stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+    stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const teamBKillsTotal =
     game?.team_b_kills_override ??
-    stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+    stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   async function addScoreboardPlayer(playerId: string) {
     await ensureStatRow(playerId);
     loadAll();
@@ -3804,12 +4107,22 @@ export default function LiveConsolePage() {
         )}
       </div>
 
-      {/* Local capture (admin PC) — only drives anything when this match is on local_ocr.
-          Moved to directly under the match header (was previously the very last section
-          on the page) so the OCR tracker + calibration controls are reachable without
-          scrolling past the moment list, draft sim, and scoreboard first — see the
-          "Prioritize admin controls" ask. */}
-      <section className="space-y-3 pt-4">
+      {/* Left column ("Live Feed"): broadcast/capture stays pinned on
+          screen on wide-enough viewports instead of scrolling away with
+          everything else — the one thing an operator needs visible at all
+          times. Below lg it just stacks like every other section (a phone
+          screen has no room to spare for a permanently-pinned column).
+          Right of it: everything else (draft tool, match control, kill
+          tracking, objectives, moment log, scoreboard) in normal document
+          flow. */}
+      <div className="lg:flex lg:items-start lg:gap-6">
+        <aside className="lg:sticky lg:top-24 lg:w-[26rem] lg:shrink-0 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:pr-1">
+          {/* Local capture (admin PC) — only drives anything when this match is on local_ocr.
+              Moved to directly under the match header (was previously the very last section
+              on the page) so the OCR tracker + calibration controls are reachable without
+              scrolling past the moment list, draft sim, and scoreboard first — see the
+              "Prioritize admin controls" ask. */}
+          <section className="space-y-3 pt-4">
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Local capture (this PC)</h2>
           {match.update_source === "local_ocr" && (
@@ -4315,7 +4628,7 @@ export default function LiveConsolePage() {
                             <tbody>
                               {visibleTrackers.map((t) => {
                                 const calibrated = !!regions[t.field];
-                                const isCountdownLike = t.category === "countdown" || t.category === "draft_timer";
+                                const isCountdownLike = t.category === "countdown";
                                 return (
                                   <tr key={t.id} className={`border-b border-white/5 ${t.phase === match.state ? "" : "opacity-50"}`}>
                                     <td className="py-1.5 pr-2 whitespace-nowrap">{t.phase.replace(/_/g, " ")}</td>
@@ -4396,16 +4709,7 @@ export default function LiveConsolePage() {
                                               className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
                                             />
                                             <button
-                                              onClick={() => {
-                                                const value = manualTimeInputs[t.field] ?? "";
-                                                if (t.category === "countdown") setManualCountdown(value);
-                                                else {
-                                                  const { side } = fieldParts(t.field);
-                                                  const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
-                                                  const letter: "a" | "b" | null = teamId === match.team_a?.id ? "a" : teamId === match.team_b?.id ? "b" : null;
-                                                  if (letter) setManualDraftTimer(letter, value);
-                                                }
-                                              }}
+                                              onClick={() => setManualCountdown(manualTimeInputs[t.field] ?? "")}
                                               title="Set this directly instead of waiting on OCR"
                                               className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
                                             >
@@ -4531,6 +4835,483 @@ export default function LiveConsolePage() {
           </>
         )}
       </section>
+        </aside>
+
+        <div className="flex-1 min-w-0 space-y-8">
+
+      {/* Draft tool sits first in the center column, directly beside/below
+          the tracking canvas — the site owner runs this on a single
+          monitor, so having the OCR canvas and the drafting UI stacked
+          vertically (true on narrow/stacked layouts; side-by-side at the
+          top of the center column on wide ones) instead of competing for
+          the same scroll region matters more than the
+          "which comes textually first" grouping that used to place this
+          next to the game/map selector further down. */}
+      {/* Hero picks/bans */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Hero picks & bans</h2>
+          <div className="flex gap-2">
+            {/* Also rendered near Live scoreboard below for Hot matches —
+                duplicated here (same shared editingFinishedGame state) so
+                Normal matches, which never render that section at all,
+                still have a way to unlock a finished game's picks/bans and
+                score for editing. */}
+            {gameFinished && (
+              <button
+                onClick={() => setEditingFinishedGame((v) => !v)}
+                title="This game is finished — result data is read-only until unlocked"
+                className={`text-xs rounded px-2 py-1 border ${
+                  editingFinishedGame ? "border-signal/50 text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
+                }`}
+              >
+                {editingFinishedGame ? "🔓 Editing finished game — click to lock" : "🔒 Unlock to edit"}
+              </button>
+            )}
+            {DRAFT_PHASES.includes(match.state) && (
+              <button
+                onClick={() => setShowHeroPicker(true)}
+                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+              >
+                🖼 Hero reference
+              </button>
+            )}
+            <button
+              onClick={() =>
+                postToTelegram(
+                  `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
+                  { entityType: "game", entityId: game.id, notificationType: "draft_result" }
+                )
+              }
+              className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+            >
+              📢 Announce draft
+            </button>
+            {match.state === "DRAFT_COMPLETE" && (
+              <button
+                onClick={saveDraftAndStartGame}
+                title="Posts the draft recap to Telegram/Slack and advances the match to Game ongoing"
+                className="text-xs border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 font-semibold"
+              >
+                💾 SAVE draft &amp; start game
+              </button>
+            )}
+            {match.update_source === "local_ocr" && (
+              <button
+                onClick={syncDraftFromLiquipedia}
+                disabled={syncingDraft}
+                title="Corrects which hero was picked/banned to match Liquipedia's bracket page. Never touches kill stats or the moment list."
+                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-50"
+              >
+                {syncingDraft ? "Syncing..." : "🔄 Sync from Liquipedia"}
+              </button>
+            )}
+          </div>
+        </div>
+        {syncDraftStatus && <p className="text-xs text-white/50">{syncDraftStatus}</p>}
+
+        {/* Broadcast-style draft overlay — presentation layer on top of the
+            same pickBans/roster state the plain form and simulation grid
+            below read and write. Player photos flip to hero icons as each
+            pick lands (via pickBans' own player_id, set either by the
+            manual form immediately or by the post-sim "assign player"
+            step), the acting side glows while draftSim has a live turn,
+            and — once anything's editable — clicking a locked-in slot
+            reopens the same Hero reference modal targeted at that one row
+            instead of a fresh insert. */}
+        {DRAFT_PHASES.includes(match.state) && match.team_a && match.team_b && (
+          <DraftOverlay
+            leftTeam={overlayLeftTeam}
+            rightTeam={overlayRightTeam}
+            leftPlayers={overlayLeftPlayers}
+            rightPlayers={overlayRightPlayers}
+            pickBans={pickBans as DraftOverlayPickBan[]}
+            heroIconFor={heroIconFor}
+            stageLabel={overlayStageLabel}
+            phaseLabel={overlayPhaseLabel}
+            turnSide={overlayTurnSide}
+            turnLabel={overlayTurnLabel}
+            stepProgress={overlayStepProgress}
+            turnKey={overlayTurnKey}
+            interactive={pickBanEditable}
+            onCorrectPick={openHeroPickerForCorrection}
+          />
+        )}
+
+        {/* Active roster (main lineup) — editable up through Draft complete
+            (not locked the instant the draft starts, per spec). Draft can't
+            start unless both teams have exactly 5 checked here; gated in
+            handlePhaseChange, not just visually here. */}
+        {(match.state === "MATCH_NOT_STARTED" || DRAFT_PHASES.includes(match.state)) && (
+          <div className="border border-white/10 rounded-lg p-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[match.team_a, match.team_b].map((team, idx) => {
+              if (!team) return <span key={idx} />;
+              const teamRoster = rosterFor(team.id);
+              const activeCount = teamRoster.filter((p) => p.is_active_roster).length;
+              return (
+                <div key={team.id} className="space-y-1.5">
+                  <p className="text-xs text-white/50">
+                    {team.name} — active roster{" "}
+                    <span className={activeCount === 5 ? "text-emerald-400" : "text-yellow-300"}>{activeCount}/5</span>
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {teamRoster.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => toggleActiveRoster(p.id, !p.is_active_roster)}
+                        className={`text-[10px] rounded px-2 py-1 border ${
+                          p.is_active_roster
+                            ? "border-signal/40 bg-signal/10 text-white"
+                            : "border-white/10 text-white/40 hover:border-white/30"
+                        }`}
+                        title={p.is_active_roster ? "Active — click to bench" : "Bench — click to activate"}
+                      >
+                        {p.is_active_roster ? "✓ " : ""}
+                        {p.ign}
+                        {p.role ? ` (${p.role})` : ""}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Draft ban/pick simulation — replaces OCR/AI hero-pick detection
+            entirely. Bans show no on-screen text (only an icon), so this
+            was always the riskiest OCR surface; the admin now logs each
+            step by hand from a searchable hero grid, in the exact fixed
+            order a tournament draft follows. */}
+        {DRAFT_PHASES.includes(match.state) && (
+          <div className="border border-white/10 rounded-lg p-3 space-y-3">
+            {!draftSim ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-white/50">Draft simulation — pick Blue side (first pick, first ban):</span>
+                {match.team_a && (
+                  <button onClick={() => startDraftSimulation(match.team_a!.id)} className="lv-btn-ghost !text-xs">
+                    {match.team_a.name} is Blue
+                  </button>
+                )}
+                {match.team_b && (
+                  <button onClick={() => startDraftSimulation(match.team_b!.id)} className="lv-btn-ghost !text-xs">
+                    {match.team_b.name} is Blue
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <p className="text-sm font-semibold">
+                    {DRAFT_SEQUENCE[draftSim.stepIndex].side === "blue"
+                      ? draftSim.blueTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name
+                      : draftSim.redTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
+                    {" — "}
+                    <span className={DRAFT_SEQUENCE[draftSim.stepIndex].type === "ban" ? "text-red-400" : "text-emerald-400"}>
+                      {draftStepLabel(draftSim.stepIndex)}
+                    </span>
+                    <span className="text-white/30 text-xs"> ({draftSim.stepIndex + 1}/{DRAFT_SEQUENCE.length})</span>
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={undoLastDraftStep}
+                      disabled={draftSim.stepIndex === 0}
+                      title="Undo the last pick/ban — removes it from Hero picks & bans and the Moment list"
+                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      ↩ Undo
+                    </button>
+                    <button onClick={stopDraftSimulation} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                      Stop
+                    </button>
+                    <button onClick={resetDraftSimulation} className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10">
+                      Reset draft
+                    </button>
+                  </div>
+                </div>
+                <input
+                  value={simHeroSearch}
+                  onChange={(e) => setSimHeroSearch(e.target.value)}
+                  placeholder="Search heroes..."
+                  className="w-full bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
+                />
+                <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-2 max-h-64 overflow-y-auto">
+                  {heroes
+                    .filter((h) => h.name.toLowerCase().includes(simHeroSearch.toLowerCase()))
+                    .map((h) => {
+                      const taken = draftSim.committed.some((c) => c.heroName.toLowerCase() === h.name.toLowerCase());
+                      return (
+                        <button
+                          key={h.id}
+                          onClick={() => logSimulationStep(h.name)}
+                          disabled={taken}
+                          title={h.name}
+                          className={`flex flex-col items-center gap-1 group ${taken ? "opacity-30 cursor-not-allowed" : ""}`}
+                        >
+                          <HeroIcon url={h.icon_url} name={h.name} size="sm" />
+                          <span className="text-[9px] text-white/60 group-hover:text-white text-center leading-tight truncate w-full">
+                            {h.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Player -> hero assignment — post-simulation, pre-Finish. Each
+            dropdown only ever lists this team's picks that don't have a
+            player yet, so it shrinks as assignments land instead of
+            needing its own "already assigned" filter logic. */}
+        {match.state === "DRAFT_COMPLETE" &&
+          [match.team_a, match.team_b].some(
+            (team) => team && pickBans.some((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id && !pb.custom_player_name)
+          ) && (
+            <div className="border border-white/10 rounded-lg p-3 space-y-3">
+              <p className="text-xs text-white/50">
+                Assign each picked hero to the player actually playing it — or add a custom player (a sub who&apos;s not
+                in the roster) scoped to just this match:
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {[match.team_a, match.team_b].map((team, idx) => {
+                  if (!team) return <span key={idx} />;
+                  const unassigned = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id && !pb.custom_player_name);
+                  if (unassigned.length === 0) return <span key={team.id} />;
+                  const activeRoster = rosterFor(team.id).filter((p) => p.is_active_roster);
+                  return (
+                    <div key={team.id} className="space-y-2">
+                      <p className="text-xs text-white/50">{team.name}</p>
+                      {unassigned.map((pb) => {
+                        const hero = heroes.find((h) => h.name === pb.hero_name);
+                        return (
+                          <div key={pb.id} className="flex items-center gap-2">
+                            <HeroIcon url={hero?.icon_url} name={pb.hero_name} size="xs" />
+                            <span className="text-xs w-24 truncate">{pb.hero_name}</span>
+                            <select
+                              defaultValue=""
+                              onChange={(e) => {
+                                if (e.target.value === "__custom__") {
+                                  addCustomPlayerToPick(pb.id);
+                                } else if (e.target.value) {
+                                  assignHeroToPlayer(pb.id, e.target.value, pb.hero_name);
+                                }
+                              }}
+                              className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                            >
+                              <option value="">Assign player...</option>
+                              {activeRoster
+                                .filter((p) => !pickBans.some((other) => other.player_id === p.id && other.type === "pick"))
+                                .map((p) => (
+                                  <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                                ))}
+                              <option value="__custom__">+ Custom player (not in roster)...</option>
+                            </select>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+        {/* Drag-and-drop hero/player swap — post-draft, for correcting a
+            hero assigned to the wrong player without re-doing the dropdown
+            above. Drag a hero chip onto another player's row: if that
+            player already has a hero of their own, the two swap; if not,
+            it's just a move. Both write through handleHeroDropOnPlayer,
+            which is itself just 1-2 calls to assignHeroToPlayer — same
+            write path as the dropdown flow above, no new logic. */}
+        {(match.state === "DRAFT_COMPLETE" || match.state === "GAME_STARTED") && pickBans.some((pb) => pb.type === "pick" && pb.player_id) && (
+          <div className="border border-white/10 rounded-lg p-3 space-y-3">
+            <p className="text-xs text-white/50">Drag a hero onto another player to reassign or swap it:</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {[match.team_a, match.team_b].map((team, idx) => {
+                if (!team) return <span key={idx} />;
+                const activeRoster = rosterFor(team.id).filter((p) => p.is_active_roster);
+                return (
+                  <div key={team.id} className="space-y-1">
+                    <p className="text-xs text-white/50">{team.name}</p>
+                    {activeRoster.map((p) => {
+                      const pb = pickBans.find((row) => row.type === "pick" && row.player_id === p.id);
+                      const hero = pb ? heroes.find((h) => h.name === pb.hero_name) : null;
+                      return (
+                        <div
+                          key={p.id}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            const draggedId = e.dataTransfer.getData("text/pick-ban-id");
+                            if (draggedId) handleHeroDropOnPlayer(draggedId, p.id);
+                          }}
+                          className="flex items-center gap-2 border border-white/10 rounded px-2 py-1.5 bg-white/[0.02]"
+                        >
+                          <span className="text-xs w-24 truncate">{p.ign}{p.role ? ` (${p.role})` : ""}</span>
+                          {pb ? (
+                            <div
+                              draggable
+                              onDragStart={(e) => e.dataTransfer.setData("text/pick-ban-id", pb.id)}
+                              className="flex items-center gap-1.5 cursor-grab active:cursor-grabbing border border-white/10 rounded px-1.5 py-1 bg-white/5 hover:border-signal/50"
+                              title={`Drag to reassign ${pb.hero_name}`}
+                            >
+                              <HeroIcon url={hero?.icon_url} name={pb.hero_name} size="xs" />
+                              <span className="text-[11px]">{pb.hero_name}</span>
+                            </div>
+                          ) : (
+                            <span className="text-[11px] text-white/30">No hero — drop one here</span>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Reused by the DraftOverlay's click-a-slot correction flow (see
+            onCorrectPick={openHeroPickerForCorrection} above), not just the
+            plain form below — so this modal is squarely in the "does the
+            draft overlay actually work on a phone" path. Outer padding
+            shrunk below sm so the hero grid gets its full width back
+            instead of losing 48px to backdrop padding it doesn't need on
+            a screen that's already narrow; sm: restores the original p-6. */}
+        {showHeroPicker && (
+          <div
+            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3 sm:p-6"
+            onClick={closeHeroPicker}
+          >
+            <div
+              className="bg-ink border border-white/10 rounded-lg p-4 max-w-3xl w-full max-h-[80vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-bold text-sm">
+                  {heroPickerTarget ? `Correct pick — ${heroPickerTarget.label}` : "Hero reference — click to select"}
+                </h3>
+                <button onClick={closeHeroPicker} className="text-white/40 hover:text-white/70 text-sm">✕</button>
+              </div>
+              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
+                {heroes.map((h) => (
+                  <button
+                    key={h.id}
+                    onClick={() => {
+                      if (heroPickerTarget) {
+                        correctPickBanHero(heroPickerTarget.pb, h.name);
+                      } else {
+                        setPbHero(h.name);
+                      }
+                      closeHeroPicker();
+                    }}
+                    className="flex flex-col items-center gap-1 group"
+                  >
+                    <HeroIcon url={h.icon_url} name={h.name} size="md" />
+                    <span className="text-[10px] text-white/60 group-hover:text-white text-center leading-tight">{h.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+        <div className="flex gap-2 items-end flex-wrap">
+          <select
+            value={pbTeam}
+            onChange={(e) => {
+              setPbTeam(e.target.value);
+              setPbPlayer("");
+            }}
+            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
+          >
+            <option value="">Team</option>
+            {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
+            {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
+          </select>
+          <select
+            value={pbType}
+            onChange={(e) => setPbType(e.target.value as "pick" | "ban")}
+            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
+          >
+            <option value="ban">Ban</option>
+            <option value="pick">Pick</option>
+          </select>
+          {pbType === "pick" && (
+            <select
+              value={pbPlayer}
+              onChange={(e) => setPbPlayer(e.target.value)}
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
+            >
+              <option value="">Player</option>
+              {pbTeam &&
+                rosterFor(pbTeam)
+                  .filter((p) => !pickBans.some((pb) => pb.player_id === p.id && pb.type === "pick"))
+                  .map((p) => (
+                    <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                  ))}
+            </select>
+          )}
+          <div className="flex items-center gap-1.5">
+            {heroes.find((h) => h.name === pbHero)?.icon_url && (
+              <HeroIcon url={heroes.find((h) => h.name === pbHero)!.icon_url} name={pbHero} size="xs" />
+            )}
+            <select
+              value={pbHero}
+              onChange={(e) => setPbHero(e.target.value)}
+              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
+            >
+              <option value="">Hero</option>
+              {heroes.map((h) => (
+                <option key={h.id} value={h.name}>{h.name}</option>
+              ))}
+            </select>
+          </div>
+          <button onClick={logPickBan} disabled={!pickBanEditable} className="lv-btn-ghost disabled:opacity-40">
+            Log
+          </button>
+        </div>
+
+        {[match.team_a, match.team_b].map((team, idx) =>
+          team ? (
+            <div key={team.id} className="space-y-1">
+              <p className="text-xs text-white/50">{team.name}</p>
+              <div className="flex flex-wrap gap-2 text-xs">
+                {pickBans
+                  .filter((pb) => pb.team_id === team.id && pb.type === "pick")
+                  .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
+                  .map((pb) => {
+                    const player = players.find((p) => p.id === pb.player_id);
+                    return (
+                      <span key={pb.id} className="px-2 py-1 rounded bg-emerald-500/20 flex items-center gap-1.5">
+                        ✅ {pb.hero_name}
+                        {player && <span className="text-white/50">({player.ign}{player.role ? ` · ${player.role}` : ""})</span>}
+                        {pickBanEditable && (
+                          <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                        )}
+                      </span>
+                    );
+                  })}
+                {pickBans
+                  .filter((pb) => pb.team_id === team.id && pb.type === "ban")
+                  .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0))
+                  .map((pb) => (
+                    <span key={pb.id} className="px-2 py-1 rounded bg-red-500/20 flex items-center gap-1.5">
+                      🚫 {pb.hero_name}
+                      {pickBanEditable && (
+                        <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
+                      )}
+                    </span>
+                  ))}
+              </div>
+            </div>
+          ) : (
+            <span key={idx} />
+          )
+        )}
+      </section>
+
 
       {!isEditable && (
         <p className="lv-alert-warning">
@@ -4572,6 +5353,14 @@ export default function LiveConsolePage() {
         </div>
       )}
 
+      {/* Grouped into one visual block per the layout ask: the Game N
+          selector, Declare Game Winner, and the "add a moment" / Objectives
+          / Screenshot controls all live in the same row/area now instead of
+          being separately-bordered sections an admin has to hunt across —
+          faster access without scrolling. The Moment list's actual output
+          (the rendered timeline) stays out of this block — see "Moment
+          Timeline" further down, physically separated from these controls. */}
+      <div className="border border-white/10 rounded-lg p-3 space-y-4">
       {/* Game selector — everything below (moment list, scoreboard, hero
           picks/bans, net worth, screenshots) operates on whichever game is
           selected here, not necessarily the live one. Lets an admin fix up
@@ -4885,70 +5674,10 @@ export default function LiveConsolePage() {
             )}
           </div>
         )}
-        {/* Vertical, not a wrapping row of chips — sized to show ~6
-            moments before scrolling (a tall unbounded list was pushing
-            everything below it too far down the page), newest first (the
-            query orders by minute_mark ascending, so this reverses it for
-            display), same pattern as the public page's own Moment list. */}
-        <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
-          {[...keyMoments].reverse().map((km) => {
-            const player = players.find((p) => p.id === km.player_id);
-            const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
-            if (editingMomentId === km.id) {
-              return (
-                <div key={km.id} className="px-3 py-2 rounded bg-signal/20 flex items-center gap-1.5">
-                  <input
-                    value={editingMomentText}
-                    onChange={(e) => setEditingMomentText(e.target.value)}
-                    className="bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
-                    autoFocus
-                  />
-                  <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
-                  <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-                </div>
-              );
-            }
-            return (
-              <div
-                key={km.id}
-                className={`px-3 py-2 rounded flex items-center gap-1.5 ${
-                  km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
-                }`}
-              >
-                <span className="flex-1 min-w-0 truncate">
-                  {km.is_key_moment && "⭐ "}
-                  {km.minute_mark}&apos; {label}
-                  {km.screenshot_url && " 📸"}
-                </span>
-                <button
-                  onClick={() => {
-                    setEditingMomentId(km.id);
-                    setEditingMomentText(label);
-                  }}
-                  className="text-white/30 hover:text-white/70 normal-case shrink-0"
-                  title="Edit"
-                >
-                  ✎
-                </button>
-                <button
-                  onClick={() =>
-                    postToTelegram(
-                      `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
-                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" },
-                      km.screenshot_url ?? undefined
-                    )
-                  }
-                  className="text-white/30 hover:text-signal normal-case shrink-0"
-                  title="Post to Telegram"
-                >
-                  📢
-                </button>
-                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case shrink-0">✕</button>
-              </div>
-            );
-          })}
-          {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
-        </div>
+        {/* The actual rendered list moved to the "Moment Timeline" panel
+            near the bottom of this column — this section now only holds
+            the controls that add to it, per the "separate add-a-moment
+            controls from the view-logged-moments list" ask. */}
       </section>
 
       {/* Objectives (counters) */}
@@ -5054,6 +5783,7 @@ export default function LiveConsolePage() {
       </section>
         </>
       )}
+      </div>
 
       {match.update_source !== "local_ocr" && (
         <p className="text-xs text-white/40 border border-white/10 rounded px-3 py-2">
@@ -5061,397 +5791,6 @@ export default function LiveConsolePage() {
           data: picks/bans, score, stream, VOD). Switch to Hot match above to take manual/OCR control.
         </p>
       )}
-
-      {/* Hero picks/bans */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-bold">Hero picks & bans</h2>
-          <div className="flex gap-2">
-            {/* Also rendered near Live scoreboard below for Hot matches —
-                duplicated here (same shared editingFinishedGame state) so
-                Normal matches, which never render that section at all,
-                still have a way to unlock a finished game's picks/bans and
-                score for editing. */}
-            {gameFinished && (
-              <button
-                onClick={() => setEditingFinishedGame((v) => !v)}
-                title="This game is finished — result data is read-only until unlocked"
-                className={`text-xs rounded px-2 py-1 border ${
-                  editingFinishedGame ? "border-signal/50 text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
-                }`}
-              >
-                {editingFinishedGame ? "🔓 Editing finished game — click to lock" : "🔒 Unlock to edit"}
-              </button>
-            )}
-            {DRAFT_PHASES.includes(match.state) && (
-              <button
-                onClick={() => setShowHeroPicker(true)}
-                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-              >
-                🖼 Hero reference
-              </button>
-            )}
-            <button
-              onClick={() =>
-                postToTelegram(
-                  `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
-                  { entityType: "game", entityId: game.id, notificationType: "draft_result" }
-                )
-              }
-              className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-            >
-              📢 Announce draft
-            </button>
-            {match.update_source === "local_ocr" && (
-              <button
-                onClick={syncDraftFromLiquipedia}
-                disabled={syncingDraft}
-                title="Corrects which hero was picked/banned to match Liquipedia's bracket page. Never touches kill stats or the moment list."
-                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-50"
-              >
-                {syncingDraft ? "Syncing..." : "🔄 Sync from Liquipedia"}
-              </button>
-            )}
-          </div>
-        </div>
-        {syncDraftStatus && <p className="text-xs text-white/50">{syncDraftStatus}</p>}
-
-        {/* Broadcast-style draft overlay — presentation layer on top of the
-            same pickBans/roster state the plain form and simulation grid
-            below read and write. Player photos flip to hero icons as each
-            pick lands (via pickBans' own player_id, set either by the
-            manual form immediately or by the post-sim "assign player"
-            step), the acting side glows while draftSim has a live turn,
-            and — once anything's editable — clicking a locked-in slot
-            reopens the same Hero reference modal targeted at that one row
-            instead of a fresh insert. */}
-        {DRAFT_PHASES.includes(match.state) && match.team_a && match.team_b && (
-          <DraftOverlay
-            leftTeam={overlayLeftTeam}
-            rightTeam={overlayRightTeam}
-            leftPlayers={overlayLeftPlayers}
-            rightPlayers={overlayRightPlayers}
-            pickBans={pickBans as DraftOverlayPickBan[]}
-            heroIconFor={heroIconFor}
-            stageLabel={overlayStageLabel}
-            phaseLabel={overlayPhaseLabel}
-            turnSide={overlayTurnSide}
-            turnLabel={overlayTurnLabel}
-            stepProgress={overlayStepProgress}
-            turnKey={overlayTurnKey}
-            interactive={pickBanEditable}
-            onCorrectPick={openHeroPickerForCorrection}
-          />
-        )}
-
-        {/* Active roster (main lineup) — editable up through Draft complete
-            (not locked the instant the draft starts, per spec). Draft can't
-            start unless both teams have exactly 5 checked here; gated in
-            handlePhaseChange, not just visually here. */}
-        {(match.state === "MATCH_NOT_STARTED" || DRAFT_PHASES.includes(match.state)) && (
-          <div className="border border-white/10 rounded-lg p-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {[match.team_a, match.team_b].map((team, idx) => {
-              if (!team) return <span key={idx} />;
-              const teamRoster = rosterFor(team.id);
-              const activeCount = teamRoster.filter((p) => p.is_active_roster).length;
-              return (
-                <div key={team.id} className="space-y-1.5">
-                  <p className="text-xs text-white/50">
-                    {team.name} — active roster{" "}
-                    <span className={activeCount === 5 ? "text-emerald-400" : "text-yellow-300"}>{activeCount}/5</span>
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {teamRoster.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => toggleActiveRoster(p.id, !p.is_active_roster)}
-                        className={`text-[10px] rounded px-2 py-1 border ${
-                          p.is_active_roster
-                            ? "border-signal/40 bg-signal/10 text-white"
-                            : "border-white/10 text-white/40 hover:border-white/30"
-                        }`}
-                        title={p.is_active_roster ? "Active — click to bench" : "Bench — click to activate"}
-                      >
-                        {p.is_active_roster ? "✓ " : ""}
-                        {p.ign}
-                        {p.role ? ` (${p.role})` : ""}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* Draft ban/pick simulation — replaces OCR/AI hero-pick detection
-            entirely. Bans show no on-screen text (only an icon), so this
-            was always the riskiest OCR surface; the admin now logs each
-            step by hand from a searchable hero grid, in the exact fixed
-            order a tournament draft follows. */}
-        {DRAFT_PHASES.includes(match.state) && (
-          <div className="border border-white/10 rounded-lg p-3 space-y-3">
-            {!draftSim ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-white/50">Draft simulation — pick Blue side (first pick, first ban):</span>
-                {match.team_a && (
-                  <button onClick={() => startDraftSimulation(match.team_a!.id)} className="lv-btn-ghost !text-xs">
-                    {match.team_a.name} is Blue
-                  </button>
-                )}
-                {match.team_b && (
-                  <button onClick={() => startDraftSimulation(match.team_b!.id)} className="lv-btn-ghost !text-xs">
-                    {match.team_b.name} is Blue
-                  </button>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <p className="text-sm font-semibold">
-                    {DRAFT_SEQUENCE[draftSim.stepIndex].side === "blue"
-                      ? draftSim.blueTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name
-                      : draftSim.redTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
-                    {" — "}
-                    <span className={DRAFT_SEQUENCE[draftSim.stepIndex].type === "ban" ? "text-red-400" : "text-emerald-400"}>
-                      {draftStepLabel(draftSim.stepIndex)}
-                    </span>
-                    <span className="text-white/30 text-xs"> ({draftSim.stepIndex + 1}/{DRAFT_SEQUENCE.length})</span>
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={undoLastDraftStep}
-                      disabled={draftSim.stepIndex === 0}
-                      title="Undo the last pick/ban — removes it from Hero picks & bans and the Moment list"
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                      ↩ Undo
-                    </button>
-                    <button onClick={stopDraftSimulation} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
-                      Stop
-                    </button>
-                    <button onClick={resetDraftSimulation} className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10">
-                      Reset draft
-                    </button>
-                  </div>
-                </div>
-                <input
-                  value={simHeroSearch}
-                  onChange={(e) => setSimHeroSearch(e.target.value)}
-                  placeholder="Search heroes..."
-                  className="w-full bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
-                />
-                <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-2 max-h-64 overflow-y-auto">
-                  {heroes
-                    .filter((h) => h.name.toLowerCase().includes(simHeroSearch.toLowerCase()))
-                    .map((h) => {
-                      const taken = draftSim.committed.some((c) => c.heroName.toLowerCase() === h.name.toLowerCase());
-                      return (
-                        <button
-                          key={h.id}
-                          onClick={() => logSimulationStep(h.name)}
-                          disabled={taken}
-                          title={h.name}
-                          className={`flex flex-col items-center gap-1 group ${taken ? "opacity-30 cursor-not-allowed" : ""}`}
-                        >
-                          <HeroIcon url={h.icon_url} name={h.name} size="sm" />
-                          <span className="text-[9px] text-white/60 group-hover:text-white text-center leading-tight truncate w-full">
-                            {h.name}
-                          </span>
-                        </button>
-                      );
-                    })}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Player -> hero assignment — post-simulation, pre-Finish. Each
-            dropdown only ever lists this team's picks that don't have a
-            player yet, so it shrinks as assignments land instead of
-            needing its own "already assigned" filter logic. */}
-        {match.state === "DRAFT_COMPLETE" &&
-          [match.team_a, match.team_b].some(
-            (team) => team && pickBans.some((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id)
-          ) && (
-            <div className="border border-white/10 rounded-lg p-3 space-y-3">
-              <p className="text-xs text-white/50">Assign each picked hero to the player actually playing it:</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {[match.team_a, match.team_b].map((team, idx) => {
-                  if (!team) return <span key={idx} />;
-                  const unassigned = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id);
-                  if (unassigned.length === 0) return <span key={team.id} />;
-                  const activeRoster = rosterFor(team.id).filter((p) => p.is_active_roster);
-                  return (
-                    <div key={team.id} className="space-y-2">
-                      <p className="text-xs text-white/50">{team.name}</p>
-                      {unassigned.map((pb) => {
-                        const hero = heroes.find((h) => h.name === pb.hero_name);
-                        return (
-                          <div key={pb.id} className="flex items-center gap-2">
-                            <HeroIcon url={hero?.icon_url} name={pb.hero_name} size="xs" />
-                            <span className="text-xs w-24 truncate">{pb.hero_name}</span>
-                            <select
-                              defaultValue=""
-                              onChange={(e) => e.target.value && assignHeroToPlayer(pb.id, e.target.value, pb.hero_name)}
-                              className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                            >
-                              <option value="">Assign player...</option>
-                              {activeRoster
-                                .filter((p) => !pickBans.some((other) => other.player_id === p.id && other.type === "pick"))
-                                .map((p) => (
-                                  <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
-                                ))}
-                            </select>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-        {/* Reused by the DraftOverlay's click-a-slot correction flow (see
-            onCorrectPick={openHeroPickerForCorrection} above), not just the
-            plain form below — so this modal is squarely in the "does the
-            draft overlay actually work on a phone" path. Outer padding
-            shrunk below sm so the hero grid gets its full width back
-            instead of losing 48px to backdrop padding it doesn't need on
-            a screen that's already narrow; sm: restores the original p-6. */}
-        {showHeroPicker && (
-          <div
-            className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-3 sm:p-6"
-            onClick={closeHeroPicker}
-          >
-            <div
-              className="bg-ink border border-white/10 rounded-lg p-4 max-w-3xl w-full max-h-[80vh] overflow-y-auto"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-bold text-sm">
-                  {heroPickerTarget ? `Correct pick — ${heroPickerTarget.label}` : "Hero reference — click to select"}
-                </h3>
-                <button onClick={closeHeroPicker} className="text-white/40 hover:text-white/70 text-sm">✕</button>
-              </div>
-              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
-                {heroes.map((h) => (
-                  <button
-                    key={h.id}
-                    onClick={() => {
-                      if (heroPickerTarget) {
-                        correctPickBanHero(heroPickerTarget.pb, h.name);
-                      } else {
-                        setPbHero(h.name);
-                      }
-                      closeHeroPicker();
-                    }}
-                    className="flex flex-col items-center gap-1 group"
-                  >
-                    <HeroIcon url={h.icon_url} name={h.name} size="md" />
-                    <span className="text-[10px] text-white/60 group-hover:text-white text-center leading-tight">{h.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-        <div className="flex gap-2 items-end flex-wrap">
-          <select
-            value={pbTeam}
-            onChange={(e) => {
-              setPbTeam(e.target.value);
-              setPbPlayer("");
-            }}
-            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
-          >
-            <option value="">Team</option>
-            {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
-            {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
-          </select>
-          <select
-            value={pbType}
-            onChange={(e) => setPbType(e.target.value as "pick" | "ban")}
-            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
-          >
-            <option value="ban">Ban</option>
-            <option value="pick">Pick</option>
-          </select>
-          {pbType === "pick" && (
-            <select
-              value={pbPlayer}
-              onChange={(e) => setPbPlayer(e.target.value)}
-              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
-            >
-              <option value="">Player</option>
-              {pbTeam &&
-                rosterFor(pbTeam)
-                  .filter((p) => !pickBans.some((pb) => pb.player_id === p.id && pb.type === "pick"))
-                  .map((p) => (
-                    <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
-                  ))}
-            </select>
-          )}
-          <div className="flex items-center gap-1.5">
-            {heroes.find((h) => h.name === pbHero)?.icon_url && (
-              <HeroIcon url={heroes.find((h) => h.name === pbHero)!.icon_url} name={pbHero} size="xs" />
-            )}
-            <select
-              value={pbHero}
-              onChange={(e) => setPbHero(e.target.value)}
-              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
-            >
-              <option value="">Hero</option>
-              {heroes.map((h) => (
-                <option key={h.id} value={h.name}>{h.name}</option>
-              ))}
-            </select>
-          </div>
-          <button onClick={logPickBan} disabled={!pickBanEditable} className="lv-btn-ghost disabled:opacity-40">
-            Log
-          </button>
-        </div>
-
-        {[match.team_a, match.team_b].map((team, idx) =>
-          team ? (
-            <div key={team.id} className="space-y-1">
-              <p className="text-xs text-white/50">{team.name}</p>
-              <div className="flex flex-wrap gap-2 text-xs">
-                {pickBans
-                  .filter((pb) => pb.team_id === team.id && pb.type === "pick")
-                  .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
-                  .map((pb) => {
-                    const player = players.find((p) => p.id === pb.player_id);
-                    return (
-                      <span key={pb.id} className="px-2 py-1 rounded bg-emerald-500/20 flex items-center gap-1.5">
-                        ✅ {pb.hero_name}
-                        {player && <span className="text-white/50">({player.ign}{player.role ? ` · ${player.role}` : ""})</span>}
-                        {pickBanEditable && (
-                          <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
-                        )}
-                      </span>
-                    );
-                  })}
-                {pickBans
-                  .filter((pb) => pb.team_id === team.id && pb.type === "ban")
-                  .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0))
-                  .map((pb) => (
-                    <span key={pb.id} className="px-2 py-1 rounded bg-red-500/20 flex items-center gap-1.5">
-                      🚫 {pb.hero_name}
-                      {pickBanEditable && (
-                        <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
-                      )}
-                    </span>
-                  ))}
-              </div>
-            </div>
-          ) : (
-            <span key={idx} />
-          )
-        )}
-      </section>
 
       {match.update_source === "local_ocr" && (
         <>
@@ -5558,7 +5897,7 @@ export default function LiveConsolePage() {
               <span className="w-14">A</span>
             </div>
             {teamPlayers.map((p) => {
-              const stat = stats.find((s) => s.player_id === p.id);
+              const stat = statForPlayer(p);
               const isEditingRoster = editingScoreboardPlayerId === p.id;
               return (
                 <div key={p.id} className="flex gap-2 items-center text-sm min-w-max">
@@ -5681,12 +6020,107 @@ export default function LiveConsolePage() {
           </div>
         ))}
       </section>
+
+      {/* Moment Timeline — the actual output (what's already been logged),
+          physically separated from the "add a moment" controls above,
+          which stay next to the map selector/objectives/screenshot
+          controls further up. Living at the bottom of this column, right
+          after the scoreboard, is where an operator's eye lands after
+          every other control on this page — the newest logged action is
+          always the last thing rendered here. */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="font-bold">Moment Timeline</h2>
+          {lastAction && (
+            <button
+              onClick={undoLastAction}
+              title="Ctrl+Z also does this — undoes only the single most recent logged action"
+              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 text-white/60 hover:text-white"
+            >
+              ⎌ Undo: {lastAction.label} (Ctrl+Z)
+            </button>
+          )}
+        </div>
+        {/* Vertical, not a wrapping row of chips — sized to show ~6
+            moments before scrolling (a tall unbounded list was pushing
+            everything below it too far down the page), newest first (the
+            query orders by minute_mark ascending, so this reverses it for
+            display), same pattern as the public page's own Moment list. */}
+        <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
+          {[...keyMoments].reverse().map((km) => {
+            const player = players.find((p) => p.id === km.player_id);
+            const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
+            if (editingMomentId === km.id) {
+              return (
+                <div key={km.id} className="px-3 py-2 rounded bg-signal/20 flex items-center gap-1.5">
+                  <input
+                    value={editingMomentText}
+                    onChange={(e) => setEditingMomentText(e.target.value)}
+                    className="bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
+                    autoFocus
+                  />
+                  <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
+                  <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
+                </div>
+              );
+            }
+            return (
+              <div
+                key={km.id}
+                className={`px-3 py-2 rounded flex items-center gap-1.5 ${
+                  km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
+                }`}
+              >
+                <span className="flex-1 min-w-0 truncate">
+                  {km.is_key_moment && "⭐ "}
+                  {km.minute_mark}&apos; {label}
+                  {km.screenshot_url && " 📸"}
+                </span>
+                <button
+                  onClick={() => {
+                    setEditingMomentId(km.id);
+                    setEditingMomentText(label);
+                  }}
+                  className="text-white/30 hover:text-white/70 normal-case shrink-0"
+                  title="Edit"
+                >
+                  ✎
+                </button>
+                <button
+                  onClick={() =>
+                    postToTelegram(
+                      `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
+                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" },
+                      km.screenshot_url ?? undefined
+                    )
+                  }
+                  className="text-white/30 hover:text-signal normal-case shrink-0"
+                  title="Post to Telegram"
+                >
+                  📢
+                </button>
+                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case shrink-0">✕</button>
+              </div>
+            );
+          })}
+          {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
+        </div>
+      </section>
         </>
       )}
+
+        </div>
+      </div>
 
       {telegramStatus && (
         <p className="text-xs text-white/50 fixed bottom-4 right-4 bg-black/80 border border-white/10 rounded px-3 py-2 z-50">
           {telegramStatus}
+        </p>
+      )}
+
+      {undoStatus && (
+        <p className="text-xs text-emerald-300 fixed bottom-16 right-4 bg-black/80 border border-emerald-500/30 rounded px-3 py-2 z-50">
+          {undoStatus}
         </p>
       )}
 

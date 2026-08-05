@@ -1396,6 +1396,16 @@ export default function LiveConsolePage() {
   const [trackers, setTrackers] = useState<Tracker[]>([]);
   const [regions, setRegions] = useState<Record<string, RegionBox | null>>({});
   const [readings, setReadings] = useState<Record<string, string>>({});
+  // Diagnostic-only OCR freshness/confidence per tracker field — purely a
+  // read-side overlay on top of `readings` above, never consulted by any
+  // capture/parsing/write logic (see captureTickBody). lastGoodAt is the
+  // last tick that returned non-blank OCR text for this field; confidence
+  // is Tesseract's own overall page-confidence (0-100) for the most recent
+  // recognize() call, good read or not — already returned by tesseract.js
+  // on every tick, just not read into anything until now. Lets the tracker
+  // table below show, at a glance, whether a field is actively updating
+  // and how much Tesseract itself trusts the last read.
+  const [trackerHealth, setTrackerHealth] = useState<Record<string, { lastGoodAt: number | null; confidence: number | null }>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string; playerId?: string | null; playerName?: string | null } | null>(null);
   const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
 
@@ -2318,9 +2328,22 @@ export default function LiveConsolePage() {
       const sideTeamId = side === "left" ? leftTeamId : side === "right" ? rightTeamId : null;
 
       try {
-        const { data: { text } } = await worker.recognize(canvas);
+        // `data` also carries Tesseract's own overall page-confidence
+        // (0-100) for this recognize() call — already computed by
+        // tesseract.js on every tick, just wired into trackerHealth below
+        // rather than left unread. Purely diagnostic: nothing downstream
+        // of this line changes what it did before.
+        const { data } = await worker.recognize(canvas);
+        const text = data.text;
         const trimmed = text.trim();
         setReadings((prev) => ({ ...prev, [tracker.field]: trimmed }));
+        setTrackerHealth((prev) => ({
+          ...prev,
+          [tracker.field]: {
+            lastGoodAt: trimmed ? Date.now() : prev[tracker.field]?.lastGoodAt ?? null,
+            confidence: data.confidence,
+          },
+        }));
         // Numeric tracking only ever needs digits plus whichever single
         // punctuation character disambiguates the number itself (":" for a
         // clock) — everything else OCR picked up (stray glyphs, overlay
@@ -2475,6 +2498,60 @@ export default function LiveConsolePage() {
     setConsistencyWarning(duplicateHero ? `"${duplicateHero}" read as picked on two different K/D/A trackers — check hero OCR/roster data.` : null);
 
     if (game && kdaParsed.length > 0) loadAll();
+  }
+
+  // Tesseract page-confidence below which a *recent* read still gets
+  // flagged — small stylized broadcast-overlay text runs lower than prose
+  // even on a correct read, so this only catches genuinely rough ones
+  // rather than second-guessing every normal read.
+  const OCR_CONFIDENCE_WARN_THRESHOLD = 40;
+  // At-a-glance dot for one tracker's live reading — see trackerHealth
+  // above. Diagnostic only: never read by anything else in this file.
+  // Two independent failure modes collapse into one glance here — a field
+  // that's stopped updating, and a field that IS updating but with a
+  // garbage OCR read (Tesseract's own confidence on the last successful
+  // read is low) — both show the same amber/red, while a healthy field
+  // stays a small, easy-to-ignore dim dot. Skipped entirely for a tracker
+  // outside the match's current live phase — that row is already dimmed
+  // and isn't being read this tick, so a stale dot there would just be
+  // noise, not a diagnosis.
+  function renderFreshnessDot(field: string, isActivePhase: boolean) {
+    if (!isActivePhase) return null;
+    const health = trackerHealth[field];
+    const confPart = health?.confidence != null ? ` (${Math.round(health.confidence)}% OCR confidence)` : "";
+    if (!health || health.lastGoodAt == null) {
+      return (
+        <span
+          title={`No successful OCR read yet${confPart}`}
+          className="inline-block w-1.5 h-1.5 rounded-full bg-white/20 align-middle ml-1.5 shrink-0"
+        />
+      );
+    }
+    const ageSec = Math.round((Date.now() - health.lastGoodAt) / 1000);
+    const ageLabel = ageSec < 1 ? "just now" : `${ageSec}s ago`;
+    const lowConfidence = health.confidence != null && health.confidence < OCR_CONFIDENCE_WARN_THRESHOLD;
+    if (ageSec > 30) {
+      return (
+        <span
+          title={`No successful read in ${ageLabel} — check this region${confPart}`}
+          className="inline-block w-2.5 h-2.5 rounded-full bg-red-500 ring-2 ring-red-500/40 animate-pulse align-middle ml-1.5 shrink-0"
+        />
+      );
+    }
+    if (ageSec > 15 || lowConfidence) {
+      return (
+        <span
+          title={`${lowConfidence ? "Low-confidence read" : "Getting stale"} — updated ${ageLabel}${confPart}`}
+          className="inline-block w-2 h-2 rounded-full bg-yellow-400 align-middle ml-1.5 shrink-0"
+        />
+      );
+    }
+    return (
+      <span
+        title={`Updated ${ageLabel}${confPart}`}
+        className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500/50 align-middle ml-1.5 shrink-0"
+      />
+    );
   }
 
   // captureTick/captureFrameAndAnalyze are plain functions recreated on
@@ -3967,8 +4044,11 @@ export default function LiveConsolePage() {
                                     <td className="py-1.5 pr-2 whitespace-nowrap">
                                       <span className={calibrated ? "text-emerald-400" : "text-yellow-300"}>{calibrated ? "Calibrated" : "Not calibrated"}</span>
                                     </td>
-                                    <td className="py-1.5 pr-2 text-white/60 truncate max-w-[160px]" title={readings[t.field]}>
-                                      {readings[t.field] || "—"}
+                                    <td className="py-1.5 pr-2 text-white/60 max-w-[160px]" title={readings[t.field]}>
+                                      <span className="inline-flex items-center max-w-full">
+                                        <span className="truncate">{readings[t.field] || "—"}</span>
+                                        {renderFreshnessDot(t.field, t.phase === match.state)}
+                                      </span>
                                     </td>
                                     <td className="py-1.5">
                                       <div className="flex flex-wrap gap-1 items-center">

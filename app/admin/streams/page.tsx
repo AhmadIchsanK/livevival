@@ -24,9 +24,64 @@ function youtubeVideoId(url: string): string | null {
   const m = url.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
   return m ? m[1] : null;
 }
-function youtubeThumbnailUrl(url: string): string | null {
-  const id = youtubeVideoId(url);
-  return id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : null;
+
+// Resolution fallback chain, highest to lowest. i.ytimg.com serves these as
+// static files per-video — not every video has a maxresdefault/sddefault
+// generated (it 404s when absent), so a thumbnail requested at a resolution
+// the video doesn't have would otherwise just render broken. hqdefault and
+// below are effectively always present (YouTube serves a grey placeholder
+// rather than 404ing), so the chain is guaranteed to resolve to *something*
+// displayable for any real video id.
+const THUMBNAIL_RES_CHAIN = ["maxresdefault", "sddefault", "hqdefault", "mqdefault", "default"] as const;
+
+function youtubeThumbnailUrlAt(videoId: string, resIndex: number): string {
+  const res = THUMBNAIL_RES_CHAIN[Math.min(resIndex, THUMBNAIL_RES_CHAIN.length - 1)];
+  return `https://i.ytimg.com/vi/${videoId}/${res}.jpg`;
+}
+
+// Thumbnail <img> that starts at the highest resolution and steps down the
+// chain on each 404 (onError), instead of hardcoding one resolution and
+// risking a broken-image icon for videos without a maxres/sd thumbnail. If
+// every step in the chain fails (shouldn't happen for a real video id, but
+// covers deleted/never-existed ones) it swaps to an explicit "no preview"
+// placeholder rather than leaving a broken <img>.
+function YoutubeThumbnail({ url, className }: { url: string; className: string }) {
+  const videoId = youtubeVideoId(url);
+  const [resIndex, setResIndex] = useState(0);
+  const [exhausted, setExhausted] = useState(false);
+
+  useEffect(() => {
+    setResIndex(0);
+    setExhausted(false);
+  }, [videoId]);
+
+  if (!videoId) return null;
+
+  if (exhausted) {
+    return (
+      <div
+        className={`${className} flex items-center justify-center bg-white/5 text-white/30 text-[9px] text-center leading-tight px-1`}
+      >
+        No preview
+      </div>
+    );
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={youtubeThumbnailUrlAt(videoId, resIndex)}
+      alt=""
+      className={className}
+      onError={() => {
+        setResIndex((i) => {
+          if (i + 1 < THUMBNAIL_RES_CHAIN.length) return i + 1;
+          setExhausted(true);
+          return i;
+        });
+      }}
+    />
+  );
 }
 
 export default function StreamsPage() {
@@ -41,6 +96,7 @@ export default function StreamsPage() {
   const [tournamentId, setTournamentId] = useState("");
   const [overlayTemplate, setOverlayTemplate] = useState("default");
   const [titleFetching, setTitleFetching] = useState(false);
+  const [titleFetchError, setTitleFetchError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -66,15 +122,27 @@ export default function StreamsPage() {
 
   // Pre-fills the overlay hint with the video's real YouTube title so the
   // admin doesn't have to type it by hand — still freely editable after.
+  // Best-effort (a failure here never blocks adding the stream — the admin
+  // can always type the overlay hint by hand), but the failure itself is
+  // surfaced inline rather than swallowed, so a bad/expired URL or a
+  // malformed YouTube response doesn't just look like nothing happened.
   async function fetchTitleInto(videoUrl: string, apply: (title: string) => void) {
     if (!youtubeVideoId(videoUrl)) return;
     setTitleFetching(true);
+    setTitleFetchError(null);
     try {
       const res = await fetch(`/api/youtube-title?url=${encodeURIComponent(videoUrl)}`);
-      const data = await res.json();
-      if (data.title) apply(data.title);
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data || typeof data.title !== "string" || !data.title.trim()) {
+        setTitleFetchError(
+          (data && typeof data.error === "string" && data.error) ||
+            "Couldn't extract a title from that video — enter one manually."
+        );
+        return;
+      }
+      apply(data.title);
     } catch {
-      // Best-effort — leave whatever the admin already typed.
+      setTitleFetchError("Couldn't reach YouTube to fetch the title — enter one manually.");
     } finally {
       setTitleFetching(false);
     }
@@ -225,16 +293,13 @@ export default function StreamsPage() {
                 placeholder="https://www.youtube.com/watch?v=..."
                 className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
               />
-              {youtubeThumbnailUrl(url) && (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={youtubeThumbnailUrl(url)!}
-                  alt=""
-                  className="w-20 h-11 rounded object-cover border border-white/10 shrink-0"
-                />
-              )}
+              <YoutubeThumbnail
+                url={url}
+                className="w-20 h-11 rounded object-cover border border-white/10 shrink-0"
+              />
             </div>
             {titleFetching && <p className="text-[10px] text-white/40">Fetching title from YouTube...</p>}
+            {titleFetchError && <p className="text-[10px] text-red-400">{titleFetchError}</p>}
           </div>
           <div className="space-y-1">
             <label className="text-xs text-white/50">Tournament</label>
@@ -374,14 +439,10 @@ export default function StreamsPage() {
                         checked={selected.has(s.id)}
                         onChange={() => toggleSelected(s.id)}
                       />
-                      {youtubeThumbnailUrl(s.url) && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={youtubeThumbnailUrl(s.url)!}
-                          alt=""
-                          className="w-20 h-11 rounded object-cover border border-white/10 shrink-0"
-                        />
-                      )}
+                      <YoutubeThumbnail
+                        url={s.url}
+                        className="w-20 h-11 rounded object-cover border border-white/10 shrink-0"
+                      />
                       <div>
                         <p className="text-sm font-semibold truncate max-w-md">
                           {s.overlay_template && s.overlay_template !== "default" ? s.overlay_template : s.url}

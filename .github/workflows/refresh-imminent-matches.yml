@@ -17,6 +17,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/_tmp_gap_diagnostic.mjs
       - run: node scripts/refresh-imminent-matches.mjs
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}

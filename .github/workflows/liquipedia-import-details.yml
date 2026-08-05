@@ -19,7 +19,20 @@ name: Import Liquipedia rosters and finished-match details
 on:
   schedule:
     - cron: "0 3,9,15,21 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tournament_slugs:
+        description: >-
+          Optional: comma-separated liquipedia_slug value(s) (e.g.
+          "MPL/Indonesia/Season_17,MPL/Indonesia/Season_16") to refresh
+          finished-match details (games/picks/bans/VODs) for those
+          tournaments only, bypassing the past-year window and table order —
+          for tournaments that keep missing the normal pass's timeout/
+          cancellation because of where they sit in the list. Leave blank for
+          the normal full pass. Only applies to the refresh-match-details
+          job; import-team-rosters always runs its normal full pass.
+        required: false
+        default: ""
 
 jobs:
   refresh-match-details:
@@ -49,6 +62,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TOURNAMENT_SLUGS: ${{ github.event.inputs.tournament_slugs }}
 
   import-team-rosters:
     runs-on: ubuntu-latest

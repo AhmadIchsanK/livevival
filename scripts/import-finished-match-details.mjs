@@ -289,14 +289,64 @@ async function importMatchDetail(tournamentId, m) {
   console.log(`Imported ${m.leftName} vs ${m.rightName}: ${m.games.length} game(s), picks + bans + winners recorded`);
 }
 
-export async function importTournament(pageTitle) {
-  const { data: tournament } = await supabase
-    .from("tournaments")
-    .select("id")
-    .eq("liquipedia_slug", pageTitle)
-    .maybeSingle();
+// tournamentId, when passed by a caller that already knows it (e.g.
+// refresh-finished-match-details.mjs, which resolves it once per tournament
+// and reuses it across every stage subpage), skips the lookup below entirely.
+//
+// THE BUG this fixes: this function used to resolve tournamentId by looking
+// up `tournaments.liquipedia_slug === pageTitle` — which only ever matches
+// when pageTitle is a tournament's own top-level slug. Every stage subpage
+// (e.g. "MPL/Indonesia/Season_17/Regular_Season") is NOT its own row in the
+// `tournaments` table (only "MPL/Indonesia/Season_17" is), so that lookup
+// always failed for subpages and logged "not found in DB — run the
+// tournament importer first" — which was actively misleading, since the
+// tournament importer had already run and the subpage's matches already
+// existed in `matches` (tournament_id pointing at the parent). Confirmed via
+// real job logs: refresh-finished-match-details.mjs discovers subpages fine
+// (discoverStagePages) and calls importTournament(page) once per subpage,
+// but every one of those calls hit exactly this dead end — silently
+// limiting every multi-page tournament to whatever small inline bracket (if
+// any) renders on the top-level page itself, e.g. MPL Indonesia Season 17
+// only ever got its 8 inline playoff matches' details while the 72 real
+// regular-season matches (which live entirely on the /Regular_Season
+// subpage) never got picks/bans/VODs/winners at all — accounting for the
+// large majority of the ~800 finished matches found with zero `games` rows
+// despite this job "succeeding" run after run. Even the CLI usage note
+// below (`node ... "MSC/2026/Knockout_Stage"`) documents passing a subpage
+// title directly, so this was broken for manual single-page runs too, not
+// just the automated multi-page pass — it just never surfaced as an error,
+// only ever as a skipped tournament.
+//
+// Fix: resolve by the LONGEST tournament slug that's a prefix of pageTitle
+// (exact match included) instead of requiring pageTitle to equal a slug
+// outright — this correctly maps any subpage back to its parent tournament
+// row without a hardcoded subpage-name list, the same "no hardcoded names"
+// principle getTournamentPages() already uses on the import-matches side.
+export async function importTournament(pageTitle, tournamentId = null) {
+  let resolvedId = tournamentId;
 
-  if (!tournament) {
+  if (!resolvedId) {
+    const { data: exact } = await supabase
+      .from("tournaments")
+      .select("id")
+      .eq("liquipedia_slug", pageTitle)
+      .maybeSingle();
+
+    if (exact) {
+      resolvedId = exact.id;
+    } else {
+      const { data: candidates } = await supabase
+        .from("tournaments")
+        .select("id, liquipedia_slug")
+        .not("liquipedia_slug", "is", null);
+      const parent = (candidates ?? [])
+        .filter((t) => pageTitle.startsWith(`${t.liquipedia_slug}/`))
+        .sort((a, b) => b.liquipedia_slug.length - a.liquipedia_slug.length)[0];
+      resolvedId = parent?.id ?? null;
+    }
+  }
+
+  if (!resolvedId) {
     console.warn(`Tournament "${pageTitle}" not found in DB — run the tournament importer first.`);
     return;
   }
@@ -308,7 +358,7 @@ export async function importTournament(pageTitle) {
   console.log(`Found ${finished.length} finished match(es) on ${pageTitle}`);
 
   for (const m of finished) {
-    await importMatchDetail(tournament.id, m);
+    await importMatchDetail(resolvedId, m);
   }
 }
 

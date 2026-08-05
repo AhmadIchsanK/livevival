@@ -102,7 +102,12 @@ async function main() {
       console.log(`Checking ${pagesToCheck.length} page(s) for match details: ${pagesToCheck.join(", ")}`);
 
       for (const page of pagesToCheck) {
-        await importTournament(page);
+        // Pass t.id directly — see import-finished-match-details.mjs's
+        // importTournament() header comment for why relying on it to
+        // re-resolve a stage subpage's tournament by exact slug match
+        // silently skipped every subpage (the bug that left most
+        // multi-page tournaments' finished matches without games rows).
+        await importTournament(page, t.id);
         await sleep(5000);
       }
     } catch (err) {

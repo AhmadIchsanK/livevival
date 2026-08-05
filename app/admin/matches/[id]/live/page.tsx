@@ -2749,7 +2749,18 @@ export default function LiveConsolePage() {
             break;
           }
           case "game_timer": {
-            if (mmss) {
+            const newSeconds = mmss ? Number(mmss[1]) * 60 + Number(mmss[2]) : null;
+            const knownSeconds = lastPersistedSeconds.current ?? game?.current_time_seconds ?? null;
+            // Never-decreases — the timer only counts up during live play,
+            // so a reading smaller than what's already recorded is always a
+            // garbled OCR read, never a real value (a genuine mid-game
+            // clock reset isn't a thing MLBB does). A low Tesseract
+            // confidence score would make this call even easier, but the
+            // guard is unconditional either way — treated exactly like a
+            // blank/unreadable tick below, not a rejected-but-otherwise-
+            // normal one.
+            const isGarbledDecrease = newSeconds != null && knownSeconds != null && newSeconds < knownSeconds;
+            if (mmss && !isGarbledDecrease) {
               unreadableTimerSince.current = null;
               pauseSuggested.current = false;
               setMinute(Number(mmss[1]));
@@ -2786,6 +2797,12 @@ export default function LiveConsolePage() {
             const kills = Number(digitsOnly);
             if (!Number.isFinite(kills) || kills < 0 || kills > 300) break;
             const column = sideTeamId === match?.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+            // Never-decreases — a noisy read lower than what's already
+            // recorded is always a misread (kill counts only go up); the
+            // manual scoreboard edit is the way to actually correct a
+            // wrong count downward.
+            const currentKills = column === "team_a_kills_override" ? game.team_a_kills_override : game.team_b_kills_override;
+            if (currentKills != null && kills < currentKills) break;
             await supabase.from("games").update({ [column]: kills }).eq("id", game.id);
             break;
           }
@@ -2843,7 +2860,16 @@ export default function LiveConsolePage() {
     if (networthLeft != null && networthRight != null && game && match) {
       const teamAGold = leftTeamId === match.team_a?.id ? networthLeft : networthRight;
       const teamBGold = leftTeamId === match.team_a?.id ? networthRight : networthLeft;
-      await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: teamAGold, team_b_gold: teamBGold });
+      // Never-decreases, per side independently — net worth only grows
+      // during live play, so a reading lower than the last confirmed
+      // snapshot is a garbled OCR read, not a real dip. Clamps just the
+      // side that misread rather than discarding the whole tick, so a
+      // correctly-read side still lands even if the other side glitched.
+      const knownAGold = latestNetWorth?.team_a_gold ?? null;
+      const knownBGold = latestNetWorth?.team_b_gold ?? null;
+      const safeTeamAGold = knownAGold != null && teamAGold < knownAGold ? knownAGold : teamAGold;
+      const safeTeamBGold = knownBGold != null && teamBGold < knownBGold ? knownBGold : teamBGold;
+      await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: safeTeamAGold, team_b_gold: safeTeamBGold });
     }
 
     // K/D/A: same auto-upsert precedent already used by the AI-vision path
@@ -2857,8 +2883,19 @@ export default function LiveConsolePage() {
     // same hero).
     if (game) {
       for (const row of kdaParsed) {
+        // Never-decreases, per stat independently — kills/deaths/assists
+        // only ever go up during a live game, so a noisy read lower than
+        // what's already stored for this player is a misread, not a real
+        // correction (that's what the manual Live scoreboard edit is for).
+        // Clamped per-field rather than rejecting the whole reading, so a
+        // correctly-read higher kill count still lands even if deaths or
+        // assists misread low on the same tick.
+        const existing = stats.find((s) => s.player_id === row.playerId);
+        const kills = existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills;
+        const deaths = existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths;
+        const assists = existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists;
         await supabase.from("player_stats").upsert(
-          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills: row.kills, deaths: row.deaths, assists: row.assists },
+          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills, deaths, assists },
           { onConflict: "game_id,player_id" }
         );
       }

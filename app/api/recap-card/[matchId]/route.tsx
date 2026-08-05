@@ -1,5 +1,6 @@
 import { ImageResponse } from "next/og";
 import { createClient } from "@supabase/supabase-js";
+import { formatMatchDate } from "@/lib/formatMatchDate";
 
 export const runtime = "edge";
 
@@ -14,6 +15,8 @@ const SIGNAL = "#E31E2A";
 type Ratio = "portrait" | "landscape";
 type CardMatch = {
   format: string | null;
+  stage: string | null;
+  scheduled_at: string | null;
   series_winner_team_id: string | null;
   tournament: { name: string } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
@@ -326,12 +329,27 @@ function renderCard({
     </div>
   );
 
+  // Stage ("Group A", "Playoffs", "Grand Final", ...) and the match date
+  // sit on their own line below the tournament/format line — a subtler
+  // sub-label (smaller, more muted, tighter letter-spacing than the
+  // tournament line) rather than crowding onto the same line, matching the
+  // "Picks"/"Bans" sub-label treatment already used below (see subLabel()).
+  // Either piece is omitted gracefully when absent — a null stage never
+  // renders as a stray "null" or empty dot-separator.
+  const dateLabel = formatMatchDate(match.scheduled_at);
+  const stageDateBits = [match.stage, dateLabel || null].filter(Boolean);
+
   const scoreBar = (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 28 * scale }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
       <span style={{ fontSize: 22 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 3, textAlign: "center" }}>
         {match.tournament?.name ?? ""} {match.format ? `· ${match.format}` : ""}
       </span>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 48 * scale, width: "100%" }}>
+      {stageDateBits.length > 0 && (
+        <span style={{ fontSize: 16 * scale, fontWeight: 700, color: "#ffffff44", textTransform: "uppercase", letterSpacing: 2, textAlign: "center" }}>
+          {stageDateBits.join(" · ")}
+        </span>
+      )}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 48 * scale, width: "100%", marginTop: 14 * scale }}>
         {teamBox(teamA, aWins, winnerId === teamA?.id, Boolean(winnerId))}
         <div style={{ display: "flex", alignItems: "center", gap: 28 * scale, fontSize: 160 * scale, fontWeight: 700, lineHeight: 1 }}>
           <span style={{ color: winnerId === teamA?.id ? SIGNAL : "#ffffff" }}>{aWins}</span>
@@ -485,7 +503,7 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
   const { data: match } = await supabase
     .from("matches")
     .select(
-      `id, format, status, series_winner_team_id, update_source,
+      `id, format, stage, scheduled_at, status, series_winner_team_id, update_source,
        tournament:tournaments(name),
        team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
        team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
@@ -549,7 +567,15 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
   }
 
   return renderCard({
-    match: { format: match.format, series_winner_team_id: match.series_winner_team_id, tournament, team_a: teamA, team_b: teamB },
+    match: {
+      format: match.format,
+      stage: match.stage,
+      scheduled_at: match.scheduled_at,
+      series_winner_team_id: match.series_winner_team_id,
+      tournament,
+      team_a: teamA,
+      team_b: teamB,
+    },
     games: games ?? [],
     heroPicks,
     ratio,

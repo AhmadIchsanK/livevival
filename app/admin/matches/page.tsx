@@ -112,6 +112,7 @@ type Match = {
   id: string;
   scheduled_at: string | null;
   format: string | null;
+  stage: string | null;
   status: string;
   youtube_url: string | null;
   state: string;
@@ -142,6 +143,7 @@ export default function MatchesPage() {
   const [teamBId, setTeamBId] = useState("");
   const [format, setFormat] = useState("BO3");
   const [scheduledAt, setScheduledAt] = useState("");
+  const [stage, setStage] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -243,7 +245,7 @@ export default function MatchesPage() {
     let query = supabase
       .from("matches")
       .select(
-        `id, scheduled_at, format, status, youtube_url, state, stream_id, update_source, notification_tier,
+        `id, scheduled_at, format, stage, status, youtube_url, state, stream_id, update_source, notification_tier,
          tournament_id, team_a_id, team_b_id,
          tournament:tournaments(name, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(name),
@@ -288,6 +290,7 @@ export default function MatchesPage() {
       team_a_id: teamAId || null,
       team_b_id: teamBId || null,
       format,
+      stage: stage.trim() || null,
       scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
       status: "scheduled",
     });
@@ -301,6 +304,7 @@ export default function MatchesPage() {
     setTeamAId("");
     setTeamBId("");
     setScheduledAt("");
+    setStage("");
     loadMatches(activeTab);
   }
 
@@ -323,6 +327,7 @@ export default function MatchesPage() {
       team_a_id: string;
       team_b_id: string;
       format: string;
+      stage: string | null;
       scheduled_at: string | null;
     }>
   ) {
@@ -396,6 +401,7 @@ export default function MatchesPage() {
   const [editTeamAId, setEditTeamAId] = useState("");
   const [editTeamBId, setEditTeamBId] = useState("");
   const [editFormat, setEditFormat] = useState("BO3");
+  const [editStage, setEditStage] = useState("");
   const [editScheduledAt, setEditScheduledAt] = useState("");
 
   // ── Per-game VOD editing (finished matches only) ─────────────────────
@@ -433,6 +439,7 @@ export default function MatchesPage() {
     setEditTeamAId(m.team_a_id ?? "");
     setEditTeamBId(m.team_b_id ?? "");
     setEditFormat(m.format ?? "BO3");
+    setEditStage(m.stage ?? "");
     setEditScheduledAt(m.scheduled_at ? new Date(m.scheduled_at).toISOString().slice(0, 16) : "");
   }
 
@@ -442,6 +449,7 @@ export default function MatchesPage() {
       team_a_id: editTeamAId,
       team_b_id: editTeamBId,
       format: editFormat,
+      stage: editStage.trim() || null,
       scheduled_at: editScheduledAt ? new Date(editScheduledAt).toISOString() : null,
     });
     setEditingId(null);
@@ -548,6 +556,16 @@ export default function MatchesPage() {
               type="datetime-local"
               value={scheduledAt}
               onChange={(e) => setScheduledAt(e.target.value)}
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
+            />
+          </div>
+
+          <div className="col-span-2 space-y-1">
+            <label className="text-xs text-white/50">Stage (optional)</label>
+            <input
+              value={stage}
+              onChange={(e) => setStage(e.target.value)}
+              placeholder="e.g. Group A, Regular Season, Playoffs, Grand Final"
               className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
             />
           </div>
@@ -689,6 +707,12 @@ export default function MatchesPage() {
                       onChange={(e) => setEditScheduledAt(e.target.value)}
                       className="col-span-2 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     />
+                    <input
+                      value={editStage}
+                      onChange={(e) => setEditStage(e.target.value)}
+                      placeholder="Stage (e.g. Group A, Playoffs)"
+                      className="col-span-2 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                    />
                   </div>
                   <div className="flex gap-2">
                     <button onClick={() => saveEditMatch(m.id)} className="lv-btn-primary">
@@ -722,6 +746,7 @@ export default function MatchesPage() {
                         m.tournament?.name
                       )}{" "}
                       · {m.format} · {m.scheduled_at ? formatMatchDate(m.scheduled_at) : "no time set"}
+                      {m.stage && <> · {m.stage}</>}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">

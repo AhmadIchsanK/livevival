@@ -26,6 +26,7 @@ type MatchRow = {
   status: string;
   scheduled_at: string | null;
   format: string | null;
+  stage: string | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
 };
@@ -98,7 +99,7 @@ export default function TournamentPage() {
         supabase
           .from("matches")
           .select(
-            `id, status, scheduled_at, format,
+            `id, status, scheduled_at, format, stage,
              team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
              team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
           )
@@ -370,6 +371,7 @@ export default function TournamentPage() {
               score={scores[m.id]}
               scheduledAt={m.scheduled_at}
               format={m.format}
+              stage={m.stage}
             />
           ))}
           {upcomingAndLive.length === 0 && <p className="text-white/30 text-sm">No upcoming matches scheduled yet.</p>}
@@ -391,6 +393,7 @@ export default function TournamentPage() {
               score={scores[m.id]}
               scheduledAt={m.scheduled_at}
               format={m.format}
+              stage={m.stage}
             />
           ))}
           {history.length === 0 && <p className="text-white/30 text-sm">No finished matches yet.</p>}

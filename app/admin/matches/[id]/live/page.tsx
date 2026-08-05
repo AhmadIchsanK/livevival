@@ -1431,6 +1431,14 @@ export default function LiveConsolePage() {
   // moved mid-session), so it now lives directly on the enlarged inline
   // canvas instead.
   const [canvasPhaseFilter, setCanvasPhaseFilter] = useState<string>("");
+  // Explicit toggle for "am I dragging tracker boxes, or interacting with
+  // whatever's playing underneath" — replaces any gesture-based tap-vs-drag
+  // guessing (fragile, fights the video's own click handling) with a plain
+  // on/off switch. OFF (default): the canvas' own onMouseDown never starts a
+  // drag, and existing tracker boxes render as a thin, non-interactive
+  // outline. ON: full drag/resize/click-to-edit behavior, unchanged from
+  // before this toggle existed.
+  const [trackerEditMode, setTrackerEditMode] = useState(false);
   const [pendingBox, setPendingBox] = useState<RegionBox | null>(null);
   const [pendingBoxPhase, setPendingBoxPhase] = useState<string>("");
   const [pendingBoxField, setPendingBoxField] = useState<string>("");
@@ -2587,7 +2595,24 @@ export default function LiveConsolePage() {
 
   async function startCapture() {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      // preferCurrentTab + displaySurface:"browser" captures this admin
+      // tab directly, skipping the OS-level "share your screen" picker
+      // entirely in browsers that support it (Chrome/Edge as of this
+      // writing) — this is what fixes single-monitor capture: a tab
+      // captured this way keeps delivering real, live frames even while
+      // the OS focus moves to another app, since the capture happens at
+      // the browser/tab level rather than the OS window level (a captured
+      // *window* on a single monitor commonly stops refreshing once the
+      // OS stops compositing it as the focused window). preferCurrentTab
+      // isn't in TypeScript's lib.dom types yet on many TS versions, hence
+      // the cast. Both options are safe to pass unconditionally: a browser
+      // that doesn't recognize them (Firefox, Safari) just ignores the
+      // unsupported keys per the getDisplayMedia spec and falls back to
+      // its normal picker — no feature-detection needed.
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { displaySurface: "browser" },
+        preferCurrentTab: true,
+      } as any);
       streamRef.current = stream;
       // previewRef.current is null here — the <video> only exists in the
       // DOM once captureActive is true, and this runs before that state
@@ -2785,6 +2810,11 @@ export default function LiveConsolePage() {
   function startCalibrating(field: string) {
     setCalibratingField(field);
     setDraftBox(regions[field] ?? null);
+    // Clicking "Calibrate"/"Resize" in the tracker table is an explicit
+    // request to edit — turn edit mode on so the canvas actually responds
+    // to the drag that's about to happen, rather than requiring a second
+    // manual toggle click right after.
+    setTrackerEditMode(true);
   }
 
   async function confirmSuggestion() {
@@ -3731,21 +3761,39 @@ export default function LiveConsolePage() {
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <span className="text-[10px] text-white/40">
-                    Any tracker, any phase, is editable from here regardless of the match's current live phase.
-                    Drag directly on the video to place a new tracker, or click an existing outlined region to
-                    move/resize it.
+                    {trackerEditMode
+                      ? "Tracker edit mode is ON — drag directly on the video to place a new tracker, or click an existing outlined region to move/resize it."
+                      : "Tracker edit mode is OFF — tracker boxes are shown but inert; turn it on to place or adjust them."}
                   </span>
-                  <select
-                    value={canvasPhaseFilter}
-                    onChange={(e) => setCanvasPhaseFilter(e.target.value)}
-                    className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
-                    title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
-                  >
-                    <option value="">All phases</option>
-                    {TRACKER_PHASES.map((p) => (
-                      <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                    ))}
-                  </select>
+                  <div className="flex items-center gap-2">
+                    {/* Explicit toggle instead of guessing "tap to play" vs.
+                        "drag to place a tracker" from the gesture itself —
+                        see the note on trackerEditMode above. Deliberately
+                        loud (filled background when on) since it silently
+                        changes what a click on the video does. */}
+                    <button
+                      type="button"
+                      onClick={() => setTrackerEditMode((v) => !v)}
+                      aria-pressed={trackerEditMode}
+                      className={`text-xs rounded px-3 py-1.5 border whitespace-nowrap ${
+                        trackerEditMode ? "bg-signal text-ink border-signal font-semibold" : "border-white/20 text-white/70 hover:bg-white/10"
+                      }`}
+                      title="When off, clicks pass through to the video instead of placing/editing tracker boxes"
+                    >
+                      {trackerEditMode ? "✏️ Tracker edit mode: ON" : "Tracker edit mode: OFF"}
+                    </button>
+                    <select
+                      value={canvasPhaseFilter}
+                      onChange={(e) => setCanvasPhaseFilter(e.target.value)}
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
+                      title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
+                    >
+                      <option value="">All phases</option>
+                      {TRACKER_PHASES.map((p) => (
+                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
                 <div
                   data-crop-container
@@ -3777,6 +3825,7 @@ export default function LiveConsolePage() {
                     // buttons stop propagation on their own mousedown, so
                     // clicking one to edit it never falls through to here.
                     if (captureMode !== "manual") return;
+                    if (!trackerEditMode) return; // edit mode off — clicks pass through, no drag starts
                     if (calibratingField && !draftBox) startBoxDrag("draw", e, "draftBox");
                     else if (!calibratingField && !pendingBox) startBoxDrag("draw", e, "pendingBox");
                   }}
@@ -3789,6 +3838,28 @@ export default function LiveConsolePage() {
                       .map(({ field, label }) => {
                         const box = regions[field];
                         if (!box) return null;
+                        // Tracker edit mode OFF: present but inert — a thin
+                        // outline only, no click handler, no drag handles, so
+                        // it never intercepts a click meant for whatever's
+                        // playing underneath. ON: same clickable box as
+                        // before (jumps straight into edit mode for the
+                        // region clicked), just gated behind the toggle now
+                        // instead of always-on gesture guessing.
+                        if (!trackerEditMode) {
+                          return (
+                            <div
+                              key={field}
+                              title={label}
+                              className="absolute border border-white/25 pointer-events-none"
+                              style={{
+                                left: `${box.xPct}%`,
+                                top: `${box.yPct}%`,
+                                width: `${box.wPct}%`,
+                                height: `${box.hPct}%`,
+                              }}
+                            />
+                          );
+                        }
                         return (
                           // Clickable straight from the video instead of
                           // only via the small "Resize" button in the field
@@ -4442,16 +4513,11 @@ export default function LiveConsolePage() {
           the stream preview and clock controls into two ~180px columns on a
           phone. Stacked below md (768px, unchanged from desktop's real
           window width) fixes that; nothing changes at md and up. */}
+      {/* Stream embed moved to the bottom of this panel (was first) — the
+          site owner called it out as distracting sitting where the admin's
+          eye lands first; the OCR clock controls are what actually needs
+          glancing at repeatedly during a broadcast. */}
       <div className={`grid gap-6 ${match.update_source === "local_ocr" ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
-        {embedUrl && (
-          <iframe
-            src={embedUrl}
-            className="w-full aspect-video rounded"
-            allow="autoplay; encrypted-media"
-            allowFullScreen
-          />
-        )}
-
         {match.update_source === "local_ocr" && (
           <div className="space-y-2">
             <p className="text-xs text-white/50">
@@ -4532,6 +4598,15 @@ export default function LiveConsolePage() {
               {" "}Whichever source is selected above is what the public page shows.
             </p>
           </div>
+        )}
+
+        {embedUrl && (
+          <iframe
+            src={embedUrl}
+            className="w-full aspect-video rounded"
+            allow="autoplay; encrypted-media"
+            allowFullScreen
+          />
         )}
       </div>
 

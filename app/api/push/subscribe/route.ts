@@ -29,21 +29,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `entityType must be one of: ${VALID_ENTITY_TYPES.join(", ")}` }, { status: 400 });
   }
 
-  // ignoreDuplicates (INSERT ... ON CONFLICT DO NOTHING) rather than a real
-  // upsert — re-tapping "follow" for the same match in the same browser
-  // just no-ops instead of erroring on the unique constraint or piling up
-  // duplicate rows that would each fire a separate push. Deliberately not
-  // ON CONFLICT DO UPDATE: that requires an UPDATE RLS policy too, which
-  // this table intentionally doesn't have (see the migration) since the
-  // anon key should only ever be able to insert here.
+  // Plain insert, not .upsert()/onConflict — confirmed against the live DB
+  // that .upsert() (even with ignoreDuplicates) makes postgrest-js request
+  // the affected row back (an implicit RETURNING), and Postgres enforces
+  // RLS on that RETURNING projection the same as a SELECT. This table
+  // deliberately has no SELECT policy for anon/authenticated (subscription
+  // endpoints/keys shouldn't be publicly readable), so that RETURNING check
+  // always failed with "new row violates row-level security policy" even
+  // though the INSERT's own WITH CHECK (unconditionally true) was never the
+  // problem — reproduced directly against the DB: the identical INSERT
+  // succeeds under role anon once RETURNING is dropped. A plain .insert()
+  // never requests a row back, so it doesn't hit this at all. Re-tapping
+  // "follow" for the same match hits the unique constraint instead — same
+  // duplicate-key-is-fine pattern already used elsewhere in this codebase
+  // (see worker/src/telegram.mjs's notifyOnce).
   const { error } = await supabase
     .from("push_subscriptions")
-    .upsert(
-      { endpoint, p256dh, auth, entity_type: entityType, entity_id: entityId },
-      { onConflict: "endpoint,entity_type,entity_id", ignoreDuplicates: true }
-    );
+    .insert({ endpoint, p256dh, auth, entity_type: entityType, entity_id: entityId });
 
-  if (error) {
+  if (error && !error.message.includes("duplicate key")) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

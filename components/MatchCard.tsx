@@ -20,6 +20,7 @@ export function MatchCard({
   score,
   scheduledAt,
   format,
+  stage,
   tier,
   tournamentName,
   tournamentSlug,
@@ -34,6 +35,10 @@ export function MatchCard({
   score?: { a: number; b: number };
   scheduledAt?: string | null;
   format?: string | null;
+  // Free-text tournament stage — "Group A", "Regular Season", "Playoffs",
+  // "Grand Final", etc. Optional: most matches (flat single-bracket
+  // tournaments, or ones not yet backfilled) have none.
+  stage?: string | null;
   tier?: string | null;
   // Omit tournamentName (e.g. on the tournament's own page) to skip the
   // tournament line entirely instead of showing a redundant self-link.
@@ -100,6 +105,7 @@ export function MatchCard({
         tournamentDefaultTier={tournamentDefaultTier}
         tier={tier}
         format={format}
+        stage={stage}
         scheduledAt={scheduledAt}
         showHot={!isLive}
         updateSource={updateSource}
@@ -115,6 +121,7 @@ function MatchCardMeta({
   tournamentDefaultTier,
   tier,
   format,
+  stage,
   scheduledAt,
   showHot,
   updateSource,
@@ -125,6 +132,7 @@ function MatchCardMeta({
   tournamentDefaultTier?: "normal" | "hot" | "priority" | null;
   tier?: string | null;
   format?: string | null;
+  stage?: string | null;
   scheduledAt?: string | null;
   showHot: boolean;
   updateSource?: "liquipedia" | "local_ocr";
@@ -149,6 +157,7 @@ function MatchCardMeta({
       </span>
     );
   }
+  if (stage) bits.push(stage);
   if (tier) bits.push(`${tier}-Tier`);
   if (format) bits.push(format);
   if (scheduledAt) {

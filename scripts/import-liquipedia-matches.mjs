@@ -180,6 +180,21 @@ async function getTournamentPages(tournament) {
   return pages;
 }
 
+// Best-effort stage label derived from the subpage a match's popup was
+// found on (e.g. ".../Regular_Season" -> "Regular Season", ".../Playoffs"
+// -> "Playoffs") — the same subpage names getTournamentPages() already
+// discovers to know where to look for matches at all, so tagging each
+// match with the page it came from is nearly free. The tournament's own
+// base page (pages[0]) carries no stage info of its own (a flat schedule,
+// a bracket overview, or just duplicates of the subpages) so it's left
+// null rather than guessed at.
+function deriveStageFromPage(baseSlug, pageSlug) {
+  if (pageSlug === baseSlug) return null;
+  const lastSegment = pageSlug.slice(baseSlug.length + 1).split("/").pop();
+  if (!lastSegment) return null;
+  return lastSegment.replace(/_/g, " ");
+}
+
 async function importMatchesForTournament(tournament) {
   const pages = await getTournamentPages(tournament);
   console.log(`Fetching matches for ${tournament.name} across ${pages.length} page(s): ${pages.join(", ")}`);
@@ -188,7 +203,8 @@ async function importMatchesForTournament(tournament) {
   for (let i = 0; i < pages.length; i++) {
     try {
       const html = await fetchRenderedPage(pages[i]);
-      found.push(...extractMatches(html));
+      const stage = deriveStageFromPage(tournament.liquipedia_slug, pages[i]);
+      found.push(...extractMatches(html).map((m) => ({ ...m, stage })));
     } catch (err) {
       console.error(`Failed fetching "${pages[i]}" for ${tournament.name}: ${err.message}`);
     }
@@ -233,10 +249,15 @@ async function importMatchesForTournament(tournament) {
       if (existing.status !== "live") {
         payload.status = m.finished ? "finished" : existing.status;
       }
+      // Stage is intentionally NOT set on update, even when this pass
+      // derived one — same reasoning as stream_id above: an admin may have
+      // hand-edited it (e.g. to something more specific than the raw
+      // subpage name), and a re-import shouldn't silently clobber that.
       const { error } = await supabase.from("matches").update(payload).eq("id", existing.id);
       if (error) console.error(`Failed to update match: ${error.message}`);
     } else {
       payload.status = m.finished ? "finished" : "scheduled";
+      if (m.stage) payload.stage = m.stage;
       const { error } = await supabase.from("matches").insert(payload);
       if (error) console.error(`Failed to insert match: ${error.message}`);
     }

@@ -17,6 +17,7 @@ type Tournament = {
   fmvp_player_id: string | null;
   fmvp_player: { ign: string } | null;
   default_notification_tier: "normal" | "hot" | "priority";
+  youtube_channel_url: string | null;
 };
 
 type Status = "ongoing" | "upcoming" | "completed";
@@ -52,6 +53,7 @@ export default function TournamentsAdminPage() {
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [logoUrl, setLogoUrl] = useState("");
+  const [youtubeChannelUrl, setYoutubeChannelUrl] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -62,16 +64,39 @@ export default function TournamentsAdminPage() {
   const [editLogoUrl, setEditLogoUrl] = useState("");
   const [editLogoBgOverride, setEditLogoBgOverride] = useState<LogoBgOverride | "">("");
   const [editFmvpIgn, setEditFmvpIgn] = useState("");
+  const [editYoutubeChannelUrl, setEditYoutubeChannelUrl] = useState("");
   const [allPlayerIgns, setAllPlayerIgns] = useState<string[]>([]);
+  const [youtubeSyncStatus, setYoutubeSyncStatus] = useState<Record<string, string>>({});
 
   async function loadTournaments() {
     const { data } = await supabase
       .from("tournaments")
       .select(
-        "id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, logo_bg_override, fmvp_player_id, fmvp_player:players(ign), default_notification_tier"
+        "id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, logo_bg_override, fmvp_player_id, fmvp_player:players(ign), default_notification_tier, youtube_channel_url"
       )
       .order("start_date", { ascending: false, nullsFirst: false });
     setTournaments((data as unknown as Tournament[]) ?? []);
+  }
+
+  // Fire-and-forget best-effort sync — a tournament save should never block
+  // or fail on this. See app/api/admin/sync-tournament-youtube/route.ts for
+  // what it actually does (no-ops cleanly if YOUTUBE_API_KEY isn't set).
+  async function syncYoutubeStreams(tournamentId: string) {
+    setYoutubeSyncStatus((prev) => ({ ...prev, [tournamentId]: "Checking YouTube channel..." }));
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) return;
+      const res = await fetch("/api/admin/sync-tournament-youtube", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ tournamentId }),
+      });
+      const data = await res.json();
+      setYoutubeSyncStatus((prev) => ({ ...prev, [tournamentId]: data.message ?? data.error ?? "" }));
+    } catch (err) {
+      setYoutubeSyncStatus((prev) => ({ ...prev, [tournamentId]: (err as Error).message }));
+    }
   }
 
   // Changing a tournament's default cascades to its matches — but only
@@ -151,14 +176,19 @@ export default function TournamentsAdminPage() {
     setLoading(true);
     setError(null);
 
-    const { error } = await supabase.from("tournaments").insert({
-      name,
-      tier,
-      liquipedia_slug: slug || null,
-      start_date: startDate || null,
-      end_date: endDate || null,
-      logo_url: logoUrl || null,
-    });
+    const { data: inserted, error } = await supabase
+      .from("tournaments")
+      .insert({
+        name,
+        tier,
+        liquipedia_slug: slug || null,
+        start_date: startDate || null,
+        end_date: endDate || null,
+        logo_url: logoUrl || null,
+        youtube_channel_url: youtubeChannelUrl || null,
+      })
+      .select("id")
+      .single();
 
     setLoading(false);
     if (error) {
@@ -170,7 +200,9 @@ export default function TournamentsAdminPage() {
     setStartDate("");
     setEndDate("");
     setLogoUrl("");
+    setYoutubeChannelUrl("");
     loadTournaments();
+    if (inserted?.id && youtubeChannelUrl.trim()) syncYoutubeStreams(inserted.id);
   }
 
   function startEdit(t: Tournament) {
@@ -183,6 +215,14 @@ export default function TournamentsAdminPage() {
     setEditLogoUrl(t.logo_url ?? "");
     setEditLogoBgOverride(t.logo_bg_override ?? "");
     setEditFmvpIgn(t.fmvp_player?.ign ?? "");
+    setEditYoutubeChannelUrl(t.youtube_channel_url ?? "");
+  }
+
+  async function setLogoBgOverride(id: string, value: LogoBgOverride | "") {
+    const next = value || null;
+    setTournaments((prev) => prev.map((t) => (t.id === id ? { ...t, logo_bg_override: next } : t)));
+    const { error } = await supabase.from("tournaments").update({ logo_bg_override: next }).eq("id", id);
+    if (error) setError(error.message);
   }
 
   async function saveEdit(id: string) {
@@ -204,6 +244,9 @@ export default function TournamentsAdminPage() {
       fmvpPlayerId = player.id;
     }
 
+    const previous = tournaments.find((t) => t.id === id);
+    const newChannelUrl = editYoutubeChannelUrl.trim() || null;
+
     const { error } = await supabase
       .from("tournaments")
       .update({
@@ -215,6 +258,7 @@ export default function TournamentsAdminPage() {
         logo_url: editLogoUrl || null,
         logo_bg_override: editLogoBgOverride || null,
         fmvp_player_id: fmvpPlayerId,
+        youtube_channel_url: newChannelUrl,
       })
       .eq("id", id);
     if (error) {
@@ -223,17 +267,10 @@ export default function TournamentsAdminPage() {
     }
     setEditingId(null);
     loadTournaments();
-  }
-
-  // Applies instantly from the read-only row's own select (no need to enter
-  // edit mode just to flip the logo backing).
-  async function setLogoBgOverride(id: string, value: LogoBgOverride | "") {
-    setTournaments((prev) => prev.map((t) => (t.id === id ? { ...t, logo_bg_override: value || null } : t)));
-    const { error } = await supabase
-      .from("tournaments")
-      .update({ logo_bg_override: value || null })
-      .eq("id", id);
-    if (error) setError(error.message);
+    // Only re-sync when the channel URL actually changed (set or edited) —
+    // no point re-hitting the YouTube API's daily quota on every unrelated
+    // field edit (dates, logo, etc.).
+    if (newChannelUrl && newChannelUrl !== (previous?.youtube_channel_url ?? null)) syncYoutubeStreams(id);
   }
 
   function friendlyDeleteError(message: string, label: string) {
@@ -337,6 +374,19 @@ export default function TournamentsAdminPage() {
             className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
         </div>
+        <div className="col-span-2 space-y-1">
+          <label className="text-xs text-white/50">YouTube channel URL (optional)</label>
+          <input
+            value={youtubeChannelUrl}
+            onChange={(e) => setYoutubeChannelUrl(e.target.value)}
+            placeholder="e.g. https://www.youtube.com/@channelname"
+            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
+          />
+          <p className="text-[10px] text-white/30">
+            On save, this tournament&apos;s matches get auto-matched to this channel&apos;s public live/upcoming streams by
+            date (needs YOUTUBE_API_KEY configured — see status after saving).
+          </p>
+        </div>
         <button
           type="submit"
           disabled={loading}
@@ -421,13 +471,11 @@ export default function TournamentsAdminPage() {
                 <tr>
                   <th className="font-normal pb-2 w-8" />
                   <th className="font-normal pb-2 w-8">Logo</th>
+                  <th className="font-normal pb-2 w-28">Logo backing</th>
                   <th className="font-normal pb-2">Name</th>
                   <th className="font-normal pb-2">Tier</th>
                   <th className="font-normal pb-2">Dates</th>
                   <th className="font-normal pb-2">Slug</th>
-                  <th className="font-normal pb-2" title="Manual backing-color override for this tournament's logo box — leave on Auto to keep the automatic light/dark detection.">
-                    Logo backing
-                  </th>
                   <th className="font-normal pb-2" title="Default notification tier for new matches — changing it also cascades to this tournament's future/in-progress matches (finished ones are left alone).">
                     Notifications
                   </th>
@@ -441,7 +489,19 @@ export default function TournamentsAdminPage() {
                       <>
                         <td className="py-2" />
                         <td className="py-2 pr-2">
-                          <TeamLogo url={editLogoUrl} alt="" size="sm" bgOverride={editLogoBgOverride || null} />
+                          <TeamLogo url={editLogoUrl || null} alt={editName} bgOverride={editLogoBgOverride || null} size="sm" />
+                        </td>
+                        <td className="py-2 pr-2">
+                          <select
+                            value={editLogoBgOverride}
+                            onChange={(e) => setEditLogoBgOverride(e.target.value as LogoBgOverride | "")}
+                            className="w-full bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
+                          >
+                            <option value="">Auto</option>
+                            {LOGO_BG_OVERRIDES.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
                         </td>
                         <td className="py-2 pr-2">
                           <input
@@ -493,18 +553,12 @@ export default function TournamentsAdminPage() {
                               <option key={ign} value={ign} />
                             ))}
                           </datalist>
-                        </td>
-                        <td className="py-2 pr-2">
-                          <select
-                            value={editLogoBgOverride}
-                            onChange={(e) => setEditLogoBgOverride(e.target.value as LogoBgOverride | "")}
-                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                          >
-                            <option value="">Auto</option>
-                            {LOGO_BG_OVERRIDES.map((o) => (
-                              <option key={o.value} value={o.value}>{o.label}</option>
-                            ))}
-                          </select>
+                          <input
+                            value={editYoutubeChannelUrl}
+                            onChange={(e) => setEditYoutubeChannelUrl(e.target.value)}
+                            placeholder="YouTube channel URL (optional)"
+                            className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                          />
                         </td>
                         <td className="py-2" />
                         <td className="py-2 text-right space-x-2">
@@ -525,7 +579,19 @@ export default function TournamentsAdminPage() {
                           <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggleSelected(t.id)} />
                         </td>
                         <td className="py-2">
-                          <TeamLogo url={t.logo_url} alt="" size="sm" bgOverride={t.logo_bg_override} />
+                          <TeamLogo url={t.logo_url} alt={t.name} bgOverride={t.logo_bg_override} size="sm" />
+                        </td>
+                        <td className="py-2">
+                          <select
+                            value={t.logo_bg_override ?? ""}
+                            onChange={(e) => setLogoBgOverride(t.id, e.target.value as LogoBgOverride | "")}
+                            className="w-full bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
+                          >
+                            <option value="">Auto</option>
+                            {LOGO_BG_OVERRIDES.map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </select>
                         </td>
                         <td className="py-2">{t.name}</td>
                         <td className="py-2 text-white/60">{t.tier}-Tier</td>
@@ -535,19 +601,21 @@ export default function TournamentsAdminPage() {
                         <td className="py-2 text-white/40 text-xs">
                           {t.liquipedia_slug ?? "—"}
                           {t.fmvp_player?.ign && <div className="text-white/30">FMVP: {t.fmvp_player.ign}</div>}
-                        </td>
-                        <td className="py-2">
-                          <select
-                            value={t.logo_bg_override ?? ""}
-                            onChange={(e) => setLogoBgOverride(t.id, e.target.value as LogoBgOverride | "")}
-                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                            title="Manual logo backing color override"
-                          >
-                            <option value="">Auto</option>
-                            {LOGO_BG_OVERRIDES.map((o) => (
-                              <option key={o.value} value={o.value}>{o.label}</option>
-                            ))}
-                          </select>
+                          {t.youtube_channel_url && (
+                            <div className="text-white/30 flex items-center gap-1">
+                              YT:{" "}
+                              <button
+                                onClick={() => syncYoutubeStreams(t.id)}
+                                className="underline hover:text-white/60"
+                                title="Re-check this channel's live/upcoming streams and fill any unlinked matches on the same date."
+                              >
+                                sync now
+                              </button>
+                            </div>
+                          )}
+                          {youtubeSyncStatus[t.id] && (
+                            <div className="text-white/30 max-w-[180px]">{youtubeSyncStatus[t.id]}</div>
+                          )}
                         </td>
                         <td className="py-2">
                           <select

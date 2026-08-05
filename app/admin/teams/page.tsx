@@ -2,22 +2,92 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { TeamSocialLinks } from "@/components/TeamSocialLinks";
 import { TeamLogo, LOGO_BG_OVERRIDES, type LogoBgOverride } from "@/components/TeamLogo";
 
 type Team = {
   id: string;
   name: string;
-  short_name: string | null;
   logo_url: string | null;
   logo_bg_override: LogoBgOverride | null;
+  location: string | null;
+  region: string | null;
+  website_url: string | null;
+  twitter_url: string | null;
+  instagram_url: string | null;
+  facebook_url: string | null;
+  youtube_url: string | null;
+  discord_url: string | null;
 };
 type SortKey = "name" | "name_desc";
 
+const TEAM_COLUMNS =
+  "id, name, logo_url, logo_bg_override, location, region, website_url, twitter_url, instagram_url, facebook_url, youtube_url, discord_url";
+
+type TeamFormState = {
+  name: string;
+  logoUrl: string;
+  logoBgOverride: LogoBgOverride | "";
+  location: string;
+  region: string;
+  websiteUrl: string;
+  twitterUrl: string;
+  instagramUrl: string;
+  facebookUrl: string;
+  youtubeUrl: string;
+  discordUrl: string;
+};
+
+const EMPTY_FORM: TeamFormState = {
+  name: "",
+  logoUrl: "",
+  logoBgOverride: "",
+  location: "",
+  region: "",
+  websiteUrl: "",
+  twitterUrl: "",
+  instagramUrl: "",
+  facebookUrl: "",
+  youtubeUrl: "",
+  discordUrl: "",
+};
+
+function formToPayload(f: TeamFormState) {
+  return {
+    name: f.name,
+    logo_url: f.logoUrl || null,
+    logo_bg_override: f.logoBgOverride || null,
+    location: f.location || null,
+    region: f.region || null,
+    website_url: f.websiteUrl || null,
+    twitter_url: f.twitterUrl || null,
+    instagram_url: f.instagramUrl || null,
+    facebook_url: f.facebookUrl || null,
+    youtube_url: f.youtubeUrl || null,
+    discord_url: f.discordUrl || null,
+  };
+}
+
+function teamToForm(t: Team): TeamFormState {
+  return {
+    name: t.name,
+    logoUrl: t.logo_url ?? "",
+    logoBgOverride: t.logo_bg_override ?? "",
+    location: t.location ?? "",
+    region: t.region ?? "",
+    websiteUrl: t.website_url ?? "",
+    twitterUrl: t.twitter_url ?? "",
+    instagramUrl: t.instagram_url ?? "",
+    facebookUrl: t.facebook_url ?? "",
+    youtubeUrl: t.youtube_url ?? "",
+    discordUrl: t.discord_url ?? "",
+  };
+}
+
 export default function TeamsPage() {
   const [teams, setTeams] = useState<Team[]>([]);
-  const [name, setName] = useState("");
-  const [shortName, setShortName] = useState("");
-  const [logoUrl, setLogoUrl] = useState("");
+  const [form, setForm] = useState<TeamFormState>(EMPTY_FORM);
+  const [showAddSocials, setShowAddSocials] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -26,19 +96,20 @@ export default function TeamsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editShortName, setEditShortName] = useState("");
-  const [editLogoUrl, setEditLogoUrl] = useState("");
-  const [editLogoBgOverride, setEditLogoBgOverride] = useState<LogoBgOverride | "">("");
+  const [editForm, setEditForm] = useState<TeamFormState>(EMPTY_FORM);
 
   const [mergeTargetId, setMergeTargetId] = useState("");
   const [merging, setMerging] = useState(false);
 
+  function setFormField<K extends keyof TeamFormState>(key: K, value: TeamFormState[K]) {
+    setForm((prev) => ({ ...prev, [key]: value }));
+  }
+  function setEditField<K extends keyof TeamFormState>(key: K, value: TeamFormState[K]) {
+    setEditForm((prev) => ({ ...prev, [key]: value }));
+  }
+
   async function loadTeams() {
-    const { data, error } = await supabase
-      .from("teams")
-      .select("id, name, short_name, logo_url, logo_bg_override")
-      .order("name", { ascending: true });
+    const { data, error } = await supabase.from("teams").select(TEAM_COLUMNS).order("name", { ascending: true });
     if (error) {
       setError(error.message);
       return;
@@ -55,7 +126,10 @@ export default function TeamsPage() {
     const base = !q
       ? teams
       : teams.filter(
-          (t) => t.name.toLowerCase().includes(q) || (t.short_name ?? "").toLowerCase().includes(q)
+          (t) =>
+            t.name.toLowerCase().includes(q) ||
+            (t.location ?? "").toLowerCase().includes(q) ||
+            (t.region ?? "").toLowerCase().includes(q)
         );
     const sorted = [...base].sort((a, b) => a.name.localeCompare(b.name));
     return sortKey === "name_desc" ? sorted.reverse() : sorted;
@@ -81,57 +155,38 @@ export default function TeamsPage() {
     setLoading(true);
     setError(null);
 
-    const { error } = await supabase
-      .from("teams")
-      .insert({ name, short_name: shortName || null, logo_url: logoUrl || null });
+    const { error } = await supabase.from("teams").insert(formToPayload(form));
 
     setLoading(false);
     if (error) {
       setError(error.message);
       return;
     }
-    setName("");
-    setShortName("");
-    setLogoUrl("");
+    setForm(EMPTY_FORM);
+    setShowAddSocials(false);
     loadTeams();
   }
 
   function startEdit(t: Team) {
     setEditingId(t.id);
-    setEditName(t.name);
-    setEditShortName(t.short_name ?? "");
-    setEditLogoUrl(t.logo_url ?? "");
-    setEditLogoBgOverride(t.logo_bg_override ?? "");
+    setEditForm(teamToForm(t));
+  }
+
+  async function setLogoBgOverride(id: string, value: LogoBgOverride | "") {
+    const next = value || null;
+    setTeams((prev) => prev.map((t) => (t.id === id ? { ...t, logo_bg_override: next } : t)));
+    const { error } = await supabase.from("teams").update({ logo_bg_override: next }).eq("id", id);
+    if (error) setError(error.message);
   }
 
   async function saveEdit(id: string) {
-    const { error } = await supabase
-      .from("teams")
-      .update({
-        name: editName,
-        short_name: editShortName || null,
-        logo_url: editLogoUrl || null,
-        logo_bg_override: editLogoBgOverride || null,
-      })
-      .eq("id", id);
+    const { error } = await supabase.from("teams").update(formToPayload(editForm)).eq("id", id);
     if (error) {
       setError(error.message);
       return;
     }
     setEditingId(null);
     loadTeams();
-  }
-
-  // Applies instantly from the read-only row's own select (no need to enter
-  // edit mode just to flip the logo backing) — every other field still goes
-  // through the full edit/save flow above.
-  async function setLogoBgOverride(id: string, value: LogoBgOverride | "") {
-    setTeams((prev) => prev.map((t) => (t.id === id ? { ...t, logo_bg_override: value || null } : t)));
-    const { error } = await supabase
-      .from("teams")
-      .update({ logo_bg_override: value || null })
-      .eq("id", id);
-    if (error) setError(error.message);
   }
 
   function friendlyDeleteError(message: string, label: string) {
@@ -211,46 +266,104 @@ export default function TeamsPage() {
     loadTeams();
   }
 
+  const socialInputClass =
+    "w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs outline-none focus:border-signal";
+
   return (
     <div className="text-white space-y-6 max-w-5xl">
       <h1 className="lv-heading text-lg">Teams</h1>
 
-      <form onSubmit={handleAdd} className="flex gap-3 items-end flex-wrap">
-        <div className="flex-1 min-w-[160px] space-y-1">
-          <label className="text-xs text-white/50">Team name</label>
-          <input
-            required
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. RRQ Hoshi"
-            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
-          />
+      <form onSubmit={handleAdd} className="space-y-3">
+        <div className="flex gap-3 items-end flex-wrap">
+          <div className="flex-1 min-w-[160px] space-y-1">
+            <label className="text-xs text-white/50">Team name</label>
+            <input
+              required
+              value={form.name}
+              onChange={(e) => setFormField("name", e.target.value)}
+              placeholder="e.g. RRQ Hoshi"
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            />
+          </div>
+          <div className="w-40 space-y-1">
+            <label className="text-xs text-white/50">Location</label>
+            <input
+              value={form.location}
+              onChange={(e) => setFormField("location", e.target.value)}
+              placeholder="Jakarta, Indonesia"
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            />
+          </div>
+          <div className="w-32 space-y-1">
+            <label className="text-xs text-white/50">Region</label>
+            <input
+              value={form.region}
+              onChange={(e) => setFormField("region", e.target.value)}
+              placeholder="Indonesia"
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            />
+          </div>
+          <div className="flex-1 min-w-[200px] space-y-1">
+            <label className="text-xs text-white/50">Logo URL</label>
+            <input
+              value={form.logoUrl}
+              onChange={(e) => setFormField("logoUrl", e.target.value)}
+              placeholder="https://..."
+              className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
+            />
+          </div>
+          <button type="submit" disabled={loading} className="lv-btn-primary !py-2">
+            Add
+          </button>
         </div>
-        <div className="w-32 space-y-1">
-          <label className="text-xs text-white/50">Short name</label>
-          <input
-            value={shortName}
-            onChange={(e) => setShortName(e.target.value)}
-            placeholder="RRQ"
-            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
-          />
-        </div>
-        <div className="flex-1 min-w-[200px] space-y-1">
-          <label className="text-xs text-white/50">Logo URL</label>
-          <input
-            value={logoUrl}
-            onChange={(e) => setLogoUrl(e.target.value)}
-            placeholder="https://..."
-            className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
-          />
-        </div>
+
         <button
-          type="submit"
-          disabled={loading}
-          className="lv-btn-primary !py-2"
+          type="button"
+          onClick={() => setShowAddSocials((v) => !v)}
+          className="text-xs text-white/40 hover:text-white/70"
         >
-          Add
+          {showAddSocials ? "− Hide" : "+ Add"} website / social links
         </button>
+        {showAddSocials && (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+            <input
+              value={form.websiteUrl}
+              onChange={(e) => setFormField("websiteUrl", e.target.value)}
+              placeholder="Website URL"
+              className={socialInputClass}
+            />
+            <input
+              value={form.twitterUrl}
+              onChange={(e) => setFormField("twitterUrl", e.target.value)}
+              placeholder="X / Twitter URL"
+              className={socialInputClass}
+            />
+            <input
+              value={form.instagramUrl}
+              onChange={(e) => setFormField("instagramUrl", e.target.value)}
+              placeholder="Instagram URL"
+              className={socialInputClass}
+            />
+            <input
+              value={form.facebookUrl}
+              onChange={(e) => setFormField("facebookUrl", e.target.value)}
+              placeholder="Facebook URL"
+              className={socialInputClass}
+            />
+            <input
+              value={form.youtubeUrl}
+              onChange={(e) => setFormField("youtubeUrl", e.target.value)}
+              placeholder="YouTube URL"
+              className={socialInputClass}
+            />
+            <input
+              value={form.discordUrl}
+              onChange={(e) => setFormField("discordUrl", e.target.value)}
+              placeholder="Discord URL"
+              className={socialInputClass}
+            />
+          </div>
+        )}
       </form>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
@@ -261,7 +374,7 @@ export default function TeamsPage() {
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter by name..."
+            placeholder="Filter by name, location, or region..."
             className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
@@ -315,11 +428,10 @@ export default function TeamsPage() {
               />
             </th>
             <th className="font-normal pb-2 w-10">Logo</th>
+            <th className="font-normal pb-2 w-28">Logo backing</th>
             <th className="font-normal pb-2">Name</th>
-            <th className="font-normal pb-2">Short</th>
-            <th className="font-normal pb-2" title="Manual backing-color override for this team's logo box — leave on Auto to keep the automatic light/dark detection.">
-              Logo backing
-            </th>
+            <th className="font-normal pb-2">Location / Region</th>
+            <th className="font-normal pb-2">Links</th>
             <th className="font-normal pb-2 text-right">Actions</th>
           </tr>
         </thead>
@@ -330,34 +442,13 @@ export default function TeamsPage() {
                 <>
                   <td className="py-2" />
                   <td className="py-2 pr-2">
-                    <TeamLogo url={editLogoUrl} alt="" size="sm" bgOverride={editLogoBgOverride || null} />
+                    <TeamLogo url={editForm.logoUrl || null} alt={editForm.name} bgOverride={editForm.logoBgOverride || null} size="sm" />
                   </td>
-                  <td className="py-2 pr-2">
-                    <input
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 pr-2 space-y-1">
-                    <input
-                      value={editShortName}
-                      onChange={(e) => setEditShortName(e.target.value)}
-                      placeholder="Short name"
-                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                    <input
-                      value={editLogoUrl}
-                      onChange={(e) => setEditLogoUrl(e.target.value)}
-                      placeholder="Logo URL"
-                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                    />
-                  </td>
-                  <td className="py-2 pr-2">
+                  <td className="py-2 pr-2 align-top">
                     <select
-                      value={editLogoBgOverride}
-                      onChange={(e) => setEditLogoBgOverride(e.target.value as LogoBgOverride | "")}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      value={editForm.logoBgOverride}
+                      onChange={(e) => setEditField("logoBgOverride", e.target.value as LogoBgOverride | "")}
+                      className="w-full bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
                     >
                       <option value="">Auto</option>
                       {LOGO_BG_OVERRIDES.map((o) => (
@@ -365,7 +456,75 @@ export default function TeamsPage() {
                       ))}
                     </select>
                   </td>
-                  <td className="py-2 text-right space-x-2">
+                  <td className="py-2 pr-2 align-top space-y-1 min-w-[160px]">
+                    <input
+                      value={editForm.name}
+                      onChange={(e) => setEditField("name", e.target.value)}
+                      placeholder="Team name"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
+                    />
+                    <input
+                      value={editForm.logoUrl}
+                      onChange={(e) => setEditField("logoUrl", e.target.value)}
+                      placeholder="Logo URL"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                    />
+                  </td>
+                  <td className="py-2 pr-2 align-top space-y-1 min-w-[140px]">
+                    <input
+                      value={editForm.location}
+                      onChange={(e) => setEditField("location", e.target.value)}
+                      placeholder="Location"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                    />
+                    <input
+                      value={editForm.region}
+                      onChange={(e) => setEditField("region", e.target.value)}
+                      placeholder="Region"
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                    />
+                  </td>
+                  <td className="py-2 pr-2 align-top min-w-[220px]">
+                    <div className="grid grid-cols-2 gap-1">
+                      <input
+                        value={editForm.websiteUrl}
+                        onChange={(e) => setEditField("websiteUrl", e.target.value)}
+                        placeholder="Website"
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      />
+                      <input
+                        value={editForm.twitterUrl}
+                        onChange={(e) => setEditField("twitterUrl", e.target.value)}
+                        placeholder="X / Twitter"
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      />
+                      <input
+                        value={editForm.instagramUrl}
+                        onChange={(e) => setEditField("instagramUrl", e.target.value)}
+                        placeholder="Instagram"
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      />
+                      <input
+                        value={editForm.facebookUrl}
+                        onChange={(e) => setEditField("facebookUrl", e.target.value)}
+                        placeholder="Facebook"
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      />
+                      <input
+                        value={editForm.youtubeUrl}
+                        onChange={(e) => setEditField("youtubeUrl", e.target.value)}
+                        placeholder="YouTube"
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      />
+                      <input
+                        value={editForm.discordUrl}
+                        onChange={(e) => setEditField("discordUrl", e.target.value)}
+                        placeholder="Discord"
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      />
+                    </div>
+                  </td>
+                  <td className="py-2 text-right space-x-2 align-top">
                     <button onClick={() => saveEdit(t.id)} className="lv-btn-primary !px-2 !py-1">
                       Save
                     </button>
@@ -387,22 +546,26 @@ export default function TeamsPage() {
                     />
                   </td>
                   <td className="py-2">
-                    <TeamLogo url={t.logo_url} alt="" size="sm" bgOverride={t.logo_bg_override} />
+                    <TeamLogo url={t.logo_url} alt={t.name} bgOverride={t.logo_bg_override} size="sm" />
                   </td>
-                  <td className="py-2">{t.name}</td>
-                  <td className="py-2 text-white/60">{t.short_name ?? "—"}</td>
                   <td className="py-2">
                     <select
                       value={t.logo_bg_override ?? ""}
                       onChange={(e) => setLogoBgOverride(t.id, e.target.value as LogoBgOverride | "")}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                      title="Manual logo backing color override"
+                      className="w-full bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
                     >
                       <option value="">Auto</option>
                       {LOGO_BG_OVERRIDES.map((o) => (
                         <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
                     </select>
+                  </td>
+                  <td className="py-2">{t.name}</td>
+                  <td className="py-2 text-white/60">
+                    {[t.location, t.region].filter(Boolean).join(" · ") || "—"}
+                  </td>
+                  <td className="py-2">
+                    <TeamSocialLinks team={t} />
                   </td>
                   <td className="py-2 text-right space-x-2">
                     <button
@@ -423,7 +586,7 @@ export default function TeamsPage() {
             </tr>
           ))}
           {filtered.length === 0 && (
-            <tr><td colSpan={6} className="py-4 text-white/30 text-center">No teams match.</td></tr>
+            <tr><td colSpan={7} className="py-4 text-white/30 text-center">No teams match.</td></tr>
           )}
         </tbody>
       </table>

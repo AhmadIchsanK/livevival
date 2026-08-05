@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { HeroIcon } from "@/components/HeroIcon";
 
@@ -325,103 +325,118 @@ export default function HeroesPage() {
             <th className="font-normal pb-2">Role</th>
             <th className="font-normal pb-2">Lane</th>
             <th className="font-normal pb-2">Region</th>
-            <th className="font-normal pb-2">Aliases</th>
             <th className="font-normal pb-2 text-right">Actions</th>
           </tr>
         </thead>
         <tbody>
           {filtered.map((h) => (
-            <tr key={h.id} className="border-t border-white/10">
-              {editingId === h.id ? (
-                <>
+            <Fragment key={h.id}>
+              <tr className="border-t border-white/10">
+                {editingId === h.id ? (
+                  <>
+                    <td className="py-2" colSpan={2} />
+                    <td className="py-2 pr-2">
+                      <input
+                        value={editName}
+                        onChange={(e) => setEditName(e.target.value)}
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
+                      />
+                    </td>
+                    <td className="py-2 pr-2">
+                      <input
+                        value={editRole}
+                        onChange={(e) => setEditRole(e.target.value)}
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
+                      />
+                    </td>
+                    <td className="py-2 pr-2">
+                      <input
+                        value={editLane}
+                        onChange={(e) => setEditLane(e.target.value)}
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
+                      />
+                    </td>
+                    <td className="py-2 pr-2">
+                      <input
+                        value={editRegion}
+                        onChange={(e) => setEditRegion(e.target.value)}
+                        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
+                      />
+                    </td>
+                    <td className="py-2 text-right space-x-2">
+                      <button onClick={() => saveEdit(h.id)} className="lv-btn-primary !px-2 !py-1">
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setEditingId(null)}
+                        className="lv-btn-ghost !px-2 !py-1"
+                      >
+                        Cancel
+                      </button>
+                    </td>
+                  </>
+                ) : (
+                  <>
+                    <td className="py-2">
+                      <input type="checkbox" checked={selected.has(h.id)} onChange={() => toggleSelected(h.id)} />
+                    </td>
+                    <td className="py-2">
+                      <HeroIcon url={h.icon_url} name={h.name} size="sm" />
+                    </td>
+                    <td className="py-2">{h.name}</td>
+                    <td className="py-2 text-white/60">{h.role ?? "—"}</td>
+                    <td className="py-2 text-white/60">{h.lane ?? "—"}</td>
+                    <td className="py-2 text-white/60">{h.region ?? "—"}</td>
+                    <td className="py-2 text-right space-x-2">
+                      <button
+                        onClick={() => startEdit(h)}
+                        className="lv-btn-ghost !px-2 !py-1"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => deleteHero(h.id, h.name)}
+                        className="lv-btn-danger !px-2 !py-1"
+                      >
+                        Delete
+                      </button>
+                    </td>
+                  </>
+                )}
+              </tr>
+              {/* Aliases (and icon URL) aren't shown as a table column — a long
+                  comma-list clutters the grid — but they're still editable here,
+                  since aliases drive hero-name resolution during Liquipedia
+                  scraping (see worker/src/finishedMatchSync.mjs). */}
+              {editingId === h.id && (
+                <tr className="border-t border-white/5 bg-white/[0.02]">
                   <td className="py-2" colSpan={2} />
-                  <td className="py-2 pr-2">
-                    <input
-                      value={editName}
-                      onChange={(e) => setEditName(e.target.value)}
-                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 pr-2">
-                    <input
-                      value={editRole}
-                      onChange={(e) => setEditRole(e.target.value)}
-                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 pr-2">
-                    <input
-                      value={editLane}
-                      onChange={(e) => setEditLane(e.target.value)}
-                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 pr-2">
-                    <input
-                      value={editRegion}
-                      onChange={(e) => setEditRegion(e.target.value)}
-                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
-                    />
-                  </td>
-                  <td className="py-2 pr-2">
+                  <td className="py-2 pr-2" colSpan={2}>
+                    <label className="text-[10px] text-white/40 block mb-1">Aliases (comma-separated)</label>
                     <input
                       value={editAliases}
                       onChange={(e) => setEditAliases(e.target.value)}
+                      placeholder="e.g. YZ, Yu-Zhong"
                       className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
+                  </td>
+                  <td className="py-2 pr-2" colSpan={2}>
+                    <label className="text-[10px] text-white/40 block mb-1">Icon URL</label>
                     <input
                       value={editIconUrl}
                       onChange={(e) => setEditIconUrl(e.target.value)}
-                      placeholder="Icon URL"
-                      className="w-full mt-1 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                      placeholder="https://..."
+                      className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     />
                   </td>
-                  <td className="py-2 text-right space-x-2">
-                    <button onClick={() => saveEdit(h.id)} className="lv-btn-primary !px-2 !py-1">
-                      Save
-                    </button>
-                    <button
-                      onClick={() => setEditingId(null)}
-                      className="lv-btn-ghost !px-2 !py-1"
-                    >
-                      Cancel
-                    </button>
-                  </td>
-                </>
-              ) : (
-                <>
-                  <td className="py-2">
-                    <input type="checkbox" checked={selected.has(h.id)} onChange={() => toggleSelected(h.id)} />
-                  </td>
-                  <td className="py-2">
-                    <HeroIcon url={h.icon_url} name={h.name} size="sm" />
-                  </td>
-                  <td className="py-2">{h.name}</td>
-                  <td className="py-2 text-white/60">{h.role ?? "—"}</td>
-                  <td className="py-2 text-white/60">{h.lane ?? "—"}</td>
-                  <td className="py-2 text-white/60">{h.region ?? "—"}</td>
-                  <td className="py-2 text-white/40 text-xs">{h.aliases.join(", ") || "—"}</td>
-                  <td className="py-2 text-right space-x-2">
-                    <button
-                      onClick={() => startEdit(h)}
-                      className="lv-btn-ghost !px-2 !py-1"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={() => deleteHero(h.id, h.name)}
-                      className="lv-btn-danger !px-2 !py-1"
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </>
+                  <td className="py-2" />
+                </tr>
               )}
-            </tr>
+            </Fragment>
           ))}
           {filtered.length === 0 && (
             <tr>
-              <td colSpan={8} className="py-4 text-white/30 text-center">
+              <td colSpan={7} className="py-4 text-white/30 text-center">
                 No heroes match.
               </td>
             </tr>

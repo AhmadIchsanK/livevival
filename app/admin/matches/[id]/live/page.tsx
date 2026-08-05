@@ -8,6 +8,7 @@ import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
 import { DraftOverlay, type DraftOverlayPickBan } from "@/components/DraftOverlay";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
+import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
 
 // Auto-detected moment triggers only — narrowed to the four kill-streak
 // callouts (each still requires a player name attached, extracted by the
@@ -3078,10 +3079,11 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  async function toggleUpdateSource() {
+  // Unified Normal/Priority/Hot dropdown — sets update_source and
+  // notification_tier together, see lib/matchTier.ts for the exact mapping.
+  async function setMatchTier(tier: MatchTier) {
     if (!match || isContributor) return;
-    const next = match.update_source === "liquipedia" ? "local_ocr" : "liquipedia";
-    await supabase.from("matches").update({ update_source: next }).eq("id", match.id);
+    await supabase.from("matches").update(matchTierFields(tier)).eq("id", match.id);
     loadAll();
   }
 
@@ -3560,19 +3562,22 @@ export default function LiveConsolePage() {
             </div>
           )}
           {!isContributor && (
-            <button
-              onClick={toggleUpdateSource}
-              title="Normal matches sync automatically from Liquipedia (score, picks/bans, VOD only). Hot matches are fully admin/OCR-controlled (adds KDA, items, moment log)."
-              className={`text-[10px] px-2 py-0.5 rounded border ${
-                match.update_source === "liquipedia"
-                  ? "border-emerald-500/40 text-emerald-400"
-                  : "border-signal/50 text-signal"
+            <select
+              value={displayMatchTier(match)}
+              onChange={(e) => setMatchTier(e.target.value as MatchTier)}
+              title="Normal: Liquipedia auto-sync, no automatic posts. Priority: Liquipedia auto-sync, match-started/finished posts only. Hot: fully admin/OCR-controlled, every automatic trigger."
+              className={`text-[10px] px-2 py-0.5 rounded border bg-transparent ${
+                displayMatchTier(match) === "hot"
+                  ? "border-signal/50 text-signal"
+                  : displayMatchTier(match) === "priority"
+                  ? "border-amber-400/50 text-amber-300"
+                  : "border-emerald-500/40 text-emerald-400"
               }`}
             >
-              {match.update_source === "liquipedia"
-                ? "📡 Normal match — click to make this a Hot match"
-                : "🔥 Hot match — click to hand back to Normal (Liquipedia auto)"}
-            </button>
+              {(Object.keys(MATCH_TIER_LABELS) as MatchTier[]).map((tier) => (
+                <option key={tier} value={tier}>{MATCH_TIER_LABELS[tier]}</option>
+              ))}
+            </select>
           )}
           <button onClick={shareFullMatchInfo} className="text-[10px] border border-white/10 rounded px-2 py-0.5 hover:bg-white/10">
             📢 Share everything to Telegram

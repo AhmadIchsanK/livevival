@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { useTheme } from "next-themes";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
@@ -47,29 +48,34 @@ const PHASE_LABELS: Record<string, string> = {
   TECHNICAL_PAUSE: "Technical pause",
 };
 
-// The site owner's "One page. Three layouts." spec, expressed as a pure
-// function of match.state — nothing here reads component state, so it's
-// automatically correct on every Realtime-driven re-render with no extra
-// effect/mount logic of its own. Three buckets over the match_state enum
-// (MATCH_NOT_STARTED, DRAFT_STARTED, DRAFT_COMPLETE, GAME_STARTED,
-// GAME_FINISHED, SERIES_FINISHED, TECHNICAL_PAUSE, CUSTOM — same set the
-// admin live console uses):
-//  - "draft": MATCH_NOT_STARTED (nothing to show yet, pre-draft), plus the
-//    two actual draft states. Grouping MATCH_NOT_STARTED here (rather than
-//    a 4th bucket) matches what data exists at that point — no picks, no
-//    scoreboard, nothing "game" about it yet.
-//  - "game": GAME_STARTED, TECHNICAL_PAUSE, CUSTOM, and GAME_FINISHED — the
-//    last one is the "waiting for the next game" in-between state once one
-//    game of a Bo3+ ends but the series hasn't (mirrors this file's own
-//    existing per-game vs per-series split: games.winner_team_id vs
-//    match.series_winner_team_id). It still has a scoreboard worth showing
-//    (the just-finished game's), so it stays in "game" rather than jumping
-//    to "draft" or "finished".
-//  - "finished": SERIES_FINISHED only — the one state that's actually terminal.
-type LayoutBucket = "draft" | "game" | "finished";
-function layoutBucketFor(state: string): LayoutBucket {
+// The site owner's revised "four states, one page" spec (superseding the
+// earlier three-bucket version), expressed as close to a pure function of
+// match.state as the actual requirements allow — recomputed on every
+// Realtime-driven re-render with no extra effect/mount logic of its own.
+// Four buckets over the match_state enum (MATCH_NOT_STARTED, DRAFT_STARTED,
+// DRAFT_COMPLETE, GAME_STARTED, GAME_FINISHED, SERIES_FINISHED,
+// TECHNICAL_PAUSE, CUSTOM — same set the admin live console uses):
+//  - "default": MATCH_NOT_STARTED (nothing live yet — switcher, stream,
+//    moment list, full player/role roster) AND GAME_FINISHED (the
+//    in-between-games intermission once one game of a Bo3+ ends but the
+//    series hasn't — same layout, plus that just-finished game's Draft
+//    recap + Scoreboard bolted on below, see the render logic further
+//    down). Also used — see the selectedGame check below — whenever the
+//    switcher is pointed at an earlier, already-finished game while a
+//    later game in the series is actually the live one: the site owner's
+//    spec hedges this ("probably also") rather than stating it outright,
+//    so this is a bounded, literal reading of that hedge, not a full
+//    separate per-game state machine.
+//  - "draft": DRAFT_STARTED, DRAFT_COMPLETE.
+//  - "game": GAME_STARTED, TECHNICAL_PAUSE, CUSTOM — actively-playing
+//    states with a live scoreboard worth showing.
+//  - "finished": SERIES_FINISHED — the one state that's actually terminal.
+type LayoutBucket = "default" | "draft" | "game" | "finished";
+function layoutBucketFor(state: string, selectedGame: Game | null, liveGameId: string | null): LayoutBucket {
   if (state === "SERIES_FINISHED") return "finished";
-  if (state === "MATCH_NOT_STARTED" || state === "DRAFT_STARTED" || state === "DRAFT_COMPLETE") return "draft";
+  if (selectedGame && selectedGame.id !== liveGameId && selectedGame.status === "finished") return "default";
+  if (state === "DRAFT_STARTED" || state === "DRAFT_COMPLETE") return "draft";
+  if (state === "MATCH_NOT_STARTED" || state === "GAME_FINISHED") return "default";
   return "game";
 }
 type Game = {
@@ -465,16 +471,16 @@ export default function PublicMatchPage() {
   }
   if (!match) return <main className="min-h-screen flex items-center justify-center text-white/50 text-sm">Loading...</main>;
 
-  // Drives which of the three layouts renders below — recomputed on every
+  // Drives which of the four layouts renders below — recomputed on every
   // render straight from match.state (itself kept fresh by the Realtime
   // subscription above), so a state transition reflows the page the moment
   // the row changes with no reload and no separate effect to keep in sync.
-  const layoutBucket = layoutBucketFor(match.state);
+  const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
+  const liveGameId = games.find((g) => g.status !== "finished")?.id ?? games[games.length - 1]?.id ?? null;
+  const layoutBucket = layoutBucketFor(match.state, selectedGame, liveGameId);
 
   const teamAId = match.team_a?.id;
   const teamBId = match.team_b?.id;
-
-  const selectedGame = games.find((g) => g.id === selectedGameId) ?? null;
 
   // Ticks up client-side between OCR reads instead of only jumping every
   // capture interval — current_time_updated_at (OCR) / manual_time_started_at

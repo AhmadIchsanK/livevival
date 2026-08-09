@@ -115,6 +115,30 @@ function renderCard({
   const isLandscape = ratio === "landscape";
   const ticks = tickMarks(scale);
 
+  // Safe-margin convention (confirmed via real rendered screenshots showing
+  // footer text cutting through the last ban row's labels in BOTH
+  // orientations): top/bottom margin is scaled off the canvas HEIGHT so it
+  // reads the same proportionally in both ratios (64px on portrait's
+  // 1920-tall canvas == ~36px on landscape's 1080-tall one, the same 3.3%).
+  // Left/right margin is intentionally NOT the same 64*scale value in
+  // landscape — that would be ~36px on a 1920-wide canvas (1.9%), way
+  // tighter than portrait's 64px on its 1080-wide canvas (5.9%). marginX
+  // uses that same 5.9%-of-width ratio so landscape gets a proportionally
+  // equivalent side margin (~114px, rounded to 120) instead of an
+  // accidentally-thin one inherited from the height-based scale factor.
+  const marginY = 64 * scale;
+  const marginX = isLandscape ? 120 : 64 * scale;
+  // Landscape-only size boosts so the wider canvas's extra horizontal room
+  // shows up as bigger, more prominent content instead of empty black space
+  // between the two team columns (confirmed via a rough height budget: even
+  // after these boosts, landscape's content column comes in ~200px under
+  // its 1080px-tall frame, so there's no risk of pushing bans/picks into
+  // the footer). heroBoost enlarges pick/ban hero portraits and their
+  // internal gaps; logoBoost enlarges the team logo plates in the score bar.
+  // Both are 1 (no-op) in portrait so this never touches portrait's sizing.
+  const heroBoost = isLandscape ? 1.4 : 1;
+  const logoBoost = isLandscape ? 1.25 : 1;
+
   // Every hero portrait sits on a light plate with a signal-colored ring —
   // the same "logo/icon always gets a backing box" rule used everywhere
   // else on the site (components/TeamLogo.tsx). That component samples the
@@ -245,15 +269,15 @@ function renderCard({
       </div>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
         {subLabel("Picks")}
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 20 * scale }}>
-          {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i, 128 * scale, 4)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 20 * scale * heroBoost }}>
+          {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i, 128 * scale * heroBoost, 4)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
         </div>
       </div>
       {bans.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
           {subLabel("Bans")}
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 16 * scale }}>
-            {bans.map((p, i) => heroPortrait(p, i, 92 * scale, 3))}
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 16 * scale * heroBoost }}>
+            {bans.map((p, i) => heroPortrait(p, i, 92 * scale * heroBoost, 3))}
           </div>
         </div>
       )}
@@ -268,7 +292,7 @@ function renderCard({
         <span style={{ fontSize: 22 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks &amp; bans</span>
         {ticks.right}
       </div>
-      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 64 * scale : 48 * scale, width: "100%" }}>
+      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 80 * scale : 48 * scale, width: "100%" }}>
         {teamPickColumn(teamA?.name, teamAPicks, teamABans)}
         {teamPickColumn(teamB?.name, teamBPicks, teamBBans)}
       </div>
@@ -287,20 +311,20 @@ function renderCard({
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          width: 220 * scale,
-          height: 220 * scale,
+          width: 220 * scale * logoBoost,
+          height: 220 * scale * logoBoost,
           borderRadius: 32 * scale,
           background: "#f5f5f5",
           border: `${isWinner ? 7 : 2}px solid ${isWinner ? SIGNAL : "#ffffff2a"}`,
-          padding: 24 * scale,
+          padding: 24 * scale * logoBoost,
           boxShadow: isWinner ? `0 0 ${72 * scale}px ${SIGNAL}66` : "none",
         }}
       >
         {team?.logo_url ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={team.logo_url} alt="" width={164 * scale} height={164 * scale} style={{ objectFit: "contain" }} />
+          <img src={team.logo_url} alt="" width={164 * scale * logoBoost} height={164 * scale * logoBoost} style={{ objectFit: "contain" }} />
         ) : (
-          <span style={{ fontSize: 56 * scale, fontWeight: 700, color: INK }}>{(team?.name ?? "?").slice(0, 2).toUpperCase()}</span>
+          <span style={{ fontSize: 56 * scale * logoBoost, fontWeight: 700, color: INK }}>{(team?.name ?? "?").slice(0, 2).toUpperCase()}</span>
         )}
       </div>
       <span style={{ fontSize: 36 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
@@ -351,9 +375,9 @@ function renderCard({
       )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 48 * scale, width: "100%", marginTop: 14 * scale }}>
         {teamBox(teamA, aWins, winnerId === teamA?.id, Boolean(winnerId))}
-        <div style={{ display: "flex", alignItems: "center", gap: 28 * scale, fontSize: 160 * scale, fontWeight: 700, lineHeight: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 28 * scale, fontSize: 160 * scale * logoBoost, fontWeight: 700, lineHeight: 1 }}>
           <span style={{ color: winnerId === teamA?.id ? SIGNAL : "#ffffff" }}>{aWins}</span>
-          <span style={{ color: "#ffffff33", fontSize: 90 * scale }}>–</span>
+          <span style={{ color: "#ffffff33", fontSize: 90 * scale * logoBoost }}>–</span>
           <span style={{ color: winnerId === teamB?.id ? SIGNAL : "#ffffff" }}>{bWins}</span>
         </div>
         {teamBox(teamB, bWins, winnerId === teamB?.id, Boolean(winnerId))}
@@ -420,56 +444,84 @@ function renderCard({
             height: "100%",
             display: "flex",
             flexDirection: "column",
-            padding: `${64 * scale}px`,
+            paddingTop: marginY,
+            paddingBottom: marginY,
+            paddingLeft: marginX,
+            paddingRight: marginX,
           }}
         >
-          {/* Brand accent bar — an angular sliver of signal red across the
-              top, echoing the site's own .lv-clip-corner mark motif, so the
-              card reads as Livevival-branded even cropped to a thumbnail. */}
-          <div
-            style={{
-              display: "flex",
-              width: 120 * scale,
-              height: 8 * scale,
-              background: SIGNAL,
-              borderRadius: 4 * scale,
-              marginBottom: 28 * scale,
-            }}
-          />
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            {/* Real width/height needed — Satori doesn't do intrinsic image
-                sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={logoUrl} alt="Livevival" width={(isLandscape ? 168 : 142) * scale} height={(isLandscape ? 48 : 40) * scale} />
-            <span style={{ fontSize: 16 * scale, color: "#ffffff55", textTransform: "uppercase", letterSpacing: 3 }}>Match recap</span>
+          {/* Top and bottom safe-space, explicitly verified against the real
+              overlap bug (footer text cutting through the last ban row's
+              labels in both orientations): the OLD footer used `marginTop:
+              "auto"` to float to the bottom of this column. That only
+              reserves space when the column has genuine leftover height —
+              on a match with a full 5-pick/5-ban row for both teams, the
+              content group below can grow tall enough that there's no
+              leftover space left, so `auto` resolves to 0 and the footer
+              renders flush against (and on a still-taller render, painted
+              over) the last content row instead of below it.
+              The fix: everything ABOVE the footer (accent bar, header,
+              score/picks content) now lives in its own `flex: 1` region
+              with `overflow: "hidden"`. Because this region's parent
+              (the padded column above) has a definite height (the fixed
+              ImageResponse canvas), `flex: 1` here resolves correctly —
+              same reasoning already established for the landscape pick
+              columns' `flex: 1` above. That reserves the footer's own
+              height FIRST (the footer is a normal, non-growing flex child
+              sized after this region), guaranteeing a real gap between
+              content and footer on every render; on the rare
+              longer-than-usual match this clips excess content at the
+              bottom of the region instead of overlapping the footer —
+              clipped is a strictly safer failure mode than illegible
+              overlapping text.
+              Top clearance was checked too, not just assumed: the header
+              row (accent bar + logo/"Match recap" line) sits directly
+              below `marginY` of top padding with nothing else competing
+              for that space, so it already had adequate top safe-space in
+              both orientations before this change — left as-is. */}
+          <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
+            {/* Brand accent bar — an angular sliver of signal red across the
+                top, echoing the site's own .lv-clip-corner mark motif, so the
+                card reads as Livevival-branded even cropped to a thumbnail. */}
+            <div
+              style={{
+                display: "flex",
+                width: 120 * scale,
+                height: 8 * scale,
+                background: SIGNAL,
+                borderRadius: 4 * scale,
+                marginBottom: 28 * scale,
+              }}
+            />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              {/* Real width/height needed — Satori doesn't do intrinsic image
+                  sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={logoUrl} alt="Livevival" width={(isLandscape ? 168 : 142) * scale} height={(isLandscape ? 48 : 40) * scale} />
+              <span style={{ fontSize: 16 * scale, color: "#ffffff55", textTransform: "uppercase", letterSpacing: 3 }}>Match recap</span>
+            </div>
+
+            {/* Landscape gets a genuine two-column recomposition for the
+                picks (each team's 5 heroes as their own row, side by side)
+                instead of the portrait's stacked rows — matches the two
+                reference layouts rather than scaling one design uniformly.
+                Top-anchored (not `justifyContent: "center"` inside a grown
+                flex container) — centering a content block shorter than the
+                available height left a large dead gap above the tournament
+                line on a real render; a fixed top offset plus generous
+                between-section gaps fills the frame in a way that's
+                predictable regardless of how much content each match has. */}
+            <div style={{ display: "flex", flexDirection: "column", gap: isLandscape ? 64 * scale : 56 * scale, marginTop: 56 * scale }}>
+              {scoreBar}
+              {finalPicksBlock}
+            </div>
           </div>
 
-          {/* Landscape gets a genuine two-column recomposition for the
-              picks (each team's 5 heroes as their own row, side by side)
-              instead of the portrait's stacked rows — matches the two
-              reference layouts rather than scaling one design uniformly.
-              Top-anchored (not `justifyContent: "center"` inside a grown
-              flex container) — centering a content block shorter than the
-              available height left a large dead gap above the tournament
-              line on a real render; a fixed top offset plus generous
-              between-section gaps fills the frame in a way that's
-              predictable regardless of how much content each match has. */}
-          <div style={{ display: "flex", flexDirection: "column", gap: isLandscape ? 64 * scale : 56 * scale, marginTop: 56 * scale }}>
-            {scoreBar}
-            {finalPicksBlock}
-          </div>
-
-          {/* `marginTop: "auto"` (not `justifyContent: "space-between"` on the
-              whole padding container, and not `flex: 1` + `justifyContent:
-              "center"` on the content group above — the exact combination
-              that caused the dead-gap-above-the-tournament-line bug
-              documented above) pushes just this footer to the bottom of the
-              column, whatever height the score/picks content above happens
-              to take up. A normal match now also renders bans (not just
-              picks), so the content block itself runs taller than before —
-              between that and the footer no longer floating with a bare gap
-              underneath it, a match with fewer games/picks doesn't read as
-              an unfinished card with blank space at the bottom. */}
+          {/* Footer is now a plain (non-growing) flex child that always
+              renders right after the `flex: 1` region above, i.e. always
+              `marginY` above the canvas's bottom edge regardless of how
+              tall the content above is — see the safe-space comment above
+              for why this replaced the old `marginTop: "auto"` approach. */}
           <div
             style={{
               display: "flex",
@@ -477,7 +529,7 @@ function renderCard({
               justifyContent: "space-between",
               borderTop: "1px solid #ffffff1a",
               paddingTop: 20 * scale,
-              marginTop: "auto",
+              marginTop: 28 * scale,
             }}
           >
             <span style={{ fontSize: 18 * scale, color: "#ffffff55", letterSpacing: 1 }}>livevival-sigma.vercel.app</span>

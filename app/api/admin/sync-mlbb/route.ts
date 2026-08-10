@@ -4,7 +4,7 @@ import { syncMLBBDataToDatabase } from "@/services/mlbb-liquipedia-sync";
 import { recordQueryTime, recordError } from "@/lib/metrics";
 import { clearQueryCache } from "@/lib/queryCache";
 
-export const maxDuration = 600; // 10 minutes for sync operations
+export const maxDuration = 300; // 5 minutes max for Vercel Free tier
 
 export async function POST(req: NextRequest) {
   const startTime = Date.now();

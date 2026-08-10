@@ -6196,17 +6196,35 @@ export default function LiveConsolePage() {
                   {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
                     <HeroIcon url={heroes.find((h) => h.name === stat?.hero_name)!.icon_url} name={stat?.hero_name} size="xs" className="-mr-1" />
                   )}
-                  <select
-                    value={stat?.hero_name ?? ""}
-                    onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
-                    disabled={!scoreboardEditable}
-                    className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
-                  >
-                    <option value="">Hero</option>
-                    {heroes.map((h) => (
-                      <option key={h.id} value={h.name}>{h.name}</option>
-                    ))}
-                  </select>
+                  {/* Once this player has a locked-in pick (hero_picks_bans),
+                      the Draft board above is the single place to correct
+                      their hero — that edit already propagates here via
+                      updateStat (see correctPickBanHero/assignHeroToPlayer),
+                      so this dropdown used to be a second, independent way
+                      to set the exact same field: pick a wrong hero here and
+                      it silently disagreed with the Draft board's own record
+                      until the next full reload. Read-only display instead.
+                      Falls back to the dropdown only when there's no pick to
+                      read from yet (Normal/Liquipedia matches with no local
+                      draft tracking, or a substitute added straight to the
+                      scoreboard) — that's still the only place to set it. */}
+                  {pickBans.some((pb) => pb.type === "pick" && pb.player_id === p.id) ? (
+                    <span className="w-24 truncate text-xs" title="Set from the Draft board above — correct it there">
+                      {stat?.hero_name || "—"}
+                    </span>
+                  ) : (
+                    <select
+                      value={stat?.hero_name ?? ""}
+                      onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
+                      disabled={!scoreboardEditable}
+                      className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
+                    >
+                      <option value="">Hero</option>
+                      {heroes.map((h) => (
+                        <option key={h.id} value={h.name}>{h.name}</option>
+                      ))}
+                    </select>
+                  )}
                   {(["kills", "deaths", "assists"] as const).map((field) => (
                     <input
                       key={field}

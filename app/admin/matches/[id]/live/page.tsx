@@ -5070,6 +5070,22 @@ export default function LiveConsolePage() {
           style={{ width: "100%" }}
         >
           <div className="space-y-6 p-3 lg:p-4">
+            {/* Paused-state banner — the console already halts capture and
+                locks Scoreboard/Objectives edits during TECHNICAL_PAUSE
+                (see captureActive/SCOREBOARD_EDITABLE_PHASES above); this
+                just makes that state impossible to miss at a glance, per
+                the blueprint's "clearly indicate paused state" ask. */}
+            {match.state === "TECHNICAL_PAUSE" && (
+              <div
+                className="rounded px-3 py-2 text-xs font-semibold text-amber-200 border-2 border-amber-400/60"
+                style={{
+                  backgroundImage:
+                    "repeating-linear-gradient(45deg, rgba(251,191,36,0.12), rgba(251,191,36,0.12) 10px, rgba(251,191,36,0.04) 10px, rgba(251,191,36,0.04) 20px)",
+                }}
+              >
+                ⏸ Technical pause — clock frozen, capture halted. Resume with the phase stepper above once play restarts.
+              </div>
+            )}
             {/* Everything a live game needs constantly — declare the
                 winner, log an objective, log a moment — sits at the very
                 top of this column, ahead of the draft board and the rest

@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(
       {
-        matches: data as CachedMatch[] | null,
+        matches: data as unknown as CachedMatch[] | null,
         hasMore,
         duration: `${duration}ms`,
         timestamp: new Date().toISOString(),

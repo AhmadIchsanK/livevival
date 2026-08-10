@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+// CSS custom properties aren't part of React's CSSProperties type — this
+// widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
+// without an `any` cast.
+type CSSPropertiesWithVars = CSSProperties & Record<`--${string}`, string>;
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
@@ -216,60 +220,21 @@ export default function LiveConsolePage() {
   const mmssTimestamp = () => `${String(minute).padStart(2, "0")}:${String(secondOfMinute).padStart(2, "0")}`;
   const [error, setError] = useState<string | null>(null);
 
-  // Three-column layout resize state with localStorage persistence
-  const [menuOpen, setMenuOpen] = useState(true);
-  const [greenWidth, setGreenWidth] = useState(400);
-  const [yellowWidth, setYellowWidth] = useState(600);
-  const [redWidth, setRedWidth] = useState(400);
-  const [isResizing, setIsResizing] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Measures the sticky top header's real rendered height (it wraps to a
+  // different number of lines depending on match state/badges) so the
+  // monitor pane's own `sticky top-[...]` offset in the 60/40 layout below
+  // can sit exactly beneath it instead of guessing a fixed pixel value.
+  const adminHeaderRef = useRef<HTMLDivElement>(null);
+  const [adminHeaderH, setAdminHeaderH] = useState(0);
   useEffect(() => {
-    const saved = localStorage.getItem("match-admin-column-widths");
-    if (saved) {
-      try {
-        const { green, yellow, red } = JSON.parse(saved);
-        setGreenWidth(green);
-        setYellowWidth(yellow);
-        setRedWidth(red);
-      } catch {}
-    }
+    const el = adminHeaderRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => setAdminHeaderH(entry.contentRect.height));
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
-
-  useEffect(() => {
-    localStorage.setItem(
-      "match-admin-column-widths",
-      JSON.stringify({ green: greenWidth, yellow: yellowWidth, red: redWidth })
-    );
-  }, [greenWidth, yellowWidth, redWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-    const startX = 0;
-    const startGreen = greenWidth;
-    const startYellow = yellowWidth;
-    const startRed = redWidth;
-
-    function handleMouseMove(e: MouseEvent) {
-      const delta = e.clientX - (startX || e.clientX);
-      if (isResizing === "green-yellow") {
-        setGreenWidth(Math.max(300, startGreen + delta));
-      } else if (isResizing === "yellow-red") {
-        setYellowWidth(Math.max(300, startYellow + delta));
-      }
-    }
-
-    function handleMouseUp() {
-      setIsResizing(null);
-    }
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isResizing, greenWidth, yellowWidth, redWidth]);
 
   // ── Undo (Ctrl+Z) for the most recently logged event ──────────────────
   // Deliberately single-level, not a full undo stack — every write site
@@ -4114,20 +4079,14 @@ export default function LiveConsolePage() {
   }
 
   return (
-    <div className="text-white space-y-8 max-w-7xl">
+    <div className="text-white space-y-8 max-w-7xl" style={{ "--lv-admin-header-h": `${adminHeaderH}px` } as CSSPropertiesWithVars}>
       {/* Sticky — phase changes and the stream link are the two things an
           admin needs reachable no matter how far down the page they've
-          scrolled (moment log, scoreboard, calibration UI are all long). */}
-      <div className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
-        <div className="flex items-center gap-2 mb-2">
-          <button
-            onClick={() => setMenuOpen(!menuOpen)}
-            className="text-xl p-1.5 hover:bg-white/10 rounded transition-colors"
-            title={menuOpen ? "Hide menu" : "Show menu"}
-          >
-            ☰
-          </button>
-        </div>
+          scrolled (moment log, scoreboard, calibration UI are all long).
+          Its rendered height is measured below (adminHeaderH) so the
+          monitor pane's own sticky offset can sit exactly below it
+          instead of guessing a fixed pixel value against wrapping text. */}
+      <div ref={adminHeaderRef} className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
         <h1 className="lv-heading text-lg flex items-center gap-2.5 flex-wrap">
           {/* Each team's own little "live-score box" — logo + name, with
               the last-captured net worth pinned to its top-right corner
@@ -4332,21 +4291,20 @@ export default function LiveConsolePage() {
         )}
       </div>
 
-      {/* Three-column layout with resize handles - responsive for mobile/tablet */}
-      <div
-        className="flex flex-col lg:flex-row gap-0 rounded-lg border border-white/10 overflow-hidden"
-        style={{
-          height: "auto",
-          minHeight: "calc(100vh - 300px)"
-        }}
-      >
-        {/* GREEN COLUMN: Livestream & Capture - Mobile: full width, lg: resizable */}
+      {/* THE MONITOR (60%) + ACTION DECK (40%) — a fixed two-pane split
+          instead of the old three-column resizable layout. The monitor
+          (stream + OCR capture) is pinned on large screens so it's always
+          in view; the action deck is the one scrollable column holding
+          everything else, phase-collapsed further down so only what's
+          relevant to the current match phase is expanded by default. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[60fr_40fr] lg:items-start gap-4 lg:gap-0 rounded-lg border border-white/10 overflow-hidden">
+        {/* THE MONITOR — livestream + OCR capture. Sticky on large screens
+            so the stream never scrolls out of view while the action deck
+            scrolls independently beside it. */}
         <div
-          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full lg:w-auto max-w-full"
+          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full max-w-full lg:sticky lg:top-[calc(var(--lv-admin-header-h,0px)+1px)] lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
           style={{
-            width: menuOpen ? greenWidth : 40,
-            transition: menuOpen ? "none" : "width 0.3s",
-            minWidth: "40px"
+            width: "100%",
           }}
         >
           <div className="p-3 lg:p-4 space-y-4">
@@ -5103,21 +5061,13 @@ export default function LiveConsolePage() {
           </div>
         </div>
 
-        {/* Resize handle GREEN-YELLOW - Hidden on mobile */}
+        {/* ACTION DECK (40%) — the one scrollable column. Yellow (game
+            data) and Red (moment timeline) merge into this single pane;
+            phase-relevant content is prioritized further down instead of
+            splitting into more side-by-side columns. */}
         <div
-          className="hidden lg:block w-1 bg-white/10 hover:bg-signal/50 cursor-col-resize transition-colors"
-          onMouseDown={() => setIsResizing("green-yellow")}
-          style={{ display: menuOpen ? "block" : "none" }}
-        />
-
-        {/* YELLOW COLUMN: Game Data (Middle) - Mobile: full width, lg: resizable */}
-        <div
-          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full lg:w-auto flex-1 lg:flex-none max-w-full"
-          style={{
-            width: menuOpen ? yellowWidth : "flex-1",
-            transition: menuOpen ? "none" : "width 0.3s",
-            minWidth: "40px"
-          }}
+          className="flex flex-col overflow-y-auto w-full max-w-full lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
+          style={{ width: "100%" }}
         >
           <div className="space-y-6 p-3 lg:p-4">
             {/* Everything a live game needs constantly — declare the
@@ -6420,25 +6370,10 @@ export default function LiveConsolePage() {
       )}
 
           </div>
-        </div>
 
-        {/* Resize handle YELLOW-RED - Hidden on mobile */}
-        <div
-          className="hidden lg:block w-1 bg-white/10 hover:bg-signal/50 cursor-col-resize transition-colors"
-          onMouseDown={() => setIsResizing("yellow-red")}
-          style={{ display: menuOpen ? "block" : "none" }}
-        />
-
-        {/* RED COLUMN: Moment Timeline (Right) - Mobile: full width, lg: resizable */}
-        <div
-          className="flex flex-col overflow-y-auto w-full lg:w-auto max-w-full"
-          style={{
-            width: menuOpen ? redWidth : 40,
-            minWidth: "40px",
-            transition: menuOpen ? "none" : "width 0.3s"
-          }}
-        >
-          <div className="p-3 lg:p-4 space-y-4">
+          {/* Moment Timeline — was its own third column, now the last
+              block inside the same scrollable action deck. */}
+          <div className="p-3 lg:p-4 space-y-4 border-t border-white/10">
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold text-sm">Moment Timeline</h3>

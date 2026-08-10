@@ -319,6 +319,7 @@ export default function PublicMatchPage() {
   const [recapPreviewOpen, setRecapPreviewOpen] = useState(false);
   const [screenshotPreview, setScreenshotPreview] = useState<Screenshot | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [recapRefreshKey, setRecapRefreshKey] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 1000);
@@ -705,7 +706,7 @@ export default function PublicMatchPage() {
     // no fallback double-prompt afterward.
     if (typeof navigator.canShare === "function") {
       try {
-        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}`);
+        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}&t=${recapRefreshKey}`);
         const blob = await res.blob();
         const file = new File([blob], "livevival-recap.png", { type: "image/png" });
         if (navigator.canShare({ files: [file] })) {
@@ -1510,7 +1511,8 @@ export default function PublicMatchPage() {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
+                key={recapRefreshKey}
+                src={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
                 alt="Match recap card"
                 className="w-full rounded"
               />
@@ -1531,7 +1533,7 @@ export default function PublicMatchPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <a
-                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
+                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
                   download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
                   className="lv-btn-primary inline-block !text-xs !py-1.5"
                 >
@@ -1542,6 +1544,13 @@ export default function PublicMatchPage() {
                 </button>
                 <button onClick={handleCopyLink} className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5">
                   {copied ? "Copied!" : "Copy link"}
+                </button>
+                <button
+                  onClick={() => setRecapRefreshKey((k) => k + 1)}
+                  className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5"
+                  title="Regenerate recap image with latest data"
+                >
+                  🔄 Refresh
                 </button>
               </div>
             </div>
@@ -1557,13 +1566,14 @@ export default function PublicMatchPage() {
           <div className="max-w-lg w-full flex flex-col items-center gap-4" onClick={(e) => e.stopPropagation()}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
+              key={recapRefreshKey}
+              src={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
               alt="Match recap card preview"
               className="w-full rounded lv-card-flush"
             />
             <div className="flex flex-wrap gap-2 justify-center">
               <a
-                href={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
+                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
                 download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
                 className="lv-btn-primary inline-block !text-xs !py-1.5"
               >

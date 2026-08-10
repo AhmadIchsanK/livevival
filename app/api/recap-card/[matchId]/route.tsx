@@ -150,8 +150,8 @@ function renderCard({
   // its 1080px-tall frame, so there's no risk of pushing bans/picks into
   // the footer). heroBoost enlarges pick/ban hero portraits and their
   // internal gaps; logoBoost enlarges the team logo plates in the score bar.
-  // Both are 1 (no-op) in portrait so this never touches portrait's sizing.
-  const heroBoost = isLandscape ? 1.4 : 1;
+  // Portrait uses 0.9 to fit all 5 picks + 5 bans per team without clipping.
+  const heroBoost = isLandscape ? 1.4 : 0.9;
   const logoBoost = isLandscape ? 1.25 : 1;
 
   // Every hero portrait sits on a light plate with a signal-colored ring —

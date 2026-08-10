@@ -1,17 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
-// Broadcast-style pick/ban overlay for the admin live console's Draft
-// phase — a presentation layer on top of the same hero_picks_bans rows the
-// plain "Hero picks & bans" form below already reads/writes. This never
-// writes to the DB itself except through the two callbacks
-// (onCorrectPick/nothing else) — turn order, sequencing, and the actual
-// insert/delete of a pick or ban all stay owned by the draft-simulation
-// logic in the page itself.
+// Broadcast-style pick/ban board for the admin live console's Draft phase —
+// and the SINGLE editing surface for hero_picks_bans, not just a read-only
+// presentation layer. Every slot is directly interactive: click a filled
+// slot to correct it (auto-swapping with a teammate if the new hero is
+// already theirs), click an empty slot to add a fresh pick/ban for that
+// exact player/team. This replaces what used to be three separate,
+// disconnected editors (a manual Team/Type/Hero/Log form, a drag-and-drop
+// swap grid, and a chip list with delete buttons) — see the "Hero picks &
+// bans" section of the live console page for the callback wiring
+// (onSlotClick) and the shared hero-picker modal all three actions open.
 
 export type DraftOverlayPlayer = {
   id: string;
@@ -28,6 +30,13 @@ export type DraftOverlayPickBan = {
   type: "pick" | "ban";
   pick_order: number | null;
 };
+// Discriminated union covering every write the board can trigger — passed
+// to the page's single onSlotClick handler, which opens the shared hero
+// picker modal already targeted at the right action.
+export type DraftOverlaySlotAction =
+  | { mode: "correct"; pb: DraftOverlayPickBan; label: string }
+  | { mode: "add-pick"; teamId: string; playerId: string; label: string }
+  | { mode: "add-ban"; teamId: string; label: string };
 
 // Same no-image fallback language as HeroIcon (rounded-lg bg-white/5 border
 // border-white/10, shrink-0) — just with initials instead of an empty box,
@@ -51,12 +60,6 @@ function PlayerPhoto({ url, name, size }: { url: string | null | undefined; name
   );
 }
 
-function mmss(totalSeconds: number) {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
 function PlayerSlot({
   player,
   team,
@@ -64,6 +67,7 @@ function PlayerSlot({
   heroIconUrl,
   size,
   onClick,
+  addable,
 }: {
   player: DraftOverlayPlayer;
   team: DraftOverlayTeam;
@@ -71,20 +75,30 @@ function PlayerSlot({
   heroIconUrl: string | null | undefined;
   size: "md" | "lg";
   onClick?: () => void;
+  // Empty slot, but still clickable — dashed ring + a small "+" badge so it
+  // reads as "click to add" instead of looking like an inert placeholder.
+  addable?: boolean;
 }) {
   const Wrapper = onClick ? "button" : "div";
   return (
     <Wrapper
       type={onClick ? "button" : undefined}
       onClick={onClick}
-      title={onClick ? `Correct ${player.ign}'s pick` : undefined}
+      title={onClick ? (pick ? `Correct ${player.ign}'s pick` : `Add a pick for ${player.ign}`) : undefined}
       className={`flex flex-col items-center gap-1 w-14 sm:w-[4.5rem] shrink-0 ${onClick ? "cursor-pointer group" : ""}`}
     >
       <div className={`relative ${onClick ? "transition-transform group-hover:scale-105" : ""}`}>
         {pick ? (
           <HeroIcon url={heroIconUrl} name={pick.hero_name} size={size} />
         ) : (
-          <PlayerPhoto url={player.photo_url} name={player.ign} size={size} />
+          <div className={addable ? "rounded-lg ring-1 ring-dashed ring-white/20 group-hover:ring-signal/60" : ""}>
+            <PlayerPhoto url={player.photo_url} name={player.ign} size={size} />
+          </div>
+        )}
+        {addable && (
+          <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-white/10 border border-white/20 text-[10px] leading-4 text-center text-white/50 group-hover:text-signal group-hover:border-signal/60">
+            +
+          </span>
         )}
         {team && (
           <div className="absolute -bottom-1.5 -right-1.5 scale-[0.55] origin-bottom-right drop-shadow">
@@ -102,8 +116,30 @@ function PlayerSlot({
   );
 }
 
-function BanSlot({ ban, heroIconUrl, onClick }: { ban: DraftOverlayPickBan | undefined; heroIconUrl: string | null | undefined; onClick?: () => void }) {
-  if (!ban) return <div className="w-6 h-6 rounded border border-dashed border-white/10 shrink-0" />;
+function BanSlot({
+  ban,
+  heroIconUrl,
+  onClick,
+  addable,
+}: {
+  ban: DraftOverlayPickBan | undefined;
+  heroIconUrl: string | null | undefined;
+  onClick?: () => void;
+  addable?: boolean;
+}) {
+  if (!ban) {
+    return (
+      <button
+        type="button"
+        disabled={!onClick}
+        onClick={onClick}
+        title={onClick ? "Add a ban" : undefined}
+        className={`w-6 h-6 rounded border border-dashed shrink-0 ${
+          addable ? "border-white/25 hover:border-signal/60 hover:bg-signal/10 cursor-pointer" : "border-white/10"
+        }`}
+      />
+    );
+  }
   const Wrapper = onClick ? "button" : "div";
   return (
     <Wrapper type={onClick ? "button" : undefined} onClick={onClick} title={onClick ? `Correct ban: ${ban.hero_name}` : ban.hero_name}>
@@ -124,9 +160,8 @@ export function DraftOverlay({
   turnSide,
   turnLabel,
   stepProgress,
-  turnKey,
   interactive,
-  onCorrectPick,
+  onSlotClick,
 }: {
   leftTeam: DraftOverlayTeam;
   rightTeam: DraftOverlayTeam;
@@ -144,20 +179,13 @@ export function DraftOverlay({
   turnSide: "left" | "right" | null;
   turnLabel: string | null;
   stepProgress: string | null;
-  // Changes whenever the active turn changes — resets the cosmetic
-  // countdown. Not tied to any real deadline in the data model; purely a
-  // broadcast-style visual per the reference screenshots.
-  turnKey: string;
   interactive: boolean;
-  onCorrectPick: (pb: DraftOverlayPickBan, label: string) => void;
+  // Single dispatch point for every write the board can trigger — see
+  // DraftOverlaySlotAction. The page owns opening the shared hero-picker
+  // modal and the actual insert/update/swap logic; this component only
+  // ever reports "here's what was clicked."
+  onSlotClick: (action: DraftOverlaySlotAction) => void;
 }) {
-  const [countdown, setCountdown] = useState(30);
-  useEffect(() => {
-    setCountdown(30);
-    const iv = setInterval(() => setCountdown((c) => (c > 0 ? c - 1 : 0)), 1000);
-    return () => clearInterval(iv);
-  }, [turnKey]);
-
   function pickFor(playerId: string) {
     return pickBans.find((pb) => pb.type === "pick" && pb.player_id === playerId);
   }
@@ -171,7 +199,13 @@ export function DraftOverlay({
   function renderPlayers(playersList: DraftOverlayPlayer[], team: DraftOverlayTeam) {
     return playersList.map((p) => {
       const pick = pickFor(p.id);
-      const clickable = interactive && !!pick;
+      const onClick = !interactive
+        ? undefined
+        : pick
+        ? () => onSlotClick({ mode: "correct", pb: pick, label: `${p.ign} — ${pick.hero_name}` })
+        : team
+        ? () => onSlotClick({ mode: "add-pick", teamId: team.id, playerId: p.id, label: `${p.ign}${p.role ? ` (${p.role})` : ""}` })
+        : undefined;
       return (
         <PlayerSlot
           key={p.id}
@@ -180,7 +214,30 @@ export function DraftOverlay({
           pick={pick}
           heroIconUrl={pick ? heroIconFor(pick.hero_name) : null}
           size="lg"
-          onClick={clickable ? () => onCorrectPick(pick!, `${p.ign} — ${pick!.hero_name}`) : undefined}
+          onClick={onClick}
+          addable={!pick && !!onClick}
+        />
+      );
+    });
+  }
+
+  function renderBans(bans: DraftOverlayPickBan[], team: DraftOverlayTeam) {
+    return Array.from({ length: 5 }).map((_, i) => {
+      const ban = bans[i];
+      const onClick = !interactive
+        ? undefined
+        : ban
+        ? () => onSlotClick({ mode: "correct", pb: ban, label: `${team?.name ?? "Team"} ban — ${ban.hero_name}` })
+        : team
+        ? () => onSlotClick({ mode: "add-ban", teamId: team.id, label: `${team.name} — ban` })
+        : undefined;
+      return (
+        <BanSlot
+          key={i}
+          ban={ban}
+          heroIconUrl={ban ? heroIconFor(ban.hero_name) : null}
+          onClick={onClick}
+          addable={!ban && !!onClick}
         />
       );
     });
@@ -195,14 +252,7 @@ export function DraftOverlay({
           }`}
         >
           <div className="flex justify-around sm:justify-between gap-1 sm:gap-2 flex-wrap">{renderPlayers(leftPlayers, leftTeam)}</div>
-          <div className="flex justify-center gap-1">{Array.from({ length: 5 }).map((_, i) => (
-            <BanSlot
-              key={i}
-              ban={leftBans[i]}
-              heroIconUrl={leftBans[i] ? heroIconFor(leftBans[i].hero_name) : null}
-              onClick={interactive && leftBans[i] ? () => onCorrectPick(leftBans[i], `${leftTeam?.name ?? "Team"} ban — ${leftBans[i].hero_name}`) : undefined}
-            />
-          ))}</div>
+          <div className="flex justify-center gap-1">{renderBans(leftBans, leftTeam)}</div>
           <div
             className={`h-1 rounded-full transition-opacity ${turnSide === "left" ? "bg-signal opacity-100 shadow-[0_0_10px_2px_rgba(227,30,42,0.6)]" : "opacity-0"}`}
           />
@@ -211,7 +261,6 @@ export function DraftOverlay({
         <div className="shrink-0 flex flex-col items-center justify-start pt-2 sm:pt-4 px-2 sm:px-5 gap-1 text-center">
           <span className="text-[9px] sm:text-[10px] tracking-widest text-white/40 uppercase">{stageLabel}</span>
           <span className="text-base sm:text-xl font-display font-bold uppercase tracking-wide">{phaseLabel}</span>
-          <span className="text-2xl sm:text-3xl font-mono font-bold tabular-nums text-signal">{mmss(countdown)}</span>
           {turnLabel && (
             <span className="text-[10px] text-white/50">
               {turnLabel}
@@ -226,21 +275,16 @@ export function DraftOverlay({
           }`}
         >
           <div className="flex justify-around sm:justify-between gap-1 sm:gap-2 flex-wrap">{renderPlayers(rightPlayers, rightTeam)}</div>
-          <div className="flex justify-center gap-1">{Array.from({ length: 5 }).map((_, i) => (
-            <BanSlot
-              key={i}
-              ban={rightBans[i]}
-              heroIconUrl={rightBans[i] ? heroIconFor(rightBans[i].hero_name) : null}
-              onClick={interactive && rightBans[i] ? () => onCorrectPick(rightBans[i], `${rightTeam?.name ?? "Team"} ban — ${rightBans[i].hero_name}`) : undefined}
-            />
-          ))}</div>
+          <div className="flex justify-center gap-1">{renderBans(rightBans, rightTeam)}</div>
           <div
             className={`h-1 rounded-full transition-opacity ${turnSide === "right" ? "bg-signal opacity-100 shadow-[0_0_10px_2px_rgba(227,30,42,0.6)]" : "opacity-0"}`}
           />
         </div>
       </div>
       {interactive && (
-        <p className="mt-2 text-center text-[10px] text-white/30">Click a locked-in pick or ban to correct which hero it was.</p>
+        <p className="mt-2 text-center text-[10px] text-white/30">
+          Click any slot — filled to correct it, empty to add a pick or ban.
+        </p>
       )}
     </div>
   );

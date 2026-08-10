@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
-import { DraftOverlay, type DraftOverlayPickBan } from "@/components/DraftOverlay";
+import { DraftOverlay, type DraftOverlayPickBan, type DraftOverlaySlotAction } from "@/components/DraftOverlay";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
 
@@ -699,11 +699,7 @@ export default function LiveConsolePage() {
   // player_id is required for picks (so the console can show who's
   // actually playing this game, not the whole roster) and left null for
   // bans, which are team-level decisions rather than one player's.
-  const [pbTeam, setPbTeam] = useState("");
-  const [pbType, setPbType] = useState<"pick" | "ban">("ban");
-  const [pbPlayer, setPbPlayer] = useState("");
-  const [pbHero, setPbHero] = useState("");
-  // Shared by both the manual "Hero picks & bans" form and the OCR/AI-vision
+  // Shared by both the draft board's write paths and the OCR/AI-vision
   // draft-detection push flow (commitDraftAction below) — every pick/ban,
   // however it got logged, should show up in the Moment list without a
   // separate manual step.
@@ -730,28 +726,29 @@ export default function LiveConsolePage() {
     if (error) setError(`Failed to log ${type} to the moment list: ${error.message}`);
   }
 
-  async function logPickBan() {
-    if (!pbTeam || !pbHero || !game) return;
-    if (pbType === "pick" && !pbPlayer) return;
-    // Same-team hero uniqueness — two players on one team can't both be
-    // running the same hero in the same game.
-    if (pbType === "pick") {
-      const dupeHero = pickBans.some(
-        (pb) => pb.team_id === pbTeam && pb.type === "pick" && pb.hero_name.toLowerCase() === pbHero.toLowerCase()
-      );
-      if (dupeHero) {
-        setError(`${pbHero} is already picked by this team this game.`);
-        return;
-      }
+  // Add a brand-new pick, targeted at one exact player — the write behind
+  // clicking an empty player slot on the draft board. Deliberately not the
+  // "assign an already-logged, player-less pick" flow (that's
+  // assignHeroToPlayer, used by the post-simulation assignment section
+  // below) — this always inserts a fresh row, so it errors on a hero this
+  // team already has rather than silently double-logging it.
+  async function addPickForPlayer(teamId: string, playerId: string, heroName: string) {
+    if (!game) return;
+    const dupeHero = pickBans.some(
+      (pb) => pb.team_id === teamId && pb.type === "pick" && pb.hero_name.toLowerCase() === heroName.toLowerCase()
+    );
+    if (dupeHero) {
+      setError(`${heroName} is already picked by this team this game — if it just hasn't been assigned to a player yet, use the assignment list below instead.`);
+      return;
     }
     const payload = {
       game_id: game.id,
       match_id: matchId,
-      team_id: pbTeam,
-      player_id: pbType === "pick" ? pbPlayer : null,
-      hero_name: pbHero,
-      hero_id: heroes.find((h) => h.name === pbHero)?.id ?? null,
-      type: pbType,
+      team_id: teamId,
+      player_id: playerId,
+      hero_name: heroName,
+      hero_id: heroes.find((h) => h.name === heroName)?.id ?? null,
+      type: "pick" as const,
       pick_order: pickBans.length + 1,
       custom_player_name: null as string | null,
       custom_player_role: null as string | null,
@@ -760,10 +757,8 @@ export default function LiveConsolePage() {
       const newRow = { id: fakeId(), ...payload };
       pushPendingEdit({ table: "hero_picks_bans", action: "insert", before: null, after: newRow });
       setPickBans((prev) => [...prev, newRow as PickBan]);
-      await logPickBanMoment(pbType, pbTeam, pbHero, pbType === "pick" ? pbPlayer : null);
-      if (pbType === "pick" && pbPlayer) await updateStat(pbPlayer, "hero_name", pbHero);
-      setPbHero("");
-      setPbPlayer("");
+      await logPickBanMoment("pick", teamId, heroName, playerId);
+      await updateStat(playerId, "hero_name", heroName);
       return;
     }
     const { error } = await supabase.from("hero_picks_bans").insert(payload);
@@ -771,13 +766,50 @@ export default function LiveConsolePage() {
       setError(error.message);
       return;
     }
-    await logPickBanMoment(pbType, pbTeam, pbHero, pbType === "pick" ? pbPlayer : null);
+    await logPickBanMoment("pick", teamId, heroName, playerId);
     // A manual pick is the scoreboard's source of truth for that slot —
     // sync it immediately instead of leaving the two to drift until
     // someone edits K/D/A by hand.
-    if (pbType === "pick" && pbPlayer) await updateStat(pbPlayer, "hero_name", pbHero);
-    setPbHero("");
-    setPbPlayer("");
+    await updateStat(playerId, "hero_name", heroName);
+    loadAll();
+  }
+  // Add a brand-new ban for a team — the write behind clicking an empty ban
+  // slot on the draft board. Same insert shape as addPickForPlayer, minus a
+  // player.
+  async function addBanForTeam(teamId: string, heroName: string) {
+    if (!game) return;
+    const dupeHero = pickBans.some(
+      (pb) => pb.team_id === teamId && pb.type === "ban" && pb.hero_name.toLowerCase() === heroName.toLowerCase()
+    );
+    if (dupeHero) {
+      setError(`${heroName} is already banned by this team this game.`);
+      return;
+    }
+    const payload = {
+      game_id: game.id,
+      match_id: matchId,
+      team_id: teamId,
+      player_id: null as string | null,
+      hero_name: heroName,
+      hero_id: heroes.find((h) => h.name === heroName)?.id ?? null,
+      type: "ban" as const,
+      pick_order: pickBans.length + 1,
+      custom_player_name: null as string | null,
+      custom_player_role: null as string | null,
+    };
+    if (isContributor) {
+      const newRow = { id: fakeId(), ...payload };
+      pushPendingEdit({ table: "hero_picks_bans", action: "insert", before: null, after: newRow });
+      setPickBans((prev) => [...prev, newRow as PickBan]);
+      await logPickBanMoment("ban", teamId, heroName, null);
+      return;
+    }
+    const { error } = await supabase.from("hero_picks_bans").insert(payload);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    await logPickBanMoment("ban", teamId, heroName, null);
     loadAll();
   }
   async function deletePickBan(id: string) {
@@ -791,10 +823,9 @@ export default function LiveConsolePage() {
     if (error) setError(error.message);
     else loadAll();
   }
-  // Corrects which hero a single already-logged pick/ban row was for —
-  // the write path the DraftOverlay's click-a-slot correction UI uses
-  // (via the same Hero reference modal as the plain form below, just
-  // targeted at one existing row instead of filling the "add new" form).
+  // Corrects which hero a single already-logged pick/ban row was for — the
+  // write path the draft board's click-a-slot correction flow uses (via
+  // assignOrSwapHero below, which wraps this with the auto-swap check).
   // Same table, same update semantics as assignHeroToPlayer already uses
   // for the post-draft player assignment step — just correcting hero_name
   // instead of player_id.
@@ -818,6 +849,26 @@ export default function LiveConsolePage() {
     }
     if (pb.type === "pick" && pb.player_id) await updateStat(pb.player_id, "hero_name", heroName);
     loadAll();
+  }
+
+  // Correcting a pick's hero to one a teammate already has swaps the two
+  // instead of erroring or leaving a duplicate — replaces the old
+  // standalone drag-and-drop swap grid with the same click-to-correct flow
+  // used for a plain mistake. Bans never conflict this way (no per-player
+  // slot to steal from), so they always go through the plain correction.
+  async function assignOrSwapHero(pb: PickBan, heroName: string) {
+    if (pb.type === "pick") {
+      const conflicting = pickBans.find(
+        (other) => other.id !== pb.id && other.team_id === pb.team_id && other.type === "pick" && other.hero_name.toLowerCase() === heroName.toLowerCase()
+      );
+      if (conflicting) {
+        const previousHero = pb.hero_name;
+        await correctPickBanHero(pb, heroName);
+        await correctPickBanHero(conflicting, previousHero);
+        return;
+      }
+    }
+    await correctPickBanHero(pb, heroName);
   }
 
   // ── Scoreboard ──────────────────────────────────────────────────────
@@ -916,19 +967,37 @@ export default function LiveConsolePage() {
   // "add player" dropdown (for a substitute the scoreboard didn't already
   // pick up automatically).
   const [addPlayerSelect, setAddPlayerSelect] = useState<Record<string, string>>({});
-  // Pop-out hero reference — all hero icons/names at a glance for fast
+  // Pop-out hero picker — all hero icons/names at a glance for fast
   // pick/ban selection, since scrolling a plain <select> of 130+ heroes by
-  // name is slow mid-draft. Draft-phase only per its own purpose.
+  // name is slow mid-draft. This is now the ONLY place a hero gets chosen —
+  // every click on the draft board (correct a filled slot, add a pick to an
+  // empty player slot, add a ban to an empty ban slot) opens this same
+  // modal, just targeted differently via heroPickerTarget. Reference-only
+  // browsing (the "Hero reference" button) opens it with target null.
   const [showHeroPicker, setShowHeroPicker] = useState(false);
-  // Set when the Hero reference modal was opened from the DraftOverlay's
-  // click-a-slot correction flow rather than the plain "add new pick/ban"
-  // form — redirects the modal's click handler to correctPickBanHero for
-  // that one existing row instead of filling pbHero. Cleared whenever the
-  // modal closes any other way too, so a stray reopen never mis-targets.
-  const [heroPickerTarget, setHeroPickerTarget] = useState<{ pb: PickBan; label: string } | null>(null);
+  type HeroPickerTarget =
+    | { mode: "correct"; pb: PickBan; label: string }
+    | { mode: "add-pick"; teamId: string; playerId: string; label: string }
+    | { mode: "add-ban"; teamId: string; label: string };
+  const [heroPickerTarget, setHeroPickerTarget] = useState<HeroPickerTarget | null>(null);
   function closeHeroPicker() {
     setShowHeroPicker(false);
     setHeroPickerTarget(null);
+  }
+  // Single dispatch point for every DraftOverlay slot click — opens the
+  // shared hero picker already targeted at the right write (correct/add
+  // pick/add ban). See DraftOverlaySlotAction for the shape this handles.
+  function handleDraftSlotClick(action: DraftOverlaySlotAction) {
+    if (action.mode === "correct") {
+      const realPb = pickBans.find((p) => p.id === action.pb.id);
+      if (!realPb) return;
+      setHeroPickerTarget({ mode: "correct", pb: realPb, label: action.label });
+    } else if (action.mode === "add-pick") {
+      setHeroPickerTarget({ mode: "add-pick", teamId: action.teamId, playerId: action.playerId, label: action.label });
+    } else {
+      setHeroPickerTarget({ mode: "add-ban", teamId: action.teamId, label: action.label });
+    }
+    setShowHeroPicker(true);
   }
   // Reconciles this Hot match's hero picks/bans against Liquipedia's own
   // bracket record — see scripts/sync-hot-match-picks-bans.mjs for why this
@@ -1989,23 +2058,6 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  // Drag-and-drop hero/player re-assignment, post-draft — sits entirely on
-  // top of assignHeroToPlayer above (same write path the dropdown-based
-  // "Assign each picked hero" flow already uses), no separate write logic.
-  // Dropping player A's hero onto player B: B's pick row gets A's hero; if B
-  // already had a hero of their own, that pick row gets reassigned to A in
-  // the same gesture (a real swap, two calls to the same function) — if B
-  // had none yet, only the first call happens (a plain move).
-  async function handleHeroDropOnPlayer(draggedPickBanId: string, targetPlayerId: string) {
-    const draggedPb = pickBans.find((pb) => pb.id === draggedPickBanId);
-    if (!draggedPb || draggedPb.player_id === targetPlayerId) return;
-    const sourcePlayerId = draggedPb.player_id;
-    const targetPb = pickBans.find((pb) => pb.type === "pick" && pb.player_id === targetPlayerId);
-    await assignHeroToPlayer(draggedPb.id, targetPlayerId, draggedPb.hero_name);
-    if (targetPb && sourcePlayerId) {
-      await assignHeroToPlayer(targetPb.id, sourcePlayerId, targetPb.hero_name);
-    }
-  }
 
   // Adds a match-local custom player (a sub not in the `players` table at
   // all) directly onto an already-logged pick — sets custom_player_name/
@@ -3911,19 +3963,14 @@ export default function LiveConsolePage() {
       : "PICKING"
     : match.state === "DRAFT_COMPLETE"
     ? "FINAL ADJUSTMENTS"
+    : match.state === "GAME_STARTED"
+    ? "LIVE — CORRECTIONS"
     : "DRAFT PHASE";
   const overlayStageLabel = `${match.tournament?.name ?? "Draft"} · Game ${game.game_number}`;
   const overlayTurnLabel = draftSim ? draftStepLabel(draftSim.stepIndex) : null;
   const overlayStepProgress = draftSim ? `${draftSim.stepIndex + 1}/${DRAFT_SEQUENCE.length}` : null;
-  const overlayTurnKey = draftSim ? `${game.id}-${draftSim.stepIndex}` : `${game.id}-${match.state}`;
   function heroIconFor(heroName: string) {
     return heroes.find((h) => h.name === heroName)?.icon_url ?? null;
-  }
-  function openHeroPickerForCorrection(pb: DraftOverlayPickBan, label: string) {
-    const realPb = pickBans.find((p) => p.id === pb.id);
-    if (!realPb) return;
-    setHeroPickerTarget({ pb: realPb, label });
-    setShowHeroPicker(true);
   }
 
   async function toggleActiveRoster(playerId: string, next: boolean) {
@@ -5098,16 +5145,19 @@ export default function LiveConsolePage() {
         </div>
         {syncDraftStatus && <p className="text-xs text-white/50">{syncDraftStatus}</p>}
 
-        {/* Broadcast-style draft overlay — presentation layer on top of the
-            same pickBans/roster state the plain form and simulation grid
-            below read and write. Player photos flip to hero icons as each
-            pick lands (via pickBans' own player_id, set either by the
-            manual form immediately or by the post-sim "assign player"
-            step), the acting side glows while draftSim has a live turn,
-            and — once anything's editable — clicking a locked-in slot
-            reopens the same Hero reference modal targeted at that one row
-            instead of a fresh insert. */}
-        {DRAFT_PHASES.includes(match.state) && match.team_a && match.team_b && (
+        {/* Broadcast-style draft board — THE editing surface for
+            hero_picks_bans, not just a presentation layer. Player photos
+            flip to hero icons as each pick lands (via pickBans' own
+            player_id, set either by clicking an empty slot directly or by
+            the post-sim "assign player" step below), the acting side glows
+            while draftSim has a live turn, and — whenever editable —
+            clicking any slot opens the shared hero picker: filled slots to
+            correct (auto-swapping with a teammate if the new hero is
+            already theirs), empty slots to add a fresh pick/ban. Stays
+            mounted through GAME_STARTED too, purely for that
+            correct-by-click ability, since a hero can still turn out
+            misattributed after the game's already live. */}
+        {(DRAFT_PHASES.includes(match.state) || match.state === "GAME_STARTED") && match.team_a && match.team_b && (
           <DraftOverlay
             leftTeam={overlayLeftTeam}
             rightTeam={overlayRightTeam}
@@ -5120,9 +5170,8 @@ export default function LiveConsolePage() {
             turnSide={overlayTurnSide}
             turnLabel={overlayTurnLabel}
             stepProgress={overlayStepProgress}
-            turnKey={overlayTurnKey}
             interactive={pickBanEditable}
-            onCorrectPick={openHeroPickerForCorrection}
+            onSlotClick={handleDraftSlotClick}
           />
         )}
 
@@ -5166,12 +5215,14 @@ export default function LiveConsolePage() {
           </div>
         )}
 
-        {/* Draft ban/pick simulation — replaces OCR/AI hero-pick detection
-            entirely. Bans show no on-screen text (only an icon), so this
-            was always the riskiest OCR surface; the admin now logs each
-            step by hand from a searchable hero grid, in the exact fixed
-            order a tournament draft follows. */}
-        {DRAFT_PHASES.includes(match.state) && (
+        {/* Draft ban/pick simulation — an optional structured alternative to
+            clicking picks/bans onto the board above one at a time: enforces
+            the exact fixed order a tournament draft follows and logs each
+            step from a searchable hero grid. DRAFT_STARTED only — once the
+            draft is done (or the sim completes and auto-advances the
+            phase), this stays gone instead of resurfacing a confusing
+            "restart the draft?" prompt during Final Adjustments. */}
+        {match.state === "DRAFT_STARTED" && (
           <div className="border border-white/10 rounded-lg p-3 space-y-3">
             {!draftSim ? (
               <div className="flex flex-wrap items-center gap-2">
@@ -5306,64 +5357,10 @@ export default function LiveConsolePage() {
             </div>
           )}
 
-        {/* Drag-and-drop hero/player swap — post-draft, for correcting a
-            hero assigned to the wrong player without re-doing the dropdown
-            above. Drag a hero chip onto another player's row: if that
-            player already has a hero of their own, the two swap; if not,
-            it's just a move. Both write through handleHeroDropOnPlayer,
-            which is itself just 1-2 calls to assignHeroToPlayer — same
-            write path as the dropdown flow above, no new logic. */}
-        {(match.state === "DRAFT_COMPLETE" || match.state === "GAME_STARTED") && pickBans.some((pb) => pb.type === "pick" && pb.player_id) && (
-          <div className="border border-white/10 rounded-lg p-3 space-y-3">
-            <p className="text-xs text-white/50">Drag a hero onto another player to reassign or swap it:</p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {[match.team_a, match.team_b].map((team, idx) => {
-                if (!team) return <span key={idx} />;
-                const activeRoster = rosterFor(team.id).filter((p) => p.is_active_roster);
-                return (
-                  <div key={team.id} className="space-y-1">
-                    <p className="text-xs text-white/50">{team.name}</p>
-                    {activeRoster.map((p) => {
-                      const pb = pickBans.find((row) => row.type === "pick" && row.player_id === p.id);
-                      const hero = pb ? heroes.find((h) => h.name === pb.hero_name) : null;
-                      return (
-                        <div
-                          key={p.id}
-                          onDragOver={(e) => e.preventDefault()}
-                          onDrop={(e) => {
-                            e.preventDefault();
-                            const draggedId = e.dataTransfer.getData("text/pick-ban-id");
-                            if (draggedId) handleHeroDropOnPlayer(draggedId, p.id);
-                          }}
-                          className="flex items-center gap-2 border border-white/10 rounded px-2 py-1.5 bg-white/[0.02]"
-                        >
-                          <span className="text-xs w-24 truncate">{p.ign}{p.role ? ` (${p.role})` : ""}</span>
-                          {pb ? (
-                            <div
-                              draggable
-                              onDragStart={(e) => e.dataTransfer.setData("text/pick-ban-id", pb.id)}
-                              className="flex items-center gap-1.5 cursor-grab active:cursor-grabbing border border-white/10 rounded px-1.5 py-1 bg-white/5 hover:border-signal/50"
-                              title={`Drag to reassign ${pb.hero_name}`}
-                            >
-                              <HeroIcon url={hero?.icon_url} name={pb.hero_name} size="xs" />
-                              <span className="text-[11px]">{pb.hero_name}</span>
-                            </div>
-                          ) : (
-                            <span className="text-[11px] text-white/30">No hero — drop one here</span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Reused by the DraftOverlay's click-a-slot correction flow (see
-            onCorrectPick={openHeroPickerForCorrection} above), not just the
-            plain form below — so this modal is squarely in the "does the
+        {/* Reused by the draft board's click-a-slot flow (see
+            onSlotClick={handleDraftSlotClick} above) — clicking any filled
+            slot on the board reopens this same modal targeted at that one
+            row, so this modal is squarely in the "does the draft board
             draft overlay actually work on a phone" path. Outer padding
             shrunk below sm so the hero grid gets its full width back
             instead of losing 48px to backdrop padding it doesn't need on
@@ -5379,19 +5376,40 @@ export default function LiveConsolePage() {
             >
               <div className="flex items-center justify-between mb-3">
                 <h3 className="font-bold text-sm">
-                  {heroPickerTarget ? `Correct pick — ${heroPickerTarget.label}` : "Hero reference — click to select"}
+                  {!heroPickerTarget
+                    ? "Hero reference — browse only"
+                    : heroPickerTarget.mode === "correct"
+                    ? `Correct ${heroPickerTarget.pb.type} — ${heroPickerTarget.label}`
+                    : heroPickerTarget.mode === "add-pick"
+                    ? `Add pick — ${heroPickerTarget.label}`
+                    : `Add ban — ${heroPickerTarget.label}`}
                 </h3>
-                <button onClick={closeHeroPicker} className="text-white/40 hover:text-white/70 text-sm">✕</button>
+                <div className="flex items-center gap-2">
+                  {heroPickerTarget?.mode === "correct" && pickBanEditable && (
+                    <button
+                      onClick={() => {
+                        deletePickBan(heroPickerTarget.pb.id);
+                        closeHeroPicker();
+                      }}
+                      className="text-xs border border-red-500/30 text-red-400 rounded px-2 py-1 hover:bg-red-500/10"
+                    >
+                      🗑 Remove
+                    </button>
+                  )}
+                  <button onClick={closeHeroPicker} className="text-white/40 hover:text-white/70 text-sm">✕</button>
+                </div>
               </div>
               <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
                 {heroes.map((h) => (
                   <button
                     key={h.id}
                     onClick={() => {
-                      if (heroPickerTarget) {
-                        correctPickBanHero(heroPickerTarget.pb, h.name);
-                      } else {
-                        setPbHero(h.name);
+                      if (heroPickerTarget?.mode === "correct") {
+                        assignOrSwapHero(heroPickerTarget.pb, h.name);
+                      } else if (heroPickerTarget?.mode === "add-pick") {
+                        addPickForPlayer(heroPickerTarget.teamId, heroPickerTarget.playerId, h.name);
+                      } else if (heroPickerTarget?.mode === "add-ban") {
+                        addBanForTeam(heroPickerTarget.teamId, h.name);
                       }
                       closeHeroPicker();
                     }}
@@ -5404,99 +5422,6 @@ export default function LiveConsolePage() {
               </div>
             </div>
           </div>
-        )}
-        <div className="flex gap-2 items-end flex-wrap">
-          <select
-            value={pbTeam}
-            onChange={(e) => {
-              setPbTeam(e.target.value);
-              setPbPlayer("");
-            }}
-            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
-          >
-            <option value="">Team</option>
-            {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
-            {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
-          </select>
-          <select
-            value={pbType}
-            onChange={(e) => setPbType(e.target.value as "pick" | "ban")}
-            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
-          >
-            <option value="ban">Ban</option>
-            <option value="pick">Pick</option>
-          </select>
-          {pbType === "pick" && (
-            <select
-              value={pbPlayer}
-              onChange={(e) => setPbPlayer(e.target.value)}
-              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
-            >
-              <option value="">Player</option>
-              {pbTeam &&
-                rosterFor(pbTeam)
-                  .filter((p) => !pickBans.some((pb) => pb.player_id === p.id && pb.type === "pick"))
-                  .map((p) => (
-                    <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
-                  ))}
-            </select>
-          )}
-          <div className="flex items-center gap-1.5">
-            {heroes.find((h) => h.name === pbHero)?.icon_url && (
-              <HeroIcon url={heroes.find((h) => h.name === pbHero)!.icon_url} name={pbHero} size="xs" />
-            )}
-            <select
-              value={pbHero}
-              onChange={(e) => setPbHero(e.target.value)}
-              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
-            >
-              <option value="">Hero</option>
-              {heroes.map((h) => (
-                <option key={h.id} value={h.name}>{h.name}</option>
-              ))}
-            </select>
-          </div>
-          <button onClick={logPickBan} disabled={!pickBanEditable} className="lv-btn-ghost disabled:opacity-40">
-            Log
-          </button>
-        </div>
-
-        {[match.team_a, match.team_b].map((team, idx) =>
-          team ? (
-            <div key={team.id} className="space-y-1">
-              <p className="text-xs text-white/50">{team.name}</p>
-              <div className="flex flex-wrap gap-2 text-xs">
-                {pickBans
-                  .filter((pb) => pb.team_id === team.id && pb.type === "pick")
-                  .sort((a, b) => roleIndex(players.find((p) => p.id === a.player_id)?.role ?? null) - roleIndex(players.find((p) => p.id === b.player_id)?.role ?? null))
-                  .map((pb) => {
-                    const player = players.find((p) => p.id === pb.player_id);
-                    return (
-                      <span key={pb.id} className="px-2 py-1 rounded bg-emerald-500/20 flex items-center gap-1.5">
-                        ✅ {pb.hero_name}
-                        {player && <span className="text-white/50">({player.ign}{player.role ? ` · ${player.role}` : ""})</span>}
-                        {pickBanEditable && (
-                          <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
-                        )}
-                      </span>
-                    );
-                  })}
-                {pickBans
-                  .filter((pb) => pb.team_id === team.id && pb.type === "ban")
-                  .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0))
-                  .map((pb) => (
-                    <span key={pb.id} className="px-2 py-1 rounded bg-red-500/20 flex items-center gap-1.5">
-                      🚫 {pb.hero_name}
-                      {pickBanEditable && (
-                        <button onClick={() => deletePickBan(pb.id)} className="text-white/30 hover:text-red-400">✕</button>
-                      )}
-                    </span>
-                  ))}
-              </div>
-            </div>
-          ) : (
-            <span key={idx} />
-          )
         )}
       </section>
 

@@ -6411,75 +6411,16 @@ export default function LiveConsolePage() {
 
           </div>
 
-          {/* Moment Timeline — was its own third column, now the last
-              block inside the same scrollable action deck. */}
-          <div className="p-3 lg:p-4 space-y-4 border-t border-white/10">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-sm">Moment Timeline</h3>
-                {lastAction && (
-                  <button
-                    onClick={undoLastAction}
-                    className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 text-white/60"
-                    title="Ctrl+Z"
-                  >
-                    ⎌
-                  </button>
-                )}
-              </div>
-              <div className="space-y-1 max-h-96 overflow-y-auto">
-                {[...keyMoments].reverse().slice(0, 5).map((km) => {
-                  const player = players.find((p) => p.id === km.player_id);
-                  const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
-
-                  if (editingMomentId === km.id) {
-                    return (
-                      <div key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5 text-xs">
-                        <input
-                          value={editingMomentText}
-                          onChange={(e) => setEditingMomentText(e.target.value)}
-                          className="bg-white/10 border border-white/10 rounded px-1 py-0.5 text-xs flex-1"
-                          autoFocus
-                        />
-                        <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400">✓</button>
-                        <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400">✕</button>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div key={km.id} className={`px-2 py-1 rounded flex items-center gap-1.5 text-xs ${km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"}`}>
-                      <span className="flex-1 min-w-0 truncate">
-                        {km.is_key_moment && "⭐ "}
-                        {km.minute_mark}' {label}
-                        {km.screenshot_url && " 📸"}
-                      </span>
-                      <div className="flex gap-0.5 shrink-0">
-                        <button
-                          onClick={() => {
-                            setEditingMomentId(km.id);
-                            setEditingMomentText(label);
-                          }}
-                          className="text-white/30 hover:text-white/70 text-xs"
-                          title="Edit"
-                        >
-                          ✎
-                        </button>
-                        <button
-                          onClick={() => deleteKeyMoment(km.id)}
-                          className="text-white/30 hover:text-red-400 text-xs"
-                          title="Delete"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {keyMoments.length === 0 && <p className="text-xs text-white/40">No moments logged yet</p>}
-              </div>
-            </div>
-          </div>
+          {/* A second, compact "Moment Timeline" widget used to live here —
+              exact same keyMoments data, same edit/delete/undo, just the 5
+              most recent instead of the full scrollable list in the
+              "Moment Timeline" section above. It made sense back when this
+              was its own third column (a some-of-it-always-visible glance
+              panel while the fuller list sat elsewhere); now that both
+              live in the same scrollable action deck, one above the other,
+              it was showing the same moments twice with two separate edit
+              controls for the same rows. Removed — the section above is
+              the one Moment Timeline. */}
         </div>
       </div>
 

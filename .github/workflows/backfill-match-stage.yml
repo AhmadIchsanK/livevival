@@ -15,7 +15,16 @@ name: Backfill match stage (one-time)
 # workflow again later to pick up whatever tournaments are still left with
 # a null-stage match.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      tournament_slugs:
+        description: >-
+          Optional: comma-separated liquipedia_slug value(s) to backfill
+          stage for those tournaments only, bypassing table order. Leave
+          blank for the normal full pass over every tournament with a
+          null-stage match.
+        required: false
+        default: ""
 
 jobs:
   backfill:
@@ -31,3 +40,4 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TOURNAMENT_SLUGS: ${{ github.event.inputs.tournament_slugs }}

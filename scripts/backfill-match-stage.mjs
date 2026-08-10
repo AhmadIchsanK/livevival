@@ -163,18 +163,41 @@ async function getAllNullStageTournamentIds() {
 }
 
 async function main() {
-  const { tournamentIds, total } = await getAllNullStageTournamentIds();
-  console.log(`${total} match row(s) with stage IS NULL, across ${tournamentIds.length} tournament(s)`);
-  if (tournamentIds.length === 0) return;
+  // Optional manual override: TOURNAMENT_SLUGS="Games_of_the_Future/2026,..."
+  // processes just those tournaments, bypassing table order — same fix
+  // already applied to import-liquipedia-matches.mjs and
+  // refresh-finished-match-details.mjs for the identical failure mode (a
+  // large tournament list doesn't fit in one pass, so whichever ones sit
+  // late in table order can wait indefinitely for a full untargeted run to
+  // reach them).
+  const override = (process.env.TOURNAMENT_SLUGS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  const { data: tournaments, error: tourErr } = await supabase
-    .from("tournaments")
-    .select("id, name, liquipedia_slug")
-    .in("id", tournamentIds);
-  if (tourErr) throw tourErr;
+  let relevant;
+  if (override.length > 0) {
+    const { data: tournaments, error } = await supabase
+      .from("tournaments")
+      .select("id, name, liquipedia_slug")
+      .in("liquipedia_slug", override);
+    if (error) throw error;
+    relevant = tournaments ?? [];
+    console.log(`TOURNAMENT_SLUGS override: processing ${relevant.length} of ${override.length} explicitly requested tournament(s)`);
+  } else {
+    const { tournamentIds, total } = await getAllNullStageTournamentIds();
+    console.log(`${total} match row(s) with stage IS NULL, across ${tournamentIds.length} tournament(s)`);
+    if (tournamentIds.length === 0) return;
 
-  const relevant = (tournaments ?? []).filter((t) => t.liquipedia_slug);
-  console.log(`Processing ${relevant.length} tournament(s) with a liquipedia_slug`);
+    const { data: tournaments, error: tourErr } = await supabase
+      .from("tournaments")
+      .select("id, name, liquipedia_slug")
+      .in("id", tournamentIds);
+    if (tourErr) throw tourErr;
+
+    relevant = (tournaments ?? []).filter((t) => t.liquipedia_slug);
+    console.log(`Processing ${relevant.length} tournament(s) with a liquipedia_slug`);
+  }
 
   for (const t of relevant) {
     try {

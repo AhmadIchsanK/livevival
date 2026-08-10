@@ -150,8 +150,8 @@ function renderCard({
   // its 1080px-tall frame, so there's no risk of pushing bans/picks into
   // the footer). heroBoost enlarges pick/ban hero portraits and their
   // internal gaps; logoBoost enlarges the team logo plates in the score bar.
-  // Portrait uses 0.9 to fit all 5 picks + 5 bans per team without clipping.
-  const heroBoost = isLandscape ? 1.4 : 0.9;
+  // Portrait uses 0.75 to fit all 5 picks + 5 bans per team without clipping.
+  const heroBoost = isLandscape ? 1.4 : 0.75;
   const logoBoost = isLandscape ? 1.25 : 1;
 
   // Every hero portrait sits on a light plate with a signal-colored ring —
@@ -261,7 +261,7 @@ function renderCard({
   // 110*scale square) so the section fills more of the available frame
   // instead of leaving visible dead space.
   const teamPickColumn = (name: string | undefined, picks: CardHeroPick[], bans: CardHeroPick[]) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: isLandscape ? 26 * scale : 18 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
       <div
         style={{
           display: "flex",
@@ -284,14 +284,14 @@ function renderCard({
       </div>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
         {subLabel("Picks")}
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 20 * scale * heroBoost }}>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: isLandscape ? 20 * scale * heroBoost : 16 * scale * heroBoost }}>
           {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i, 128 * scale * heroBoost, 4)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
         </div>
       </div>
       {bans.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
           {subLabel("Bans")}
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 16 * scale * heroBoost }}>
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: isLandscape ? 16 * scale * heroBoost : 12 * scale * heroBoost }}>
             {bans.map((p, i) => heroPortrait(p, i, 92 * scale * heroBoost, 3))}
           </div>
         </div>
@@ -307,7 +307,7 @@ function renderCard({
         <span style={{ fontSize: 22 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks &amp; bans</span>
         {ticks.right}
       </div>
-      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 80 * scale : 48 * scale, width: "100%" }}>
+      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 80 * scale : 36 * scale, width: "100%" }}>
         {teamPickColumn(teamA?.name, teamAPicks, teamABans)}
         {teamPickColumn(teamB?.name, teamBPicks, teamBBans)}
       </div>

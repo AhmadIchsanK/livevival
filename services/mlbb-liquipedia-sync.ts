@@ -359,24 +359,25 @@ export async function syncMLBBDataToDatabase(): Promise<{
               totalPlayers += players.length;
 
               for (const player of players) {
-                await supabase
-                  .from("players")
-                  .upsert(
-                    {
-                      id: player.name.toLowerCase().replace(/\s+/g, "-"),
-                      name: player.name,
-                      ign: player.ign || player.name,
-                      role: player.role,
-                      country: player.country,
-                      team_id: team.name.toLowerCase().replace(/\s+/g, "-"),
-                      liquipedia_url: player.liquipediaUrl,
-                      updated_at: new Date().toISOString(),
-                    },
-                    { onConflict: "id" }
-                  )
-                  .catch((err) => {
-                    console.debug(`[MLBB Sync] Player sync skipped (table may not exist)`);
-                  });
+                try {
+                  await supabase
+                    .from("players")
+                    .upsert(
+                      {
+                        id: player.name.toLowerCase().replace(/\s+/g, "-"),
+                        name: player.name,
+                        ign: player.ign || player.name,
+                        role: player.role,
+                        country: player.country,
+                        team_id: team.name.toLowerCase().replace(/\s+/g, "-"),
+                        liquipedia_url: player.liquipediaUrl,
+                        updated_at: new Date().toISOString(),
+                      },
+                      { onConflict: "id" }
+                    );
+                } catch (err) {
+                  console.debug(`[MLBB Sync] Player sync skipped (table may not exist)`);
+                }
               }
             }
           } catch (err) {

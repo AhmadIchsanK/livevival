@@ -19,8 +19,28 @@
 // once — reusing import-liquipedia-matches.mjs's exact fetch/upsert logic
 // so new matches, not just status updates on existing ones, land quickly
 // without waiting on the slower 6h pass.
+//
+// It also runs the finished-match-details importer (games/picks/bans/
+// winner) for the same tournaments, not just the schedule importer. These
+// are two genuinely separate systems — import-liquipedia-matches.mjs only
+// ever writes status/format/stream_id, never games/hero_picks_bans/
+// series_winner_team_id/state — and those detail fields normally get
+// filled in later by the worker's live-window poll or the 6h
+// refresh-finished-match-details.mjs cron. Both of those miss a match
+// that's discovered ALREADY finished: the worker only polls matches whose
+// scheduled_at is within a few hours of now, and a match found for the
+// first time a day after it aired is already outside that window the
+// instant its row is created. Confirmed as exactly what happened to Games
+// of the Future 2026's Grand Final — it landed with status='finished' but
+// zero games, zero picks/bans, and state stuck at MATCH_NOT_STARTED,
+// because nothing had ever run the detail import against it. Running both
+// importers together here means a late-discovered match gets its full
+// result in the same 30-min cycle it's discovered in, instead of
+// depending on a second, differently-scoped process to ever reach it.
 import { createClient } from "@supabase/supabase-js";
 import { importMatchesForTournament } from "./import-liquipedia-matches.mjs";
+import { importTournament } from "./import-finished-match-details.mjs";
+import { discoverStagePages } from "./refresh-finished-match-details.mjs";
 import { sleep } from "./_liquipedia.mjs";
 
 const supabase = createClient(
@@ -62,6 +82,16 @@ async function main() {
       console.error(`Failed importing matches for ${t.name}:`, err.message);
     }
     await sleep(5000); // same inter-tournament pacing as import-liquipedia-matches.mjs
+
+    try {
+      const pages = [t.liquipedia_slug, ...(await discoverStagePages(t.liquipedia_slug))];
+      for (const page of pages) {
+        await importTournament(page, t.id);
+        await sleep(5000);
+      }
+    } catch (err) {
+      console.error(`Failed importing match details for ${t.name}:`, err.message);
+    }
   }
 }
 

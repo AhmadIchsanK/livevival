@@ -324,6 +324,18 @@ export async function apiQuery(params, attempt = 1, maxRetries = MAX_RETRIES) {
   return data;
 }
 
+function ownText($, el) {
+  return $(el)
+    .contents()
+    .filter((_, n) => n.type === "text")
+    .text()
+    .trim();
+}
+
+function stripFormatSuffix(label) {
+  return label.replace(/\s*\(Bo\d\)\s*$/i, "").trim() || null;
+}
+
 /**
  * Derives a human-readable stage/round label ("Grand Final", "Semifinals",
  * "Upper Bracket Final", ...) for one match popup on a single-page bracket
@@ -332,15 +344,33 @@ export async function apiQuery(params, attempt = 1, maxRetries = MAX_RETRIES) {
  * key off of.
  *
  * Confirmed against real rendered HTML (Games_of_the_Future/2026, GH
- * Actions diagnostic run): each round is a `.brkts-round-header` +
- * `.brkts-round-body` sibling pair, both direct children of `.brkts-
- * bracket`; the header carries the round name in `.brkts-header-div`
- * (e.g. "Grand Final (Bo5)", "Upper Bracket Semifinals"). A round-body can
- * nest ANOTHER round-body inside `.brkts-round-lower` (the double-
- * elimination lower-bracket sub-tree) — walking up from the popup and
- * taking the outermost round-body (the one whose own parent is literally
- * `.brkts-bracket`) is what correctly skips past that nesting instead of
- * matching the inner lower-bracket round's own (different) header.
+ * Actions diagnostics) that Liquipedia renders brackets on this page in TWO
+ * different shapes:
+ *
+ * 1. Paired rounds (e.g. "Upper Bracket Semifinals" + "Lower Bracket
+ *    Final"): each round is its own `.brkts-round-header` + `.brkts-round-
+ *    body` sibling pair, both direct children of `.brkts-bracket`, and the
+ *    header's single `.brkts-header-div` carries that one round's name.
+ *
+ * 2. Recursive single-elimination rounds (Round of 16 -> Quarterfinals ->
+ *    Semifinals -> Grand Final): ALL round names live as sibling
+ *    `.brkts-header-div`s inside ONE shared `.brkts-round-header` (in round
+ *    order), while the rounds themselves nest via `.brkts-round-lower`
+ *    instead of being flat siblings — the round-body that's the direct
+ *    child of `.brkts-bracket` (no enclosing `.brkts-round-lower`) is the
+ *    LAST round (Grand Final); each further layer of `.brkts-round-lower`
+ *    nesting steps one round earlier. The label index is therefore
+ *    `headerDivs.length - depth`, where depth is how many `.brkts-round-
+ *    body` ancestors sit between the popup and the bracket root inclusive.
+ *    A third place match sits at the same depth as the Grand Final but
+ *    isn't part of that count — it has its own preceding sibling
+ *    `.brkts-header-div.brkts-third-place-header`, checked first.
+ *
+ * Both shapes are really the same rule at heart (walk up to the bracket
+ * root counting round-body depth, then index into whichever header labels
+ * that depth's own header actually has) — shape 1 is just the degenerate
+ * case where every header has exactly one label and no round-lower
+ * nesting exists, so depth is always 1 and the index is always 0.
  *
  * Trailing "(BoN)" is stripped since the format is already captured
  * separately in matches.format. Returns null (same as if this were never
@@ -350,31 +380,55 @@ export async function apiQuery(params, attempt = 1, maxRetries = MAX_RETRIES) {
  * here.
  */
 export function deriveStageFromBracket($, popupEl) {
-  const ancestors = $(popupEl).parents().toArray();
-  let outerRoundBody = null;
+  const $popup = $(popupEl);
+
+  const matchDiv = $popup.closest(".brkts-match");
+  if (matchDiv.length && matchDiv.hasClass("brkts-third-place-match")) {
+    const header = matchDiv.prevAll(".brkts-header-div").first();
+    if (header.length) {
+      const label = ownText($, header.get(0));
+      if (label) return stripFormatSuffix(label);
+    }
+  }
+
+  const ancestors = $popup.parents().toArray();
+  let bracketIndex = -1;
   for (let i = 0; i < ancestors.length; i++) {
     if ($(ancestors[i]).hasClass("brkts-bracket")) {
-      const child = i > 0 ? $(ancestors[i - 1]) : null;
-      if (child && child.hasClass("brkts-round-body")) outerRoundBody = child;
+      bracketIndex = i;
       break;
     }
   }
-  if (!outerRoundBody) return null;
+  if (bracketIndex === -1) return null;
 
-  const header = outerRoundBody.prev();
+  const bracket = $(ancestors[bracketIndex]);
+  let depth = 0;
+  for (let i = 0; i < bracketIndex; i++) {
+    if ($(ancestors[i]).hasClass("brkts-round-body")) depth++;
+  }
+  if (depth === 0) return null;
+
+  const directChild = bracketIndex > 0 ? $(ancestors[bracketIndex - 1]) : null;
+  if (!directChild || !directChild.hasClass("brkts-round-body")) return null;
+
+  const header = directChild.prev();
   if (!header.hasClass("brkts-round-header")) return null;
+
+  const headerDivs = header.find(".brkts-header-div").toArray();
+  if (headerDivs.length === 0) return null;
+
+  // Shape 1 (single label) ignores depth entirely — a round-body can
+  // legitimately nest further sub-matches under it (e.g. a group stage's
+  // own internal structure) without that meaning a different round.
+  const target = headerDivs.length === 1 ? headerDivs[0] : headerDivs[headerDivs.length - depth];
+  if (!target) return null;
 
   // .brkts-header-div also nests responsive-width label variants
   // (.brkts-header-option, e.g. "UB Semifinals"/"UBSF") as children — a
   // plain .text() call concatenates every one of them into one garbled
   // string. Only the container's own direct text nodes are the real
   // full-length label.
-  const headerDiv = header.find(".brkts-header-div").first();
-  const label = headerDiv
-    .contents()
-    .filter((_, n) => n.type === "text")
-    .text()
-    .trim();
+  const label = ownText($, target);
   if (!label) return null;
-  return label.replace(/\s*\(Bo\d\)\s*$/i, "").trim() || null;
+  return stripFormatSuffix(label);
 }

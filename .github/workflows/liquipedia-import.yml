@@ -31,21 +31,6 @@ on:
         default: ""
 
 jobs:
-  # TEMPORARY diagnostic job #3 — investigating a bug where deriveStage-
-  # FromBracket assigned "Round of 16" to every playoff match including the
-  # confirmed Grand Final. Removed once fixed.
-  diagnose-bracket2:
-    if: github.event.inputs.tournament_slugs == 'Games_of_the_Future/2026'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm install cheerio
-      - run: node scripts/_diagnose-bracket-markup3.mjs "Games_of_the_Future/2026" 4
-
   import-tournaments:
     runs-on: ubuntu-latest
     timeout-minutes: 30

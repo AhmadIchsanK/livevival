@@ -1,0 +1,29 @@
+name: Force-finish stale live matches
+
+# Catches a Liquipedia-sourced match Liquipedia never marked finished (so
+# it would otherwise show as "live" on the public site forever). See the
+# script's header comment for the per-format duration thresholds and why
+# this now runs as a cron instead of on the (removed) always-on worker's
+# tick loop.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  force-finish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: force-finish-stale-matches
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/force-finish-stale-matches.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

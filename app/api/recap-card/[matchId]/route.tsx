@@ -1,6 +1,20 @@
 import { ImageResponse } from "next/og";
 import { createClient } from "@supabase/supabase-js";
-import { formatMatchDate } from "@/lib/formatMatchDate";
+
+// Date-only formatter for recap card (time removed to fit safe area in portrait)
+function formatRecapDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const year = d.getFullYear();
+  const month = MONTH_NAMES[d.getMonth()];
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year} ${month} ${day}`;
+}
 
 export const runtime = "edge";
 
@@ -118,16 +132,17 @@ function renderCard({
   // Safe-margin convention (confirmed via real rendered screenshots showing
   // footer text cutting through the last ban row's labels in BOTH
   // orientations): top/bottom margin is scaled off the canvas HEIGHT so it
-  // reads the same proportionally in both ratios (64px on portrait's
-  // 1920-tall canvas == ~36px on landscape's 1080-tall one, the same 3.3%).
-  // Left/right margin is intentionally NOT the same 64*scale value in
-  // landscape — that would be ~36px on a 1920-wide canvas (1.9%), way
-  // tighter than portrait's 64px on its 1080-wide canvas (5.9%). marginX
-  // uses that same 5.9%-of-width ratio so landscape gets a proportionally
-  // equivalent side margin (~114px, rounded to 120) instead of an
-  // accidentally-thin one inherited from the height-based scale factor.
-  const marginY = 64 * scale;
-  const marginX = isLandscape ? 120 : 64 * scale;
+  // reads the same proportionally in both ratios (80px on portrait's
+  // 1920-tall canvas == ~42px on landscape's 1080-tall one, ~3.9%).
+  // Left/right margin is intentionally NOT the same value in landscape —
+  // that would be ~42px on a 1920-wide canvas (2.2%), way tighter than
+  // portrait's 80px on its 1080-wide canvas (7.4%). marginX uses that
+  // same 7.4%-of-width ratio so landscape gets a proportionally equivalent
+  // side margin (~141px) instead of an accidentally-thin one.
+  // Increased from 64px to 80px in portrait to ensure time-removed date fits
+  // comfortably within safe area without overlapping header or footer.
+  const marginY = 80 * scale;
+  const marginX = isLandscape ? 141 : 80 * scale;
   // Landscape-only size boosts so the wider canvas's extra horizontal room
   // shows up as bigger, more prominent content instead of empty black space
   // between the two team columns (confirmed via a rough height budget: even
@@ -135,8 +150,8 @@ function renderCard({
   // its 1080px-tall frame, so there's no risk of pushing bans/picks into
   // the footer). heroBoost enlarges pick/ban hero portraits and their
   // internal gaps; logoBoost enlarges the team logo plates in the score bar.
-  // Both are 1 (no-op) in portrait so this never touches portrait's sizing.
-  const heroBoost = isLandscape ? 1.4 : 1;
+  // Portrait uses 0.75 to fit all 5 picks + 5 bans per team without clipping.
+  const heroBoost = isLandscape ? 1.4 : 0.75;
   const logoBoost = isLandscape ? 1.25 : 1;
 
   // Every hero portrait sits on a light plate with a signal-colored ring —
@@ -246,7 +261,7 @@ function renderCard({
   // 110*scale square) so the section fills more of the available frame
   // instead of leaving visible dead space.
   const teamPickColumn = (name: string | undefined, picks: CardHeroPick[], bans: CardHeroPick[]) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 26 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: isLandscape ? 26 * scale : 18 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
       <div
         style={{
           display: "flex",
@@ -269,14 +284,14 @@ function renderCard({
       </div>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
         {subLabel("Picks")}
-        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 20 * scale * heroBoost }}>
+        <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: isLandscape ? 20 * scale * heroBoost : 16 * scale * heroBoost }}>
           {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i, 128 * scale * heroBoost, 4)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
         </div>
       </div>
       {bans.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
           {subLabel("Bans")}
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 16 * scale * heroBoost }}>
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: isLandscape ? 16 * scale * heroBoost : 12 * scale * heroBoost }}>
             {bans.map((p, i) => heroPortrait(p, i, 92 * scale * heroBoost, 3))}
           </div>
         </div>
@@ -292,7 +307,7 @@ function renderCard({
         <span style={{ fontSize: 22 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks &amp; bans</span>
         {ticks.right}
       </div>
-      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 80 * scale : 48 * scale, width: "100%" }}>
+      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 80 * scale : 36 * scale, width: "100%" }}>
         {teamPickColumn(teamA?.name, teamAPicks, teamABans)}
         {teamPickColumn(teamB?.name, teamBPicks, teamBBans)}
       </div>
@@ -360,7 +375,8 @@ function renderCard({
   // "Picks"/"Bans" sub-label treatment already used below (see subLabel()).
   // Either piece is omitted gracefully when absent — a null stage never
   // renders as a stray "null" or empty dot-separator.
-  const dateLabel = formatMatchDate(match.scheduled_at);
+  // Date-only format (time removed) ensures portrait mode content stays within safe area
+  const dateLabel = formatRecapDate(match.scheduled_at);
   const stageDateBits = [match.stage, dateLabel || null].filter(Boolean);
 
   const scoreBar = (

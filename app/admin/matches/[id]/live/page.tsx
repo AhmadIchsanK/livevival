@@ -214,6 +214,61 @@ export default function LiveConsolePage() {
   const mmssTimestamp = () => `${String(minute).padStart(2, "0")}:${String(secondOfMinute).padStart(2, "0")}`;
   const [error, setError] = useState<string | null>(null);
 
+  // Three-column layout resize state with localStorage persistence
+  const [menuOpen, setMenuOpen] = useState(true);
+  const [greenWidth, setGreenWidth] = useState(400);
+  const [yellowWidth, setYellowWidth] = useState(600);
+  const [redWidth, setRedWidth] = useState(400);
+  const [isResizing, setIsResizing] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem("match-admin-column-widths");
+    if (saved) {
+      try {
+        const { green, yellow, red } = JSON.parse(saved);
+        setGreenWidth(green);
+        setYellowWidth(yellow);
+        setRedWidth(red);
+      } catch {}
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(
+      "match-admin-column-widths",
+      JSON.stringify({ green: greenWidth, yellow: yellowWidth, red: redWidth })
+    );
+  }, [greenWidth, yellowWidth, redWidth]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const startX = 0;
+    const startGreen = greenWidth;
+    const startYellow = yellowWidth;
+    const startRed = redWidth;
+
+    function handleMouseMove(e: MouseEvent) {
+      const delta = e.clientX - (startX || e.clientX);
+      if (isResizing === "green-yellow") {
+        setGreenWidth(Math.max(300, startGreen + delta));
+      } else if (isResizing === "yellow-red") {
+        setYellowWidth(Math.max(300, startYellow + delta));
+      }
+    }
+
+    function handleMouseUp() {
+      setIsResizing(null);
+    }
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isResizing, greenWidth, yellowWidth, redWidth]);
+
   // ── Undo (Ctrl+Z) for the most recently logged event ──────────────────
   // Deliberately single-level, not a full undo stack — every write site
   // that wires in just overwrites whatever was here before, so Ctrl+Z
@@ -570,7 +625,7 @@ export default function LiveConsolePage() {
   // already gets, instead of a one-off that skips those side effects.
   async function saveDraftAndStartGame() {
     if (!match || !game) return;
-    if (!draftFullyResolved()) {
+    if (match.state !== "DRAFT_COMPLETE" && !draftFullyResolved()) {
       setError("Can't save the draft yet — not all 10 players have a hero assigned.");
       return;
     }
@@ -1028,6 +1083,19 @@ export default function LiveConsolePage() {
       return;
     }
     const { error } = await supabase.from("objectives").delete().eq("id", mostRecent.id);
+    if (error) setError(error.message);
+    else loadAll();
+  }
+  async function deleteObjective(objectiveId: string) {
+    if (isContributor) {
+      const obj = objectives.find((o) => o.id === objectiveId);
+      if (obj) {
+        pushPendingEdit({ table: "objectives", action: "delete", before: obj as unknown as Record<string, unknown>, after: null });
+        setObjectives((prev) => prev.filter((o) => o.id !== objectiveId));
+      }
+      return;
+    }
+    const { error } = await supabase.from("objectives").delete().eq("id", objectiveId);
     if (error) setError(error.message);
     else loadAll();
   }
@@ -3894,6 +3962,15 @@ export default function LiveConsolePage() {
           admin needs reachable no matter how far down the page they've
           scrolled (moment log, scoreboard, calibration UI are all long). */}
       <div className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            onClick={() => setMenuOpen(!menuOpen)}
+            className="text-xl p-1.5 hover:bg-white/10 rounded transition-colors"
+            title={menuOpen ? "Hide menu" : "Show menu"}
+          >
+            ☰
+          </button>
+        </div>
         <h1 className="lv-heading text-lg flex items-center gap-2.5 flex-wrap">
           {/* Each team's own little "live-score box" — logo + name, with
               the last-captured net worth pinned to its top-right corner
@@ -4107,22 +4184,48 @@ export default function LiveConsolePage() {
         )}
       </div>
 
-      {/* Left column ("Live Feed"): broadcast/capture stays pinned on
-          screen on wide-enough viewports instead of scrolling away with
-          everything else — the one thing an operator needs visible at all
-          times. Below lg it just stacks like every other section (a phone
-          screen has no room to spare for a permanently-pinned column).
-          Right of it: everything else (draft tool, match control, kill
-          tracking, objectives, moment log, scoreboard) in normal document
-          flow. */}
-      <div className="lg:flex lg:items-start lg:gap-6">
-        <aside className="lg:sticky lg:top-24 lg:w-[26rem] lg:shrink-0 lg:max-h-[calc(100vh-7rem)] lg:overflow-y-auto lg:pr-1">
-          {/* Local capture (admin PC) — only drives anything when this match is on local_ocr.
-              Moved to directly under the match header (was previously the very last section
-              on the page) so the OCR tracker + calibration controls are reachable without
-              scrolling past the moment list, draft sim, and scoreboard first — see the
-              "Prioritize admin controls" ask. */}
-          <section className="space-y-3 pt-4">
+      {/* Three-column layout with resize handles - responsive for mobile/tablet */}
+      <div
+        className="flex flex-col lg:flex-row gap-0 rounded-lg border border-white/10 overflow-hidden"
+        style={{
+          height: "auto",
+          minHeight: "calc(100vh - 300px)"
+        }}
+      >
+        {/* GREEN COLUMN: Livestream & Capture - Mobile: full width, lg: resizable */}
+        <div
+          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full lg:w-auto max-w-full"
+          style={{
+            width: menuOpen ? greenWidth : 40,
+            transition: menuOpen ? "none" : "width 0.3s",
+            minWidth: "40px"
+          }}
+        >
+          <div className="p-3 lg:p-4 space-y-4">
+            {/* Livestream embed - scrollable if needed, not resizable */}
+            <div className="space-y-2">
+              <h3 className="font-semibold text-sm">Livestream</h3>
+              {embedUrl ? (
+                <iframe
+                  src={embedUrl}
+                  className="w-full aspect-video rounded"
+                  allow="autoplay; encrypted-media"
+                  allowFullScreen
+                />
+              ) : (
+                <div className="w-full aspect-video bg-white/5 rounded flex items-center justify-center text-white/30 text-xs border border-white/10">
+                  No livestream URL
+                </div>
+              )}
+            </div>
+
+            {/* Local capture (admin PC) — only drives anything when this match is on local_ocr.
+                Moved to directly under the match header (was previously the very last section
+                on the page) so the OCR tracker + calibration controls are reachable without
+                scrolling past the moment list, draft sim, and scoreboard first — see the
+                "Prioritize admin controls" ask. */}
+            {match.update_source === "local_ocr" && (
+              <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="font-bold">Local capture (this PC)</h2>
           {match.update_source === "local_ocr" && (
@@ -4835,9 +4938,94 @@ export default function LiveConsolePage() {
           </>
         )}
       </section>
-        </aside>
+            )}
+          </div>
+        </div>
 
-        <div className="flex-1 min-w-0 space-y-8">
+        {/* Resize handle GREEN-YELLOW - Hidden on mobile */}
+        <div
+          className="hidden lg:block w-1 bg-white/10 hover:bg-signal/50 cursor-col-resize transition-colors"
+          onMouseDown={() => setIsResizing("green-yellow")}
+          style={{ display: menuOpen ? "block" : "none" }}
+        />
+
+        {/* YELLOW COLUMN: Game Data (Middle) - Mobile: full width, lg: resizable */}
+        <div
+          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full lg:w-auto flex-1 lg:flex-none max-w-full"
+          style={{
+            width: menuOpen ? yellowWidth : "flex-1",
+            transition: menuOpen ? "none" : "width 0.3s",
+            minWidth: "40px"
+          }}
+        >
+          <div className="space-y-6 p-3 lg:p-4">
+            {/* After draft complete: show objectives, declare game, screenshots at top */}
+            {!DRAFT_PHASES.includes(match.state) && (
+              <>
+                {/* Declare Game Winner */}
+                {game.status === "live" && !gameFinished && (
+                  <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
+                    <h3 className="font-semibold text-sm">Declare Game Winner</h3>
+                    <div className="flex gap-2 flex-wrap">
+                      {[match.team_a, match.team_b].map((team) =>
+                        team ? (
+                          <button
+                            key={team.id}
+                            onClick={() => declareGameWinner(team.id)}
+                            className={`text-xs px-3 py-1.5 rounded font-semibold transition-colors ${
+                              game.winner_team_id === team.id
+                                ? "bg-signal text-white"
+                                : "border border-white/20 hover:bg-white/10"
+                            }`}
+                          >
+                            🏆 {team.name}
+                          </button>
+                        ) : null
+                      )}
+                    </div>
+                  </section>
+                )}
+
+                {/* Objectives */}
+                <section className="space-y-2">
+                  <h3 className="font-semibold text-sm">Objectives</h3>
+                  <div className="bg-white/5 rounded p-2 space-y-1 max-h-40 overflow-y-auto">
+                    {objectives.map((obj) => (
+                      <div key={obj.id} className="flex items-center justify-between text-xs bg-white/5 rounded px-2 py-1">
+                        <span>{obj.type} @ {obj.minute_mark}'</span>
+                        <button onClick={() => deleteObjective(obj.id)} className="text-white/30 hover:text-red-400">✕</button>
+                      </div>
+                    ))}
+                    {objectives.length === 0 && <p className="text-xs text-white/40">No objectives logged</p>}
+                  </div>
+                </section>
+
+                {/* Screenshots */}
+                {screenshots.length > 0 && (
+                  <section className="space-y-2">
+                    <h3 className="font-semibold text-sm">Screenshots</h3>
+                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-1 max-h-48 overflow-y-auto">
+                      {screenshots.slice(0, 6).map((ss) => (
+                        <div key={ss.id} className="relative group cursor-pointer">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={ss.image_url}
+                            alt={ss.note || "screenshot"}
+                            className="w-full aspect-video object-cover rounded"
+                          />
+                          <button
+                            onClick={() => deleteScreenshot(ss.id, ss.image_url)}
+                            className="absolute top-1 right-1 bg-red-500/80 text-white rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+              </>
+            )}
 
       {/* Draft tool sits first in the center column, directly beside/below
           the tracking canvas — the site owner runs this on a single
@@ -5588,15 +5776,6 @@ export default function LiveConsolePage() {
             </p>
           </div>
         )}
-
-        {embedUrl && (
-          <iframe
-            src={embedUrl}
-            className="w-full aspect-video rounded"
-            allow="autoplay; encrypted-media"
-            allowFullScreen
-          />
-        )}
       </div>
 
       {match.update_source === "local_ocr" && (
@@ -5980,7 +6159,7 @@ export default function LiveConsolePage() {
                 automatically (no hero pick logged for them this game) —
                 adding them here creates their player_stats row, which
                 activeFive() above now also treats as "in the game". */}
-            {isEditable && (
+            {isEditable && match.state === "MATCH_NOT_STARTED" && (
               <div className="flex items-center gap-2 pl-8 pt-1">
                 {(() => {
                   const teamId = idx === 0 ? match.team_a?.id : match.team_b?.id;
@@ -6047,7 +6226,7 @@ export default function LiveConsolePage() {
             query orders by minute_mark ascending, so this reverses it for
             display), same pattern as the public page's own Moment list. */}
         <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
-          {[...keyMoments].reverse().map((km) => {
+          {[...keyMoments].reverse().slice(0, 5).map((km) => {
             const player = players.find((p) => p.id === km.player_id);
             const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
             if (editingMomentId === km.id) {
@@ -6109,6 +6288,92 @@ export default function LiveConsolePage() {
         </>
       )}
 
+          </div>
+        </div>
+
+        {/* Resize handle YELLOW-RED - Hidden on mobile */}
+        <div
+          className="hidden lg:block w-1 bg-white/10 hover:bg-signal/50 cursor-col-resize transition-colors"
+          onMouseDown={() => setIsResizing("yellow-red")}
+          style={{ display: menuOpen ? "block" : "none" }}
+        />
+
+        {/* RED COLUMN: Moment Timeline (Right) - Mobile: full width, lg: resizable */}
+        <div
+          className="flex flex-col overflow-y-auto w-full lg:w-auto max-w-full"
+          style={{
+            width: menuOpen ? redWidth : 40,
+            minWidth: "40px",
+            transition: menuOpen ? "none" : "width 0.3s"
+          }}
+        >
+          <div className="p-3 lg:p-4 space-y-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-sm">Moment Timeline</h3>
+                {lastAction && (
+                  <button
+                    onClick={undoLastAction}
+                    className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 text-white/60"
+                    title="Ctrl+Z"
+                  >
+                    ⎌
+                  </button>
+                )}
+              </div>
+              <div className="space-y-1 max-h-96 overflow-y-auto">
+                {[...keyMoments].reverse().slice(0, 5).map((km) => {
+                  const player = players.find((p) => p.id === km.player_id);
+                  const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
+
+                  if (editingMomentId === km.id) {
+                    return (
+                      <div key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5 text-xs">
+                        <input
+                          value={editingMomentText}
+                          onChange={(e) => setEditingMomentText(e.target.value)}
+                          className="bg-white/10 border border-white/10 rounded px-1 py-0.5 text-xs flex-1"
+                          autoFocus
+                        />
+                        <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400">✓</button>
+                        <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400">✕</button>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div key={km.id} className={`px-2 py-1 rounded flex items-center gap-1.5 text-xs ${km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"}`}>
+                      <span className="flex-1 min-w-0 truncate">
+                        {km.is_key_moment && "⭐ "}
+                        {km.minute_mark}' {label}
+                        {km.screenshot_url && " 📸"}
+                      </span>
+                      <div className="flex gap-0.5 shrink-0">
+                        <button
+                          onClick={() => {
+                            setEditingMomentId(km.id);
+                            setEditingMomentText(label);
+                          }}
+                          className="text-white/30 hover:text-white/70 text-xs"
+                          title="Edit"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          onClick={() => deleteKeyMoment(km.id)}
+                          className="text-white/30 hover:text-red-400 text-xs"
+                          title="Delete"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {keyMoments.length === 0 && <p className="text-xs text-white/40">No moments logged yet</p>}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

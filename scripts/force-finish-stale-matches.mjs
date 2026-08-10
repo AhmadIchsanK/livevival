@@ -1,8 +1,18 @@
-// Force-finishes a match that's been stuck non-finished for implausibly
-// long — e.g. Liquipedia never flips its .timer-object to data-finished
-// (human error on the wiki, a page edit that dropped the popup, etc.), so
-// syncTournamentFinishedMatches has nothing to ever match against and the
-// match sits "live" on the public site forever with no result.
+// Livevival — force-finishes a Liquipedia-sourced match that's sat
+// non-finished implausibly long (Liquipedia never flipped its finished
+// flag — human error on the wiki, a page edit that dropped the popup,
+// etc.), so it would otherwise show as "live" on the public site forever
+// with no result.
+//
+// Ported from worker/src/staleMatchSync.mjs (deleted along with the rest
+// of the always-on Railway worker — see MIGRATION_REMOVE_RAILWAY.md — that
+// process no longer exists to run this on its own 10-min tick). This is
+// the same logic, re-run periodically via GitHub Actions cron instead:
+// query is identical, and refreshing a stale match's tournament before
+// giving up now goes through import-finished-match-details.mjs's
+// importTournament() (the same function refresh-ongoing-tournament-
+// matches.mjs already uses) rather than the worker's own
+// syncTournamentFinishedMatches.
 //
 // Per-format max duration, worked from the admin's own estimate: a single
 // game (draft through game finish) takes up to ~1 hour, plus ~10 minutes
@@ -11,8 +21,17 @@
 // plus a flat 2-hour buffer for delays/technical pauses. For BO3 that's
 // 3*(1 + 1/6) + 2 = 5.5, rounded up to 6 hours — matching the number the
 // admin gave directly; every other format is the same formula scaled by
-// its own max game count, rounded up to a whole hour so the numbers stay
-// easy to reason about (BO1=4h, BO3=6h, BO5=8h, BO7=11h).
+// its own max game count, rounded up to a whole hour (BO1=4h, BO3=6h,
+// BO5=8h, BO7=11h).
+import { createClient } from "@supabase/supabase-js";
+import { importTournament } from "./import-finished-match-details.mjs";
+import { discoverStagePages } from "./refresh-finished-match-details.mjs";
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
 const GAME_MAX_HOURS = 1;
 const GAME_OVERHEAD_HOURS = 1 / 6;
 const DELAY_BUFFER_HOURS = 2;
@@ -27,7 +46,7 @@ export function thresholdHours(format) {
   return Math.ceil(maxGames * (GAME_MAX_HOURS + GAME_OVERHEAD_HOURS) + DELAY_BUFFER_HOURS);
 }
 
-export async function findStaleMatches(supabase) {
+export async function findStaleMatches() {
   const { data, error } = await supabase
     .from("matches")
     .select("id, format, scheduled_at, tournament_id, tournaments(id, name, liquipedia_slug)")
@@ -46,23 +65,19 @@ export async function findStaleMatches(supabase) {
   });
 }
 
-/**
- * Gives every stale match's tournament one more fresh look (in case
- * Liquipedia has since marked it finished — the normal path handles that
- * via the caller-supplied refreshFn), then force-closes anything still
- * unresolved so it stops showing as live indefinitely. Never touches
- * local_ocr matches (findStaleMatches already filters to update_source =
- * 'liquipedia' — an admin's own capture session is the only authority on
- * when that match ends).
- *
- * refreshFn(tournament) is injected rather than imported directly so this
- * module doesn't need its own copy of fetchRenderedPage/syncTournament-
- * FinishedMatches's rate-limit handling — index.mjs already has both.
- */
-export async function forceFinishStaleMatches(supabase, refreshFn) {
-  const stale = await findStaleMatches(supabase);
-  if (stale.length === 0) return;
+async function refreshTournamentFinishedMatches(tournament) {
+  const pages = [tournament.liquipedia_slug, ...(await discoverStagePages(tournament.liquipedia_slug))];
+  for (const page of pages) {
+    await importTournament(page, tournament.id);
+  }
+}
 
+async function main() {
+  const stale = await findStaleMatches();
+  if (stale.length === 0) {
+    console.log("No stale matches past their format's max duration.");
+    return;
+  }
   console.log(`Stale-match sweep: ${stale.length} match(es) past their format's max duration.`);
 
   const tournamentsById = new Map();
@@ -70,7 +85,7 @@ export async function forceFinishStaleMatches(supabase, refreshFn) {
 
   for (const tournament of tournamentsById.values()) {
     try {
-      await refreshFn(tournament);
+      await refreshTournamentFinishedMatches(tournament);
     } catch (err) {
       console.error(`Stale-match refresh failed for ${tournament.name}:`, err.message);
     }
@@ -95,3 +110,8 @@ export async function forceFinishStaleMatches(supabase, refreshFn) {
     else console.warn(`Force-finished match ${m.id} after ${hours}h with no confirmed result.`);
   }
 }
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

@@ -39,16 +39,24 @@ two environment variable values against your Supabase dashboard, then redeploy
 Once that green dot shows up, Phase 1 is complete — tell me and we'll move to
 Phase 2 (setting up the real database tables).
 
-## Match automation (Groq vision worker)
+## Match automation
 
 `supabase/schema.sql` adds the tables/columns for automated match tracking:
 `streams` (one broadcast URL → many matches), `matches.state` /
 `games.state` (the MATCH_NOT_STARTED → STREAM_ENDED lifecycle), and
-`key_moments` additions for auto-detected savage/maniac/lord-steal moments
-with screenshots. Run it against your Supabase project's SQL editor.
+`key_moments` additions for match tracking with screenshots.
 
-`worker/` is a separate always-on Node process (deploy on Railway, not
-Vercel) that watches each active stream, classifies frames with Groq vision,
-and drives all of the above automatically — see `worker/README.md` for setup.
-Admins can flip `matches.auto_managed` off per match to fall back to the
-existing manual live console at any time.
+The website supports two data sources for match updates:
+
+1. **Liquipedia** (`update_source = 'liquipedia'`): Synced every 6 hours via GitHub Actions cron job
+   - Runs `.github/workflows/liquipedia-import.yml` automatically
+   - Updates schedule, scores, picks/bans, VOD links
+   - Historical data backfill
+   - Max 6-hour latency for data updates
+
+2. **Local OCR** (`update_source = 'local_ocr'`): Real-time manual capture via admin console
+   - Admins use the live admin panel (`/admin/matches/[id]/live`) to enter data
+   - OCR can auto-detect team stats and picks with Tesseract.js
+   - Full control over data accuracy
+   - Can be toggled per-match as needed
+   - Suitable for time-sensitive broadcasts

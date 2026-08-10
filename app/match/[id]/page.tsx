@@ -300,6 +300,7 @@ function PublicDraftTeamPanel({
 export default function PublicMatchPage() {
   const params = useParams();
   const matchId = params.id as string;
+  const { theme } = useTheme();
 
   const [match, setMatch] = useState<Match | null>(null);
   const [games, setGames] = useState<Game[]>([]);
@@ -319,6 +320,7 @@ export default function PublicMatchPage() {
   const [recapPreviewOpen, setRecapPreviewOpen] = useState(false);
   const [screenshotPreview, setScreenshotPreview] = useState<Screenshot | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  const [recapRefreshKey, setRecapRefreshKey] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => setNowMs(Date.now()), 1000);
@@ -705,7 +707,7 @@ export default function PublicMatchPage() {
     // no fallback double-prompt afterward.
     if (typeof navigator.canShare === "function") {
       try {
-        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}`);
+        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}&t=${recapRefreshKey}`);
         const blob = await res.blob();
         const file = new File([blob], "livevival-recap.png", { type: "image/png" });
         if (navigator.canShare({ files: [file] })) {
@@ -982,45 +984,95 @@ export default function PublicMatchPage() {
           </div>
         )}
 
-        {/* Capped to a medium width (was full-bleed across the whole page
-            column) with chat beside it on desktop instead of stacked below
-            — the Moment list underneath is meant to be the main focus, not
-            the stream. Stacks back to video-then-chat on mobile where
-            there's no room for two columns. */}
-        <div className="max-w-5xl mx-auto flex flex-col sm:flex-row gap-3">
-          <div className="sm:w-3/5 space-y-2">
-            {embedUrl ? (
-              <div className="lv-card-flush overflow-hidden">
-                <iframe
-                  key={embedUrl}
-                  src={embedUrl}
-                  className="w-full aspect-video"
-                  allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                  allowFullScreen
-                />
-              </div>
-            ) : (
-              videoUrl && (
-                <a href={videoUrl} target="_blank" className="lv-nav-link block">
-                  Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
-                </a>
-              )
-            )}
-          </div>
-          {chatEmbedUrl && (
-            <div className="sm:w-2/5 flex flex-col">
-              <button
-                onClick={() => setChatOpen((v) => !v)}
-                className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70 self-start sm:self-stretch"
-              >
-                💬 {chatOpen ? "Hide chat" : "Show chat"}
-              </button>
-              {chatOpen && (
-                <iframe src={chatEmbedUrl} className="w-full h-56 sm:h-auto sm:flex-1 sm:min-h-0 mt-2 rounded border border-white/10" />
+        {layoutBucket === "draft" ? (
+          <div className="max-w-5xl mx-auto flex flex-col sm:flex-row gap-3">
+            <div className="sm:w-2/5 space-y-2 order-2 sm:order-1">
+              {chatEmbedUrl && (
+                <div className="flex flex-col">
+                  <button
+                    onClick={() => setChatOpen((v) => !v)}
+                    className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70 self-start sm:self-stretch"
+                  >
+                    💬 {chatOpen ? "Hide chat" : "Show chat"}
+                  </button>
+                  {chatOpen && (
+                    <iframe
+                      src={chatEmbedUrl}
+                      className={`w-full h-56 sm:h-auto sm:flex-1 sm:min-h-0 mt-2 rounded border ${
+                        theme === "dark"
+                          ? "border-white/10 bg-black/50"
+                          : "border-black/10 bg-white/50"
+                      }`}
+                      title="YouTube live chat"
+                    />
+                  )}
+                </div>
               )}
             </div>
-          )}
-        </div>
+            <div className="sm:w-3/5 space-y-2 order-1 sm:order-2">
+              {embedUrl ? (
+                <div className="lv-card-flush overflow-hidden">
+                  <iframe
+                    key={embedUrl}
+                    src={embedUrl}
+                    className="w-full aspect-video"
+                    allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                    allowFullScreen
+                  />
+                </div>
+              ) : (
+                videoUrl && (
+                  <a href={videoUrl} target="_blank" className="lv-nav-link block">
+                    Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
+                  </a>
+                )
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="max-w-5xl mx-auto flex flex-col sm:flex-row gap-3">
+            <div className="sm:w-3/5 space-y-2">
+              {embedUrl ? (
+                <div className="lv-card-flush overflow-hidden">
+                  <iframe
+                    key={embedUrl}
+                    src={embedUrl}
+                    className="w-full aspect-video"
+                    allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                    allowFullScreen
+                  />
+                </div>
+              ) : (
+                videoUrl && (
+                  <a href={videoUrl} target="_blank" className="lv-nav-link block">
+                    Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
+                  </a>
+                )
+              )}
+            </div>
+            {chatEmbedUrl && (
+              <div className="sm:w-2/5 flex flex-col">
+                <button
+                  onClick={() => setChatOpen((v) => !v)}
+                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70 self-start sm:self-stretch"
+                >
+                  💬 {chatOpen ? "Hide chat" : "Show chat"}
+                </button>
+                {chatOpen && (
+                  <iframe
+                    src={chatEmbedUrl}
+                    className={`w-full h-56 sm:h-auto sm:flex-1 sm:min-h-0 mt-2 rounded border ${
+                      theme === "dark"
+                        ? "border-white/10 bg-black/50"
+                        : "border-black/10 bg-white/50"
+                    }`}
+                    title="YouTube live chat"
+                  />
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {match.update_source === "local_ocr" && (
@@ -1336,9 +1388,9 @@ export default function PublicMatchPage() {
                         {s.heroIconUrl && <HeroIcon url={s.heroIconUrl} name={s.heroName} size="xs" />}
                         {s.heroName ?? (s.heroIconUrl === null && s.heroName === null ? "—" : "")}
                       </td>
-                      <td className="tabular-nums">{s.kills ?? <span className="text-white/30">TBD</span>}</td>
-                      <td className="tabular-nums">{s.deaths ?? <span className="text-white/30">TBD</span>}</td>
-                      <td className="tabular-nums">{s.assists ?? <span className="text-white/30">TBD</span>}</td>
+                      <td className="tabular-nums">{s.kills !== null ? s.kills : <span className="text-white/30">0</span>}</td>
+                      <td className="tabular-nums">{s.deaths !== null ? s.deaths : <span className="text-white/30">0</span>}</td>
+                      <td className="tabular-nums">{s.assists !== null ? s.assists : <span className="text-white/30">0</span>}</td>
                     </tr>
                   ))}
                   {t.list.length === 0 && (
@@ -1360,47 +1412,53 @@ export default function PublicMatchPage() {
       </>
       )}
 
-      {/* Screenshots — Finished layout only ("Result / Timeline / Draft /
-          Statistics / Screenshots" per spec). Individual key moments still
-          carry their own inline screenshot in the Moment list/Timeline
-          above during Draft/Game; this standalone gallery is the
-          post-series highlights reel. */}
-      {match.update_source === "local_ocr" && layoutBucket === "finished" && (
+      {/* Screenshots — shown during game state and finished state. During
+          game, displays auto-updating gallery as captures come in; finished
+          state shows post-series highlights reel. Individual key moments
+          still carry their own inline screenshot in the Moment list above. */}
+      {match.update_source === "local_ocr" && (layoutBucket === "game" || layoutBucket === "finished") && gameScreenshots.length > 0 && (
       <section>
         <h2 className="lv-heading mb-2">Screenshots {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
-        <div className="flex flex-wrap gap-3">
-          {gameScreenshots.map((s) => (
-            <div key={s.id} className="w-48 space-y-1 lv-card-flush p-2">
-              {/* Opens the same preview/download/share flow as the recap
-                  card below (rather than a bare new tab) — each frame
-                  already carries a Livevival watermark + match/tournament
-                  caption baked in at capture time, so sharing it the same
-                  way the recap does is what actually gets that branding
-                  in front of anyone who reposts it. */}
-              <button
-                type="button"
-                onClick={() => setScreenshotPreview(s)}
-                className="block w-full hover:opacity-90 transition-opacity"
-                title="Click to preview full size"
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
-              </button>
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-[10px] text-white/40">
-                  {s.in_game_time ? `${s.in_game_time} in-game` : ""}
-                  {s.in_game_time && " · "}
-                  {new Date(s.created_at).toLocaleString()}
-                </p>
-                <a href={s.image_url} download className="text-[10px] text-white/50 hover:text-signal shrink-0">
-                  ⬇ Download
-                </a>
+        <div className="overflow-x-auto pr-2">
+          <div className="flex gap-3 pb-2">
+            {gameScreenshots.map((s) => (
+              <div key={s.id} className="flex-shrink-0 w-48 space-y-1">
+                {/* Opens the same preview/download/share flow as the recap
+                    card below (rather than a bare new tab) — each frame
+                    already carries a Livevival watermark + match/tournament
+                    caption baked in at capture time, so sharing it the same
+                    way the recap does is what actually gets that branding
+                    in front of anyone who reposts it. */}
+                <button
+                  type="button"
+                  onClick={() => setScreenshotPreview(s)}
+                  className="block w-full hover:opacity-90 transition-opacity"
+                  title="Click to preview full size"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10 aspect-video object-cover" />
+                </button>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] text-white/40 truncate">
+                    {s.in_game_time ? `${s.in_game_time}` : ""}
+                  </p>
+                  <a href={s.image_url} download className="text-[10px] text-white/50 hover:text-signal shrink-0">
+                    ⬇
+                  </a>
+                </div>
+                {s.note && <p className="text-[10px] text-white/50 line-clamp-2">{s.note}</p>}
               </div>
-              {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
-            </div>
-          ))}
-          {gameScreenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots yet.</span>}
+            ))}
+          </div>
         </div>
+      </section>
+      )}
+
+      {/* Screenshots empty state for finished matches that have no shots */}
+      {match.update_source === "local_ocr" && layoutBucket === "finished" && gameScreenshots.length === 0 && (
+      <section>
+        <h2 className="lv-heading mb-2">Screenshots {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <span className="text-white/30 text-xs">No screenshots captured.</span>
       </section>
       )}
 
@@ -1455,7 +1513,8 @@ export default function PublicMatchPage() {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
-                src={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
+                key={recapRefreshKey}
+                src={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
                 alt="Match recap card"
                 className="w-full rounded"
               />
@@ -1476,7 +1535,7 @@ export default function PublicMatchPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <a
-                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
+                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
                   download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
                   className="lv-btn-primary inline-block !text-xs !py-1.5"
                 >
@@ -1487,6 +1546,13 @@ export default function PublicMatchPage() {
                 </button>
                 <button onClick={handleCopyLink} className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5">
                   {copied ? "Copied!" : "Copy link"}
+                </button>
+                <button
+                  onClick={() => setRecapRefreshKey((k) => k + 1)}
+                  className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5"
+                  title="Regenerate recap image with latest data"
+                >
+                  🔄 Refresh
                 </button>
               </div>
             </div>
@@ -1502,13 +1568,14 @@ export default function PublicMatchPage() {
           <div className="max-w-lg w-full flex flex-col items-center gap-4" onClick={(e) => e.stopPropagation()}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
+              key={recapRefreshKey}
+              src={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
               alt="Match recap card preview"
               className="w-full rounded lv-card-flush"
             />
             <div className="flex flex-wrap gap-2 justify-center">
               <a
-                href={`/api/recap-card/${match.id}?ratio=${recapRatio}`}
+                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
                 download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
                 className="lv-btn-primary inline-block !text-xs !py-1.5"
               >

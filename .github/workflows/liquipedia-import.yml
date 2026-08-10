@@ -31,21 +31,6 @@ on:
         default: ""
 
 jobs:
-  # TEMPORARY diagnostic — auditing what Liquipedia team/hero/player page
-  # data we don't currently capture, to plan a freshness/coverage pass.
-  # Removed once the audit is done.
-  diagnose-field-coverage:
-    if: github.event.inputs.tournament_slugs == 'DIAGNOSE_FIELD_COVERAGE'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm install cheerio
-      - run: node scripts/_diagnose-field-coverage.mjs
-
   import-tournaments:
     runs-on: ubuntu-latest
     timeout-minutes: 30

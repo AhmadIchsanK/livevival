@@ -40,7 +40,9 @@ import {
   extractCountryCodes,
   getInfoboxRows,
   extractInfoboxIconLinks,
+  parseMoneyString,
 } from "./_liquipedia.mjs";
+import { getAdminEditedFields, buildProvenanceGuardedUpdate } from "./_provenance.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -172,6 +174,19 @@ export function extractLocationAndRegion($) {
   return { location, region };
 }
 
+// Confirmed against ONIC's real infobox: "created" is a clean ISO date
+// ("2018-07-26"), "approx. total winnings" is a dollar-formatted string
+// ("$2,651,695") parsed via the shared parseMoneyString helper.
+export function extractFoundedAndWinnings($) {
+  const rows = getInfoboxRows($);
+  const createdCell = rows.get("created");
+  const winningsCell = rows.get("approx. total winnings");
+  const createdText = createdCell?.text().trim();
+  const founded = createdText && /^\d{4}-\d{2}-\d{2}$/.test(createdText) ? createdText : null;
+  const winnings = winningsCell ? parseMoneyString(winningsCell.text()) : null;
+  return { founded, winnings };
+}
+
 // Domains that unambiguously identify a specific social platform — checked
 // before anything icon-class-based since a link's own href is a much more
 // stable signal than an icon filename/CSS class that Liquipedia could
@@ -299,6 +314,7 @@ async function importTeam(team) {
   const page = await fetchTeamPage(slug);
   if (!page) {
     console.warn(`No Liquipedia page found for "${team.name}" (tried slug "${slug}") — skipping`);
+    await supabase.from("teams").update({ last_liquipedia_sync_at: new Date().toISOString() }).eq("id", team.id);
     return;
   }
 
@@ -307,23 +323,34 @@ async function importTeam(team) {
   const roster = extractActiveRoster($);
   const { location, region } = extractLocationAndRegion($);
   const socialLinks = extractSocialLinks($);
+  const { founded, winnings } = extractFoundedAndWinnings($);
 
-  const teamUpdate = {};
-  if (!team.liquipedia_slug) teamUpdate.liquipedia_slug = page.canonicalTitle;
-  if (!team.logo_url && logoUrl) teamUpdate.logo_url = logoUrl;
-  // Same "only fill a gap, never overwrite" rule as logo_url/liquipedia_slug
-  // above (and heroes.role/lane/region) — an admin's manual edit on any of
-  // these is never clobbered by a re-scrape.
-  if (!team.location && location) teamUpdate.location = location;
-  if (!team.region && region) teamUpdate.region = region;
-  if (socialLinks) {
-    for (const column of SOCIAL_COLUMNS) {
-      if (!team[column] && socialLinks[column]) teamUpdate[column] = socialLinks[column];
-    }
+  const scrapedFields = {
+    liquipedia_slug: page.canonicalTitle,
+    logo_url: logoUrl,
+    location,
+    region,
+    founded_date: founded,
+    total_winnings: winnings,
+  };
+  for (const column of SOCIAL_COLUMNS) {
+    if (socialLinks?.[column]) scrapedFields[column] = socialLinks[column];
   }
-  if (Object.keys(teamUpdate).length > 0) {
-    const { error } = await supabase.from("teams").update(teamUpdate).eq("id", team.id);
-    if (error) console.error(`Failed to update team "${team.name}":`, error.message);
+
+  // Only worth the extra round trip when the row already has values to
+  // protect — a brand-new/mostly-empty row has nothing an admin could have
+  // edited yet.
+  const hasExistingValues = Object.keys(scrapedFields).some((f) => team[f] != null);
+  const adminEditedFields = hasExistingValues
+    ? await getAdminEditedFields(supabase, "teams", team.id)
+    : new Set();
+  const { payload: teamUpdate, skipped } = buildProvenanceGuardedUpdate(team, scrapedFields, adminEditedFields);
+  teamUpdate.last_liquipedia_sync_at = new Date().toISOString();
+
+  const { error } = await supabase.from("teams").update(teamUpdate).eq("id", team.id);
+  if (error) console.error(`Failed to update team "${team.name}":`, error.message);
+  if (skipped.length > 0) {
+    console.log(`  ${team.name}: kept admin-edited value(s) for ${skipped.join(", ")}`);
   }
 
   for (const p of roster) {
@@ -338,46 +365,75 @@ async function importTeam(team) {
 }
 
 const SOCIAL_COLUMNS = ["website_url", "twitter_url", "instagram_url", "facebook_url", "youtube_url", "discord_url"];
+const SCRAPED_TEAM_COLUMNS = [
+  "logo_url",
+  "location",
+  "region",
+  "founded_date",
+  "total_winnings",
+  ...SOCIAL_COLUMNS,
+];
+// A team's own page realistically doesn't change often — 7 days balances
+// staying current against not burning the shared rate-limit budget on
+// re-confirming rows that are almost always still correct.
+const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+// Caps how many already-complete-but-stale rows get re-checked in one run,
+// on top of however many still have a genuine gap (gap-fill rows are never
+// capped) — same "converge over several runs, never gamble the whole
+// timeout" pattern as import-liquipedia-heroes.mjs's icon backfill.
+const MAX_STALE_REFRESH_PER_RUN = 40;
 
 async function main() {
   const { data: teams, error } = await supabase
     .from("teams")
-    .select(`id, name, liquipedia_slug, logo_url, location, region, ${SOCIAL_COLUMNS.join(", ")}`);
+    .select(`id, name, liquipedia_slug, last_liquipedia_sync_at, ${SCRAPED_TEAM_COLUMNS.join(", ")}`);
   if (error) throw error;
 
   const { data: players, error: playersError } = await supabase.from("players").select("team_id, role");
   if (playersError) throw playersError;
   const teamsWithMissingRole = new Set(players.filter((p) => p.team_id && !p.role).map((p) => p.team_id));
 
-  // Re-fetching every team on every run (301 teams, Liquipedia rate-limited)
-  // was the actual cause of the slow backfill: with retries, a full pass
-  // routinely blew past GitHub Actions' 6h hard job cap and got force-
-  // cancelled before reaching the back half of the team list — confirmed
-  // via the last two scheduled runs of this workflow, both "cancelled" at
-  // ~6h05m. Skip teams that already have a logo, a fully-roled known
-  // roster, a location/region, and every social column; only re-fetch when
-  // a new player shows up with no role yet or one of those team-level
-  // fields is still a gap. location/region/socials are 100% null across
-  // all 318 teams as of this field's introduction, so the very first run
-  // after deploying it necessarily reprocesses close to the full team list
-  // regardless — same shape of one-time cost the roster/logo backfill
-  // already went through, and it converges the same way: each run only
-  // re-touches teams still missing something, and the job's own
+  // Re-fetching every team on every run (301+ teams, Liquipedia rate-
+  // limited) was the actual cause of the slow original backfill: with
+  // retries, a full pass routinely blew past GitHub Actions' 6h hard job
+  // cap and got force-cancelled before reaching the back half of the team
+  // list — confirmed via the last two scheduled runs of this workflow,
+  // both "cancelled" at ~6h05m. Two independent selection reasons feed the
+  // same run now: (1) gap-fill — any team missing a value in one of
+  // SCRAPED_TEAM_COLUMNS, or with a rostered player still missing a role —
+  // is never capped, since these are the highest-value/lowest-cost rows to
+  // fix; (2) periodic refresh — an already-complete team whose
+  // last_liquipedia_sync_at is older than STALE_AFTER_MS gets re-checked
+  // too (capped at MAX_STALE_REFRESH_PER_RUN, oldest-synced first), so a
+  // roster/social/logo change on an otherwise-"done" team's page still
+  // eventually reaches this scraper instead of being frozen forever the
+  // moment every column first fills in. buildProvenanceGuardedUpdate (see
+  // importTeam above) is what makes re-checking an already-filled row
+  // safe: it only overwrites a non-null value when that specific field's
+  // last real change wasn't a human admin edit. The job's own
   // timeout-minutes/cron-interval combination (180 min, every 6h, no
-  // overlapping runs) already tolerates spreading that convergence across
-  // several scheduled cycles instead of finishing in one. Note this can
-  // never fully "converge to zero" for a team whose real Liquipedia page
+  // overlapping runs) tolerates spreading a large gap-fill backlog across
+  // several scheduled cycles instead of finishing in one; this can never
+  // fully "converge to zero" for a team whose real Liquipedia page
   // genuinely has no Location field or Links section — same accepted
-  // tradeoff logo_url already has for a team with no logo on its page.
-  const needsFetch = teams.filter(
-    (t) =>
-      !t.logo_url ||
-      teamsWithMissingRole.has(t.id) ||
-      !t.location ||
-      !t.region ||
-      SOCIAL_COLUMNS.some((c) => !t[c])
+  // tradeoff logo_url already had for a team with no logo on its page.
+  const now = Date.now();
+  const hasGap = (t) =>
+    SCRAPED_TEAM_COLUMNS.some((c) => t[c] == null) || teamsWithMissingRole.has(t.id);
+  const isStale = (t) =>
+    !t.last_liquipedia_sync_at || now - new Date(t.last_liquipedia_sync_at).getTime() > STALE_AFTER_MS;
+
+  const gapFillTeams = teams.filter(hasGap);
+  const staleCompleteTeams = teams
+    .filter((t) => !hasGap(t) && isStale(t))
+    .sort((a, b) => new Date(a.last_liquipedia_sync_at ?? 0) - new Date(b.last_liquipedia_sync_at ?? 0))
+    .slice(0, MAX_STALE_REFRESH_PER_RUN);
+  const needsFetch = [...gapFillTeams, ...staleCompleteTeams];
+
+  console.log(
+    `Processing ${needsFetch.length} of ${teams.length} team(s): ${gapFillTeams.length} with a gap, ` +
+      `${staleCompleteTeams.length} complete-but-stale (rest already fresh)...`
   );
-  console.log(`Processing ${needsFetch.length} of ${teams.length} team(s) (rest already complete)...`);
   for (const team of needsFetch) {
     try {
       await importTeam(team);

@@ -77,7 +77,8 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { apiQuery, fetchRenderedPage, sleep } from "./_liquipedia.mjs";
+import { apiQuery, fetchRenderedPage, sleep, splitBrSeparatedCell, arrayOrNull } from "./_liquipedia.mjs";
+import { getAdminEditedFields, buildProvenanceGuardedUpdate } from "./_provenance.mjs";
 
 const CATEGORY = process.env.LIQUIPEDIA_HERO_CATEGORY || "Category:Hero";
 
@@ -101,6 +102,38 @@ const SAFE_RETRY_BUDGET = 2;
 // are simply left for the next scheduled run (they stay in
 // needsIconFetch/needsMetadataFetch since nothing was written for them).
 const MAX_HEROES_PER_RUN = 30;
+
+// Balance-patch-driven fields (stats, win rate, price) change far more
+// often than a team's roster/socials — 3 days instead of teams' 7 keeps
+// this closer to current without meaningfully increasing request volume
+// (MAX_HEROES_PER_RUN already caps actual fetches regardless of how many
+// heroes are technically "due").
+const STALE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+
+const METADATA_COLUMNS = [
+  "role",
+  "lane",
+  "region",
+  "price_bp",
+  "price_diamond",
+  "specialty",
+  "resource_bar",
+  "voice_actors",
+  "hp",
+  "hp_regen",
+  "energy",
+  "energy_regen",
+  "physical_attack",
+  "physical_defense",
+  "magic_power",
+  "magic_defense",
+  "attack_speed",
+  "attack_speed_ratio",
+  "movement_speed",
+  "win_rate_pct",
+  "win_rate_record",
+  "release_year",
+];
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -195,12 +228,84 @@ function cleanInfoboxValue(cell) {
   return text || null;
 }
 
+// Confirmed against Ling's real infobox: "price" concatenates a Battle
+// Points icon+number and a Diamond icon+number with no separator in plain
+// text ("32000 599" for cell.text()) — walk the cell's own child nodes in
+// DOM order instead, tracking which icon's alt text most recently
+// preceded each number so the two currencies never get confused.
+function parsePriceCell($, cell) {
+  const result = { bp: null, diamond: null };
+  if (!cell || cell.length === 0) return result;
+  let currentLabel = null;
+  cell.contents().each((_, node) => {
+    if (node.type === "tag" && node.name === "img") {
+      const alt = ($(node).attr("alt") || "").toLowerCase();
+      if (alt.includes("battle")) currentLabel = "bp";
+      else if (alt.includes("diamond")) currentLabel = "diamond";
+      else currentLabel = null;
+    } else if (node.type === "text" && currentLabel && result[currentLabel] == null) {
+      const match = $(node).text().match(/\d+/);
+      if (match) result[currentLabel] = Number(match[0]);
+    }
+  });
+  return result;
+}
+
+function parseNumericCell(cell) {
+  if (!cell) return null;
+  const match = cell.text().replace(/,/g, "").match(/-?\d+(\.\d+)?/);
+  return match ? Number(match[0]) : null;
+}
+
+// "2196W : 2139L (50.66%)" — the percentage is what's actually useful to
+// sort/filter on; the W/L record is kept as-is alongside it rather than
+// parsed further (not worth two more integer columns for a value this
+// rarely displayed on its own).
+function parseWinRateCell(cell) {
+  if (!cell) return { pct: null, record: null };
+  const text = cell.text().trim();
+  const pctMatch = text.match(/\(([\d.]+)%\)/);
+  const record = text.replace(/\s*\([\d.]+%\)\s*$/, "").trim() || null;
+  return { pct: pctMatch ? Number(pctMatch[1]) : null, record };
+}
+
+// Some heroes' "Release Date" field is only a bare year ("2019"); without
+// a reliable full date across the whole roster, this is stored as
+// release_year rather than a `date` column that would need guessing a
+// month/day that was never actually on the page.
+function parseReleaseYear(cell) {
+  if (!cell) return null;
+  const match = cell.text().match(/\d{4}/);
+  return match ? Number(match[0]) : null;
+}
+
 function extractHeroMetadata($) {
   const rows = getInfoboxRows($);
+  const price = parsePriceCell($, rows.get("price"));
+  const winRate = parseWinRateCell(rows.get("win rate"));
   return {
     role: cleanInfoboxValue(rows.get("role")),
     lane: cleanInfoboxValue(rows.get("lane")),
     region: cleanInfoboxValue(rows.get("region")),
+    price_bp: price.bp,
+    price_diamond: price.diamond,
+    specialty: arrayOrNull(splitBrSeparatedCell($, rows.get("specialty"))),
+    resource_bar: cleanInfoboxValue(rows.get("resource bar")),
+    voice_actors: arrayOrNull(splitBrSeparatedCell($, rows.get("voice actor(s)"))),
+    hp: parseNumericCell(rows.get("hp")),
+    hp_regen: parseNumericCell(rows.get("hp regen")),
+    energy: parseNumericCell(rows.get("energy")),
+    energy_regen: parseNumericCell(rows.get("energy regen")),
+    physical_attack: parseNumericCell(rows.get("physical attack")),
+    physical_defense: parseNumericCell(rows.get("physical defense")),
+    magic_power: parseNumericCell(rows.get("magic power")),
+    magic_defense: parseNumericCell(rows.get("magic defense")),
+    attack_speed: parseNumericCell(rows.get("attack speed")),
+    attack_speed_ratio: parseNumericCell(rows.get("attack speed ratio")),
+    movement_speed: parseNumericCell(rows.get("movement speed")),
+    win_rate_pct: winRate.pct,
+    win_rate_record: winRate.record,
+    release_year: parseReleaseYear(rows.get("release date")),
   };
 }
 
@@ -213,7 +318,7 @@ async function fetchHeroMetadata(title) {
 async function upsertHero(name, iconUrl, metadata) {
   const { data: existing } = await supabase
     .from("heroes")
-    .select("id, icon_url, role, lane, region")
+    .select(`id, icon_url, last_liquipedia_sync_at, ${METADATA_COLUMNS.join(", ")}`)
     .eq("name", name)
     .maybeSingle();
 
@@ -223,21 +328,31 @@ async function upsertHero(name, iconUrl, metadata) {
     // script's own earlier output, before the small-icon source existed) to
     // the new small icon — but never touch a value that's neither: that's
     // either already a good small icon or something an admin set by hand.
+    // Kept as its own rule (not routed through the generic provenance
+    // guard below) since "only overwrite this one specific low-quality
+    // state" isn't the same rule as "only overwrite when not admin-edited."
     const isUpgradeable = !existing.icon_url || /infobox/i.test(existing.icon_url);
     if (iconUrl && isUpgradeable && iconUrl !== existing.icon_url) update.icon_url = iconUrl;
-    // Same "only fill a gap, never overwrite" rule for role/lane/region —
-    // whether the existing value came from an earlier scrape or an admin
-    // edit, this script has no way to tell the difference and shouldn't
-    // clobber either.
+
     if (metadata) {
-      if (!existing.role && metadata.role) update.role = metadata.role;
-      if (!existing.lane && metadata.lane) update.lane = metadata.lane;
-      if (!existing.region && metadata.region) update.region = metadata.region;
+      const hasExistingValues = METADATA_COLUMNS.some((f) => existing[f] != null);
+      const adminEditedFields = hasExistingValues
+        ? await getAdminEditedFields(supabase, "heroes", existing.id)
+        : new Set();
+      const { payload, skipped } = buildProvenanceGuardedUpdate(existing, metadata, adminEditedFields);
+      Object.assign(update, payload);
+      if (skipped.length > 0) console.log(`  ${name}: kept admin-edited value(s) for ${skipped.join(", ")}`);
+      // Only stamp when a metadata fetch actually happened this run — this
+      // is what the staleness check orders by, so stamping it on every
+      // call (even the ones where `metadata` is null because this hero
+      // wasn't due/didn't fit this run's cap) would make a never-refreshed
+      // hero look freshly synced and let it silently fall out of rotation.
+      update.last_liquipedia_sync_at = new Date().toISOString();
     }
-    if (Object.keys(update).length > 0) {
-      const { error } = await supabase.from("heroes").update(update).eq("id", existing.id);
-      if (error) console.error(`Failed to update "${name}":`, error.message);
-    }
+
+    if (Object.keys(update).length === 0) return;
+    const { error } = await supabase.from("heroes").update(update).eq("id", existing.id);
+    if (error) console.error(`Failed to update "${name}":`, error.message);
     return;
   }
 
@@ -245,9 +360,8 @@ async function upsertHero(name, iconUrl, metadata) {
     name,
     liquipedia_slug: name.replace(/ /g, "_"),
     icon_url: iconUrl,
-    role: metadata?.role ?? null,
-    lane: metadata?.lane ?? null,
-    region: metadata?.region ?? null,
+    last_liquipedia_sync_at: new Date().toISOString(),
+    ...Object.fromEntries(METADATA_COLUMNS.map((f) => [f, metadata?.[f] ?? null])),
   });
   if (error && !error.message.includes("duplicate key")) {
     console.error(`Failed to insert hero "${name}":`, error.message);
@@ -283,28 +397,51 @@ async function main() {
   // forever. "Good" excludes the old infobox-portrait URLs this script used
   // to produce before the small-icon source existed, so those get upgraded
   // once and then left alone.
-  const { data: existingHeroes } = await supabase.from("heroes").select("name, icon_url, role, lane, region");
+  const { data: existingHeroes } = await supabase
+    .from("heroes")
+    .select(`name, icon_url, last_liquipedia_sync_at, ${METADATA_COLUMNS.join(", ")}`);
   const needsUpgrade = new Set(
     (existingHeroes ?? []).filter((h) => !h.icon_url || /infobox/i.test(h.icon_url)).map((h) => h.name)
   );
-  const needsMetadata = new Set(
-    (existingHeroes ?? []).filter((h) => !h.role || !h.lane || !h.region).map((h) => h.name)
-  );
+  // Gap-fill: any hero missing so much as one of the now much-larger
+  // METADATA_COLUMNS set (previously just role/lane/region) still needs a
+  // fetch every run until nothing's left null.
+  const heroHasGap = (h) => METADATA_COLUMNS.some((f) => h[f] == null);
+  const now = Date.now();
+  const isStale = (h) =>
+    !h.last_liquipedia_sync_at || now - new Date(h.last_liquipedia_sync_at).getTime() > STALE_AFTER_MS;
+  const gapHeroes = new Set((existingHeroes ?? []).filter(heroHasGap).map((h) => h.name));
+  // Periodic refresh: an already-complete hero whose stats/win-rate could
+  // have moved with a balance patch since the last check — this is the
+  // part that makes hero data actually stay "always up to date" instead
+  // of freezing the moment every column first fills in.
+  const staleHeroes = new Set((existingHeroes ?? []).filter((h) => !heroHasGap(h) && isStale(h)).map((h) => h.name));
   const knownNames = new Set((existingHeroes ?? []).map((h) => h.name));
   const needsIconFetch = new Set(titles.filter((t) => !knownNames.has(t) || needsUpgrade.has(t)));
-  const needsMetadataFetch = new Set(titles.filter((t) => !knownNames.has(t) || needsMetadata.has(t)));
+  const needsMetadataFetch = new Set(
+    titles.filter((t) => !knownNames.has(t) || gapHeroes.has(t) || staleHeroes.has(t))
+  );
 
   console.log(`${needsIconFetch.size} of ${titles.length} hero(es) need an icon fetch this run`);
-  console.log(`${needsMetadataFetch.size} of ${titles.length} hero(es) need a role/lane/region fetch this run`);
+  console.log(
+    `${needsMetadataFetch.size} of ${titles.length} hero(es) need a metadata fetch this run ` +
+      `(${gapHeroes.size} with a gap, ${staleHeroes.size} complete-but-stale)`
+  );
 
-  // Cap actual fetching to MAX_HEROES_PER_RUN (see header comment) — titles
-  // are processed in the same order every run, so this naturally advances
-  // through the roster over successive scheduled runs rather than always
-  // reattempting a fixed subset. Anything past the cap still gets upserted
-  // below (so a brand-new hero's row exists even before its own fetch
-  // happens) but with no network fetch, leaving it flagged as needing one
-  // on the next run.
-  const needsAnyFetch = titles.filter((t) => needsIconFetch.has(t) || needsMetadataFetch.has(t));
+  // Cap actual fetching to MAX_HEROES_PER_RUN (see header comment). Gap-
+  // fill heroes (never-scraped data) are prioritized over pure staleness
+  // re-checks (already-good data just due for a refresh) when both
+  // compete for the same run's budget — titles are processed in page
+  // order within each group, so this still naturally advances through the
+  // roster over successive scheduled runs rather than always reattempting
+  // a fixed subset. Anything past the cap still gets upserted below (so a
+  // brand-new hero's row exists even before its own fetch happens) but
+  // with no network fetch, leaving it flagged as needing one on the next
+  // run.
+  const needsAnyFetch = [
+    ...titles.filter((t) => needsIconFetch.has(t) || gapHeroes.has(t) || !knownNames.has(t)),
+    ...titles.filter((t) => staleHeroes.has(t) && !needsIconFetch.has(t) && !gapHeroes.has(t)),
+  ];
   const fetchableThisRun = new Set(needsAnyFetch.slice(0, MAX_HEROES_PER_RUN));
   console.log(
     `${fetchableThisRun.size} of ${needsAnyFetch.length} hero(es) needing work will actually be fetched this run (capped at ${MAX_HEROES_PER_RUN})`

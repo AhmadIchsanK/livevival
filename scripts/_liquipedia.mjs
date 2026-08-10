@@ -211,6 +211,68 @@ export function extractCountryCodes($, valueCell) {
   return codes.length > 0 ? Array.from(new Set(codes)) : null;
 }
 
+/**
+ * Parses a "$2,651,695"-shaped Liquipedia earnings string into a plain
+ * number. Confirmed against real team ("approx. total winnings") and
+ * player infobox rows sharing this exact format. Returns null for
+ * anything that doesn't contain a recognizable number (e.g. an em-dash
+ * placeholder some pages use when no earnings are on record).
+ */
+export function parseMoneyString(text) {
+  if (!text) return null;
+  const cleaned = text.replace(/[,$]/g, "").trim();
+  const match = cleaned.match(/-?\d+(\.\d+)?/);
+  if (!match) return null;
+  return Number(match[0]);
+}
+
+/**
+ * Splits a `<br>`-joined infobox cell (e.g. hero "specialty"/"voice
+ * actor(s)", player "alternate ids"/"nickname(s)") into its individual
+ * values. A plain `.text()` call on these cells concatenates every line
+ * with no separator at all (confirmed against real markup — Ling's
+ * "Chase<br>Burst" specialty reads back as the single string
+ * "ChaseBurst"), the same class of bug `.brkts-header-div` had before
+ * deriveStageFromBracket's fix — this is that same fix generalized to any
+ * `<br>`-separated cell. Returns [] for an empty/missing cell.
+ */
+export function splitBrSeparatedCell($, cell) {
+  if (!cell || cell.length === 0) return [];
+  const html = cell.html();
+  if (!html) return [];
+  return html
+    .split(/<br\s*\/?>/i)
+    .map((part) => $(`<div>${part}</div>`).text().trim())
+    .filter(Boolean);
+}
+
+/**
+ * Reads every `title`-bearing anchor inside an infobox cell as a list of
+ * names — for cells like a player's "signature heroes" that render as a
+ * row of hero icon links with no visible text of their own at all (a
+ * plain `.text()` call on that cell returns an empty string). Returns []
+ * for an empty/missing cell.
+ */
+export function extractAnchorTitlesFromCell($, cell) {
+  if (!cell || cell.length === 0) return [];
+  return cell
+    .find("a[title]")
+    .map((_, a) => $(a).attr("title")?.trim())
+    .get()
+    .filter(Boolean);
+}
+
+/**
+ * Treats an empty array the same as "nothing found" — a scrape that
+ * genuinely found no list items (a page-structure hiccup, a field the
+ * page happens not to have this run) should never overwrite previously
+ * good array data via the provenance-guarded refresh path, which only
+ * skips a field when its *value* is null/undefined, not when it's []`.
+ */
+export function arrayOrNull(arr) {
+  return arr && arr.length > 0 ? arr : null;
+}
+
 /** Maps every `<label>: value` infobox row (the `.infobox-description` / next-sibling pattern used across player, team, hero, etc. infoboxes) by lowercased label text, e.g. rows.get("location"). */
 export function getInfoboxRows($) {
   const rows = new Map();

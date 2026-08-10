@@ -6086,22 +6086,11 @@ export default function LiveConsolePage() {
       {match.update_source === "local_ocr" && (
         <>
 
-      {/* Team kills — derived from K/D/A, same as the public page */}
-      <section className="space-y-2">
-        <h2 className="font-bold">Team kills</h2>
-        {/* flex-wrap + a smaller mobile base size — two full team names at
-            text-3xl unwrapped could run past a phone's width with nowhere
-            to go; sm: restores the exact original size/gap once there's
-            room for it. */}
-        <div className="flex flex-wrap gap-4 sm:gap-8 text-2xl sm:text-3xl font-bold tabular-nums">
-          <span className={teamAKillsTotal > teamBKillsTotal ? "text-signal" : "text-white"}>
-            {match.team_a?.name}: {teamAKillsTotal}
-          </span>
-          <span className={teamBKillsTotal > teamAKillsTotal ? "text-signal" : "text-white"}>
-            {match.team_b?.name}: {teamBKillsTotal}
-          </span>
-        </div>
-      </section>
+      {/* A standalone "Team kills" readout used to sit here, showing the
+          exact same teamAKillsTotal/teamBKillsTotal numbers already big
+          and always-visible in the sticky header above (see the h1's
+          local_ocr branch) — a pure duplicate display with no editing
+          function of its own, removed rather than collapsed. */}
 
       {/* Net worth — OCR-fed each tick, but directly editable too */}
       <section className="space-y-2">

@@ -93,7 +93,21 @@ function parseDateRange(dateDisplay) {
   // already completed. Treat it the same as no end date at all.
   if (/^\d{4}$/.test(right)) return { startDate: null, endDate: null };
 
-  const endDate = new Date(right);
+  // Liquipedia elides the month on the right side when a range stays
+  // within a single month, e.g. "Aug 04–09, 2026" -> right is just
+  // "09, 2026". `new Date("09, 2026")` is Invalid Date with no month
+  // present — this silently nulled start/end for every single-month
+  // tournament (confirmed: every M1-M7 World Championship, MSC, GOTF, and
+  // the Women's events use this format; multi-month ranges like
+  // "Apr 03 – Jun 07, 2026" already carry their own month on both sides
+  // and never hit this). Borrow the month from the left side before
+  // parsing.
+  const leftMonthMatch = left.match(/^([A-Za-z]+)/);
+  const rightDayOnly = /^(\d{1,2}),?\s*(\d{4})$/.exec(right);
+  const rightForParsing =
+    rightDayOnly && leftMonthMatch ? `${leftMonthMatch[1]} ${rightDayOnly[1]}, ${rightDayOnly[2]}` : right;
+
+  const endDate = new Date(rightForParsing);
   if (isNaN(endDate.getTime())) return { startDate: null, endDate: null };
 
   const leftHasYear = /\d{4}/.test(left);

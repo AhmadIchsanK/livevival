@@ -3981,6 +3981,35 @@ export default function LiveConsolePage() {
     }
     setPlayers((prev) => prev.map((p) => (p.id === playerId ? { ...p, is_active_roster: next } : p)));
   }
+
+  // ── Pre-draft roster setup ─────────────────────────────────────────
+  // Fixing a typo'd IGN or a wrong role used to mean leaving this page for
+  // /admin/players, then coming back — a real problem the moment before a
+  // draft starts, when a sub or a corrected spelling needs to be right
+  // before it shows up on the broadcast-style board above. Scoped to
+  // renaming/re-rolling an existing roster row only, not adding brand-new
+  // players to a team — that's still a /admin/players (or /admin/teams)
+  // job, out of scope for a per-match console.
+  const [editingRosterPlayerId, setEditingRosterPlayerId] = useState<string | null>(null);
+  const [editingRosterIgn, setEditingRosterIgn] = useState("");
+  const [editingRosterRole, setEditingRosterRole] = useState("");
+  function startEditRosterPlayer(p: Player) {
+    setEditingRosterPlayerId(p.id);
+    setEditingRosterIgn(p.ign);
+    setEditingRosterRole(p.role ?? "");
+  }
+  async function saveRosterPlayerEdit(playerId: string) {
+    const ign = editingRosterIgn.trim();
+    if (!ign) return;
+    const role = editingRosterRole || null;
+    const { error } = await supabase.from("players").update({ ign, role }).eq("id", playerId);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setPlayers((prev) => prev.map((p) => (p.id === playerId ? { ...p, ign, role } : p)));
+    setEditingRosterPlayerId(null);
+  }
   // A direct "team_kills" OCR tracker (see captureTickBody) overrides this
   // once it's read anything — falls back to summing player_stats.kills
   // (the only source before that tracker existed, and still the only
@@ -5175,11 +5204,115 @@ export default function LiveConsolePage() {
           />
         )}
 
-        {/* Active roster (main lineup) — editable up through Draft complete
-            (not locked the instant the draft starts, per spec). Draft can't
-            start unless both teams have exactly 5 checked here; gated in
-            handlePhaseChange, not just visually here. */}
-        {(match.state === "MATCH_NOT_STARTED" || DRAFT_PHASES.includes(match.state)) && (
+        {/* Roster setup — the one-time step before a draft starts: fix a
+            typo'd IGN or wrong role, bench/activate down to exactly 5 a
+            side, then start the draft right here instead of hunting for
+            the phase dropdown in the sticky header above. Replaces what
+            used to be silent hunting for "why won't Draft started take" —
+            handlePhaseChange still owns the actual 5/5 gate, this panel
+            just surfaces it inline with a button that acts on it directly. */}
+        {match.state === "MATCH_NOT_STARTED" && (
+          <div className="border border-white/10 rounded-lg p-3 space-y-3">
+            <p className="text-xs text-white/50">
+              Roster setup — confirm who&apos;s playing and fix any name/role before the draft starts.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {[match.team_a, match.team_b].map((team, idx) => {
+                if (!team) return <span key={idx} />;
+                const teamRoster = rosterFor(team.id);
+                const activeCount = teamRoster.filter((p) => p.is_active_roster).length;
+                return (
+                  <div key={team.id} className="space-y-1.5">
+                    <p className="text-xs text-white/50">
+                      {team.name} — active roster{" "}
+                      <span className={activeCount === 5 ? "text-emerald-400" : "text-yellow-300"}>{activeCount}/5</span>
+                    </p>
+                    <div className="space-y-1">
+                      {teamRoster.map((p) =>
+                        editingRosterPlayerId === p.id ? (
+                          <div key={p.id} className="flex items-center gap-1.5 border border-signal/40 rounded px-2 py-1.5 bg-white/5">
+                            <input
+                              autoFocus
+                              value={editingRosterIgn}
+                              onChange={(e) => setEditingRosterIgn(e.target.value)}
+                              onKeyDown={(e) => e.key === "Enter" && saveRosterPlayerEdit(p.id)}
+                              placeholder="IGN"
+                              className="flex-1 min-w-0 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                            />
+                            <select
+                              value={editingRosterRole}
+                              onChange={(e) => setEditingRosterRole(e.target.value)}
+                              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs shrink-0"
+                            >
+                              <option value="">No role</option>
+                              {ROLE_ORDER.map((r) => (
+                                <option key={r} value={r}>{r}</option>
+                              ))}
+                            </select>
+                            <button onClick={() => saveRosterPlayerEdit(p.id)} className="lv-btn-primary !px-2 !py-1 !text-xs shrink-0">
+                              Save
+                            </button>
+                            <button onClick={() => setEditingRosterPlayerId(null)} className="lv-btn-ghost !px-2 !py-1 !text-xs shrink-0">
+                              ✕
+                            </button>
+                          </div>
+                        ) : (
+                          <div key={p.id} className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => toggleActiveRoster(p.id, !p.is_active_roster)}
+                              className={`flex-1 min-w-0 text-left text-[11px] rounded px-2 py-1.5 border truncate ${
+                                p.is_active_roster
+                                  ? "border-signal/40 bg-signal/10 text-white"
+                                  : "border-white/10 text-white/40 hover:border-white/30"
+                              }`}
+                              title={p.is_active_roster ? "Active — click to bench" : "Bench — click to activate"}
+                            >
+                              {p.is_active_roster ? "✓ " : ""}
+                              {p.ign}
+                              {p.role ? ` (${p.role})` : ""}
+                            </button>
+                            <button
+                              onClick={() => startEditRosterPlayer(p)}
+                              title="Edit IGN / role"
+                              className="text-white/30 hover:text-white shrink-0 text-xs px-1.5 py-1.5"
+                            >
+                              ✎
+                            </button>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {(() => {
+              const aActive = match.team_a ? rosterFor(match.team_a.id).filter((p) => p.is_active_roster).length : 0;
+              const bActive = match.team_b ? rosterFor(match.team_b.id).filter((p) => p.is_active_roster).length : 0;
+              const ready = aActive === 5 && bActive === 5;
+              return (
+                <div className="flex items-center gap-3 pt-1 border-t border-white/10">
+                  <button
+                    onClick={() => handlePhaseChange("DRAFT_STARTED")}
+                    disabled={!ready}
+                    className="lv-btn-primary !text-xs disabled:opacity-40"
+                  >
+                    ▶ Start draft
+                  </button>
+                  <span className={`text-xs ${ready ? "text-emerald-400" : "text-white/40"}`}>
+                    {ready ? "Both rosters ready." : `Needs exactly 5 active a side (currently ${aActive}/5, ${bActive}/5).`}
+                  </span>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* Active roster (main lineup) — bench/activate stays editable
+            through Draft complete (not locked the instant the draft
+            starts, per spec), but IGN/role editing is Roster setup-only
+            above — renaming mid-draft isn't this panel's job. */}
+        {DRAFT_PHASES.includes(match.state) && (
           <div className="border border-white/10 rounded-lg p-3 grid grid-cols-1 sm:grid-cols-2 gap-4">
             {[match.team_a, match.team_b].map((team, idx) => {
               if (!team) return <span key={idx} />;

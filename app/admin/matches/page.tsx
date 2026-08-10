@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
+import { withQueryCache } from "@/lib/queryCache";
 
 type Option = { id: string; label: string };
 
@@ -242,34 +243,26 @@ export default function MatchesPage() {
   const MATCHES_PAGE_SIZE = 30;
 
   async function loadMatches(tab: "scheduled" | "live" | "finished", offset = 0) {
-    let query = supabase
-      .from("matches")
-      .select(
-        `id, scheduled_at, format, stage, status, youtube_url, state, stream_id, update_source, notification_tier,
-         tournament_id, team_a_id, team_b_id,
-         tournament:tournaments(name, liquipedia_slug),
-         team_a:teams!matches_team_a_id_fkey(name),
-         team_b:teams!matches_team_b_id_fkey(name)`
-      )
-      .eq("status", tab);
+    try {
+      // Use cached API endpoint for much better performance on large lists
+      const response = await fetch(`/api/admin/matches-by-status?status=${tab}&offset=${offset}`);
+      if (!response.ok) {
+        const errorData = await response.json();
+        setError(errorData.error || "Failed to load matches");
+        return;
+      }
 
-    if (tab === "finished") {
-      query = query.order("scheduled_at", { ascending: false }).range(offset, offset + MATCHES_PAGE_SIZE - 1);
-    } else {
-      query = query.order("scheduled_at", { ascending: true });
-    }
+      const { matches, hasMore } = await response.json();
 
-    const { data, error } = await query;
-    if (error) {
-      setError(error.message);
-      return;
+      if (tab === "finished" && offset > 0) {
+        setMatches((prev) => [...prev, ...((matches as unknown as Match[]) ?? [])]);
+      } else {
+        setMatches((matches as unknown as Match[]) ?? []);
+      }
+      setHasMoreFinished(hasMore);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load matches");
     }
-    if (tab === "finished" && offset > 0) {
-      setMatches((prev) => [...prev, ...((data as unknown as Match[]) ?? [])]);
-    } else {
-      setMatches((data as unknown as Match[]) ?? []);
-    }
-    setHasMoreFinished((data?.length ?? 0) === MATCHES_PAGE_SIZE);
   }
 
   useEffect(() => {

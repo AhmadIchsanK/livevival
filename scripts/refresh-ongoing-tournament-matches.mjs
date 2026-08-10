@@ -37,9 +37,16 @@
 // importers together here means a late-discovered match gets its full
 // result in the same 30-min cycle it's discovered in, instead of
 // depending on a second, differently-scoped process to ever reach it.
+// Also runs the final-standings importer (placement/prize table) for the
+// same tournaments — same reasoning as the detail importer above: a
+// tournament whose last known match was already finished when discovered
+// falls straight out of the 6h cron's "past year" window logic having ever
+// run against it in time, and its final rank/placement (tournament_results)
+// never gets populated any other way.
 import { createClient } from "@supabase/supabase-js";
 import { importMatchesForTournament } from "./import-liquipedia-matches.mjs";
 import { importTournament } from "./import-finished-match-details.mjs";
+import { importTournamentResults } from "./import-tournament-results.mjs";
 import { discoverStagePages } from "./refresh-finished-match-details.mjs";
 import { sleep } from "./_liquipedia.mjs";
 
@@ -92,6 +99,13 @@ async function main() {
     } catch (err) {
       console.error(`Failed importing match details for ${t.name}:`, err.message);
     }
+
+    try {
+      await importTournamentResults(t.liquipedia_slug);
+    } catch (err) {
+      console.error(`Failed importing standings for ${t.name}:`, err.message);
+    }
+    await sleep(4000); // same pacing refresh-finished-match-details.mjs uses after this same call
   }
 }
 

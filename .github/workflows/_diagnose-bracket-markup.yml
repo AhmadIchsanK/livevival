@@ -1,0 +1,21 @@
+name: Diagnose bracket markup (throwaway)
+
+on:
+  workflow_dispatch:
+    inputs:
+      page_title:
+        description: Liquipedia page title to inspect
+        required: false
+        default: "Games_of_the_Future/2026"
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install cheerio
+      - run: node scripts/_diagnose-bracket-markup.mjs "${{ github.event.inputs.page_title }}"

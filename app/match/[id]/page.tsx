@@ -988,27 +988,67 @@ export default function PublicMatchPage() {
           shorter constrains it — the rest of the page just keeps scrolling
           past below. bg-ink covers the seam so nothing shows through. */}
       <div className="sticky top-0 z-10 bg-ink pt-2 pb-3 space-y-2">
-        {games.length > 1 && (
-          <div className="flex gap-2 flex-wrap">
-            {games.map((g) => (
-              <button
-                key={g.id}
-                onClick={() => setSelectedGameId(g.id)}
-                className={`text-xs px-3 py-1.5 rounded-md border transition-all duration-200 ${
-                  selectedGameId === g.id
-                    ? "bg-signal border-signal shadow-[0_0_16px_1px_rgba(232,72,58,0.4)]"
-                    : "border-white/10 hover:border-signal/40 hover:bg-white/5"
-                }`}
-              >
-                Game {g.game_number}
-                {g.winner_team_id && (
-                  <span className="ml-1 text-white/60">
-                    ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} won)
+        {/* Once at least one game is decided, the switcher reads as a
+            recap accordion (▶ collapsed / ▼ expanded row per game) instead
+            of a plain pill row — same underlying selectedGameId toggle
+            (only one game's sections render below at a time, see the
+            Draft recap/Scoreboard/Screenshots sections further down), just
+            framed as "which game's recap is open" rather than "which tab
+            is active". Kept as compact pills during an in-progress Draft
+            or Game, where a vertical accordion would just eat space above
+            the stream for no benefit. */}
+        {games.length > 1 && (layoutBucket === "finished" || layoutBucket === "default") ? (
+          <div className="flex flex-col gap-1.5">
+            {games.map((g) => {
+              const expanded = selectedGameId === g.id;
+              const winnerName = g.winner_team_id === teamAId ? match.team_a?.name : g.winner_team_id === teamBId ? match.team_b?.name : null;
+              return (
+                <button
+                  key={g.id}
+                  onClick={() => setSelectedGameId(g.id)}
+                  aria-expanded={expanded}
+                  className={`text-left text-xs px-3 py-2 rounded-md border flex items-center gap-2 transition-all duration-200 ${
+                    expanded
+                      ? "bg-signal/15 border-signal shadow-[0_0_16px_1px_rgba(232,72,58,0.25)]"
+                      : "border-white/10 hover:border-signal/40 hover:bg-white/5"
+                  }`}
+                >
+                  <span className="shrink-0">{expanded ? "▼" : "▶"}</span>
+                  <span className="font-semibold">Game {g.game_number}</span>
+                  <span className="text-white/60">
+                    {winnerName
+                      ? `Recap — ${winnerName} won`
+                      : g.id === liveGameId && match.state !== "SERIES_FINISHED"
+                      ? "In progress…"
+                      : "Not started yet"}
                   </span>
-                )}
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
+        ) : (
+          games.length > 1 && (
+            <div className="flex gap-2 flex-wrap">
+              {games.map((g) => (
+                <button
+                  key={g.id}
+                  onClick={() => setSelectedGameId(g.id)}
+                  className={`text-xs px-3 py-1.5 rounded-md border transition-all duration-200 ${
+                    selectedGameId === g.id
+                      ? "bg-signal border-signal shadow-[0_0_16px_1px_rgba(232,72,58,0.4)]"
+                      : "border-white/10 hover:border-signal/40 hover:bg-white/5"
+                  }`}
+                >
+                  Game {g.game_number}
+                  {g.winner_team_id && (
+                    <span className="ml-1 text-white/60">
+                      ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} won)
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )
         )}
 
         {/* Video always full width, same treatment across every phase —

@@ -9,6 +9,7 @@ import { HeroIcon } from "@/components/HeroIcon";
 import { DraftOverlay, type DraftOverlayPickBan } from "@/components/DraftOverlay";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
+import { buildHeroIconCache, downscaleVideoRegion, bestHeroMatch, type HeroIconCache, type HeroMatch } from "@/lib/heroTemplateMatch";
 
 // Auto-detected moment triggers only — narrowed to the four kill-streak
 // callouts (each still requires a player name attached, extracted by the
@@ -1798,6 +1799,184 @@ export default function LiveConsolePage() {
     })();
   }, []);
 
+  // ── Draft-slot template-match assist: hero-icon cache + calibration ───
+  // Loaded lazily (buildHeroIconCache is only ever invoked from
+  // ensureHeroIconCache below, on first actual need) rather than eagerly
+  // alongside `heroes` above — most sessions on this page never reach the
+  // draft phase with AI mode on, so eagerly downloading+decoding ~120
+  // portraits on every page load would be pure waste for them.
+  const heroIconCacheRef = useRef<HeroIconCache | null>(null);
+  const heroIconCacheLoadingRef = useRef(false);
+  async function ensureHeroIconCache(): Promise<HeroIconCache | null> {
+    if (heroIconCacheRef.current) return heroIconCacheRef.current;
+    if (heroIconCacheLoadingRef.current || heroes.length === 0) return null;
+    heroIconCacheLoadingRef.current = true;
+    try {
+      heroIconCacheRef.current = await buildHeroIconCache(heroes, proxiedImageUrl);
+      return heroIconCacheRef.current;
+    } finally {
+      heroIconCacheLoadingRef.current = false;
+    }
+  }
+
+  // Calibrated draft-slot crop regions — same shape as `regions` above
+  // (RegionBox keyed by field/key) but loaded from and saved to
+  // capture_regions independently of `trackers`/`regions`, per the note by
+  // DRAFT_SLOTS above.
+  const [draftSlotRegions, setDraftSlotRegions] = useState<Record<string, RegionBox | null>>({});
+  useEffect(() => {
+    if (!matchId) return;
+    (async () => {
+      const { data } = await supabase
+        .from("capture_regions")
+        .select("field, x_pct, y_pct, w_pct, h_pct")
+        .eq("match_id", matchId)
+        .eq("category", "draft_slot");
+      const next: Record<string, RegionBox | null> = {};
+      for (const r of (data as { field: string; x_pct: number | null; y_pct: number | null; w_pct: number | null; h_pct: number | null }[]) ?? []) {
+        next[r.field] = r.x_pct != null ? { xPct: r.x_pct, yPct: r.y_pct!, wPct: r.w_pct!, hPct: r.h_pct! } : null;
+      }
+      setDraftSlotRegions(next);
+    })();
+  }, [matchId]);
+  async function saveDraftSlotRegion(key: DraftSlotKey, box: RegionBox) {
+    setDraftSlotRegions((prev) => ({ ...prev, [key]: box }));
+    const slot = DRAFT_SLOTS.find((s) => s.key === key);
+    if (!slot) return;
+    await supabase.from("capture_regions").upsert(
+      {
+        match_id: matchId,
+        phase: "DRAFT_STARTED",
+        category: "draft_slot",
+        field: key,
+        label: slot.label,
+        x_pct: box.xPct,
+        y_pct: box.yPct,
+        w_pct: box.wPct,
+        h_pct: box.hPct,
+      },
+      { onConflict: "match_id,phase,field" }
+    );
+  }
+  async function clearDraftSlotRegion(key: DraftSlotKey) {
+    setDraftSlotRegions((prev) => ({ ...prev, [key]: null }));
+    await supabase.from("capture_regions").delete().eq("match_id", matchId).eq("phase", "DRAFT_STARTED").eq("field", key);
+  }
+
+  // Draft-slot calibration works against a single still frame, not the live
+  // video — unlike the GAME_STARTED trackers (whose on-screen position can
+  // genuinely need readjusting mid-game), a broadcast's draft-board layout
+  // is static for the whole draft, so freezing one frame to draw all 20
+  // boxes against is simpler and safer than reusing the live-video crop
+  // container the manual OCR trackers above depend on (see the note by
+  // DRAFT_SLOTS — this stays fully independent of that system).
+  const [draftSlotCalibrationOpen, setDraftSlotCalibrationOpen] = useState(false);
+  const [draftSlotCalibrationFrame, setDraftSlotCalibrationFrame] = useState<string | null>(null);
+  function captureDraftSlotCalibrationFrame() {
+    const video = previewRef.current;
+    if (!video || video.videoWidth === 0) return;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d")?.drawImage(video, 0, 0);
+    setDraftSlotCalibrationFrame(canvas.toDataURL("image/jpeg", 0.85));
+    setDraftSlotCalibrationOpen(true);
+  }
+
+  // Drag-to-draw state for the draft-slot calibration panel — same
+  // percentage-box math as dragMode/dragStartPct/dragStartBox/startBoxDrag
+  // above (clientToPct, corner-anchored resize), kept in its own refs/state
+  // so a slot-calibration drag can never read or write the GAME_STARTED
+  // tracker drag state (dragTarget et al) or vice versa.
+  const [calibratingSlot, setCalibratingSlot] = useState<DraftSlotKey | null>(null);
+  const [slotDraftBox, setSlotDraftBox] = useState<RegionBox | null>(null);
+  const slotDragMode = useRef<DragMode | null>(null);
+  const slotDragStartPct = useRef<{ x: number; y: number } | null>(null);
+  const slotDragStartBox = useRef<RegionBox | null>(null);
+  const slotCropRectRef = useRef<DOMRect | null>(null);
+  function startSlotBoxDrag(mode: DragMode, e: React.MouseEvent) {
+    if (!calibratingSlot) return;
+    e.stopPropagation();
+    const container = e.currentTarget.closest("[data-slot-crop-container]");
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    slotCropRectRef.current = rect;
+    slotDragMode.current = mode;
+    slotDragStartPct.current = clientToPct(e.clientX, e.clientY, rect);
+    slotDragStartBox.current = slotDraftBox;
+  }
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const mode = slotDragMode.current;
+      const rect = slotCropRectRef.current;
+      const start = slotDragStartPct.current;
+      if (!mode || !rect || !start) return;
+      const pt = clientToPct(e.clientX, e.clientY, rect);
+      if (mode === "draw") {
+        setSlotDraftBox({
+          xPct: Math.min(start.x, pt.x),
+          yPct: Math.min(start.y, pt.y),
+          wPct: Math.abs(pt.x - start.x),
+          hPct: Math.abs(pt.y - start.y),
+        });
+        return;
+      }
+      const startBox = slotDragStartBox.current;
+      if (!startBox) return;
+      if (mode === "move") {
+        const dx = pt.x - start.x;
+        const dy = pt.y - start.y;
+        setSlotDraftBox({
+          ...startBox,
+          xPct: Math.min(100 - startBox.wPct, Math.max(0, startBox.xPct + dx)),
+          yPct: Math.min(100 - startBox.hPct, Math.max(0, startBox.yPct + dy)),
+        });
+        return;
+      }
+      const right = startBox.xPct + startBox.wPct;
+      const bottom = startBox.yPct + startBox.hPct;
+      let { xPct, yPct, wPct, hPct } = startBox;
+      const MIN = 1.5;
+      if (mode.includes("w")) {
+        xPct = Math.min(pt.x, right - MIN);
+        wPct = right - xPct;
+      }
+      if (mode.includes("e")) wPct = Math.max(MIN, pt.x - startBox.xPct);
+      if (mode.includes("n")) {
+        yPct = Math.min(pt.y, bottom - MIN);
+        hPct = bottom - yPct;
+      }
+      if (mode.includes("s")) hPct = Math.max(MIN, pt.y - startBox.yPct);
+      setSlotDraftBox({ xPct, yPct, wPct, hPct });
+    }
+    function onUp() {
+      slotDragMode.current = null;
+      slotDragStartPct.current = null;
+      slotDragStartBox.current = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+  function lockSlotBox() {
+    if (!calibratingSlot || !slotDraftBox) return;
+    if (slotDraftBox.wPct < 1 || slotDraftBox.hPct < 1) return;
+    saveDraftSlotRegion(calibratingSlot, slotDraftBox);
+    setSlotDraftBox(null);
+    setCalibratingSlot(null);
+  }
+  function cancelSlotBox() {
+    setSlotDraftBox(null);
+    setCalibratingSlot(null);
+  }
+  function startCalibratingSlot(key: DraftSlotKey) {
+    setCalibratingSlot(key);
+    setSlotDraftBox(draftSlotRegions[key] ?? null);
+  }
+
   function normalize(s: string) {
     return s.toLowerCase().replace(/[^a-z0-9]/g, "");
   }
@@ -1836,6 +2015,50 @@ export default function LiveConsolePage() {
   }
 
   const DRAFT_PHASES = ["DRAFT_STARTED", "DRAFT_COMPLETE"];
+
+  // ── Draft-slot template-match assist (opt-in, AI-mode only) ───────────
+  // The 20 fixed on-screen positions a draft board shows at once — 5 bans +
+  // 5 picks per side. Deliberately NOT folded into the TrackerCategory/
+  // capture_regions "trackers" catalog above (catalogForPhase et al): those
+  // feed captureTickBody's per-tick Tesseract OCR loop unconditionally for
+  // every tracker whose phase matches the live match phase, and this
+  // codebase already made a deliberate, recent, documented call to remove
+  // OCR/AI-vision draft detection entirely (see the comment above
+  // DraftSide — "the single riskiest OCR surface in the console") in favor
+  // of the manual simulation below. Calibrating a draft-slot region here
+  // must never add load to, or silently reawaken, that already-rejected
+  // path — so these regions live in their own state and their own opt-in
+  // pipeline (only reachable when captureMode === "ai", which nothing in
+  // the UI currently switches to — see captureMode's own comment), gated
+  // fully independent of the manual OCR trackers. What this DOES plug into
+  // is logSimulationStep() below, the exact same call a manual grid click
+  // already makes — a suggestion here is only ever a pre-fill the admin
+  // still clicks to confirm, never a direct write.
+  type DraftSlotSide = "blue" | "red";
+  type DraftSlotKind = "pick" | "ban";
+  type DraftSlotKey = string; // `${side}_${kind}_${n}`, e.g. "blue_pick_3"
+  function draftSlotKey(side: DraftSlotSide, kind: DraftSlotKind, n: number): DraftSlotKey {
+    return `${side}_${kind}_${n}`;
+  }
+  const DRAFT_SLOTS: { key: DraftSlotKey; side: DraftSlotSide; kind: DraftSlotKind; n: number; label: string }[] = (() => {
+    const out: { key: DraftSlotKey; side: DraftSlotSide; kind: DraftSlotKind; n: number; label: string }[] = [];
+    for (const side of ["blue", "red"] as const) {
+      for (const kind of ["ban", "pick"] as const) {
+        for (let n = 1; n <= 5; n++) {
+          out.push({ key: draftSlotKey(side, kind, n), side, kind, n, label: `${side === "blue" ? "Blue" : "Red"} ${kind === "ban" ? "Ban" : "Pick"} ${n}` });
+        }
+      }
+    }
+    return out;
+  })();
+  // Which draft slot the CURRENT DRAFT_SEQUENCE step fills — same
+  // side/type/ordinal counting draftStepLabel already does, just returning
+  // the slot key instead of a display string.
+  function draftSlotForStep(stepIndex: number): DraftSlotKey {
+    const step = DRAFT_SEQUENCE[stepIndex];
+    const n = DRAFT_SEQUENCE.slice(0, stepIndex + 1).filter((s) => s.side === step.side && s.type === step.type).length;
+    return draftSlotKey(step.side, step.type, n);
+  }
 
   // ── Draft: manual ban/pick simulation ─────────────────────────────────
   // Replaces OCR/AI-vision draft detection entirely. Bans show no text on
@@ -2119,6 +2342,75 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  // ── Draft-slot suggestion: cross-checks the AI-vision text read against
+  // the client-side icon template match, for whichever slot the manual
+  // simulation is currently sitting on. Never writes anywhere on its own —
+  // logSimulationStep (the same call a manual hero-grid click makes) is
+  // still the only thing that ever inserts a hero_picks_bans row; a
+  // "suggestion" here is only ever a pre-fill the admin clicks to confirm.
+  // See the comment above DRAFT_SLOTS for why this stays a separate,
+  // opt-in (captureMode === "ai") path instead of touching the manual OCR
+  // trackers or the removed OCR/AI-vision draft-detection flow.
+  type DraftSuggestion = { slotKey: DraftSlotKey; heroName: string; source: "template" | "ai"; score: number | null };
+  const [draftSuggestion, setDraftSuggestion] = useState<DraftSuggestion | null>(null);
+  // A fresh step needs a fresh suggestion — otherwise the last step's
+  // (now stale) pre-fill would sit there looking like a live read for the
+  // new one until the next capture tick happens to overwrite it.
+  useEffect(() => {
+    setDraftSuggestion(null);
+  }, [draftSim?.stepIndex, draftSim === null]);
+
+  // Best-effort match of an AI-vision draft_actions entry to the CURRENT
+  // step: the model reports "every pick/ban visible on the board," not one
+  // keyed to a slot number, so this is team+type+not-already-committed, not
+  // a guaranteed 1:1 slot lookup — good enough as the fallback signal it's
+  // used for below.
+  function aiGuessForCurrentStep(detection: AiDetection): string | null {
+    if (!draftSim) return null;
+    const step = DRAFT_SEQUENCE[draftSim.stepIndex];
+    const teamId = step.side === "blue" ? draftSim.blueTeamId : draftSim.redTeamId;
+    const committedNames = new Set(draftSim.committed.map((c) => c.heroName.toLowerCase()));
+    const candidate = (detection.draft_actions ?? []).find(
+      (a) => a.type === step.type && matchTeamId(a.team_name) === teamId && !committedNames.has(a.hero_name.toLowerCase())
+    );
+    return candidate?.hero_name ?? null;
+  }
+
+  // Template match wins whenever it clears its own confidence bar — it
+  // reads the icon's actual pixels, so it's immune to the specific failure
+  // mode (misreading a hero NAME as text) the AI-vision path is prone to;
+  // an AI reading that disagrees with a confident template match is exactly
+  // the kind of misread this feature exists to catch, not new evidence to
+  // weigh in. AI vision only decides the suggestion when template matching
+  // has nothing confident to say (an uncalibrated slot, a mid-drag frame,
+  // or an icon that genuinely didn't resemble any cached hero closely
+  // enough).
+  function reconcileDraftSlot(slotKey: DraftSlotKey, templateGuess: HeroMatch | null, aiGuessName: string | null): DraftSuggestion | null {
+    if (templateGuess) return { slotKey, heroName: templateGuess.name, source: "template", score: templateGuess.score };
+    if (aiGuessName) return { slotKey, heroName: aiGuessName, source: "ai", score: null };
+    return null;
+  }
+
+  async function computeDraftSuggestion(video: HTMLVideoElement, detection: AiDetection) {
+    if (!draftSim) {
+      setDraftSuggestion(null);
+      return;
+    }
+    const slotKey = draftSlotForStep(draftSim.stepIndex);
+    const aiGuessName = aiGuessForCurrentStep(detection);
+    const box = draftSlotRegions[slotKey];
+    // Not calibrated for this slot yet — AI vision is the only signal
+    // available, same as before this feature existed.
+    if (!box) {
+      setDraftSuggestion(aiGuessName ? { slotKey, heroName: aiGuessName, source: "ai", score: null } : null);
+      return;
+    }
+    const cache = await ensureHeroIconCache();
+    const cropData = cache ? downscaleVideoRegion(video, box) : null;
+    const templateGuess = cropData && cache ? bestHeroMatch(cropData, cache) : null;
+    setDraftSuggestion(reconcileDraftSlot(slotKey, templateGuess, aiGuessName));
+  }
+
   async function captureFrameAndAnalyze() {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
@@ -2160,6 +2452,11 @@ export default function LiveConsolePage() {
       setAiDetection(data as AiDetection);
       setAiStatus(null);
       await applyAiDetection(data as AiDetection);
+      // Draft-slot template-match assist — only meaningful mid-draft, with
+      // a simulation actually running to attach a suggestion to.
+      if (match?.state === "DRAFT_STARTED" && draftSim) {
+        await computeDraftSuggestion(video, data as AiDetection);
+      }
     } catch (err) {
       setAiStatus((err as Error).message);
     }
@@ -3051,6 +3348,20 @@ export default function LiveConsolePage() {
     captureFrameAndAnalyzeRef.current = captureFrameAndAnalyze;
   });
 
+  // Faster cadence during the fast-moving draft phase than the steady 60s
+  // pace used everywhere else — picks/bans land seconds apart, not minutes
+  // apart, and the 60s budget below is sized for GAME_STARTED's Groq
+  // tokens-per-minute quota, not draft. Only DRAFT_STARTED gets the faster
+  // pace; DRAFT_COMPLETE/GAME_STARTED/etc. all keep the original 60s.
+  function aiCaptureIntervalMs(state: string | undefined): number {
+    return state === "DRAFT_STARTED" ? 10000 : 60000;
+  }
+  // What the currently-running interval was actually scheduled at, so the
+  // effect below can tell "phase changed, cadence needs to change" apart
+  // from "phase changed, cadence stays the same" without re-creating the
+  // interval on every match.state write.
+  const aiCaptureIntervalMsRef = useRef<number | null>(null);
+
   async function startCapture() {
     try {
       // preferCurrentTab + displaySurface:"browser" captures this admin
@@ -3081,15 +3392,21 @@ export default function LiveConsolePage() {
       // has mounted the element.
       setCaptureActive(true);
       if (captureMode === "ai") {
-        // 60s cadence, not 5s like the manual OCR loop. Confirmed against
-        // two real 429s in production that downscaling the frame only
-        // trims request size modestly (~6045 -> ~5045 tokens) — this vision
-        // model evidently normalizes images to something close to a fixed
-        // internal size, so it doesn't scale down much further with input
-        // resolution. Against an 8000 tokens-per-minute free-tier budget,
-        // a ~5000-token request only has room for one per rolling minute;
-        // anything faster was guaranteed to fail on most ticks.
-        intervalRef.current = setInterval(() => captureFrameAndAnalyzeRef.current(), 60000);
+        // 60s cadence outside draft, not 5s like the manual OCR loop.
+        // Confirmed against two real 429s in production that downscaling
+        // the frame only trims request size modestly (~6045 -> ~5045
+        // tokens) — this vision model evidently normalizes images to
+        // something close to a fixed internal size, so it doesn't scale
+        // down much further with input resolution. Against an 8000
+        // tokens-per-minute free-tier budget, a ~5000-token request only
+        // has room for one per rolling minute; anything faster was
+        // guaranteed to fail on most ticks. DRAFT_STARTED is the one
+        // exception (see aiCaptureIntervalMs above) — draft moves fast
+        // enough that even a couple of missed 429s during it are worth the
+        // tighter cadence.
+        const ms = aiCaptureIntervalMs(match?.state);
+        aiCaptureIntervalMsRef.current = ms;
+        intervalRef.current = setInterval(() => captureFrameAndAnalyzeRef.current(), ms);
       } else {
         workerRef.current = await createWorker("eng");
         intervalRef.current = setInterval(() => captureTickRef.current(), 5000);
@@ -3107,7 +3424,25 @@ export default function LiveConsolePage() {
     setSuggestion(null);
     setAiDetection(null);
     setAiStatus(null);
+    setDraftSuggestion(null);
   }
+
+  // Clears and restarts the AI-mode interval when the phase-appropriate
+  // cadence actually changes (entering/leaving DRAFT_STARTED) — deliberately
+  // keyed on match?.state so it only fires on a real phase transition, not
+  // by checking the phase inside every tick the way a naive fix might.
+  // Mirrors the exact stale-closure fix on captureFrameAndAnalyzeRef above,
+  // just for the interval's own timing instead of what its callback closes
+  // over.
+  useEffect(() => {
+    if (!captureActive || captureMode !== "ai" || aiCaptureIntervalMsRef.current == null) return;
+    const desiredMs = aiCaptureIntervalMs(match?.state);
+    if (desiredMs === aiCaptureIntervalMsRef.current) return;
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    aiCaptureIntervalMsRef.current = desiredMs;
+    intervalRef.current = setInterval(() => captureFrameAndAnalyzeRef.current(), desiredMs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [match?.state, captureActive, captureMode]);
 
   // Runs after captureActive flips true and React has actually mounted the
   // <video> element — this is what attaches the shared stream, not
@@ -5217,6 +5552,34 @@ export default function LiveConsolePage() {
                     </button>
                   </div>
                 </div>
+                {/* Draft-slot template-match assist — only ever populated
+                    while captureMode is "ai" (see the comment above
+                    DRAFT_SLOTS: nothing in the UI currently switches to
+                    that mode, so this stays dormant by default) and a
+                    region is calibrated for the CURRENT step. Clicking it
+                    calls the exact same logSimulationStep() a manual grid
+                    click below does — a pre-fill the admin still confirms,
+                    never an automatic write. */}
+                {draftSuggestion && draftSuggestion.slotKey === draftSlotForStep(draftSim.stepIndex) && (
+                  <button
+                    onClick={() => logSimulationStep(draftSuggestion.heroName)}
+                    disabled={draftSim.committed.some((c) => c.heroName.toLowerCase() === draftSuggestion.heroName.toLowerCase())}
+                    title={
+                      draftSuggestion.source === "template"
+                        ? `Matched against the calibrated icon region (${Math.round((draftSuggestion.score ?? 0) * 100)}% similarity) — click to log this pick/ban`
+                        : "AI vision's text read (no calibrated icon region for this slot yet) — click to log this pick/ban"
+                    }
+                    className="w-full flex items-center gap-2 border border-signal/40 bg-signal/10 rounded px-2.5 py-1.5 text-xs hover:bg-signal/20 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <HeroIcon url={heroIconFor(draftSuggestion.heroName)} name={draftSuggestion.heroName} size="xs" />
+                    <span>
+                      Suggested: <strong>{draftSuggestion.heroName}</strong>{" "}
+                      <span className="text-white/40">
+                        ({draftSuggestion.source === "template" ? `icon match, ${Math.round((draftSuggestion.score ?? 0) * 100)}%` : "AI vision read"})
+                      </span>
+                    </span>
+                  </button>
+                )}
                 <input
                   value={simHeroSearch}
                   onChange={(e) => setSimHeroSearch(e.target.value)}
@@ -5245,6 +5608,118 @@ export default function LiveConsolePage() {
                     })}
                 </div>
               </>
+            )}
+          </div>
+        )}
+
+        {/* Draft-slot calibration — the one-time setup the template-match
+            assist above needs per broadcast layout. Deliberately its own
+            small panel/still-frame (not the live GAME_STARTED tracker
+            canvas — see the comment above draftSlotCalibrationFrame) so it
+            can never add load to, or interact with, the manual OCR
+            trackers. Visible any time the draft is live and a frame is
+            available to freeze, independent of captureMode — calibrating a
+            region is inert on its own; only actually USING one for a
+            suggestion requires captureMode "ai" (see the comment above
+            DRAFT_SLOTS), which nothing in the UI switches to yet. */}
+        {DRAFT_PHASES.includes(match.state) && captureActive && (
+          <div className="border border-white/10 rounded-lg p-3 space-y-2">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-xs text-white/50">
+                Draft slot regions (template-match assist) — {DRAFT_SLOTS.filter((s) => draftSlotRegions[s.key]).length}/{DRAFT_SLOTS.length} calibrated
+              </span>
+              <button onClick={captureDraftSlotCalibrationFrame} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                {draftSlotCalibrationOpen ? "📐 Refresh snapshot" : "📐 Calibrate draft slot regions"}
+              </button>
+            </div>
+            {draftSlotCalibrationOpen && draftSlotCalibrationFrame && (
+              <div className="space-y-2">
+                <div
+                  data-slot-crop-container
+                  className="relative w-full sm:w-[75vw] sm:min-w-[480px] max-w-[1800px] border border-white/10 rounded overflow-hidden select-none"
+                  onMouseDown={(e) => {
+                    if (calibratingSlot && !slotDraftBox) startSlotBoxDrag("draw", e);
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={draftSlotCalibrationFrame} alt="Draft board snapshot for calibration" className="w-full block" />
+                  {DRAFT_SLOTS.filter((s) => s.key !== calibratingSlot).map((s) => {
+                    const box = draftSlotRegions[s.key];
+                    if (!box) return null;
+                    return (
+                      <div
+                        key={s.key}
+                        title={s.label}
+                        className="absolute border border-white/25 pointer-events-none"
+                        style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, width: `${box.wPct}%`, height: `${box.hPct}%` }}
+                      />
+                    );
+                  })}
+                  {calibratingSlot && slotDraftBox && (
+                    <div
+                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
+                      style={{ left: `${slotDraftBox.xPct}%`, top: `${slotDraftBox.yPct}%`, width: `${slotDraftBox.wPct}%`, height: `${slotDraftBox.hPct}%` }}
+                      onMouseDown={(e) => startSlotBoxDrag("move", e)}
+                    >
+                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+                        <div
+                          key={corner}
+                          onMouseDown={(e) => startSlotBoxDrag(corner, e)}
+                          className="absolute w-5 h-5 flex items-center justify-center"
+                          style={{
+                            left: corner.includes("w") ? 0 : "100%",
+                            top: corner.includes("n") ? 0 : "100%",
+                            transform: "translate(-50%, -50%)",
+                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                          }}
+                        >
+                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {calibratingSlot && !slotDraftBox && (
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw this slot's region</span>
+                    </div>
+                  )}
+                </div>
+                {calibratingSlot && (
+                  <div className="flex gap-2 items-center">
+                    <span className="text-xs text-white/50">{DRAFT_SLOTS.find((s) => s.key === calibratingSlot)?.label}</span>
+                    <button onClick={lockSlotBox} disabled={!slotDraftBox} className="text-xs border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 disabled:opacity-40">
+                      🔒 Lock
+                    </button>
+                    <button onClick={cancelSlotBox} className="text-xs border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 max-h-48 overflow-y-auto">
+                  {DRAFT_SLOTS.map((s) => {
+                    const calibrated = !!draftSlotRegions[s.key];
+                    return (
+                      <div key={s.key} className="flex items-center justify-between gap-1 border border-white/10 rounded px-2 py-1 text-[10px]">
+                        <span className={calibrated ? "text-emerald-400" : "text-white/50"}>{s.label}</span>
+                        <span className="flex gap-1">
+                          <button
+                            onClick={() => startCalibratingSlot(s.key)}
+                            disabled={calibratingSlot === s.key}
+                            className="border border-white/10 rounded px-1.5 py-0.5 hover:bg-white/10 disabled:opacity-40"
+                          >
+                            {calibrated ? "Resize" : "Set"}
+                          </button>
+                          {calibrated && (
+                            <button onClick={() => clearDraftSlotRegion(s.key)} className="border border-white/10 rounded px-1.5 py-0.5 hover:bg-red-500/10 hover:text-red-400">
+                              Clear
+                            </button>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </div>
         )}

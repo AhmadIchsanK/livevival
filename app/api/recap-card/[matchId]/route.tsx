@@ -1,6 +1,20 @@
 import { ImageResponse } from "next/og";
 import { createClient } from "@supabase/supabase-js";
-import { formatMatchDate } from "@/lib/formatMatchDate";
+
+// Date-only formatter for recap card (time removed to fit safe area in portrait)
+function formatRecapDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const MONTH_NAMES = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const year = d.getFullYear();
+  const month = MONTH_NAMES[d.getMonth()];
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year} ${month} ${day}`;
+}
 
 export const runtime = "edge";
 
@@ -118,16 +132,17 @@ function renderCard({
   // Safe-margin convention (confirmed via real rendered screenshots showing
   // footer text cutting through the last ban row's labels in BOTH
   // orientations): top/bottom margin is scaled off the canvas HEIGHT so it
-  // reads the same proportionally in both ratios (64px on portrait's
-  // 1920-tall canvas == ~36px on landscape's 1080-tall one, the same 3.3%).
-  // Left/right margin is intentionally NOT the same 64*scale value in
-  // landscape — that would be ~36px on a 1920-wide canvas (1.9%), way
-  // tighter than portrait's 64px on its 1080-wide canvas (5.9%). marginX
-  // uses that same 5.9%-of-width ratio so landscape gets a proportionally
-  // equivalent side margin (~114px, rounded to 120) instead of an
-  // accidentally-thin one inherited from the height-based scale factor.
-  const marginY = 64 * scale;
-  const marginX = isLandscape ? 120 : 64 * scale;
+  // reads the same proportionally in both ratios (80px on portrait's
+  // 1920-tall canvas == ~42px on landscape's 1080-tall one, ~3.9%).
+  // Left/right margin is intentionally NOT the same value in landscape —
+  // that would be ~42px on a 1920-wide canvas (2.2%), way tighter than
+  // portrait's 80px on its 1080-wide canvas (7.4%). marginX uses that
+  // same 7.4%-of-width ratio so landscape gets a proportionally equivalent
+  // side margin (~141px) instead of an accidentally-thin one.
+  // Increased from 64px to 80px in portrait to ensure time-removed date fits
+  // comfortably within safe area without overlapping header or footer.
+  const marginY = 80 * scale;
+  const marginX = isLandscape ? 141 : 80 * scale;
   // Landscape-only size boosts so the wider canvas's extra horizontal room
   // shows up as bigger, more prominent content instead of empty black space
   // between the two team columns (confirmed via a rough height budget: even
@@ -360,7 +375,8 @@ function renderCard({
   // "Picks"/"Bans" sub-label treatment already used below (see subLabel()).
   // Either piece is omitted gracefully when absent — a null stage never
   // renders as a stray "null" or empty dot-separator.
-  const dateLabel = formatMatchDate(match.scheduled_at);
+  // Date-only format (time removed) ensures portrait mode content stays within safe area
+  const dateLabel = formatRecapDate(match.scheduled_at);
   const stageDateBits = [match.stage, dateLabel || null].filter(Boolean);
 
   const scoreBar = (

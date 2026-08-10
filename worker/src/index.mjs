@@ -4,6 +4,7 @@ import { syncTournamentSchedule } from "./scheduleSync.mjs";
 import { syncTournamentFinishedMatches } from "./finishedMatchSync.mjs";
 import { maybeFillMissingVodsFromYoutube } from "./youtubeVodFallback.mjs";
 import { fetchRenderedPage } from "./liquipediaClient.mjs";
+import { forceFinishStaleMatches } from "./staleMatchSync.mjs";
 
 // Always-on replacement for the 10-minute refresh-imminent-matches GitHub
 // Action: GitHub Actions cron cannot run faster than ~5 minutes, so getting
@@ -50,11 +51,33 @@ async function loadActiveTournaments() {
 const COOLDOWN_MS = 15 * 60 * 1000;
 const rateLimitedUntil = new Map(); // tournamentId -> timestamp
 
+// Stale-match sweep only needs to run occasionally — it's a safety net for
+// matches Liquipedia never marked finished, not a freshness path (that's
+// what the per-tick active-tournament polling below is for) — running it
+// every tick would just be extra Liquipedia load for a check whose answer
+// can't meaningfully change inside 30s.
+const STALE_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+let lastStaleCheckAt = 0;
+
+async function refreshTournamentFinishedMatches(tournament) {
+  const html = await fetchRenderedPage(tournament.liquipedia_slug);
+  await syncTournamentFinishedMatches(tournament, html);
+}
+
 async function tick() {
   // Independent of the active-tournament polling below (own hourly gate,
   // own no-op-if-unconfigured guard) — runs every tick but only actually
   // does anything once an hour, and only once YOUTUBE_API_KEY is set.
   await maybeFillMissingVodsFromYoutube();
+
+  if (Date.now() - lastStaleCheckAt >= STALE_CHECK_INTERVAL_MS) {
+    lastStaleCheckAt = Date.now();
+    try {
+      await forceFinishStaleMatches(supabase, refreshTournamentFinishedMatches);
+    } catch (err) {
+      console.error("Stale-match sweep failed:", err.message);
+    }
+  }
 
   const tournaments = await loadActiveTournaments();
   if (tournaments.length === 0) {

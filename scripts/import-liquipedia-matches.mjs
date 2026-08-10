@@ -201,7 +201,11 @@ export function deriveStageFromPage(baseSlug, pageSlug) {
   return lastSegment.replace(/_/g, " ");
 }
 
-async function importMatchesForTournament(tournament) {
+// Exported so scripts/refresh-ongoing-tournament-matches.mjs can reuse the
+// exact same fetch/upsert logic for its own, differently-scoped tournament
+// selection (currently-ongoing only, run every 30 min) instead of
+// duplicating it.
+export async function importMatchesForTournament(tournament) {
   const pages = await getTournamentPages(tournament);
   console.log(`Fetching matches for ${tournament.name} across ${pages.length} page(s): ${pages.join(", ")}`);
 

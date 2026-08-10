@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { useTheme } from "next-themes";
 import { supabase } from "@/lib/supabaseClient";
@@ -26,9 +26,6 @@ type Match = {
   scheduled_at: string | null;
   countdown_seconds: number | null;
   countdown_updated_at: string | null;
-  draft_timer_a_seconds: number | null;
-  draft_timer_b_seconds: number | null;
-  draft_timer_updated_at: string | null;
   tournament: { name: string; tier: string; liquipedia_slug: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
@@ -231,14 +228,12 @@ function PublicDraftTeamPanel({
   roster,
   picksAndBans,
   onClock,
-  timerLabel,
 }: {
   teamName: string | null | undefined;
   logoUrl: string | null | undefined;
   roster: RosterPlayer[];
   picksAndBans: PickBan[];
   onClock: boolean;
-  timerLabel: string | null;
 }) {
   const sortedRoster = [...roster].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
   const picks = picksAndBans.filter((p) => p.type === "pick").sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
@@ -254,9 +249,6 @@ function PublicDraftTeamPanel({
           <TeamLogo url={logoUrl} size="sm" />
           <span className="truncate">{teamName}</span>
         </p>
-        {onClock && timerLabel && (
-          <span className="lv-badge bg-signal/15 text-signal text-[10px] font-mono tabular-nums shrink-0">⏳ {timerLabel}</span>
-        )}
       </div>
       <div className="space-y-2">
         {sortedRoster.length === 0 ? (
@@ -352,7 +344,7 @@ export default function PublicMatchPage() {
       .from("matches")
       .select(
         `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source, notification_tier, scheduled_at,
-         countdown_seconds, countdown_updated_at, draft_timer_a_seconds, draft_timer_b_seconds, draft_timer_updated_at,
+         countdown_seconds, countdown_updated_at,
          tournament:tournaments(name, tier, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url),
@@ -432,25 +424,52 @@ export default function PublicMatchPage() {
     setRoster((rp as RosterPlayer[]) ?? []);
   }, [matchId]);
 
+  // Coalesces bursts of realtime events into one loadAll() call instead of
+  // one per event. A Hot match's OCR capture ticks every 5s and writes to
+  // net_worth_snapshots/player_stats on most of those ticks, and a single
+  // admin action (e.g. logging a pick) can touch more than one of the 8
+  // subscribed tables at once — without this, that's a full 9-query reload
+  // fired repeatedly, sometimes several in-flight at once, for the entire
+  // duration of a live match, for every concurrent viewer. Leading-ish
+  // debounce (short quiet window) so one isolated event still updates
+  // promptly, with a floor on how close together two reloads can land so a
+  // sustained burst settles into "about once every ~2.5s" instead of
+  // "once per event."
+  const reloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastReloadAtRef = useRef(0);
+  const scheduleReload = useCallback(() => {
+    if (reloadTimeoutRef.current) clearTimeout(reloadTimeoutRef.current);
+    const DEBOUNCE_MS = 400;
+    const MIN_GAP_MS = 2500;
+    const sinceLastReload = Date.now() - lastReloadAtRef.current;
+    const wait = Math.max(DEBOUNCE_MS, MIN_GAP_MS - sinceLastReload);
+    reloadTimeoutRef.current = setTimeout(() => {
+      lastReloadAtRef.current = Date.now();
+      loadAll();
+    }, wait);
+  }, [loadAll]);
+
   useEffect(() => {
     loadAll();
+    lastReloadAtRef.current = Date.now();
 
     const channel = supabase
       .channel(`match-${matchId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "matches", filter: `id=eq.${matchId}` }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "games", filter: `match_id=eq.${matchId}` }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "hero_picks_bans", filter: `match_id=eq.${matchId}` }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "player_stats", filter: `match_id=eq.${matchId}` }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "objectives", filter: `match_id=eq.${matchId}` }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "key_moments", filter: `match_id=eq.${matchId}` }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "net_worth_snapshots", filter: `match_id=eq.${matchId}` }, loadAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "game_screenshots", filter: `match_id=eq.${matchId}` }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "matches", filter: `id=eq.${matchId}` }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "games", filter: `match_id=eq.${matchId}` }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "hero_picks_bans", filter: `match_id=eq.${matchId}` }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "player_stats", filter: `match_id=eq.${matchId}` }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "objectives", filter: `match_id=eq.${matchId}` }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "key_moments", filter: `match_id=eq.${matchId}` }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "net_worth_snapshots", filter: `match_id=eq.${matchId}` }, scheduleReload)
+      .on("postgres_changes", { event: "*", schema: "public", table: "game_screenshots", filter: `match_id=eq.${matchId}` }, scheduleReload)
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
+      if (reloadTimeoutRef.current) clearTimeout(reloadTimeoutRef.current);
     };
-  }, [matchId, loadAll]);
+  }, [matchId, loadAll, scheduleReload]);
 
   // Safety net alongside the Realtime subscription above, not a
   // replacement for it — a websocket can silently drop (a corporate
@@ -526,13 +545,6 @@ export default function PublicMatchPage() {
     match.state === "MATCH_NOT_STARTED" && match.countdown_seconds != null && match.countdown_updated_at
       ? formatMMSS(match.countdown_seconds - Math.floor((nowMs - new Date(match.countdown_updated_at).getTime()) / 1000))
       : null;
-
-  // Draft phase: same idea, one countdown per side.
-  const draftElapsed = match.draft_timer_updated_at ? Math.floor((nowMs - new Date(match.draft_timer_updated_at).getTime()) / 1000) : 0;
-  const liveDraftTimerA =
-    match.state === "DRAFT_STARTED" && match.draft_timer_a_seconds != null ? formatMMSS(match.draft_timer_a_seconds - draftElapsed) : null;
-  const liveDraftTimerB =
-    match.state === "DRAFT_STARTED" && match.draft_timer_b_seconds != null ? formatMMSS(match.draft_timer_b_seconds - draftElapsed) : null;
 
   // Whose turn it is to pick/ban — inferred from the pick/ban tool's own
   // state (how many rows are already logged for this game) rather than
@@ -894,15 +906,14 @@ export default function PublicMatchPage() {
               </span>
             )
           )}
-          {/* Only the team actually on the clock — the other side's timer
-              isn't counting down anything real (both were decrementing
-              identically client-side before), so showing it just as "—"
-              read as broken rather than informative. */}
-          {draftTurnTeamId && (draftTurnTeamId === teamAId ? liveDraftTimerA : liveDraftTimerB) && (
-            <span className="lv-badge bg-white/10 text-signal font-semibold tabular-nums" title="Draft pick/ban timer">
-              ⏳ {draftTurnTeamId === teamAId ? match.team_a?.name : match.team_b?.name} turn - {draftTurnTeamId === teamAId ? liveDraftTimerA : liveDraftTimerB}
-            </span>
-          )}
+          {/* "Whose turn" itself (draftTurnTeamId, derived from actual
+              pick/ban counts) is shown as a highlighted border on that
+              team's own draft panel below — no separate timer badge here
+              anymore. The old one read from draft_timer_a_seconds/
+              b_seconds, which the admin console stopped writing to (see
+              its own comment on that decision) — it would've frozen or
+              counted into negative numbers on any older match instead of
+              showing something real. */}
           {match.update_source === "local_ocr" && (
             <span
               className="lv-badge bg-signal/20 text-signal border border-signal/40"
@@ -1171,7 +1182,6 @@ export default function PublicMatchPage() {
               roster={teamAActiveRoster.length > 0 ? teamAActiveRoster : roster.filter((p) => p.team_id === teamAId)}
               picksAndBans={gamePickBans.filter((p) => p.team_id === teamAId)}
               onClock={Boolean(draftTurnTeamId) && draftTurnTeamId === teamAId}
-              timerLabel={liveDraftTimerA}
             />
             <PublicDraftTeamPanel
               teamName={match.team_b?.name}
@@ -1179,7 +1189,6 @@ export default function PublicMatchPage() {
               roster={teamBActiveRoster.length > 0 ? teamBActiveRoster : roster.filter((p) => p.team_id === teamBId)}
               picksAndBans={gamePickBans.filter((p) => p.team_id === teamBId)}
               onClock={Boolean(draftTurnTeamId) && draftTurnTeamId === teamBId}
-              timerLabel={liveDraftTimerB}
             />
           </div>
         </section>

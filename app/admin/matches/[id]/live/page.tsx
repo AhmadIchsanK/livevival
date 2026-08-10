@@ -5277,10 +5277,27 @@ export default function LiveConsolePage() {
           the same scroll region matters more than the
           "which comes textually first" grouping that used to place this
           next to the game/map selector further down. */}
-      {/* Hero picks/bans */}
-      <section className="space-y-3">
+      {/* Hero picks/bans + roster setup — collapsed by default once the
+          game is actually live. It's the primary, always-open surface
+          during roster setup and drafting; once GAME_STARTED, correcting a
+          hero here already propagates straight into the Live Scoreboard
+          below (see updateStat calls in correctPickBanHero/
+          assignHeroToPlayer), which is now the read-only display for it —
+          so keeping this expanded too just duplicates that same
+          information on screen for no reason. Still one click away for the
+          rare live correction (open={} only sets the *default*; a manual
+          toggle during this phase isn't fought on re-render since the
+          prop's value doesn't change again until the phase itself does). */}
+      <details className="space-y-3 group" open={DRAFT_PHASES.includes(match.state) || match.state === "MATCH_NOT_STARTED"}>
+        {/* Only the title toggles — the action buttons below are a
+            sibling, not nested inside <summary>, so clicking "Announce
+            draft" etc. doesn't also collapse/expand the section (a button
+            click inside <summary> bubbles into summary's own default
+            toggle behavior otherwise). */}
+        <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden font-bold flex items-center gap-1.5">
+          <span className="text-white/40 text-xs transition-transform group-open:rotate-90">▸</span> Hero picks & bans
+        </summary>
         <div className="flex items-center justify-between">
-          <h2 className="font-bold">Hero picks & bans</h2>
           <div className="flex gap-2">
             {/* Also rendered near Live scoreboard below for Hot matches —
                 duplicated here (same shared editingFinishedGame state) so
@@ -5745,7 +5762,7 @@ export default function LiveConsolePage() {
             </div>
           </div>
         )}
-      </section>
+      </details>
 
 
       {!isEditable && (

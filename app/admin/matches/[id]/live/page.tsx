@@ -1757,6 +1757,13 @@ export default function LiveConsolePage() {
   const tickInFlight = useRef(false);
 
   const [captureActive, setCaptureActive] = useState(false);
+  // Whether the "Local capture (this PC)" tracker calibration UI (edit
+  // mode, video crop overlay, tracker table) is expanded. Starts open, but
+  // see the auto-collapse effect by activeTrackers below — an admin who's
+  // already finished setting a match up shouldn't have to scroll past this
+  // every reload just to reach Livestream/Declare Winner/Moment log above.
+  const [ocrDetailsOpen, setOcrDetailsOpen] = useState(true);
+  const ocrAutoCollapsedRef = useRef(false);
   const [calibratingField, setCalibratingField] = useState<string | null>(null);
   // Live-editable draft of the region currently being calibrated — shown
   // with a preview box + corner handles, not persisted to capture_regions
@@ -3850,6 +3857,17 @@ export default function LiveConsolePage() {
 
   const embedUrl = youtubeEmbedUrl(match.youtube_url) ?? facebookEmbedUrl(match.youtube_url);
   const activeTrackers = trackers.filter((t) => t.phase === match.state);
+  const allTrackersCalibrated = activeTrackers.length > 0 && activeTrackers.every((t) => regions[t.field]);
+  // Auto-collapse the calibration UI the first time this phase's trackers
+  // are all calibrated — once, not every render (ocrAutoCollapsedRef stops
+  // this from re-fighting a manual re-expand afterward). Never collapses
+  // anything while calibration is incomplete, since that's exactly when an
+  // admin needs this UI visible.
+  useEffect(() => {
+    if (ocrAutoCollapsedRef.current || !allTrackersCalibrated) return;
+    setOcrDetailsOpen(false);
+    ocrAutoCollapsedRef.current = true;
+  }, [allTrackersCalibrated]);
 
   // The starting five for this game = whoever has a logged pick, not the
   // whole roster (which included bench/subs never playing this game —
@@ -4327,18 +4345,26 @@ export default function LiveConsolePage() {
         {/* Nothing else here makes it obvious when a phase has zero
             regions calibrated — OCR just silently reads nothing forever
             in that case, which looked identical to "OCR is broken" from
-            the outside. */}
+            the outside. Doubles as the calibration-details toggle — once
+            everything's calibrated there's rarely a reason to look at the
+            tracker table/video overlay again, so it collapses
+            automatically (see the effect by allTrackersCalibrated above)
+            and this becomes the way back in. */}
         {match.update_source === "local_ocr" && activeTrackers.length > 0 && (
-          <p
-            className={`text-xs rounded px-3 py-2 border ${
-              activeTrackers.every((t) => regions[t.field])
+          <button
+            onClick={() => setOcrDetailsOpen((v) => !v)}
+            className={`w-full text-left text-xs rounded px-3 py-2 border flex items-center justify-between gap-2 ${
+              allTrackersCalibrated
                 ? "text-emerald-400 border-emerald-500/30 bg-emerald-500/10"
                 : "text-yellow-300 border-yellow-500/30 bg-yellow-500/10"
             }`}
           >
-            {activeTrackers.filter((t) => regions[t.field]).length}/{activeTrackers.length} trackers calibrated for this phase
-            {!activeTrackers.every((t) => regions[t.field]) && " — uncalibrated trackers read nothing, however OCR-ready the rest looks"}
-          </p>
+            <span>
+              {activeTrackers.filter((t) => regions[t.field]).length}/{activeTrackers.length} trackers calibrated for this phase
+              {!allTrackersCalibrated && " — uncalibrated trackers read nothing, however OCR-ready the rest looks"}
+            </span>
+            <span className="shrink-0 text-white/40">{ocrDetailsOpen ? "▾ Hide details" : "▸ Show details"}</span>
+          </button>
         )}
 
         {match.update_source === "local_ocr" && match.team_a && match.team_b && (
@@ -4363,7 +4389,7 @@ export default function LiveConsolePage() {
             This is a Normal match (Liquipedia auto). Click &quot;Normal match&quot; above to make it a Hot match
             and take over with this PC&apos;s screen capture.
           </p>
-        ) : (
+        ) : !ocrDetailsOpen ? null : (
           <>
             <p className="text-[10px] text-white/40 bg-white/5 border border-white/10 rounded px-2 py-1.5">
               Manual region OCR — deterministic, runs entirely in your browser, no AI involved. Full-frame AI
@@ -5035,7 +5061,14 @@ export default function LiveConsolePage() {
           }}
         >
           <div className="space-y-6 p-3 lg:p-4">
-            {/* After draft complete: show objectives, declare game, screenshots at top */}
+            {/* Everything a live game needs constantly — declare the
+                winner, log an objective, log a moment — sits at the very
+                top of this column, ahead of the draft board and the rest
+                of the game-data sections below. Objectives' +/- counters
+                and the moment-template logger are Hot (local_ocr) match
+                features; a Normal match's objectives/moments come from the
+                Liquipedia sync instead, so it only gets the read-only
+                objectives list. */}
             {!DRAFT_PHASES.includes(match.state) && (
               <>
                 {/* Declare Game Winner */}
@@ -5062,42 +5095,150 @@ export default function LiveConsolePage() {
                   </section>
                 )}
 
-                {/* Objectives */}
-                <section className="space-y-2">
-                  <h3 className="font-semibold text-sm">Objectives</h3>
-                  <div className="bg-white/5 rounded p-2 space-y-1 max-h-40 overflow-y-auto">
-                    {objectives.map((obj) => (
-                      <div key={obj.id} className="flex items-center justify-between text-xs bg-white/5 rounded px-2 py-1">
-                        <span>{obj.type} @ {obj.minute_mark}'</span>
-                        <button onClick={() => deleteObjective(obj.id)} className="text-white/30 hover:text-red-400">✕</button>
-                      </div>
-                    ))}
-                    {objectives.length === 0 && <p className="text-xs text-white/40">No objectives logged</p>}
-                  </div>
-                </section>
-
-                {/* Screenshots */}
-                {screenshots.length > 0 && (
+                {/* Objectives — Hot matches get the tap-to-log +/- counters
+                    (same write path/state as before, just relocated here);
+                    a Normal match's objectives come from Liquipedia, so it
+                    only gets this read-only list. */}
+                {match.update_source === "local_ocr" ? (
+                  <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-sm">Objectives</h3>
+                      <button
+                        onClick={() =>
+                          postToTelegram(buildObjectivesMessage(), { entityType: "match", entityId: match.id, notificationType: "objectives_share" })
+                        }
+                        className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                      >
+                        📢 Share to Telegram
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-6 sm:gap-8">
+                      {[match.team_a, match.team_b].map((team, idx) =>
+                        team ? (
+                          <div key={team.id} className="space-y-1.5">
+                            <p className="text-xs text-white/50">{team.name}</p>
+                            <div className="flex flex-wrap gap-2 sm:gap-4">
+                              {OBJECTIVE_TYPES.map((type) => (
+                                <div key={type} className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => incrementObjective(team.id, type)}
+                                    disabled={!objectivesEditable}
+                                    title={`${team.name} takes a ${type}`}
+                                    className="text-xs border border-white/10 rounded px-2.5 py-1.5 sm:px-2 sm:py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
+                                  >
+                                    <span>{OBJECTIVE_ICONS[type]}</span>
+                                    <span className="capitalize">{type}</span>
+                                    <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
+                                  </button>
+                                  <button
+                                    onClick={() => decrementObjective(team.id, type)}
+                                    disabled={!objectivesEditable}
+                                    title="Undo last"
+                                    className="w-7 h-7 sm:w-5 sm:h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
+                                  >
+                                    −
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <span key={idx} />
+                        )
+                      )}
+                    </div>
+                  </section>
+                ) : (
                   <section className="space-y-2">
-                    <h3 className="font-semibold text-sm">Screenshots</h3>
-                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-1 max-h-48 overflow-y-auto">
-                      {screenshots.slice(0, 6).map((ss) => (
-                        <div key={ss.id} className="relative group cursor-pointer">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={ss.image_url}
-                            alt={ss.note || "screenshot"}
-                            className="w-full aspect-video object-cover rounded"
-                          />
-                          <button
-                            onClick={() => deleteScreenshot(ss.id, ss.image_url)}
-                            className="absolute top-1 right-1 bg-red-500/80 text-white rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
-                          >
-                            ✕
-                          </button>
+                    <h3 className="font-semibold text-sm">Objectives</h3>
+                    <div className="bg-white/5 rounded p-2 space-y-1 max-h-40 overflow-y-auto">
+                      {objectives.map((obj) => (
+                        <div key={obj.id} className="flex items-center justify-between text-xs bg-white/5 rounded px-2 py-1">
+                          <span>{obj.type} @ {obj.minute_mark}'</span>
+                          <button onClick={() => deleteObjective(obj.id)} className="text-white/30 hover:text-red-400">✕</button>
                         </div>
                       ))}
+                      {objectives.length === 0 && <p className="text-xs text-white/40">No objectives logged</p>}
                     </div>
+                  </section>
+                )}
+
+                {/* Moment list — the actual add-a-moment control (template
+                    dropdown + Log moment). Hot matches only; the rendered
+                    history stays in the "Moment Timeline" panel further
+                    down, physically separated from these controls. */}
+                {match.update_source === "local_ocr" && (
+                  <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-sm">Log a moment</h3>
+                      <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
+                    </div>
+                    <div className="flex gap-2 items-end flex-wrap">
+                      <select
+                        value={kmTemplateId}
+                        onChange={(e) => setKmTemplateId(e.target.value)}
+                        className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+                      >
+                        <option value="">Choose a template...</option>
+                        {availableTemplates.map((t) => (
+                          <option key={t.id} value={t.id}>{t.label_template}</option>
+                        ))}
+                      </select>
+                      {selectedTemplate?.label_template.includes("{team}") && (
+                        <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+                          <option value="">Team</option>
+                          {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
+                          {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
+                        </select>
+                      )}
+                      {selectedTemplate?.label_template.includes("{hero}") && (
+                        <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+                          <option value="">Hero</option>
+                          {heroes.map((h) => (
+                            <option key={h.id} value={h.id}>{h.name}</option>
+                          ))}
+                        </select>
+                      )}
+                      {selectedTemplate?.label_template.includes("{player}") && (
+                        <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+                          <option value="">Player</option>
+                          {players.map((p) => (
+                            <option key={p.id} value={p.id}>{p.ign}</option>
+                          ))}
+                        </select>
+                      )}
+                      {selectedTemplate?.type === "custom" && (
+                        <input
+                          value={kmCustomText}
+                          onChange={(e) => setKmCustomText(e.target.value)}
+                          placeholder="Type the custom moment..."
+                          className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+                        />
+                      )}
+                      <button onClick={logKeyMoment} disabled={!selectedTemplate || !isEditable} className="lv-btn-ghost disabled:opacity-40">
+                        Log moment
+                      </button>
+                    </div>
+                    {selectedTemplate && (
+                      <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+                          <input
+                            type="checkbox"
+                            checked={kmAttachScreenshot}
+                            onChange={(e) => setKmAttachScreenshot(e.target.checked)}
+                            disabled={!captureActive}
+                          />
+                          📸 Also grab the current frame into this moment
+                          {!captureActive && " (start capture above first)"}
+                        </label>
+                        {selectedTemplate.type === "custom" && (
+                          <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+                            <input type="checkbox" checked={kmMarkAsKey} onChange={(e) => setKmMarkAsKey(e.target.checked)} />
+                            ⭐ Mark as key moment
+                          </label>
+                        )}
+                      </div>
+                    )}
                   </section>
                 )}
               </>
@@ -5599,13 +5740,11 @@ export default function LiveConsolePage() {
         </div>
       )}
 
-      {/* Grouped into one visual block per the layout ask: the Game N
-          selector, Declare Game Winner, and the "add a moment" / Objectives
-          / Screenshot controls all live in the same row/area now instead of
-          being separately-bordered sections an admin has to hunt across —
-          faster access without scrolling. The Moment list's actual output
-          (the rendered timeline) stays out of this block — see "Moment
-          Timeline" further down, physically separated from these controls. */}
+      {/* Game selector, map, and past/finished results — grouped into one
+          visual block. Declare Game Winner itself now lives only at the top
+          of this column (see the "Declare Game Winner" section above this
+          one), not duplicated down here anymore — this block used to have
+          its own second copy of the same declare-winner buttons. */}
       <div className="border border-white/10 rounded-lg p-3 space-y-4">
       {/* Game selector — everything below (moment list, scoreboard, hero
           picks/bans, net worth, screenshots) operates on whichever game is
@@ -5702,21 +5841,6 @@ export default function LiveConsolePage() {
             ))}
           </select>
         </div>
-        {game.status !== "finished" && match.state !== "SERIES_FINISHED" && (
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-white/50">Declare game {game.game_number} winner</label>
-            {match.team_a && (
-              <button onClick={() => declareGameWinner(match.team_a!.id)} disabled={!isEditable} className="lv-btn-ghost !px-3 !py-1.5 disabled:opacity-40">
-                {match.team_a.name}
-              </button>
-            )}
-            {match.team_b && (
-              <button onClick={() => declareGameWinner(match.team_b!.id)} disabled={!isEditable} className="lv-btn-ghost !px-3 !py-1.5 disabled:opacity-40">
-                {match.team_b.name}
-              </button>
-            )}
-          </div>
-        )}
         {game.status === "finished" && (
           <div className="flex items-center gap-2">
             <span className="lv-badge bg-emerald-500/15 text-emerald-400">
@@ -5836,189 +5960,54 @@ export default function LiveConsolePage() {
         )}
       </div>
 
+      {/* Game screenshots — the only thing still living down here from what
+          used to be a longer local_ocr-only block; Moment list and
+          Objectives moved to the top of this column (see "Declare Game
+          Winner" above), since those are what a live game needs constantly,
+          not screenshots. */}
       {match.update_source === "local_ocr" && (
-        <>
-
-      {/* Moment list */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-bold">Moment list</h2>
-          <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
-        </div>
-        <div className="flex gap-2 items-end flex-wrap">
-          <select
-            value={kmTemplateId}
-            onChange={(e) => setKmTemplateId(e.target.value)}
-            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
-          >
-            <option value="">Choose a template...</option>
-            {availableTemplates.map((t) => (
-              <option key={t.id} value={t.id}>{t.label_template}</option>
-            ))}
-          </select>
-          {selectedTemplate?.label_template.includes("{team}") && (
-            <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-              <option value="">Team</option>
-              {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
-              {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
-            </select>
-          )}
-          {selectedTemplate?.label_template.includes("{hero}") && (
-            <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-              <option value="">Hero</option>
-              {heroes.map((h) => (
-                <option key={h.id} value={h.id}>{h.name}</option>
-              ))}
-            </select>
-          )}
-          {selectedTemplate?.label_template.includes("{player}") && (
-            <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-              <option value="">Player</option>
-              {players.map((p) => (
-                <option key={p.id} value={p.id}>{p.ign}</option>
-              ))}
-            </select>
-          )}
-          {selectedTemplate?.type === "custom" && (
-            <input
-              value={kmCustomText}
-              onChange={(e) => setKmCustomText(e.target.value)}
-              placeholder="Type the custom moment..."
-              className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
-            />
-          )}
-          <button onClick={logKeyMoment} disabled={!selectedTemplate || !isEditable} className="lv-btn-ghost disabled:opacity-40">
-            Log moment
-          </button>
-        </div>
-        {selectedTemplate && (
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-1.5 text-[10px] text-white/50">
-              <input
-                type="checkbox"
-                checked={kmAttachScreenshot}
-                onChange={(e) => setKmAttachScreenshot(e.target.checked)}
-                disabled={!captureActive}
-              />
-              📸 Also grab the current frame into this moment
-              {!captureActive && " (start capture above first)"}
+        <section className="space-y-3">
+          <h2 className="font-bold">Game {game.game_number} screenshots</h2>
+          <p className="text-xs text-white/40">
+            Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
+            current in-game timer. Shown publicly at the bottom of this game&apos;s page.
+          </p>
+          <div className="flex gap-2 items-center flex-wrap">
+            <button
+              onClick={() => captureScreenshotFromPreview()}
+              disabled={!captureActive || screenshotUploading}
+              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
+              title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
+            >
+              📸 Capture current frame
+            </button>
+            <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
+              Upload image...
+              <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
             </label>
-            {selectedTemplate.type === "custom" && (
-              <label className="flex items-center gap-1.5 text-[10px] text-white/50">
-                <input type="checkbox" checked={kmMarkAsKey} onChange={(e) => setKmMarkAsKey(e.target.checked)} />
-                ⭐ Mark as key moment
-              </label>
-            )}
+            <input
+              value={screenshotNote}
+              onChange={(e) => setScreenshotNote(e.target.value)}
+              placeholder="Note (optional)"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
+            />
+            {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
           </div>
-        )}
-        {/* The actual rendered list moved to the "Moment Timeline" panel
-            near the bottom of this column — this section now only holds
-            the controls that add to it, per the "separate add-a-moment
-            controls from the view-logged-moments list" ask. */}
-      </section>
-
-      {/* Objectives (counters) */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-bold">Objectives</h2>
-          <button
-            onClick={() =>
-              postToTelegram(buildObjectivesMessage(), { entityType: "match", entityId: match.id, notificationType: "objectives_share" })
-            }
-            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-          >
-            📢 Share to Telegram
-          </button>
-        </div>
-        {/* Both rows below used to be a single unwrapped flex row — with two
-            teams x 3 objective types x (a labeled button + an undo button)
-            that never fit a phone width, forcing the whole page to scroll
-            horizontally. flex-wrap fixes that with zero effect at desktop
-            widths, where everything already fit on one line. */}
-        <div className="flex flex-wrap gap-6 sm:gap-8">
-          {[match.team_a, match.team_b].map((team, idx) =>
-            team ? (
-              <div key={team.id} className="space-y-1.5">
-                <p className="text-xs text-white/50">{team.name}</p>
-                <div className="flex flex-wrap gap-2 sm:gap-4">
-                  {OBJECTIVE_TYPES.map((type) => (
-                    <div key={type} className="flex items-center gap-1.5">
-                      {/* One-click "+" is the primary action (also logs a
-                          Moment list entry, per spec) — "−" stays for
-                          correcting a misclick, same underlying counter. */}
-                      <button
-                        onClick={() => incrementObjective(team.id, type)}
-                        disabled={!objectivesEditable}
-                        title={`${team.name} takes a ${type}`}
-                        className="text-xs border border-white/10 rounded px-2.5 py-1.5 sm:px-2 sm:py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
-                      >
-                        <span>{OBJECTIVE_ICONS[type]}</span>
-                        <span className="capitalize">{type}</span>
-                        <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
-                      </button>
-                      <button
-                        onClick={() => decrementObjective(team.id, type)}
-                        disabled={!objectivesEditable}
-                        title="Undo last"
-                        className="w-7 h-7 sm:w-5 sm:h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
-                      >
-                        −
-                      </button>
-                    </div>
-                  ))}
+          <div className="flex flex-wrap gap-3">
+            {screenshots.map((s) => (
+              <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
+                <div className="flex items-center justify-between text-[10px] text-white/40">
+                  <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
+                  <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
                 </div>
+                {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
               </div>
-            ) : (
-              <span key={idx} />
-            )
-          )}
-        </div>
-      </section>
-
-      {/* Game screenshots */}
-      <section className="space-y-3">
-        <h2 className="font-bold">Game {game.game_number} screenshots</h2>
-        <p className="text-xs text-white/40">
-          Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
-          current in-game timer. Shown publicly at the bottom of this game&apos;s page.
-        </p>
-        <div className="flex gap-2 items-center flex-wrap">
-          <button
-            onClick={() => captureScreenshotFromPreview()}
-            disabled={!captureActive || screenshotUploading}
-            className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
-            title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
-          >
-            📸 Capture current frame
-          </button>
-          <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
-            Upload image...
-            <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
-          </label>
-          <input
-            value={screenshotNote}
-            onChange={(e) => setScreenshotNote(e.target.value)}
-            placeholder="Note (optional)"
-            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
-          />
-          {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
-        </div>
-        <div className="flex flex-wrap gap-3">
-          {screenshots.map((s) => (
-            <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
-              <div className="flex items-center justify-between text-[10px] text-white/40">
-                <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
-                <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
-              </div>
-              {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
-            </div>
-          ))}
-          {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
-        </div>
-      </section>
-        </>
+            ))}
+            {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
+          </div>
+        </section>
       )}
       </div>
 

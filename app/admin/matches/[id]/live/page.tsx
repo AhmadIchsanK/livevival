@@ -1,10 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
-// CSS custom properties aren't part of React's CSSProperties type — this
-// widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
-// without an `any` cast.
-type CSSPropertiesWithVars = CSSProperties & Record<`--${string}`, string>;
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
@@ -15,6 +11,11 @@ import { getLegalTransitions, type MatchPhase, type PhaseSignals } from "@/lib/m
 import { PhaseStepper } from "@/components/PhaseStepper";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
+
+// CSS custom properties aren't part of React's CSSProperties type — this
+// widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
+// without an `any` cast.
+type CSSPropertiesWithVars = CSSProperties & Record<`--${string}`, string>;
 
 // Auto-detected moment triggers only — narrowed to the four kill-streak
 // callouts (each still requires a player name attached, extracted by the

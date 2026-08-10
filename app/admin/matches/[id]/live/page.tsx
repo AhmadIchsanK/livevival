@@ -1086,6 +1086,19 @@ export default function LiveConsolePage() {
     if (error) setError(error.message);
     else loadAll();
   }
+  async function deleteObjective(objectiveId: string) {
+    if (isContributor) {
+      const obj = objectives.find((o) => o.id === objectiveId);
+      if (obj) {
+        pushPendingEdit({ table: "objectives", action: "delete", before: obj as unknown as Record<string, unknown>, after: null });
+        setObjectives((prev) => prev.filter((o) => o.id !== objectiveId));
+      }
+      return;
+    }
+    const { error } = await supabase.from("objectives").delete().eq("id", objectiveId);
+    if (error) setError(error.message);
+    else loadAll();
+  }
 
   // ── Net worth (OCR-fed, but directly editable) ───────────────────────
   // "Latest" is just the highest minute_mark row for this game — snapshots
@@ -5001,7 +5014,7 @@ export default function LiveConsolePage() {
                             className="w-full aspect-video object-cover rounded"
                           />
                           <button
-                            onClick={() => deleteScreenshot(ss.id)}
+                            onClick={() => deleteScreenshot(ss.id, ss.image_url)}
                             className="absolute top-1 right-1 bg-red-500/80 text-white rounded p-0.5 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
                           >
                             ✕

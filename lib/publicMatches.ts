@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { getSchedule } from "@/lib/redis";
 
 // Shared query logic for the public, unauthenticated read-only endpoints
 // under app/api/public/* (JSON + RSS). Deliberately its own small module
@@ -6,6 +7,10 @@ import { createClient } from "@supabase/supabase-js";
 // page's Supabase select shape (same table, same foreign-key aliases) but
 // runs server-side with its own client instance and its own bounds, so it
 // stays fully decoupled from the home page's client-only data flow.
+//
+// Implements Redis caching layer (Upstash) — tries cache first, falls back
+// to database for cache misses. Cache is refreshed every 30 minutes via
+// /api/cron/refresh-schedule endpoint.
 
 export type PublicMatchStatus = "live" | "scheduled" | "finished";
 

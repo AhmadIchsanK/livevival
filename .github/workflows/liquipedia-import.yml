@@ -31,6 +31,21 @@ on:
         default: ""
 
 jobs:
+  # TEMPORARY diagnostic — dumping raw values for team/hero/player infobox
+  # fields not yet captured, to pick correct column types for a migration.
+  # Removed once the audit is done.
+  diagnose-field-values:
+    if: github.event.inputs.tournament_slugs == 'DIAGNOSE_FIELD_VALUES'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install cheerio
+      - run: node scripts/_diagnose-field-values.mjs
+
   import-tournaments:
     runs-on: ubuntu-latest
     timeout-minutes: 30

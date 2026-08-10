@@ -31,6 +31,21 @@ on:
         default: ""
 
 jobs:
+  # TEMPORARY diagnostic job — to be removed once bracket round/stage
+  # selectors are confirmed against real markup. Only runs the throwaway
+  # script, never touches the DB.
+  diagnose-bracket:
+    if: github.event.inputs.tournament_slugs == 'Games_of_the_Future/2026'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install cheerio
+      - run: node scripts/_diagnose-bracket-markup.mjs "Games_of_the_Future/2026"
+
   import-tournaments:
     runs-on: ubuntu-latest
     timeout-minutes: 30

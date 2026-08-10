@@ -3821,6 +3821,26 @@ export default function LiveConsolePage() {
   // read as "the page just disappeared." Those now show as a dismissible
   // toast instead (rendered near the bottom of this component) without
   // tearing down the console underneath.
+  // Hooks below are declared here, immediately above the loading guard,
+  // specifically because they must NOT come after it — an early return
+  // can't skip a hook call between one render (match/game still null) and
+  // the next (match/game loaded) without violating the Rules of Hooks,
+  // which throws "Rendered more hooks than during the previous render"
+  // and takes down the whole page with the generic client-side-exception
+  // screen. These used to live further down, next to the roster-edit UI
+  // and OCR panel they belong to logically, but that's exactly what broke.
+  const [editingRosterPlayerId, setEditingRosterPlayerId] = useState<string | null>(null);
+  const [editingRosterIgn, setEditingRosterIgn] = useState("");
+  const [editingRosterRole, setEditingRosterRole] = useState("");
+  const [newRosterName, setNewRosterName] = useState<Record<string, string>>({});
+  const preGuardActiveTrackers = trackers.filter((t) => t.phase === match?.state);
+  const preGuardAllTrackersCalibrated = preGuardActiveTrackers.length > 0 && preGuardActiveTrackers.every((t) => regions[t.field]);
+  useEffect(() => {
+    if (ocrAutoCollapsedRef.current || !preGuardAllTrackersCalibrated) return;
+    setOcrDetailsOpen(false);
+    ocrAutoCollapsedRef.current = true;
+  }, [preGuardAllTrackersCalibrated]);
+
   if (!match || !game) return <p className="text-red-400 text-sm">{error ?? "Loading match..."}</p>;
 
   // A contributor only ever reaches this page for a finished match — the
@@ -3871,16 +3891,9 @@ export default function LiveConsolePage() {
   const embedUrl = youtubeEmbedUrl(match.youtube_url) ?? facebookEmbedUrl(match.youtube_url);
   const activeTrackers = trackers.filter((t) => t.phase === match.state);
   const allTrackersCalibrated = activeTrackers.length > 0 && activeTrackers.every((t) => regions[t.field]);
-  // Auto-collapse the calibration UI the first time this phase's trackers
-  // are all calibrated — once, not every render (ocrAutoCollapsedRef stops
-  // this from re-fighting a manual re-expand afterward). Never collapses
-  // anything while calibration is incomplete, since that's exactly when an
-  // admin needs this UI visible.
-  useEffect(() => {
-    if (ocrAutoCollapsedRef.current || !allTrackersCalibrated) return;
-    setOcrDetailsOpen(false);
-    ocrAutoCollapsedRef.current = true;
-  }, [allTrackersCalibrated]);
+  // Auto-collapse: see the preGuardAllTrackersCalibrated effect declared
+  // above the loading guard near the top of this component (has to live
+  // there, not here, to satisfy the Rules of Hooks).
 
   // The starting five for this game = whoever has a logged pick, not the
   // whole roster (which included bench/subs never playing this game —
@@ -4020,10 +4033,9 @@ export default function LiveConsolePage() {
   // before it shows up on the broadcast-style board above. Scoped to
   // renaming/re-rolling an existing roster row only, not adding brand-new
   // players to a team — that's still a /admin/players (or /admin/teams)
-  // job, out of scope for a per-match console.
-  const [editingRosterPlayerId, setEditingRosterPlayerId] = useState<string | null>(null);
-  const [editingRosterIgn, setEditingRosterIgn] = useState("");
-  const [editingRosterRole, setEditingRosterRole] = useState("");
+  // job, out of scope for a per-match console. (editingRosterPlayerId/Ign/Role
+  // state itself is declared above the loading guard near the top of this
+  // component — see the comment there.)
   function startEditRosterPlayer(p: Player) {
     setEditingRosterPlayerId(p.id);
     setEditingRosterIgn(p.ign);
@@ -4047,8 +4059,9 @@ export default function LiveConsolePage() {
   // `players` is the team's persistent roster (shared across every match
   // that team plays), so both of these are real roster changes, not
   // something scoped to just this match — matches how a real roster
-  // change (a transfer, a departure) actually works.
-  const [newRosterName, setNewRosterName] = useState<Record<string, string>>({});
+  // change (a transfer, a departure) actually works. (newRosterName state
+  // itself is declared above the loading guard near the top of this
+  // component — see the comment there.)
   async function addRosterPlayer(teamId: string) {
     const ign = (newRosterName[teamId] ?? "").trim();
     if (!ign) return;

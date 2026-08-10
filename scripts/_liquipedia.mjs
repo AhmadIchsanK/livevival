@@ -364,7 +364,17 @@ export function deriveStageFromBracket($, popupEl) {
   const header = outerRoundBody.prev();
   if (!header.hasClass("brkts-round-header")) return null;
 
-  const label = header.find(".brkts-header-div").first().text().trim();
+  // .brkts-header-div also nests responsive-width label variants
+  // (.brkts-header-option, e.g. "UB Semifinals"/"UBSF") as children — a
+  // plain .text() call concatenates every one of them into one garbled
+  // string. Only the container's own direct text nodes are the real
+  // full-length label.
+  const headerDiv = header.find(".brkts-header-div").first();
+  const label = headerDiv
+    .contents()
+    .filter((_, n) => n.type === "text")
+    .text()
+    .trim();
   if (!label) return null;
   return label.replace(/\s*\(Bo\d\)\s*$/i, "").trim() || null;
 }

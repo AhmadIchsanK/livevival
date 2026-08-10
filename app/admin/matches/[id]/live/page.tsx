@@ -7,6 +7,8 @@ import { createWorker } from "tesseract.js";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
 import { DraftOverlay, type DraftOverlayPickBan, type DraftOverlaySlotAction } from "@/components/DraftOverlay";
+import { getLegalTransitions, type MatchPhase, type PhaseSignals } from "@/lib/matchPhase";
+import { PhaseStepper } from "@/components/PhaseStepper";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
 
@@ -3529,57 +3531,72 @@ export default function LiveConsolePage() {
 
   const [forceWinnerPrompt, setForceWinnerPrompt] = useState(false);
 
-  // Single gatekeeper for every phase-dropdown selection — routes
-  // Game/Series finished through the same winner-declaration logic the
-  // buttons already use instead of letting the dropdown set those states
-  // directly with no winner attached, and enforces the technical-pause
-  // and series-finished-lock rules below.
+  // Everything lib/matchPhase's getLegalTransitions needs to evaluate every
+  // phase move at once — computed here (not scattered checks) so the phase
+  // stepper UI and handlePhaseChange's guard below are always answering
+  // from the exact same rules, never out of sync with each other.
+  const phaseSignals: PhaseSignals | null =
+    match && game
+      ? {
+          currentPhase: match.state as MatchPhase,
+          hasBothTeams: Boolean(match.team_a && match.team_b),
+          rosterReady:
+            Boolean(match.team_a) && Boolean(match.team_b)
+              ? players.filter((p) => p.team_id === match.team_a!.id && p.is_active_roster).length === 5 &&
+                players.filter((p) => p.team_id === match.team_b!.id && p.is_active_roster).length === 5
+              : false,
+          draftFullyResolved: draftFullyResolved(),
+          hasStreamUrl: Boolean(match.youtube_url),
+          currentGameHasWinner: Boolean(game.winner_team_id),
+          seriesWinsRequired: SERIES_WINS_REQUIRED[match.format ?? "BO3"] ?? 2,
+          teamAGameWins: match.team_a
+            ? pastGames.filter((g) => g.winner_team_id === match.team_a!.id).length + (game.winner_team_id === match.team_a.id ? 1 : 0)
+            : 0,
+          teamBGameWins: match.team_b
+            ? pastGames.filter((g) => g.winner_team_id === match.team_b!.id).length + (game.winner_team_id === match.team_b.id ? 1 : 0)
+            : 0,
+          isLastGameOfSeries: false,
+        }
+      : null;
+  if (phaseSignals) {
+    const required = phaseSignals.seriesWinsRequired;
+    phaseSignals.isLastGameOfSeries = phaseSignals.teamAGameWins >= required || phaseSignals.teamBGameWins >= required;
+  }
+  const phaseTransitions = phaseSignals ? getLegalTransitions(phaseSignals) : [];
+
+  // Single gatekeeper for every phase-stepper click — routes Game/Series
+  // finished through the same winner-declaration logic the dedicated
+  // buttons already use instead of setting those states directly with no
+  // winner attached, and defers everything else (is this move even legal
+  // right now) to lib/matchPhase so the rule lives in exactly one place.
   async function handlePhaseChange(newState: string) {
-    if (!match || !game) return;
+    if (!match || !game || !phaseSignals) return;
     const currentState = match.state;
     if (currentState === newState) return;
 
-    if (currentState === "SERIES_FINISHED") {
-      setError("This match is finished — use Reset if you need to change its phase.");
-      return;
-    }
-
     if (newState === "GAME_FINISHED") {
-      setForceWinnerPrompt(true);
-      return;
-    }
-
-    if (newState === "SERIES_FINISHED") {
-      const allGames = [...pastGames, game];
-      const winsFor = (id: string) => allGames.filter((g) => g.winner_team_id === id).length;
-      const required = SERIES_WINS_REQUIRED[match.format ?? "BO3"] ?? 2;
-      const aWins = match.team_a ? winsFor(match.team_a.id) : 0;
-      const bWins = match.team_b ? winsFor(match.team_b.id) : 0;
-      const seriesWinner = aWins >= required ? match.team_a?.id : bWins >= required ? match.team_b?.id : null;
+      if (!phaseSignals.currentGameHasWinner) {
+        setForceWinnerPrompt(true);
+        return;
+      }
+      // A winner's already on the row (e.g. re-confirming after a manual
+      // edit) — nothing left to prompt for, just move the phase forward.
+    } else if (newState === "SERIES_FINISHED") {
+      const required = phaseSignals.seriesWinsRequired;
+      const seriesWinner =
+        phaseSignals.teamAGameWins >= required ? match.team_a?.id : phaseSignals.teamBGameWins >= required ? match.team_b?.id : null;
       if (!seriesWinner) {
         setError(`Series finished can't be set yet — no team has reached ${required} game win(s) for ${match.format ?? "BO3"}.`);
         return;
       }
-      await finalizeSeriesFinished(seriesWinner, aWins, bWins);
+      await finalizeSeriesFinished(seriesWinner, phaseSignals.teamAGameWins, phaseSignals.teamBGameWins);
       return;
-    }
-
-    if (newState === "DRAFT_STARTED" && match.team_a && match.team_b) {
-      const aActive = players.filter((p) => p.team_id === match.team_a!.id && p.is_active_roster).length;
-      const bActive = players.filter((p) => p.team_id === match.team_b!.id && p.is_active_roster).length;
-      if (aActive !== 5 || bActive !== 5) {
-        setError(`Both teams need exactly 5 active roster players before draft can start (currently ${aActive}/${bActive}).`);
+    } else {
+      const transition = getLegalTransitions({ ...phaseSignals, currentPhase: currentState as MatchPhase }).find((t) => t.phase === newState);
+      if (transition && !transition.legal) {
+        setError(transition.blockedReason ?? `Can't move to ${newState.replace(/_/g, " ")} right now.`);
         return;
       }
-    }
-
-    if (newState === "TECHNICAL_PAUSE" && currentState !== "GAME_STARTED") {
-      setError("Technical pause can only be triggered from Game ongoing.");
-      return;
-    }
-    if (currentState === "TECHNICAL_PAUSE" && newState !== "GAME_STARTED") {
-      setError("Technical pause can only return to Game ongoing.");
-      return;
     }
 
     // Pause/resume the manual stopwatch across a technical pause — the OCR
@@ -3677,10 +3694,6 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  const MATCH_PHASES = [
-    "MATCH_NOT_STARTED", "DRAFT_STARTED", "DRAFT_COMPLETE", "GAME_STARTED",
-    "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM",
-  ];
   // What this phase's tracker area actually does — only GAME_STARTED and
   // TECHNICAL_PAUSE have a real OCR tracker at all now (see TRACKER_PHASES
   // above); every other match phase is driven by the admin's own manual
@@ -4028,6 +4041,43 @@ export default function LiveConsolePage() {
     setPlayers((prev) => prev.map((p) => (p.id === playerId ? { ...p, ign, role } : p)));
     setEditingRosterPlayerId(null);
   }
+  // Genuine roster add/remove, not just the bench/activate toggle above —
+  // for a brand-new sub who isn't in the players table at all yet, or a
+  // player who's left the team and shouldn't show up as an option anymore.
+  // `players` is the team's persistent roster (shared across every match
+  // that team plays), so both of these are real roster changes, not
+  // something scoped to just this match — matches how a real roster
+  // change (a transfer, a departure) actually works.
+  const [newRosterName, setNewRosterName] = useState<Record<string, string>>({});
+  async function addRosterPlayer(teamId: string) {
+    const ign = (newRosterName[teamId] ?? "").trim();
+    if (!ign) return;
+    const { data, error } = await supabase
+      .from("players")
+      .insert({ team_id: teamId, ign, role: null, is_active_roster: true })
+      .select("id, team_id, ign, role, photo_url, is_active_roster")
+      .single();
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setPlayers((prev) => [...prev, data as Player]);
+    setNewRosterName((prev) => ({ ...prev, [teamId]: "" }));
+  }
+  // Deletes the players row outright. If this player has picks/stats
+  // attached from a PAST match, Postgres' own foreign-key constraint
+  // rejects the delete — surfaced via the normal error toast instead of
+  // silently orphaning history, rather than this trying to pre-guess
+  // every table that might reference them.
+  async function removeRosterPlayer(p: Player) {
+    if (!confirm(`Remove ${p.ign} from the roster entirely? This is a team-wide change, not just this match.`)) return;
+    const { error } = await supabase.from("players").delete().eq("id", p.id);
+    if (error) {
+      setError(`Couldn't remove ${p.ign}: ${error.message}`);
+      return;
+    }
+    setPlayers((prev) => prev.filter((row) => row.id !== p.id));
+  }
   // A direct "team_kills" OCR tracker (see captureTickBody) overrides this
   // once it's read anything — falls back to summing player_stats.kills
   // (the only source before that tracker existed, and still the only
@@ -4146,23 +4196,14 @@ export default function LiveConsolePage() {
             placeholder="Livestream URL (YouTube or Facebook)"
             className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs w-56"
           />
-          <select
-            value={match.state}
-            onChange={(e) => handlePhaseChange(e.target.value)}
-            title="Manual phase override — useful for technical pauses or anything OCR/Liquipedia sync can't reflect on its own"
-            // A semi-transparent bg (bg-white/10) on a <select> only tints
-            // the CLOSED control — most browsers still render the opened
-            // option list with their default light native chrome regardless
-            // of surrounding CSS, which is why this read as a barely-visible
-            // white dropdown. A solid dark background plus color-scheme:
-            // dark fixes both the closed control and the native popup list.
-            style={{ colorScheme: "dark" }}
-            className="lv-badge bg-white/10 text-white border border-white/20"
-          >
-            {MATCH_PHASES.map((s) => (
-              <option key={s} value={s} className="bg-ink text-white">{s.replace(/_/g, " ")}</option>
-            ))}
-          </select>
+          {phaseSignals && (
+            <PhaseStepper
+              transitions={phaseTransitions}
+              current={match.state as MatchPhase}
+              onSelect={(phase) => handlePhaseChange(phase)}
+              disabled={isContributor}
+            />
+          )}
           {match.state === "CUSTOM" && (
             <span className="flex items-center gap-1">
               <input
@@ -4321,7 +4362,7 @@ export default function LiveConsolePage() {
             {match.update_source === "local_ocr" && (
               <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="font-bold">Local capture (this PC)</h2>
+          <h2 className="font-bold">Match capture — one monitor, one feed</h2>
           {match.update_source === "local_ocr" && (
             <button
               onClick={captureActive ? stopCapture : startCapture}
@@ -4335,6 +4376,11 @@ export default function LiveConsolePage() {
             </button>
           )}
         </div>
+        <p className="text-[10px] text-white/40">
+          Every field on this game reads from one shared-screen capture of your single monitor — team kills, team net
+          worth, the game timer, each player&apos;s K/D/A, objectives, and kill moments (double/triple/maniac/savage,
+          attributed to the player named in the kill banner) all live in this one panel below.
+        </p>
 
         {match.update_source === "local_ocr" && (
           <p className="text-xs text-white/50 bg-white/5 border border-white/10 rounded px-3 py-2">
@@ -5419,9 +5465,32 @@ export default function LiveConsolePage() {
                             >
                               ✎
                             </button>
+                            <button
+                              onClick={() => removeRosterPlayer(p)}
+                              title="Remove from roster (team-wide, not just this match)"
+                              className="text-white/30 hover:text-red-400 shrink-0 text-xs px-1.5 py-1.5"
+                            >
+                              🗑
+                            </button>
                           </div>
                         )
                       )}
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <input
+                        value={newRosterName[team.id] ?? ""}
+                        onChange={(e) => setNewRosterName((prev) => ({ ...prev, [team.id]: e.target.value }))}
+                        onKeyDown={(e) => e.key === "Enter" && addRosterPlayer(team.id)}
+                        placeholder="New player IGN"
+                        className="flex-1 min-w-0 bg-white/10 border border-dashed border-white/20 rounded px-2 py-1.5 text-xs"
+                      />
+                      <button
+                        onClick={() => addRosterPlayer(team.id)}
+                        disabled={!(newRosterName[team.id] ?? "").trim()}
+                        className="lv-btn-ghost !px-2 !py-1.5 !text-xs shrink-0 disabled:opacity-40"
+                      >
+                        + Add
+                      </button>
                     </div>
                   </div>
                 );
@@ -6117,6 +6186,7 @@ export default function LiveConsolePage() {
             <p className="text-xs text-white/50">{idx === 0 ? match.team_a?.name : match.team_b?.name}</p>
             <div className="flex gap-2 items-center text-[10px] text-white/40 pl-8 min-w-max">
               <span className="w-24">Player</span>
+              <span className="w-20">Role</span>
               <span className="w-24">Hero</span>
               <span className="w-14">K</span>
               <span className="w-14">D</span>
@@ -6143,6 +6213,7 @@ export default function LiveConsolePage() {
                   ) : (
                     <span className="w-24 truncate">{p.ign}</span>
                   )}
+                  <span className="w-20 truncate text-white/40 uppercase text-[10px] tracking-wide">{p.role ?? "—"}</span>
                   {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
                     <HeroIcon url={heroes.find((h) => h.name === stat?.hero_name)!.icon_url} name={stat?.hero_name} size="xs" className="-mr-1" />
                   )}

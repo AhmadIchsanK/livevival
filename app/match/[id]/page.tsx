@@ -114,7 +114,7 @@ type PlayerStat = {
   assists: number | null;
   gold: number;
   hero: { icon_url: string | null } | null;
-  player: { ign: string; team_id: string; is_active_roster: boolean } | null;
+  player: { ign: string; role: string | null; team_id: string; is_active_roster: boolean } | null;
 };
 type Objective = { id: string; game_id: string; team_id: string; type: string; minute_mark: number | null };
 const OBJECTIVE_ICONS: Record<string, string> = { tower: "🗼", lord: "👑", turtle: "🐢" };
@@ -177,12 +177,17 @@ function facebookEmbedUrl(url: string | null) {
 // player) — only available for YouTube, which is the only platform this
 // page actually embeds a player for (see youtubeEmbedUrl above / the
 // "link not embeddable" fallback for anything else).
-function youtubeChatEmbedUrl(url: string | null) {
+// dark_theme is YouTube's own embed param — without it the chat iframe
+// picks its own default regardless of what theme Livevival is in, which
+// read as broken/unreadable whenever the two disagreed (light page, dark
+// chat or vice versa). Tied directly to the same theme state driving the
+// rest of this page instead of guessing at the viewer's YouTube settings.
+function youtubeChatEmbedUrl(url: string | null, isDark: boolean) {
   if (!url) return null;
   const idMatch = url.match(/(?:v=|youtu\.be\/)([\w-]{11})/);
   if (!idMatch) return null;
   const domain = typeof window !== "undefined" ? window.location.hostname : "livevival-sigma.vercel.app";
-  return `https://www.youtube.com/live_chat?v=${idMatch[1]}&embed_domain=${domain}`;
+  return `https://www.youtube.com/live_chat?v=${idMatch[1]}&embed_domain=${domain}${isDark ? "&dark_theme=1" : ""}`;
 }
 
 // Public-page-only "hero portraits replace player avatars, top to bottom,
@@ -291,7 +296,8 @@ function PublicDraftTeamPanel({
 export default function PublicMatchPage() {
   const params = useParams();
   const matchId = params.id as string;
-  const { theme } = useTheme();
+  const { theme, resolvedTheme } = useTheme();
+  const isDarkTheme = (resolvedTheme ?? theme) === "dark";
 
   const [match, setMatch] = useState<Match | null>(null);
   const [games, setGames] = useState<Game[]>([]);
@@ -299,6 +305,12 @@ export default function PublicMatchPage() {
   const [stats, setStats] = useState<PlayerStat[]>([]);
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
+  // Scrolls the moment list to its newest (bottom-most, since the list
+  // itself reads oldest-to-newest top-to-bottom) entry on every update —
+  // without this, a fixed-height scroll box with a chat-log reading order
+  // would silently need a manual scroll down every time something new
+  // logs, defeating the point of putting the newest entry at the bottom.
+  const momentListRef = useRef<HTMLDivElement | null>(null);
   const [netWorth, setNetWorth] = useState<NetWorthPoint[]>([]);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [roster, setRoster] = useState<RosterPlayer[]>([]);
@@ -400,7 +412,7 @@ export default function PublicMatchPage() {
       supabase
         .from("player_stats")
         .select(
-          "id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, team_id, is_active_roster), hero:heroes(icon_url)"
+          "id, game_id, player_id, hero_name, kills, deaths, assists, gold, player:players(ign, role, team_id, is_active_roster), hero:heroes(icon_url)"
         )
         .eq("match_id", matchId),
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
@@ -408,7 +420,7 @@ export default function PublicMatchPage() {
         .from("key_moments")
         .select("id, game_id, type, description, minute_mark, second_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
         .eq("match_id", matchId)
-        .order("created_at", { ascending: false }),
+        .order("created_at", { ascending: true }),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
       supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
       rosterTeamIds.length > 0
@@ -481,6 +493,11 @@ export default function PublicMatchPage() {
     const interval = setInterval(loadAll, 10000);
     return () => clearInterval(interval);
   }, [loadAll]);
+
+  useEffect(() => {
+    const el = momentListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [keyMoments.length]);
 
   if (loadError) {
     return (
@@ -578,7 +595,7 @@ export default function PublicMatchPage() {
   // Chat only makes sense against the actual live stream, not a per-game
   // VOD link (a finished game's VOD has no live chat) — always the match's
   // own youtube_url, regardless of which game/VOD is currently selected.
-  const chatEmbedUrl = youtubeChatEmbedUrl(match.youtube_url);
+  const chatEmbedUrl = youtubeChatEmbedUrl(match.youtube_url, isDarkTheme);
 
   const gamePickBans = pickBans.filter((p) => p.game_id === selectedGameId);
   const gameStats = stats.filter((s) => s.game_id === selectedGameId);
@@ -606,12 +623,13 @@ export default function PublicMatchPage() {
   // all (see scoreRowsFor below) — before that, nobody's confirmed who's
   // actually playing this game yet.
   const rosterDecided = teamAActiveRoster.length === 5 && teamBActiveRoster.length === 5;
-  type ScoreRow = { id: string; ign: string; heroIconUrl: string | null; heroName: string | null; kills: number | null; deaths: number | null; assists: number | null };
+  type ScoreRow = { id: string; ign: string; role: string | null; heroIconUrl: string | null; heroName: string | null; kills: number | null; deaths: number | null; assists: number | null };
   function scoreRowsFor(stats: PlayerStat[], activeRoster: RosterPlayer[]): ScoreRow[] {
     if (stats.length > 0) {
       return stats.map((s) => ({
         id: s.id,
         ign: s.player?.ign ?? "?",
+        role: s.player?.role ?? null,
         heroIconUrl: s.hero?.icon_url ?? null,
         heroName: s.hero_name,
         kills: s.kills,
@@ -622,7 +640,7 @@ export default function PublicMatchPage() {
     if (!rosterDecided || match?.state === "MATCH_NOT_STARTED") return [];
     return [...activeRoster]
       .sort((a, b) => roleIndex(a.role) - roleIndex(b.role))
-      .map((p) => ({ id: p.id, ign: p.ign, heroIconUrl: null, heroName: null, kills: null, deaths: null, assists: null }));
+      .map((p) => ({ id: p.id, ign: p.ign, role: p.role, heroIconUrl: null, heroName: null, kills: null, deaths: null, assists: null }));
   }
   const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
   const teamAPicks = gamePickBans
@@ -993,94 +1011,63 @@ export default function PublicMatchPage() {
           </div>
         )}
 
-        {layoutBucket === "draft" ? (
-          <div className="max-w-5xl mx-auto flex flex-col sm:flex-row gap-3">
-            <div className="sm:w-2/5 space-y-2 order-2 sm:order-1">
-              {chatEmbedUrl && (
-                <div className="flex flex-col">
-                  <button
-                    onClick={() => setChatOpen((v) => !v)}
-                    className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70 self-start sm:self-stretch"
-                  >
-                    💬 {chatOpen ? "Hide chat" : "Show chat"}
-                  </button>
-                  {chatOpen && (
-                    <iframe
-                      src={chatEmbedUrl}
-                      className={`w-full h-56 sm:h-auto sm:flex-1 sm:min-h-0 mt-2 rounded border ${
-                        theme === "dark"
-                          ? "border-white/10 bg-black/50"
-                          : "border-black/10 bg-white/50"
-                      }`}
-                      title="YouTube live chat"
-                    />
-                  )}
-                </div>
-              )}
+        {/* Video always full width, same treatment across every phase —
+            chat is a floating toggle + overlay panel instead of a second
+            flex column, so opening it never shrinks or reflows the video
+            underneath ("without interfere the watching experience"). One
+            block for every layoutBucket instead of two near-identical
+            copies (draft used to reorder chat before video and give it a
+            permanent — if empty — 2/5 column even while closed). */}
+        <div className="max-w-5xl mx-auto relative">
+          {embedUrl ? (
+            <div className="lv-card-flush overflow-hidden">
+              <iframe
+                key={embedUrl}
+                src={embedUrl}
+                className="w-full aspect-video"
+                allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+                allowFullScreen
+              />
             </div>
-            <div className="sm:w-3/5 space-y-2 order-1 sm:order-2">
-              {embedUrl ? (
-                <div className="lv-card-flush overflow-hidden">
-                  <iframe
-                    key={embedUrl}
-                    src={embedUrl}
-                    className="w-full aspect-video"
-                    allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                    allowFullScreen
-                  />
-                </div>
-              ) : (
-                videoUrl && (
-                  <a href={videoUrl} target="_blank" className="lv-nav-link block">
-                    Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
-                  </a>
-                )
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="max-w-5xl mx-auto flex flex-col sm:flex-row gap-3">
-            <div className="sm:w-3/5 space-y-2">
-              {embedUrl ? (
-                <div className="lv-card-flush overflow-hidden">
-                  <iframe
-                    key={embedUrl}
-                    src={embedUrl}
-                    className="w-full aspect-video"
-                    allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-                    allowFullScreen
-                  />
-                </div>
-              ) : (
-                videoUrl && (
-                  <a href={videoUrl} target="_blank" className="lv-nav-link block">
-                    Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
-                  </a>
-                )
-              )}
-            </div>
-            {chatEmbedUrl && (
-              <div className="sm:w-2/5 flex flex-col">
-                <button
-                  onClick={() => setChatOpen((v) => !v)}
-                  className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 text-white/70 self-start sm:self-stretch"
-                >
-                  💬 {chatOpen ? "Hide chat" : "Show chat"}
+          ) : (
+            videoUrl && (
+              <a href={videoUrl} target="_blank" className="lv-nav-link block">
+                Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
+              </a>
+            )
+          )}
+          {chatEmbedUrl && (
+            <button
+              onClick={() => setChatOpen((v) => !v)}
+              aria-expanded={chatOpen}
+              className="absolute top-2 right-2 z-10 text-xs rounded-full px-3 py-1.5 bg-black/60 backdrop-blur border border-white/20 text-white hover:bg-black/80 shadow"
+            >
+              💬 {chatOpen ? "Hide chat" : "Chat"}
+            </button>
+          )}
+        </div>
+
+        {/* Overlay, not a layout column — a backdrop + slide-in panel on
+            desktop (fixed to the viewport edge) that sits on TOP of the
+            page, and a bottom sheet on mobile. Either way the video's own
+            size never changes when this opens or closes. */}
+        {chatEmbedUrl && chatOpen && (
+          <>
+            <div className="fixed inset-0 z-30 bg-black/40" onClick={() => setChatOpen(false)} aria-hidden="true" />
+            <div className="fixed z-40 bottom-0 left-0 right-0 h-[70vh] sm:h-auto sm:top-0 sm:bottom-0 sm:right-0 sm:left-auto sm:w-[360px] sm:max-w-[90vw] flex flex-col bg-ink border-t sm:border-t-0 sm:border-l border-white/10 shadow-2xl">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-white/10 shrink-0">
+                <span className="text-sm font-semibold">Live chat</span>
+                <button onClick={() => setChatOpen(false)} className="text-white/50 hover:text-white text-sm" aria-label="Close chat">
+                  ✕
                 </button>
-                {chatOpen && (
-                  <iframe
-                    src={chatEmbedUrl}
-                    className={`w-full h-56 sm:h-auto sm:flex-1 sm:min-h-0 mt-2 rounded border ${
-                      theme === "dark"
-                        ? "border-white/10 bg-black/50"
-                        : "border-black/10 bg-white/50"
-                    }`}
-                    title="YouTube live chat"
-                  />
-                )}
               </div>
-            )}
-          </div>
+              <iframe
+                src={chatEmbedUrl}
+                className={`w-full flex-1 min-h-0 ${isDarkTheme ? "bg-black/50" : "bg-white/50"}`}
+                title="YouTube live chat"
+              />
+            </div>
+          </>
         )}
       </div>
 
@@ -1103,21 +1090,24 @@ export default function PublicMatchPage() {
               {match.state === "CUSTOM" ? match.custom_state_label || "Custom" : PHASE_LABELS[match.state] ?? match.state}
             </span>
           </div>
-          {/* Sized to show ~10 moments before scrolling — newest always on
-              top (query is sorted created_at desc), older ones scroll into
-              view instead of being cut off. Draft layout keeps this
-              deliberately small ("Moment list small" per spec) since the
-              Draft board above is the star there; Finished gets more room
-              as a proper Timeline replay. */}
+          {/* Reads top-to-bottom like a chat log — oldest first, newest at
+              the bottom (query is sorted created_at asc) — with the box
+              auto-scrolled to the newest entry on every update (see the
+              momentListRef effect below), so a viewer never has to
+              manually scroll down to see what just happened. Draft layout
+              keeps this deliberately small ("Moment list small" per spec)
+              since the Draft board above is the star there; Finished gets
+              more room as a proper Timeline replay. */}
           <div
+            ref={momentListRef}
             className={`space-y-2 overflow-y-auto pr-1 ${
               layoutBucket === "draft" ? "max-h-[220px]" : layoutBucket === "finished" ? "max-h-[640px]" : "max-h-[420px]"
             }`}
           >
             {keyMoments.map((km, i) => {
-              // Sorted newest-first, so a separator belongs above the first
-              // moment of each game (i.e. whenever the game changes from the
-              // previous — chronologically later — entry above it).
+              // Sorted oldest-first, so a separator belongs above the
+              // first moment of each game — wherever the game_id changes
+              // from the previous (chronologically earlier) entry above it.
               const showSeparator = games.length > 1 && (i === 0 || keyMoments[i - 1].game_id !== km.game_id);
               const gameNumber = gameNumberById.get(km.game_id);
               return (
@@ -1385,12 +1375,13 @@ export default function PublicMatchPage() {
               <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
               <table className="w-full text-xs">
                 <thead className="text-white/40 text-left uppercase tracking-wide">
-                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K</th><th className="pb-1.5">D</th><th className="pb-1.5">A</th></tr>
+                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Role</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K</th><th className="pb-1.5">D</th><th className="pb-1.5">A</th></tr>
                 </thead>
                 <tbody>
                   {t.list.map((s) => (
                     <tr key={s.id} className="border-t border-white/10">
                       <td className="py-1.5">{s.ign}</td>
+                      <td className="py-1.5 text-white/40 text-[10px] uppercase tracking-wide">{s.role ?? "—"}</td>
                       <td className="flex items-center gap-1.5 py-1.5">
                         {s.heroIconUrl && <HeroIcon url={s.heroIconUrl} name={s.heroName} size="xs" />}
                         {s.heroName ?? (s.heroIconUrl === null && s.heroName === null ? "—" : "")}
@@ -1401,7 +1392,7 @@ export default function PublicMatchPage() {
                     </tr>
                   ))}
                   {t.list.length === 0 && (
-                    <tr><td colSpan={5} className="py-2 text-white/30">No stats yet.</td></tr>
+                    <tr><td colSpan={6} className="py-2 text-white/30">No stats yet.</td></tr>
                   )}
                 </tbody>
               </table>

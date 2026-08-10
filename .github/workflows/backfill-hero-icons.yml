@@ -1,19 +1,31 @@
-name: Backfill hero icons (one-time)
+name: Backfill hero icons
 
-# Manual-only, no schedule — this is a one-time cleanup for the ~80 heroes
-# stuck without an icon because import-liquipedia-heroes.mjs's own first
-# request (categorymembers) was hitting a sustained 429 and crashing
-# before fetching anything (see scripts/backfill-hero-icons.mjs for the
-# full root cause, confirmed via job logs). This script never calls
-# categorymembers, so it isn't subject to that same failure. Safe to
+# Originally one-time cleanup for the ~80 heroes stuck without an icon
+# because import-liquipedia-heroes.mjs's own first request (categorymembers)
+# was hitting a sustained 429 and crashing before fetching anything (see
+# scripts/backfill-hero-icons.mjs for the full root cause, confirmed via job
+# logs). This script never calls categorymembers, so it isn't subject to
+# that same failure.
+#
+# Given a daily cron (part of the "keep team/hero/player data always up to
+# date" pass, same reasoning as backfill-player-photos.yml's own schedule
+# addition): a brand-new hero can land with no icon at all if
+# import-liquipedia-heroes.mjs's own icon fetch was skipped or throttled
+# that run, and nothing else ever revisits it — this is the safety net that
+# catches it within a day instead of needing a manual dispatch. Safe to
 # re-run; it only ever touches rows still missing an icon.
 on:
+  schedule:
+    - cron: "0 4 * * *"
   workflow_dispatch: {}
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    concurrency:
+      group: backfill-hero-icons
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

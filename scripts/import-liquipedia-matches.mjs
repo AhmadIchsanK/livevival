@@ -39,7 +39,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { fetchRenderedPage, apiQuery, sleep } from "./_liquipedia.mjs";
+import { fetchRenderedPage, apiQuery, sleep, deriveStageFromBracket } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -89,6 +89,10 @@ export function extractMatches(html) {
       finished,
       format,
       youtubeUrl: vodHrefs[0] ?? null,
+      // Fallback for single-page bracket tournaments (no stage subpages for
+      // deriveStageFromPage to key off) — see deriveStageFromBracket's own
+      // comment. Only ever used when the page-level stage below is null.
+      bracketStage: deriveStageFromBracket($, el),
     });
   });
 
@@ -201,7 +205,11 @@ export function deriveStageFromPage(baseSlug, pageSlug) {
   return lastSegment.replace(/_/g, " ");
 }
 
-async function importMatchesForTournament(tournament) {
+// Exported so scripts/refresh-ongoing-tournament-matches.mjs can reuse the
+// exact same fetch/upsert logic for its own, differently-scoped tournament
+// selection (currently-ongoing only, run every 30 min) instead of
+// duplicating it.
+export async function importMatchesForTournament(tournament) {
   const pages = await getTournamentPages(tournament);
   console.log(`Fetching matches for ${tournament.name} across ${pages.length} page(s): ${pages.join(", ")}`);
 
@@ -268,7 +276,13 @@ async function importMatchesForTournament(tournament) {
       if (error) console.error(`Failed to update match: ${error.message}`);
     } else {
       payload.status = m.finished ? "finished" : "scheduled";
-      if (m.stage) payload.stage = m.stage;
+      // Page-derived stage (subpage name, e.g. "Regular Season") takes
+      // priority since it's the more established signal; bracketStage only
+      // ever has a value for the base page (deriveStageFromPage always
+      // returns null there), so the two never actually compete for the
+      // same match.
+      const stage = m.stage ?? m.bracketStage;
+      if (stage) payload.stage = stage;
       const { error } = await supabase.from("matches").insert(payload);
       if (error) console.error(`Failed to insert match: ${error.message}`);
     }
@@ -328,7 +342,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Guarded so refresh-ongoing-tournament-matches.mjs can import
+// importMatchesForTournament without also triggering this file's own
+// unscoped full-tournament-list main() as an import side effect.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

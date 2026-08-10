@@ -211,6 +211,68 @@ export function extractCountryCodes($, valueCell) {
   return codes.length > 0 ? Array.from(new Set(codes)) : null;
 }
 
+/**
+ * Parses a "$2,651,695"-shaped Liquipedia earnings string into a plain
+ * number. Confirmed against real team ("approx. total winnings") and
+ * player infobox rows sharing this exact format. Returns null for
+ * anything that doesn't contain a recognizable number (e.g. an em-dash
+ * placeholder some pages use when no earnings are on record).
+ */
+export function parseMoneyString(text) {
+  if (!text) return null;
+  const cleaned = text.replace(/[,$]/g, "").trim();
+  const match = cleaned.match(/-?\d+(\.\d+)?/);
+  if (!match) return null;
+  return Number(match[0]);
+}
+
+/**
+ * Splits a `<br>`-joined infobox cell (e.g. hero "specialty"/"voice
+ * actor(s)", player "alternate ids"/"nickname(s)") into its individual
+ * values. A plain `.text()` call on these cells concatenates every line
+ * with no separator at all (confirmed against real markup — Ling's
+ * "Chase<br>Burst" specialty reads back as the single string
+ * "ChaseBurst"), the same class of bug `.brkts-header-div` had before
+ * deriveStageFromBracket's fix — this is that same fix generalized to any
+ * `<br>`-separated cell. Returns [] for an empty/missing cell.
+ */
+export function splitBrSeparatedCell($, cell) {
+  if (!cell || cell.length === 0) return [];
+  const html = cell.html();
+  if (!html) return [];
+  return html
+    .split(/<br\s*\/?>/i)
+    .map((part) => $(`<div>${part}</div>`).text().trim())
+    .filter(Boolean);
+}
+
+/**
+ * Reads every `title`-bearing anchor inside an infobox cell as a list of
+ * names — for cells like a player's "signature heroes" that render as a
+ * row of hero icon links with no visible text of their own at all (a
+ * plain `.text()` call on that cell returns an empty string). Returns []
+ * for an empty/missing cell.
+ */
+export function extractAnchorTitlesFromCell($, cell) {
+  if (!cell || cell.length === 0) return [];
+  return cell
+    .find("a[title]")
+    .map((_, a) => $(a).attr("title")?.trim())
+    .get()
+    .filter(Boolean);
+}
+
+/**
+ * Treats an empty array the same as "nothing found" — a scrape that
+ * genuinely found no list items (a page-structure hiccup, a field the
+ * page happens not to have this run) should never overwrite previously
+ * good array data via the provenance-guarded refresh path, which only
+ * skips a field when its *value* is null/undefined, not when it's []`.
+ */
+export function arrayOrNull(arr) {
+  return arr && arr.length > 0 ? arr : null;
+}
+
 /** Maps every `<label>: value` infobox row (the `.infobox-description` / next-sibling pattern used across player, team, hero, etc. infoboxes) by lowercased label text, e.g. rows.get("location"). */
 export function getInfoboxRows($) {
   const rows = new Map();
@@ -322,4 +384,113 @@ export async function apiQuery(params, attempt = 1, maxRetries = MAX_RETRIES) {
   const data = await requestJson(url, label, attempt, maxRetries);
   if (data === null) return apiQuery(params, attempt + 1, maxRetries);
   return data;
+}
+
+function ownText($, el) {
+  return $(el)
+    .contents()
+    .filter((_, n) => n.type === "text")
+    .text()
+    .trim();
+}
+
+function stripFormatSuffix(label) {
+  return label.replace(/\s*\(Bo\d\)\s*$/i, "").trim() || null;
+}
+
+/**
+ * Derives a human-readable stage/round label ("Grand Final", "Semifinals",
+ * "Upper Bracket Final", ...) for one match popup on a single-page bracket
+ * tournament — i.e. a tournament like Games of the Future 2026 that has no
+ * stage subpages for deriveStageFromPage (import-liquipedia-matches.mjs) to
+ * key off of.
+ *
+ * Confirmed against real rendered HTML (Games_of_the_Future/2026, GH
+ * Actions diagnostics) that Liquipedia renders brackets on this page in TWO
+ * different shapes:
+ *
+ * 1. Paired rounds (e.g. "Upper Bracket Semifinals" + "Lower Bracket
+ *    Final"): each round is its own `.brkts-round-header` + `.brkts-round-
+ *    body` sibling pair, both direct children of `.brkts-bracket`, and the
+ *    header's single `.brkts-header-div` carries that one round's name.
+ *
+ * 2. Recursive single-elimination rounds (Round of 16 -> Quarterfinals ->
+ *    Semifinals -> Grand Final): ALL round names live as sibling
+ *    `.brkts-header-div`s inside ONE shared `.brkts-round-header` (in round
+ *    order), while the rounds themselves nest via `.brkts-round-lower`
+ *    instead of being flat siblings — the round-body that's the direct
+ *    child of `.brkts-bracket` (no enclosing `.brkts-round-lower`) is the
+ *    LAST round (Grand Final); each further layer of `.brkts-round-lower`
+ *    nesting steps one round earlier. The label index is therefore
+ *    `headerDivs.length - depth`, where depth is how many `.brkts-round-
+ *    body` ancestors sit between the popup and the bracket root inclusive.
+ *    A third place match sits at the same depth as the Grand Final but
+ *    isn't part of that count — it has its own preceding sibling
+ *    `.brkts-header-div.brkts-third-place-header`, checked first.
+ *
+ * Both shapes are really the same rule at heart (walk up to the bracket
+ * root counting round-body depth, then index into whichever header labels
+ * that depth's own header actually has) — shape 1 is just the degenerate
+ * case where every header has exactly one label and no round-lower
+ * nesting exists, so depth is always 1 and the index is always 0.
+ *
+ * Trailing "(BoN)" is stripped since the format is already captured
+ * separately in matches.format. Returns null (same as if this were never
+ * called) for anything not inside a `.brkts-bracket` at all — a group-
+ * stage/matchlist match, which this function makes no claim about; that's
+ * a lower-confidence case left for a future pass rather than guessed at
+ * here.
+ */
+export function deriveStageFromBracket($, popupEl) {
+  const $popup = $(popupEl);
+
+  const matchDiv = $popup.closest(".brkts-match");
+  if (matchDiv.length && matchDiv.hasClass("brkts-third-place-match")) {
+    const header = matchDiv.prevAll(".brkts-header-div").first();
+    if (header.length) {
+      const label = ownText($, header.get(0));
+      if (label) return stripFormatSuffix(label);
+    }
+  }
+
+  const ancestors = $popup.parents().toArray();
+  let bracketIndex = -1;
+  for (let i = 0; i < ancestors.length; i++) {
+    if ($(ancestors[i]).hasClass("brkts-bracket")) {
+      bracketIndex = i;
+      break;
+    }
+  }
+  if (bracketIndex === -1) return null;
+
+  const bracket = $(ancestors[bracketIndex]);
+  let depth = 0;
+  for (let i = 0; i < bracketIndex; i++) {
+    if ($(ancestors[i]).hasClass("brkts-round-body")) depth++;
+  }
+  if (depth === 0) return null;
+
+  const directChild = bracketIndex > 0 ? $(ancestors[bracketIndex - 1]) : null;
+  if (!directChild || !directChild.hasClass("brkts-round-body")) return null;
+
+  const header = directChild.prev();
+  if (!header.hasClass("brkts-round-header")) return null;
+
+  const headerDivs = header.find(".brkts-header-div").toArray();
+  if (headerDivs.length === 0) return null;
+
+  // Shape 1 (single label) ignores depth entirely — a round-body can
+  // legitimately nest further sub-matches under it (e.g. a group stage's
+  // own internal structure) without that meaning a different round.
+  const target = headerDivs.length === 1 ? headerDivs[0] : headerDivs[headerDivs.length - depth];
+  if (!target) return null;
+
+  // .brkts-header-div also nests responsive-width label variants
+  // (.brkts-header-option, e.g. "UB Semifinals"/"UBSF") as children — a
+  // plain .text() call concatenates every one of them into one garbled
+  // string. Only the container's own direct text nodes are the real
+  // full-length label.
+  const label = ownText($, target);
+  if (!label) return null;
+  return stripFormatSuffix(label);
 }

@@ -116,7 +116,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Guarded so refresh-ongoing-tournament-matches.mjs can import
+// discoverStagePages without also triggering this file's own unscoped
+// full-tournament-list main() as an import side effect.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

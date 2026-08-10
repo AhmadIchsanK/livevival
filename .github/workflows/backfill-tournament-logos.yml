@@ -1,17 +1,28 @@
-name: Backfill tournament logos (one-time)
+name: Backfill tournament logos
 
-# Manual-only, no schedule — this is a one-time cleanup for the ~150
-# tournaments that never got a logo because the only existing scrape for
-# it only runs within the recurring refresh job's rolling past-year
-# window (see scripts/backfill-tournament-logos.mjs for the full root
-# cause). Safe to re-run; it only ever touches rows still missing a logo.
+# Originally one-time cleanup for the ~150 tournaments that never got a
+# logo because the only existing scrape for it only runs within the
+# recurring refresh job's rolling past-year window (see
+# scripts/backfill-tournament-logos.mjs for the full root cause).
+#
+# Given a daily cron (part of the "keep team/hero/player data always up to
+# date" pass): new tournaments keep getting discovered by the regular 6h
+# import job, and each one needs its own logo fetched once — without a
+# recurring trigger here, a newly-added tournament sits with no logo until
+# someone remembers to dispatch this manually. Safe to re-run; it only
+# ever touches rows still missing a logo.
 on:
+  schedule:
+    - cron: "15 4 * * *"
   workflow_dispatch: {}
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    concurrency:
+      group: backfill-tournament-logos
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -1,0 +1,29 @@
+name: Refresh ongoing tournament matches
+
+# Fast lane for tournaments currently in progress (start_date <= today <=
+# end_date, +1 day grace) — picks up newly-appeared bracket matches (e.g. a
+# Grand Final that only renders once semifinals resolve) well before the 6h
+# full importer would reach them. See the script's header comment for the
+# gap this closes.
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: refresh-ongoing-tournament-matches
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+      - run: node scripts/refresh-ongoing-tournament-matches.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

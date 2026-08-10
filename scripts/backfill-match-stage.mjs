@@ -21,6 +21,16 @@
 // page-discovery + extraction + stage-derivation pass and re-associates
 // each extracted match back to its existing DB row instead of inserting.
 //
+// Also processes the base page (pages[0]) — originally skipped entirely,
+// since deriveStageFromPage() always returns null for it (no subpage name
+// to derive from). extractMatches() now additionally computes a per-match
+// bracketStage (deriveStageFromBracket() in _liquipedia.mjs, confirmed
+// against real markup for Games of the Future 2026 — a round header like
+// "Grand Final (Bo5)" or "Upper Bracket Semifinals" sitting directly above
+// each round's matches in the bracket template), which is the only signal
+// available for a single-page bracket tournament with no stage subpages at
+// all — exactly GOTF's shape.
+//
 // Re-association strategy: identical composite key already used everywhere
 // else in this codebase for a match — `${tournament.liquipedia_slug}__
 // ${teamAId}__${teamBId}__${m.timestamp}` — computed the same way
@@ -70,14 +80,20 @@ async function getExistingTeamId(name) {
 
 async function backfillTournament(tournament) {
   const pages = await getTournamentPages(tournament);
-  // pages[0] is always the tournament's own base page — deriveStageFromPage()
-  // always returns null for it (see that function), so it can never
-  // contribute a stage to fill in here. Skip fetching it entirely; only the
-  // subpages (if any were discovered) are worth a request for this backfill.
-  const subpages = pages.slice(1);
-  console.log(`[${tournament.name}] checking ${subpages.length} subpage(s): ${subpages.join(", ") || "(none found)"}`);
+  const [basePage, ...subpages] = pages;
+  console.log(`[${tournament.name}] checking base page + ${subpages.length} subpage(s): ${subpages.join(", ") || "(none found)"}`);
 
   const found = [];
+  try {
+    const html = await fetchRenderedPage(basePage);
+    // deriveStageFromPage() always returns null for the base page — this
+    // only ever picks up bracketStage (the round-header fallback) here.
+    found.push(...extractMatches(html).map((m) => ({ ...m, stage: m.bracketStage })).filter((m) => m.stage));
+  } catch (err) {
+    console.error(`[${tournament.name}] failed fetching base page "${basePage}": ${err.message}`);
+  }
+  if (subpages.length > 0) await sleep(2000);
+
   for (let i = 0; i < subpages.length; i++) {
     try {
       const html = await fetchRenderedPage(subpages[i]);
@@ -147,18 +163,41 @@ async function getAllNullStageTournamentIds() {
 }
 
 async function main() {
-  const { tournamentIds, total } = await getAllNullStageTournamentIds();
-  console.log(`${total} match row(s) with stage IS NULL, across ${tournamentIds.length} tournament(s)`);
-  if (tournamentIds.length === 0) return;
+  // Optional manual override: TOURNAMENT_SLUGS="Games_of_the_Future/2026,..."
+  // processes just those tournaments, bypassing table order — same fix
+  // already applied to import-liquipedia-matches.mjs and
+  // refresh-finished-match-details.mjs for the identical failure mode (a
+  // large tournament list doesn't fit in one pass, so whichever ones sit
+  // late in table order can wait indefinitely for a full untargeted run to
+  // reach them).
+  const override = (process.env.TOURNAMENT_SLUGS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  const { data: tournaments, error: tourErr } = await supabase
-    .from("tournaments")
-    .select("id, name, liquipedia_slug")
-    .in("id", tournamentIds);
-  if (tourErr) throw tourErr;
+  let relevant;
+  if (override.length > 0) {
+    const { data: tournaments, error } = await supabase
+      .from("tournaments")
+      .select("id, name, liquipedia_slug")
+      .in("liquipedia_slug", override);
+    if (error) throw error;
+    relevant = tournaments ?? [];
+    console.log(`TOURNAMENT_SLUGS override: processing ${relevant.length} of ${override.length} explicitly requested tournament(s)`);
+  } else {
+    const { tournamentIds, total } = await getAllNullStageTournamentIds();
+    console.log(`${total} match row(s) with stage IS NULL, across ${tournamentIds.length} tournament(s)`);
+    if (tournamentIds.length === 0) return;
 
-  const relevant = (tournaments ?? []).filter((t) => t.liquipedia_slug);
-  console.log(`Processing ${relevant.length} tournament(s) with a liquipedia_slug`);
+    const { data: tournaments, error: tourErr } = await supabase
+      .from("tournaments")
+      .select("id, name, liquipedia_slug")
+      .in("id", tournamentIds);
+    if (tourErr) throw tourErr;
+
+    relevant = (tournaments ?? []).filter((t) => t.liquipedia_slug);
+    console.log(`Processing ${relevant.length} tournament(s) with a liquipedia_slug`);
+  }
 
   for (const t of relevant) {
     try {

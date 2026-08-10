@@ -1,6 +1,7 @@
-// Livevival — one-time backfill: gives players their own Liquipedia photo,
-// real name, nationality, and social links, from
-// https://liquipedia.net/mobilelegends/All_Players's per-player pages.
+// Livevival — the real per-player detail scraper (despite the filename):
+// gives players their own Liquipedia photo, real name, nationality, social
+// links, birthdate, status, alternate IDs, nicknames, career winnings, and
+// signature heroes, from each player's own page.
 //
 // import-team-details.mjs only ever inserted ign/role/team_id — it never
 // captured a player's own Liquipedia page slug, so there was no way to
@@ -10,14 +11,13 @@
 // extra request cost, since it already fetches the team page once — this
 // script just needs to (a) run that same team-page fetch again for any
 // team with players still missing a slug, to actually populate it, then
-// (b) fetch each now-slugged player's own page for their infobox photo,
-// name, nationality, and links.
+// (b) fetch each now-slugged player's own page for the rest.
 //
-// Two phases, same idempotent/re-runnable/small-retry-budget shape as
-// backfill-hero-icons.mjs: a sustained Liquipedia throttle window can
-// still eat a chunk of any single run, but re-running only ever touches
-// rows still missing data, so repeated triggers converge on "done" instead
-// of duplicating work.
+// No longer a true one-time backfill: as of the "keep player data always
+// up to date" pass, phase 2 re-checks already-complete rows on a 7-day
+// cadence too (see STALE_AFTER_MS below), not just rows with a genuine
+// gap — provenance-guarded (see _provenance.mjs) so a re-check never
+// silently reverts an admin's manual correction.
 //
 // Phase 2's DOM selectors below were confirmed against real rendered HTML
 // for 5 players (AURORAA/Argentina, Lutpiii/Indonesia, Kairi/Philippines,
@@ -25,7 +25,10 @@
 // same client — not guessed. Notably:
 //   - Every infobox row is `<div class="infobox-cell-2 infobox-description">
 //     Label:</div><div style="width:50%">Value</div>` — labels seen include
-//     "Name:", "Nationality:", "Born:", "Role:", "Team:", "Status:".
+//     "Name:", "Nationality:", "Born:", "Role:", "Team:", "Status:",
+//     "Alternate IDs:", "Nickname(s):", "Approx. Total Winnings:",
+//     "Signature Heroes:". "Role:"/"Team:" are deliberately NOT captured —
+//     see fetchPlayerProfile's comment on why.
 //   - The nationality flag's own <img> src encodes the ISO code directly in
 //     its filename ("Ar_hd.png" = Argentina/AR, "Id_hd.png" =
 //     Indonesia/ID, "Ph_hd.png" = Philippines/PH, "Mm_hd.png" =
@@ -37,6 +40,10 @@
 //     a dedicated `.infobox-icons` block as `<a class="external text"
 //     href="..."><i class="lp-icon lp-instagram"></i></a>`-style anchors,
 //     one per platform, identified by the icon's second `lp-*` class.
+//   - "Born:" includes a computed age suffix ("September 21, 2005
+//     (age 20)") stripped before date-parsing. "Signature Heroes:" is an
+//     icon-only cell with no visible text at all — read from each icon
+//     anchor's `title` attribute instead.
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
@@ -46,8 +53,13 @@ import {
   extractCountryCodes,
   extractInfoboxIconLinks,
   getInfoboxRows,
+  parseMoneyString,
+  splitBrSeparatedCell,
+  extractAnchorTitlesFromCell,
+  arrayOrNull,
 } from "./_liquipedia.mjs";
 import { fetchTeamPage, extractActiveRoster, upsertPlayerRole } from "./import-team-details.mjs";
+import { getAdminEditedFields, buildProvenanceGuardedUpdate } from "./_provenance.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -66,6 +78,16 @@ const BACKFILL_MAX_RETRIES = 2;
 // location/region/social-link extraction can reuse the exact same
 // confirmed selectors instead of duplicating them (see that file's
 // extractLocationAndRegion/extractSocialLinks).
+
+// "September 21, 2005 (age 20)" — the computed age suffix needs stripping
+// before date-parsing; confirmed against Kairi's real infobox.
+function parseBornDate(cell) {
+  if (!cell) return null;
+  const raw = cell.text().replace(/\s*\(age\s*\d+\)\s*$/i, "").trim();
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
 
 async function fetchPlayerProfile(title) {
   const html = await fetchRenderedPage(title, 1, BACKFILL_MAX_RETRIES);
@@ -87,7 +109,35 @@ async function fetchPlayerProfile(title) {
 
   const links = extractInfoboxIconLinks($);
 
-  return { photoUrl: photoUrl || null, realName, countryCodes, links };
+  // "team" and "role" are deliberately NOT captured here even though
+  // they're on the page — team_id/role are already derived from the more
+  // authoritative team roster table (import-team-details.mjs), and a
+  // player's own page lags behind real roster moves just as often as that
+  // table does; storing both risks the two disagreeing with each other.
+  const bornDate = parseBornDate(rows.get("born"));
+  const status = rows.get("status")?.text().trim() || null;
+  const alternateIds = arrayOrNull(splitBrSeparatedCell($, rows.get("alternate ids")));
+  const nicknames = arrayOrNull(splitBrSeparatedCell($, rows.get("nickname(s)")));
+  const totalWinnings = rows.get("approx. total winnings")
+    ? parseMoneyString(rows.get("approx. total winnings").text())
+    : null;
+  // "signature heroes" renders as icon-only links with no visible text at
+  // all — confirmed against Kairi's real page (cell.text() comes back
+  // empty) — read from each icon anchor's title attribute instead.
+  const signatureHeroes = arrayOrNull(extractAnchorTitlesFromCell($, rows.get("signature heroes")));
+
+  return {
+    photoUrl: photoUrl || null,
+    realName,
+    countryCodes,
+    links,
+    bornDate,
+    status,
+    alternateIds,
+    nicknames,
+    totalWinnings,
+    signatureHeroes,
+  };
 }
 
 async function backfillSlugs() {
@@ -128,48 +178,96 @@ async function backfillSlugs() {
   }
 }
 
+const PROFILE_COLUMNS = [
+  "photo_url",
+  "real_name",
+  "country_codes",
+  "links",
+  "born_date",
+  "status",
+  "alternate_ids",
+  "nicknames",
+  "total_winnings",
+  "signature_heroes",
+];
+// A player's own infobox changes less often than a hero's balance-patch-
+// driven stats but more often than a team's — 7 days matches teams'
+// cadence, well inside what the shared rate-limit budget can absorb given
+// MAX_PROFILES_PER_RUN already caps actual fetch volume regardless.
+const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+// Same "converge over several runs, never gamble the whole timeout"
+// pattern as import-liquipedia-heroes.mjs — caps how many complete-but-
+// stale players get re-checked on top of however many still have a
+// genuine gap (gap-fill rows are never capped).
+const MAX_STALE_REFRESH_PER_RUN = 60;
+
 async function backfillProfiles() {
-  // Broadened from "photo_url is null" so a re-run also picks up players
-  // that already got a photo from before real_name/country_codes/links
-  // existed as columns — one fetch per player still covers all four
-  // fields, so there's no extra request cost to also mopping those up.
-  const { data: players, error } = await supabase
+  const { data: allSlugged, error } = await supabase
     .from("players")
-    .select("id, ign, liquipedia_slug, photo_url, real_name, country_codes, links")
-    .not("liquipedia_slug", "is", null)
-    .or("photo_url.is.null,real_name.is.null,country_codes.is.null,links.is.null");
+    .select(`id, ign, liquipedia_slug, last_liquipedia_sync_at, ${PROFILE_COLUMNS.join(", ")}`)
+    .not("liquipedia_slug", "is", null);
   if (error) throw error;
 
-  console.log(`Phase 2: ${players.length} slugged player(s) missing photo/real_name/country_codes/links`);
+  const now = Date.now();
+  const hasGap = (p) => PROFILE_COLUMNS.some((c) => p[c] == null);
+  const isStale = (p) =>
+    !p.last_liquipedia_sync_at || now - new Date(p.last_liquipedia_sync_at).getTime() > STALE_AFTER_MS;
+
+  const gapFillPlayers = allSlugged.filter(hasGap);
+  const staleCompletePlayers = allSlugged
+    .filter((p) => !hasGap(p) && isStale(p))
+    .sort((a, b) => new Date(a.last_liquipedia_sync_at ?? 0) - new Date(b.last_liquipedia_sync_at ?? 0))
+    .slice(0, MAX_STALE_REFRESH_PER_RUN);
+  const players = [...gapFillPlayers, ...staleCompletePlayers];
+
+  console.log(
+    `Phase 2: ${players.length} of ${allSlugged.length} slugged player(s): ${gapFillPlayers.length} with a gap, ` +
+      `${staleCompletePlayers.length} complete-but-stale (rest already fresh)`
+  );
 
   for (const p of players) {
     const title = p.liquipedia_slug.replace(/_/g, " ");
     try {
       const profile = await fetchPlayerProfile(title);
+      const scrapedFields = {
+        photo_url: profile.photoUrl,
+        real_name: profile.realName,
+        country_codes: profile.countryCodes,
+        links: profile.links,
+        born_date: profile.bornDate,
+        status: profile.status,
+        alternate_ids: profile.alternateIds,
+        nicknames: profile.nicknames,
+        total_winnings: profile.totalWinnings,
+        signature_heroes: profile.signatureHeroes,
+      };
 
-      const update = {};
-      if (!p.photo_url && profile.photoUrl) update.photo_url = profile.photoUrl;
-      if (!p.real_name && profile.realName) update.real_name = profile.realName;
-      if (!p.country_codes && profile.countryCodes) update.country_codes = profile.countryCodes;
-      if (!p.links && profile.links) update.links = profile.links;
+      const hasExistingValues = PROFILE_COLUMNS.some((c) => p[c] != null);
+      const adminEditedFields = hasExistingValues
+        ? await getAdminEditedFields(supabase, "players", p.id)
+        : new Set();
+      const { payload: update, skipped } = buildProvenanceGuardedUpdate(p, scrapedFields, adminEditedFields);
+      update.last_liquipedia_sync_at = new Date().toISOString();
 
       // Every field that came back empty this run, whether or not it was
       // already set — surfaced so a human scanning the job log can tell a
       // real gap (this player's page genuinely has no listed nationality)
       // from a broken selector (the same field is empty for everyone).
-      const stillMissing = [];
-      if (!profile.photoUrl) stillMissing.push("photo");
-      if (!profile.realName) stillMissing.push("real_name");
-      if (!profile.countryCodes) stillMissing.push("country_codes");
-      if (!profile.links) stillMissing.push("links");
+      const stillMissing = Object.entries(scrapedFields)
+        .filter(([, v]) => v == null)
+        .map(([k]) => k);
 
-      if (Object.keys(update).length > 0) {
-        const { error: updateError } = await supabase.from("players").update(update).eq("id", p.id);
-        if (updateError) console.error(`Failed to save profile for "${p.ign}":`, updateError.message);
-        else console.log(`${p.ign}: saved ${Object.keys(update).join(", ")}${stillMissing.length ? ` (page has no ${stillMissing.join("/")})` : ""}`);
-      } else {
-        console.log(`${p.ign}: nothing new on their page (missing: ${stillMissing.join(", ") || "none"})`);
+      const { error: updateError } = await supabase.from("players").update(update).eq("id", p.id);
+      if (updateError) {
+        console.error(`Failed to save profile for "${p.ign}":`, updateError.message);
+        continue;
       }
+      const savedFields = Object.keys(update).filter((f) => f !== "last_liquipedia_sync_at");
+      console.log(
+        `${p.ign}: saved ${savedFields.length > 0 ? savedFields.join(", ") : "nothing new"}` +
+          `${skipped.length ? ` (kept admin-edited: ${skipped.join(", ")})` : ""}` +
+          `${stillMissing.length ? ` (page has no ${stillMissing.join("/")})` : ""}`
+      );
     } catch (err) {
       console.error(`Failed processing "${p.ign}":`, err.message);
     }

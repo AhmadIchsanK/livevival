@@ -1,16 +1,28 @@
-name: Backfill stream titles (one-time)
+name: Backfill stream titles
 
-# Manual-only, no schedule — this is a one-time cleanup for streams added
-# before/outside the admin page's on-blur title auto-fill, not a recurring
-# job. Safe to re-run; it only ever touches rows still at the default
-# overlay_template.
+# Originally one-time cleanup for streams added before/outside the admin
+# page's on-blur title auto-fill.
+#
+# Given a weekly cron (part of the "keep team/hero/player data always up
+# to date" pass) as a low-frequency safety net: the admin auto-fill flow
+# should catch this at creation time for streams added through the normal
+# UI path, so this doesn't need matches/heroes' daily cadence — but a
+# stream added through any other path (a direct API call, a future bulk-
+# import tool) would otherwise sit with a default title forever with
+# nothing ever revisiting it. Safe to re-run; it only ever touches rows
+# still at the default overlay_template.
 on:
+  schedule:
+    - cron: "0 5 * * 0"
   workflow_dispatch: {}
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    concurrency:
+      group: backfill-stream-titles
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

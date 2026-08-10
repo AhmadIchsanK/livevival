@@ -39,7 +39,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { fetchRenderedPage, apiQuery, sleep } from "./_liquipedia.mjs";
+import { fetchRenderedPage, apiQuery, sleep, deriveStageFromBracket } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -89,6 +89,10 @@ export function extractMatches(html) {
       finished,
       format,
       youtubeUrl: vodHrefs[0] ?? null,
+      // Fallback for single-page bracket tournaments (no stage subpages for
+      // deriveStageFromPage to key off) — see deriveStageFromBracket's own
+      // comment. Only ever used when the page-level stage below is null.
+      bracketStage: deriveStageFromBracket($, el),
     });
   });
 
@@ -272,7 +276,13 @@ export async function importMatchesForTournament(tournament) {
       if (error) console.error(`Failed to update match: ${error.message}`);
     } else {
       payload.status = m.finished ? "finished" : "scheduled";
-      if (m.stage) payload.stage = m.stage;
+      // Page-derived stage (subpage name, e.g. "Regular Season") takes
+      // priority since it's the more established signal; bracketStage only
+      // ever has a value for the base page (deriveStageFromPage always
+      // returns null there), so the two never actually compete for the
+      // same match.
+      const stage = m.stage ?? m.bracketStage;
+      if (stage) payload.stage = stage;
       const { error } = await supabase.from("matches").insert(payload);
       if (error) console.error(`Failed to insert match: ${error.message}`);
     }

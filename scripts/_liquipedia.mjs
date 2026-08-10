@@ -323,3 +323,48 @@ export async function apiQuery(params, attempt = 1, maxRetries = MAX_RETRIES) {
   if (data === null) return apiQuery(params, attempt + 1, maxRetries);
   return data;
 }
+
+/**
+ * Derives a human-readable stage/round label ("Grand Final", "Semifinals",
+ * "Upper Bracket Final", ...) for one match popup on a single-page bracket
+ * tournament — i.e. a tournament like Games of the Future 2026 that has no
+ * stage subpages for deriveStageFromPage (import-liquipedia-matches.mjs) to
+ * key off of.
+ *
+ * Confirmed against real rendered HTML (Games_of_the_Future/2026, GH
+ * Actions diagnostic run): each round is a `.brkts-round-header` +
+ * `.brkts-round-body` sibling pair, both direct children of `.brkts-
+ * bracket`; the header carries the round name in `.brkts-header-div`
+ * (e.g. "Grand Final (Bo5)", "Upper Bracket Semifinals"). A round-body can
+ * nest ANOTHER round-body inside `.brkts-round-lower` (the double-
+ * elimination lower-bracket sub-tree) — walking up from the popup and
+ * taking the outermost round-body (the one whose own parent is literally
+ * `.brkts-bracket`) is what correctly skips past that nesting instead of
+ * matching the inner lower-bracket round's own (different) header.
+ *
+ * Trailing "(BoN)" is stripped since the format is already captured
+ * separately in matches.format. Returns null (same as if this were never
+ * called) for anything not inside a `.brkts-bracket` at all — a group-
+ * stage/matchlist match, which this function makes no claim about; that's
+ * a lower-confidence case left for a future pass rather than guessed at
+ * here.
+ */
+export function deriveStageFromBracket($, popupEl) {
+  const ancestors = $(popupEl).parents().toArray();
+  let outerRoundBody = null;
+  for (let i = 0; i < ancestors.length; i++) {
+    if ($(ancestors[i]).hasClass("brkts-bracket")) {
+      const child = i > 0 ? $(ancestors[i - 1]) : null;
+      if (child && child.hasClass("brkts-round-body")) outerRoundBody = child;
+      break;
+    }
+  }
+  if (!outerRoundBody) return null;
+
+  const header = outerRoundBody.prev();
+  if (!header.hasClass("brkts-round-header")) return null;
+
+  const label = header.find(".brkts-header-div").first().text().trim();
+  if (!label) return null;
+  return label.replace(/\s*\(Bo\d\)\s*$/i, "").trim() || null;
+}

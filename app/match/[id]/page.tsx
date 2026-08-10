@@ -19,6 +19,7 @@ type Match = {
   state: string;
   custom_state_label: string | null;
   format: string | null;
+  stage: string | null;
   youtube_url: string | null;
   series_winner_team_id: string | null;
   update_source: "liquipedia" | "local_ocr";
@@ -349,7 +350,7 @@ export default function PublicMatchPage() {
     const { data: matchData, error: matchError } = await supabase
       .from("matches")
       .select(
-        `id, status, state, custom_state_label, format, youtube_url, series_winner_team_id, update_source, notification_tier, scheduled_at,
+        `id, status, state, custom_state_label, format, stage, youtube_url, series_winner_team_id, update_source, notification_tier, scheduled_at,
          countdown_seconds, countdown_updated_at, draft_timer_a_seconds, draft_timer_b_seconds, draft_timer_updated_at,
          tournament:tournaments(name, tier, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
@@ -796,6 +797,7 @@ export default function PublicMatchPage() {
             match.tournament?.name
           )}{" "}
           · {match.tournament?.tier}-Tier · {match.format}
+          {match.stage ? ` · ${match.stage}` : ""}
           {match.scheduled_at ? ` · ${formatMatchDate(match.scheduled_at)}` : ""}
         </p>
         <div className="flex items-center gap-3 flex-wrap">

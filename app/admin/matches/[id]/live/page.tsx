@@ -2842,6 +2842,19 @@ export default function LiveConsolePage() {
     for (let i = current; i < target; i++) await incrementObjective(teamId, type);
   }
 
+  // Direct correction, either direction — the +/- buttons only ever move
+  // one at a time, which is fine for logging live but slow for fixing a
+  // count that's drifted (a missed OCR tick, a double-click). Reuses the
+  // same increment/decrement writes one at a time rather than a bespoke
+  // bulk delete/insert, so nothing about how an objective gets logged
+  // changes — this is just a faster way to reach the same end state.
+  async function setObjectiveCount(teamId: string, type: string, target: number) {
+    const clamped = Math.max(0, Math.round(target));
+    let current = objectiveCount(teamId, type);
+    while (current < clamped) { await incrementObjective(teamId, type); current++; }
+    while (current > clamped) { await decrementObjective(teamId, type); current--; }
+  }
+
   async function captureTick() {
     const video = previewRef.current;
     const worker = workerRef.current;
@@ -5268,8 +5281,18 @@ export default function LiveConsolePage() {
                 compact (~5 rows visible) — scrolling reveals the rest,
                 nothing is discarded. */}
             <section className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h2 className="font-bold">Moment Timeline</h2>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-bold">Moment Timeline</h2>
+                  {/* Same live in-game clock the public match page shows
+                      beside its own Moment Timeline heading — easy to spot
+                      here too, not just in the header row above. */}
+                  {(match.state === "GAME_STARTED" || match.state === "TECHNICAL_PAUSE") && (
+                    <span className="text-base font-bold text-signal tabular-nums" title="Live in-game clock">
+                      ⏱ {mmssTimestamp()}
+                    </span>
+                  )}
+                </div>
                 {lastAction && (
                   <button
                     onClick={undoLastAction}
@@ -5295,6 +5318,20 @@ export default function LiveConsolePage() {
                       ? km.description.split(" — ")[0].match(/ (?:picks|bans) (.+)$/)?.[1] ?? null
                       : null;
                   const heroIconUrl = heroName ? heroIconFor(heroName) : null;
+                  // Same colored pick/ban verb the public match page's own
+                  // Moment Timeline renders — see its renderMomentLabel.
+                  const verbMatch =
+                    (km.type === "pick" || km.type === "ban") && km.description
+                      ? km.description.match(/^(.+?) (picks|bans) (.+?)(?: — .+)?$/)
+                      : null;
+                  const labelNode = verbMatch ? (
+                    <>
+                      {verbMatch[1]} <span className={verbMatch[2] === "picks" ? "text-emerald-500 font-bold" : "text-signal font-bold"}>{verbMatch[2]}</span>{" "}
+                      {label.slice(verbMatch[1].length + verbMatch[2].length + 2)}
+                    </>
+                  ) : (
+                    label
+                  );
                   if (editingMomentId === km.id) {
                     return (
                       <div key={km.id} className="px-3 py-2 rounded bg-signal/20 flex items-center gap-1.5">
@@ -5319,7 +5356,7 @@ export default function LiveConsolePage() {
                       {heroIconUrl && <HeroIcon url={heroIconUrl} name={heroName} size="xs" className="shrink-0" />}
                       <span className="flex-1 min-w-0 truncate">
                         {km.is_key_moment && "⭐ "}
-                        {km.minute_mark}&apos; {label}
+                        {km.minute_mark}&apos; {labelNode}
                         {km.screenshot_url && " 📸"}
                       </span>
                       <button
@@ -5430,6 +5467,23 @@ export default function LiveConsolePage() {
                                   >
                                     −
                                   </button>
+                                  {/* Direct correction — the +/-/click
+                                      buttons only move one at a time,
+                                      fine for logging live but slow to fix
+                                      a count that's drifted. */}
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    disabled={!objectivesEditable}
+                                    placeholder={String(objectiveCount(team.id, type))}
+                                    title={`Set ${team.name}'s ${type} count directly`}
+                                    onBlur={(e) => {
+                                      if (e.target.value === "") return;
+                                      setObjectiveCount(team.id, type, Number(e.target.value));
+                                      e.target.value = "";
+                                    }}
+                                    className="w-10 bg-white/10 border border-white/10 rounded px-1 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
+                                  />
                                 </div>
                               ))}
                             </div>
@@ -6435,9 +6489,7 @@ export default function LiveConsolePage() {
               <span className="w-24">Player</span>
               <span className="w-20">Role</span>
               <span className="w-24">Hero</span>
-              <span className="w-14">K</span>
-              <span className="w-14">D</span>
-              <span className="w-14">A</span>
+              <span className="w-[122px]">K/D/A</span>
             </div>
             {teamPlayers.map((p) => {
               const stat = statForPlayer(p);
@@ -6495,20 +6547,29 @@ export default function LiveConsolePage() {
                       ))}
                     </select>
                   )}
-                  {(["kills", "deaths", "assists"] as const).map((field) => (
-                    <input
-                      key={field}
-                      type="number"
-                      defaultValue={stat?.[field] ?? ""}
-                      placeholder="TBD"
-                      onBlur={(e) => {
-                        if (e.target.value === "") return; // leave TBD, don't coerce a cleared field to 0
-                        updateStat(p.id, field, Number(e.target.value));
-                      }}
-                      disabled={!scoreboardEditable}
-                      className="w-14 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
-                    />
-                  ))}
+                  {/* K/D/A as one visually-grouped "0/0/0" unit (slash
+                      separators between the three fields) instead of three
+                      unlabeled inputs floating side by side — each stays
+                      independently editable, just read together like the
+                      standard K/D/A notation everywhere else on the site. */}
+                  <div className="flex items-center gap-0.5">
+                    {(["kills", "deaths", "assists"] as const).map((field, i) => (
+                      <span key={field} className="flex items-center gap-0.5">
+                        {i > 0 && <span className="text-white/30">/</span>}
+                        <input
+                          type="number"
+                          defaultValue={stat?.[field] ?? ""}
+                          placeholder="TBD"
+                          onBlur={(e) => {
+                            if (e.target.value === "") return; // leave TBD, don't coerce a cleared field to 0
+                            updateStat(p.id, field, Number(e.target.value));
+                          }}
+                          disabled={!scoreboardEditable}
+                          className="w-12 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
+                        />
+                      </span>
+                    ))}
+                  </div>
                   <div className="flex gap-1.5 ml-auto">
                     {isEditingRoster ? (
                       <>

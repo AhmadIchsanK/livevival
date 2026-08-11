@@ -223,6 +223,21 @@ export default function LiveConsolePage() {
 
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Monitor/action-deck split ratio — admin-adjustable (min 20% a side, so
+  // neither pane can be squeezed unusably thin), persisted per-browser so
+  // it doesn't reset every visit. Replaces the old fixed 60/40 grid-cols
+  // split.
+  const [splitLeftPct, setSplitLeftPct] = useState(60);
+  useEffect(() => {
+    const saved = Number(localStorage.getItem("lv-admin-split-left-pct"));
+    if (Number.isFinite(saved) && saved >= 20 && saved <= 80) setSplitLeftPct(saved);
+  }, []);
+  function applySplit(leftPct: number) {
+    const clamped = Math.max(20, Math.min(80, Math.round(leftPct)));
+    setSplitLeftPct(clamped);
+    localStorage.setItem("lv-admin-split-left-pct", String(clamped));
+  }
+
   // Measures the sticky top header's real rendered height (it wraps to a
   // different number of lines depending on match state/badges) so the
   // monitor pane's own `sticky top-[...]` offset in the 60/40 layout below
@@ -4322,18 +4337,56 @@ export default function LiveConsolePage() {
         )}
       </div>
 
-      {/* THE MONITOR (60%) + ACTION DECK (40%) — a fixed two-pane split
-          instead of the old three-column resizable layout. The monitor
-          (stream + OCR capture) is pinned on large screens so it's always
-          in view; the action deck is the one scrollable column holding
-          everything else, phase-collapsed further down so only what's
-          relevant to the current match phase is expanded by default. */}
-      <div className="grid grid-cols-1 lg:grid-cols-[60fr_40fr] lg:items-start gap-4 lg:gap-0 rounded-lg border border-white/10 overflow-hidden">
+      {/* Split ratio control — two numbers, min 20 each, always summing to
+          100 (changing one adjusts the other automatically). Replaces the
+          old fixed 60/40 split; each pane below gets its own independent
+          bordered box now (see the "why two boxes, not one" note below)
+          instead of sharing one outer border that stretched the shorter
+          pane's box down to match the taller one, leaving a dead gap. */}
+      <div className="flex items-center gap-2 mb-2 text-xs text-white/50">
+        <span>Monitor / action deck split</span>
+        <input
+          type="number"
+          min={20}
+          max={80}
+          value={splitLeftPct}
+          onChange={(e) => applySplit(Number(e.target.value) || splitLeftPct)}
+          className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-center"
+        />
+        <span>–</span>
+        <input
+          type="number"
+          min={20}
+          max={80}
+          value={100 - splitLeftPct}
+          onChange={(e) => applySplit(100 - (Number(e.target.value) || 100 - splitLeftPct))}
+          className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-center"
+        />
+        <button
+          onClick={() => applySplit(60)}
+          className="text-white/40 hover:text-white/70 underline underline-offset-2"
+        >
+          Reset to 60–40
+        </button>
+      </div>
+
+      {/* THE MONITOR + ACTION DECK — two independently-boxed panes instead
+          of one shared bordered container around both. A shared border
+          around a CSS grid row forces it to the height of the *taller*
+          cell — since the action deck (everything below the video/OCR
+          tools) runs far longer than the monitor pane's own content, that
+          left a large dead gap under the monitor, inside the same border,
+          down to wherever the action deck happened to end. Two separate
+          boxes means each one's border ends exactly at its own content —
+          no shared row height to fight. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[var(--lv-split-left)_var(--lv-split-right)] gap-4" style={{ "--lv-split-left": `${splitLeftPct}fr`, "--lv-split-right": `${100 - splitLeftPct}fr` } as CSSPropertiesWithVars}>
         {/* THE MONITOR — livestream + OCR capture. Sticky on large screens
             so the stream never scrolls out of view while the action deck
-            scrolls independently beside it. */}
+            scrolls independently beside it. Its own rounded border now —
+            ends right where its content ends, doesn't stretch to match
+            the action deck's height. */}
         <div
-          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full max-w-full lg:sticky lg:top-[calc(var(--lv-admin-header-h,0px)+1px)] lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
+          className="flex flex-col overflow-y-auto rounded-lg border border-white/10 w-full max-w-full lg:sticky lg:top-[calc(var(--lv-admin-header-h,0px)+1px)] lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
           style={{
             width: "100%",
           }}
@@ -5092,12 +5145,14 @@ export default function LiveConsolePage() {
           </div>
         </div>
 
-        {/* ACTION DECK (40%) — the one scrollable column. Yellow (game
-            data) and Red (moment timeline) merge into this single pane;
-            phase-relevant content is prioritized further down instead of
-            splitting into more side-by-side columns. */}
+        {/* ACTION DECK — the one scrollable column. Yellow (game data) and
+            Red (moment timeline) merge into this single pane; phase-
+            relevant content is prioritized further down instead of
+            splitting into more side-by-side columns. Own rounded border,
+            same reasoning as the monitor pane above — no shared row to
+            stretch either one to match the other's height. */}
         <div
-          className="flex flex-col overflow-y-auto w-full max-w-full lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
+          className="flex flex-col overflow-y-auto rounded-lg border border-white/10 w-full max-w-full lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
           style={{ width: "100%" }}
         >
           <div className="space-y-6 p-3 lg:p-4">

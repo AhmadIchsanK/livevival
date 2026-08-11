@@ -302,12 +302,26 @@ export async function POST(req: NextRequest) {
   }
 
   const groqData = await groqRes.json();
-  const raw: string = groqData.choices?.[0]?.message?.content ?? "{}";
+  const choice = groqData.choices?.[0];
+  // `??` only substitutes for null/undefined — a genuinely empty string
+  // (`content: ""`, which Groq can return when the model spends its whole
+  // token budget "thinking" and never writes a visible answer) sailed
+  // straight through the old `?? "{}"` fallback unreplaced, then failed
+  // extraction with an unhelpfully blank "()" in the error message. `||`
+  // catches the empty-string case too since "" is falsy.
+  const raw: string = choice?.message?.content || "{}";
   const withoutThinking = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
   const extracted = extractFirstJsonObject(withoutThinking);
   if (!extracted) {
+    const finishReason = choice?.finish_reason;
+    const reasonHint =
+      finishReason === "length"
+        ? " — the model hit its token limit before writing a full response, try again"
+        : !withoutThinking
+        ? " — the model returned no visible content this time, try again"
+        : "";
     return NextResponse.json(
-      { error: `No complete JSON object in model response (${withoutThinking.slice(0, 120)})` },
+      { error: `No complete JSON object in model response${reasonHint} (${withoutThinking.slice(0, 120)})` },
       { status: 502 }
     );
   }

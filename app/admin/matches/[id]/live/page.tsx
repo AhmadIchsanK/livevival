@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, Fragment, type CSSProperties } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
@@ -200,6 +201,47 @@ function facebookEmbedUrl(url: string | null) {
 // normal absolutely-positioned <div>, not a native popup — so it can't
 // have that side effect. Used anywhere on this page an admin is likely
 // to reach for a dropdown while capture/the livestream is running.
+// Both InlineMenuSelect and InlineMenuPopover render their open panel
+// through a React portal straight onto document.body, positioned via
+// fixed pixel coordinates from the trigger's own bounding rect, instead
+// of a normal absolutely-positioned child. This is necessary, not just
+// nicer: both are used inside a toolbar (see the sticky div around line
+// 6554) that's `position: sticky; z-index: 10`, nested under several
+// plain non-positioned divs below the page's own admin header (see
+// adminHeaderRef, `position: sticky; z-index: 20`). Neither sticky
+// element is a descendant of the other, and nothing between them
+// establishes its own stacking context — so per CSS stacking rules, the
+// toolbar's ENTIRE subtree is capped at its own z-10 slot when compared
+// against the header's z-20 context, no matter what z-index a normal
+// (non-portaled) descendant declares locally. A panel with `z-20` nested
+// three levels inside a `z-10` ancestor still loses to a sibling `z-20`
+// context — that "local" z-20 only wins fights within the z-10 slot, it
+// can't escape it. Portaling to <body> sidesteps the whole problem: the
+// panel becomes a sibling of the header in the stacking order instead of
+// a great-grandchild of a lower-z-index ancestor, free to out-rank it
+// with a plain z-index number again.
+function usePopoverPosition(triggerRef: RefObject<HTMLElement | null>, open: boolean) {
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    function update() {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+    }
+    update();
+    // capture:true — the toolbar's own ancestor is a scrollable pane
+    // (overflow-y-auto), whose scroll events don't bubble to window in
+    // the normal phase; capture-phase listening on window still sees them.
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [open, triggerRef]);
+  return pos;
+}
+
 function InlineMenuSelect({
   value,
   options,
@@ -216,19 +258,25 @@ function InlineMenuSelect({
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const pos = usePopoverPosition(buttonRef, open);
   useEffect(() => {
     if (!open) return;
     function onDocMouseDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [open]);
   const current = options.find((o) => o.value === value);
   return (
-    <div ref={rootRef} className={`relative inline-block ${className ?? ""}`}>
+    <div className={`inline-block ${className ?? ""}`}>
       <button
+        ref={buttonRef}
         type="button"
         title={title}
         onClick={() => setOpen((v) => !v)}
@@ -239,30 +287,103 @@ function InlineMenuSelect({
         <span className="truncate">{current?.label ?? placeholder ?? "Select..."}</span>
         <span className="text-white/40 shrink-0">▾</span>
       </button>
-      {open && (
-        <div
-          role="listbox"
-          className="absolute z-20 mt-1 min-w-full max-h-64 overflow-y-auto bg-[#111116] border border-white/15 rounded shadow-lg py-1"
-        >
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              role="option"
-              aria-selected={opt.value === value}
-              onClick={() => {
-                onChange(opt.value);
-                setOpen(false);
-              }}
-              className={`block w-full text-left px-2.5 py-1.5 text-xs whitespace-nowrap hover:bg-white/10 ${
-                opt.value === value ? "text-signal font-semibold" : "text-white/80"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={panelRef}
+            role="listbox"
+            style={{ position: "fixed", top: pos.top, left: pos.left, minWidth: pos.width }}
+            className="z-[100] max-h-64 overflow-y-auto bg-[#111116] border border-white/15 rounded shadow-lg py-1"
+          >
+            {options.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                role="option"
+                aria-selected={opt.value === value}
+                onClick={() => {
+                  onChange(opt.value);
+                  setOpen(false);
+                }}
+                className={`block w-full text-left px-2.5 py-1.5 text-xs whitespace-nowrap hover:bg-white/10 ${
+                  opt.value === value ? "text-signal font-semibold" : "text-white/80"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+}
+
+// A compact toolbar trigger that opens a floating panel of arbitrary
+// content (a mix of dropdowns/inputs/buttons that wouldn't fit as
+// standalone toolbar items) — used to fold the Templates and Captured-area
+// controls (previously two whole separate rows below the toolbar) into
+// single buttons on the sticky toolbar itself. `forceOpen` keeps the panel
+// open and immune to the outside-click-closes handler regardless of the
+// trigger click — used for Captured area, whose Lock/Cancel controls need
+// to stay visible for the whole duration of a canvas drag (which happens
+// outside this component's own DOM, so an outside-click-closes listener
+// would otherwise close the panel the instant the drag starts).
+function InlineMenuPopover({
+  label,
+  icon,
+  accentClassName,
+  forceOpen,
+  children,
+}: {
+  label: string;
+  icon?: string;
+  accentClassName?: string;
+  forceOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const isOpen = open || !!forceOpen;
+  const pos = usePopoverPosition(buttonRef, isOpen);
+  useEffect(() => {
+    if (!isOpen || forceOpen) return;
+    function onDocMouseDown(e: MouseEvent) {
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [isOpen, forceOpen]);
+  return (
+    <div className="inline-block">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="true"
+        aria-expanded={isOpen}
+        className={`text-xs rounded px-3 py-1.5 border whitespace-nowrap ${accentClassName ?? "border-white/20 text-white/70 hover:bg-white/10"}`}
+      >
+        {icon ? `${icon} ` : ""}
+        {label} ▾
+      </button>
+      {isOpen &&
+        pos &&
+        createPortal(
+          <div
+            ref={panelRef}
+            style={{ position: "fixed", top: pos.top, left: pos.left, minWidth: Math.max(pos.width, 300) }}
+            className="z-[100] bg-[#111116] border border-white/15 rounded shadow-lg p-3 space-y-2"
+          >
+            {children}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
@@ -6483,112 +6604,226 @@ export default function LiveConsolePage() {
             )}
             {captureActive && match.state !== "TECHNICAL_PAUSE" && (
               <div className="space-y-3">
-                {/* Sticky toolbar — the edit-mode toggle, phase filter, and
-                    captured-area controls are what an admin reaches for
-                    over and over while calibrating, so they stay pinned to
-                    the top of this scrolling section instead of scrolling
-                    out of reach the moment the flagged-readings list or
-                    tracker table below grows past one screen. Auto-place/
-                    template/countdown stay below, unpinned — those are
-                    occasional actions, not a running toolbar. */}
-                <div className="sticky top-0 z-10 -mx-3 lg:-mx-4 px-3 lg:px-4 py-2 space-y-2 bg-ink/95 backdrop-blur border-b border-white/10">
-                <div className="flex flex-wrap items-center gap-3 justify-between">
-                  <span className="text-[10px] text-white/40">
-                    {trackerEditMode
-                      ? "Tracker edit mode is ON — drag directly on the Match capture canvas above to place a new tracker, or click an existing outlined region to move/resize it."
-                      : "Tracker edit mode is OFF — turn this on to place or adjust tracker boxes on the Match capture canvas above."}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    {/* Explicit toggle instead of guessing "tap to play" vs.
-                        "drag to place a tracker" from the gesture itself —
-                        see the note on trackerEditMode above. Deliberately
-                        loud (filled background when on) since it silently
-                        changes what a click on the video does. */}
-                    <button
-                      type="button"
-                      onClick={() => setTrackerEditMode((v) => !v)}
-                      aria-pressed={trackerEditMode}
-                      className={`text-xs rounded px-3 py-1.5 border whitespace-nowrap ${
-                        trackerEditMode ? "bg-signal text-ink border-signal font-semibold" : "border-white/20 text-white/70 hover:bg-white/10"
-                      }`}
-                      title="When off, clicks pass through to the video instead of placing/editing tracker boxes"
-                    >
-                      {trackerEditMode ? "✏️ Tracker edit mode: ON" : "Tracker edit mode: OFF"}
-                    </button>
-                    <InlineMenuSelect
-                      value={canvasPhaseFilter}
-                      onChange={setCanvasPhaseFilter}
-                      title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
-                      options={[
-                        { value: "", label: "All phases" },
-                        ...TRACKER_PHASES.map((p) => ({ value: p, label: p.replace(/_/g, " ") })),
-                      ]}
-                    />
-                  </div>
-                </div>
-                {/* Captured area — an optional hard boundary trackers get
-                    clamped inside on save and screenshots get cropped to
-                    (see clampBoxToArea/cropVideoToEmbed). Its own toggle
-                    rather than folded into trackerEditMode above, since
-                    turning it on hijacks the same canvas drag gesture for
-                    a completely different purpose (one boundary box vs.
-                    per-tracker regions) — conflating the two would mean a
-                    drag's meaning depends on invisible state. */}
-                <div className="flex flex-wrap items-center gap-2 border border-white/10 rounded px-2.5 py-2">
-                  <span className="text-[10px] text-white/40 flex-1 min-w-[220px]">
-                    {captureAreaEditMode
-                      ? "Drag on the canvas above to draw/adjust the captured area, then Lock it in."
-                      : captureArea
-                      ? "Captured area set — every tracker save and screenshot is kept inside it (yellow outline on the canvas above)."
-                      : "No captured area set — trackers and screenshots use the whole captured frame, same as before."}
-                  </span>
-                  {!captureAreaEditMode ? (
-                    <button
-                      type="button"
-                      onClick={startEditingCaptureArea}
-                      className="text-xs rounded px-3 py-1.5 border border-yellow-400/40 text-yellow-300 hover:bg-yellow-400/10 whitespace-nowrap"
-                    >
-                      {captureArea ? "Adjust captured area" : "🖼 Set captured area"}
-                    </button>
-                  ) : (
+                {/* Single sticky toolbar — every placement action (edit
+                    mode, phase filter, captured area, templates, auto-
+                    place, AI layout, countdown override) pinned together
+                    at the top of this scrolling section, instead of the
+                    edit-mode/phase-filter/captured-area row being sticky
+                    while auto-place/templates/countdown sat in a second,
+                    non-sticky row below it that could still scroll out of
+                    reach. Templates and Captured area — each previously a
+                    whole row of their own — are now single buttons that
+                    open a small panel (InlineMenuPopover) with the same
+                    controls inside, which is what makes everything else
+                    fit in one compact row instead of wrapping across
+                    several. */}
+                <div className="sticky top-0 z-10 -mx-3 lg:-mx-4 px-3 lg:px-4 py-2 bg-ink/95 backdrop-blur border-b border-white/10">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* Explicit toggle instead of guessing "tap to play" vs.
+                      "drag to place a tracker" from the gesture itself.
+                      Deliberately loud (filled background when on) since
+                      it silently changes what a click on the video does —
+                      full explanation lives in the title tooltip now that
+                      this toolbar has more in it than room for a standing
+                      sentence of body text. */}
+                  <button
+                    type="button"
+                    onClick={() => setTrackerEditMode((v) => !v)}
+                    aria-pressed={trackerEditMode}
+                    className={`text-xs rounded px-3 py-1.5 border whitespace-nowrap ${
+                      trackerEditMode ? "bg-signal text-ink border-signal font-semibold" : "border-white/20 text-white/70 hover:bg-white/10"
+                    }`}
+                    title={
+                      trackerEditMode
+                        ? "Tracker edit mode is ON — drag directly on the Match capture canvas above to place a new tracker, or click an existing outlined region to move/resize it."
+                        : "Tracker edit mode is OFF — turn this on to place or adjust tracker boxes on the Match capture canvas above. When off, clicks pass through to the video instead."
+                    }
+                  >
+                    {trackerEditMode ? "✏️ Edit mode: ON" : "Edit mode: OFF"}
+                  </button>
+                  <InlineMenuSelect
+                    value={canvasPhaseFilter}
+                    onChange={setCanvasPhaseFilter}
+                    title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
+                    options={[
+                      { value: "", label: "All phases" },
+                      ...TRACKER_PHASES.map((p) => ({ value: p, label: p.replace(/_/g, " ") })),
+                    ]}
+                  />
+                  {/* Captured area — an optional hard boundary trackers get
+                      clamped inside on save and screenshots get cropped to
+                      (see clampBoxToArea/cropVideoToEmbed). forceOpen while
+                      captureAreaEditMode is on keeps Lock/Cancel reachable
+                      for the whole drag, which happens on the canvas above,
+                      outside this popover's own DOM. */}
+                  <InlineMenuPopover
+                    label="Captured area"
+                    icon="🖼"
+                    forceOpen={captureAreaEditMode}
+                    accentClassName={
+                      captureArea
+                        ? "border-yellow-400/50 text-yellow-300 hover:bg-yellow-400/10"
+                        : "border-white/20 text-white/70 hover:bg-white/10"
+                    }
+                  >
+                    <p className="text-[10px] text-white/50">
+                      {captureAreaEditMode
+                        ? "Drag on the canvas above to draw/adjust the captured area, then Lock it in."
+                        : captureArea
+                        ? "Set — every tracker save and screenshot is kept inside it (yellow outline on the canvas above)."
+                        : "Not set — trackers and screenshots use the whole captured frame."}
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {!captureAreaEditMode ? (
+                        <button
+                          type="button"
+                          onClick={startEditingCaptureArea}
+                          className="text-xs rounded px-3 py-1.5 border border-yellow-400/40 text-yellow-300 hover:bg-yellow-400/10 whitespace-nowrap"
+                        >
+                          {captureArea ? "Adjust" : "Set captured area"}
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={lockCaptureArea}
+                            disabled={!captureAreaDraft}
+                            className="text-xs rounded px-3 py-1.5 bg-yellow-400 text-ink font-semibold disabled:opacity-40 whitespace-nowrap"
+                          >
+                            Lock captured area
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelCaptureAreaEdit}
+                            className="text-xs rounded px-3 py-1.5 border border-white/20 text-white/70 hover:bg-white/10 whitespace-nowrap"
+                          >
+                            Cancel
+                          </button>
+                        </>
+                      )}
+                      {captureArea && !captureAreaEditMode && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (confirm("Clear the captured area? Trackers/screenshots go back to using the whole captured frame.")) clearCaptureArea();
+                          }}
+                          className="text-xs rounded px-3 py-1.5 border border-red-500/40 text-red-300 hover:bg-red-500/10 whitespace-nowrap"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </InlineMenuPopover>
+                  {captureMode === "manual" && (
                     <>
+                      {/* Saved templates — Apply/Edit/Delete an existing one,
+                          or save the current layout as a new one, all inside
+                          one panel instead of the dropdown+3 buttons+name-
+                          input+save-button that used to be their own whole
+                          toolbar row. */}
+                      <InlineMenuPopover label="Templates" icon="🗂">
+                        {templatesLoaded && trackerTemplates.length > 0 && (
+                          <div className="space-y-1.5 pb-2 border-b border-white/10">
+                            <InlineMenuSelect
+                              value={selectedTrackerTemplate}
+                              onChange={setSelectedTrackerTemplate}
+                              placeholder="Apply a saved template..."
+                              className="w-full"
+                              options={[
+                                { value: "", label: "Apply a saved template..." },
+                                ...trackerTemplates.map((t) => ({ value: t.name, label: `${t.name} (${t.regionCount})` })),
+                              ]}
+                            />
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                onClick={() => applyTrackerTemplate(selectedTrackerTemplate)}
+                                disabled={!selectedTrackerTemplate || applyingTemplate}
+                                className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                                title="Fills in whatever this template has for any field not already tracked — never touches ones that already are"
+                              >
+                                {applyingTemplate ? "Applying…" : "Apply"}
+                              </button>
+                              <button
+                                onClick={() => renameTrackerTemplate(selectedTrackerTemplate)}
+                                disabled={!selectedTrackerTemplate || renamingTemplate}
+                                title="Rename this template"
+                                className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => deleteTrackerTemplate(selectedTrackerTemplate)}
+                                disabled={!selectedTrackerTemplate || deletingTemplate}
+                                title="Delete this template — matches already using it keep their trackers, this only removes it from the list"
+                                className="text-xs border border-red-500/40 text-red-300 rounded px-2 py-1.5 hover:bg-red-500/10 disabled:opacity-40 whitespace-nowrap"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            value={newTemplateName}
+                            onChange={(e) => setNewTemplateName(e.target.value)}
+                            placeholder="Save current layout as..."
+                            className="flex-1 min-w-0 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                          />
+                          <button
+                            onClick={() => saveTrackersAsTemplate(newTemplateName)}
+                            disabled={!newTemplateName.trim() || savingTemplateAs}
+                            className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                            title="Saves every currently-calibrated region under this name, reusable on any future match"
+                          >
+                            {savingTemplateAs ? "Saving…" : "Save"}
+                          </button>
+                        </div>
+                      </InlineMenuPopover>
                       <button
-                        type="button"
-                        onClick={lockCaptureArea}
-                        disabled={!captureAreaDraft}
-                        className="text-xs rounded px-3 py-1.5 bg-yellow-400 text-ink font-semibold disabled:opacity-40 whitespace-nowrap"
+                        onClick={autoPlaceDefaultTrackers}
+                        disabled={autoPlacingTrackers}
+                        className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 whitespace-nowrap"
+                        title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
                       >
-                        Lock captured area
+                        {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place"}
                       </button>
                       <button
-                        type="button"
-                        onClick={cancelCaptureAreaEdit}
-                        className="text-xs rounded px-3 py-1.5 border border-white/20 text-white/70 hover:bg-white/10 whitespace-nowrap"
+                        onClick={suggestLayoutFromScreenshot}
+                        disabled={aiLayoutSuggesting || !captureActive}
+                        className="text-xs border border-purple-400/40 text-purple-300 rounded px-3 py-1.5 hover:bg-purple-400/10 disabled:opacity-40 whitespace-nowrap"
+                        title="Takes one screenshot of the current capture and asks a vision model to locate the standard HUD elements, then places trackers on whatever it finds — for any field not already tracked. Needs GROQ_API_KEY configured."
                       >
-                        Cancel
+                        {aiLayoutSuggesting ? "Analyzing…" : "📸 AI layout"}
                       </button>
+                      {activeTrackers.some((t) => t.category === "countdown") && (
+                        <div className="flex items-center gap-1">
+                          <input
+                            value={manualTimeInputs.countdown ?? ""}
+                            onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, countdown: e.target.value }))}
+                            placeholder="MM:SS"
+                            className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1.5 text-xs"
+                          />
+                          <button
+                            onClick={() => setManualCountdown(manualTimeInputs.countdown ?? "")}
+                            title="Set the countdown clock directly instead of waiting on OCR"
+                            className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 whitespace-nowrap"
+                          >
+                            Set countdown
+                          </button>
+                        </div>
+                      )}
                     </>
                   )}
-                  {captureArea && !captureAreaEditMode && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm("Clear the captured area? Trackers/screenshots go back to using the whole captured frame.")) clearCaptureArea();
-                      }}
-                      className="text-xs rounded px-3 py-1.5 border border-red-500/40 text-red-300 hover:bg-red-500/10 whitespace-nowrap"
-                    >
-                      Clear
-                    </button>
-                  )}
                 </div>
+                {aiLayoutStatus && <p className="text-[10px] text-white/50 pt-1.5">{aiLayoutStatus}</p>}
                 </div>
                 {/* The drag-to-calibrate canvas itself now lives up in the
                     Livestream pane, overlaid directly on the embed iframe
                     (see data-crop-container there) — this is what makes
                     region percentages mean "percent of the livestream"
                     instead of "percent of the whole captured tab". This
-                    section keeps just the edit-mode toggle/phase filter
-                    above and the tracker list/management tools below. */}
+                    section keeps just the toolbar above and the tracker
+                    list/management tools below. */}
 
                 {/* Only shown pre-draw (nothing to float a positioned panel
                     next to yet) — once draftBox exists, the floating
@@ -6602,110 +6837,6 @@ export default function LiveConsolePage() {
                     <button onClick={cancelDraftBox} className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10">
                       Cancel
                     </button>
-                  </div>
-                )}
-
-                {/* Tracker management is now entirely on the video itself
-                    (see trackerOverlay above): drag empty space to add,
-                    click any box to resize/rename/clear/remove. This
-                    strip is just the two things that don't make sense as
-                    a drag gesture — bulk-filling a starting layout, and a
-                    manual override for the countdown clock. */}
-                {captureMode === "manual" && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    {/* Saved templates first — checking whether a matching
-                        broadcast layout already exists is the natural first
-                        move before falling back to the generic auto-place
-                        guess below, not an afterthought bolted on beside it. */}
-                    {templatesLoaded && trackerTemplates.length > 0 && (
-                      <div className="flex items-center gap-1">
-                        <InlineMenuSelect
-                          value={selectedTrackerTemplate}
-                          onChange={setSelectedTrackerTemplate}
-                          placeholder="Apply a saved template..."
-                          options={[
-                            { value: "", label: "Apply a saved template..." },
-                            ...trackerTemplates.map((t) => ({ value: t.name, label: `${t.name} (${t.regionCount})` })),
-                          ]}
-                        />
-                        <button
-                          onClick={() => applyTrackerTemplate(selectedTrackerTemplate)}
-                          disabled={!selectedTrackerTemplate || applyingTemplate}
-                          className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
-                          title="Fills in whatever this template has for any field not already tracked — never touches ones that already are"
-                        >
-                          {applyingTemplate ? "Applying…" : "Apply"}
-                        </button>
-                        <button
-                          onClick={() => renameTrackerTemplate(selectedTrackerTemplate)}
-                          disabled={!selectedTrackerTemplate || renamingTemplate}
-                          title="Rename this template"
-                          className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => deleteTrackerTemplate(selectedTrackerTemplate)}
-                          disabled={!selectedTrackerTemplate || deletingTemplate}
-                          title="Delete this template — matches already using it keep their trackers, this only removes it from the list"
-                          className="text-xs border border-red-500/40 text-red-300 rounded px-2 py-1.5 hover:bg-red-500/10 disabled:opacity-40 whitespace-nowrap"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                    <button
-                      onClick={autoPlaceDefaultTrackers}
-                      disabled={autoPlacingTrackers}
-                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 whitespace-nowrap"
-                      title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
-                    >
-                      {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place default trackers"}
-                    </button>
-                    <button
-                      onClick={suggestLayoutFromScreenshot}
-                      disabled={aiLayoutSuggesting || !captureActive}
-                      className="text-xs border border-purple-400/40 text-purple-300 rounded px-3 py-1.5 hover:bg-purple-400/10 disabled:opacity-40 whitespace-nowrap"
-                      title="Takes one screenshot of the current capture and asks a vision model to locate the standard HUD elements, then places trackers on whatever it finds — for any field not already tracked. Needs GROQ_API_KEY configured."
-                    >
-                      {aiLayoutSuggesting ? "Analyzing screenshot…" : "📸 AI-suggest layout from screenshot"}
-                    </button>
-                    <div className="flex items-center gap-1">
-                      <input
-                        value={newTemplateName}
-                        onChange={(e) => setNewTemplateName(e.target.value)}
-                        placeholder="Save current layout as..."
-                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
-                      />
-                      <button
-                        onClick={() => saveTrackersAsTemplate(newTemplateName)}
-                        disabled={!newTemplateName.trim() || savingTemplateAs}
-                        className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
-                        title="Saves every currently-calibrated region under this name, reusable on any future match"
-                      >
-                        {savingTemplateAs ? "Saving…" : "Save as template"}
-                      </button>
-                    </div>
-                    {activeTrackers.some((t) => t.category === "countdown") && (
-                      <div className="flex items-center gap-1">
-                        <input
-                          value={manualTimeInputs.countdown ?? ""}
-                          onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, countdown: e.target.value }))}
-                          placeholder="MM:SS"
-                          className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1.5 text-xs"
-                        />
-                        <button
-                          onClick={() => setManualCountdown(manualTimeInputs.countdown ?? "")}
-                          title="Set the countdown clock directly instead of waiting on OCR"
-                          className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 whitespace-nowrap"
-                        >
-                          Set countdown
-                        </button>
-                      </div>
-                    )}
-                    {aiLayoutStatus && (
-                      <span className="text-[10px] text-white/50 w-full">{aiLayoutStatus}</span>
-                    )}
                   </div>
                 )}
 

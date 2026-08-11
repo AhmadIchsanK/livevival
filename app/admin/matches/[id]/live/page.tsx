@@ -448,6 +448,27 @@ export default function LiveConsolePage() {
     }
   }, [matchId, selectedGameNumber]);
 
+  // Chronological-error fix: selectedGameNumber is deliberately "sticky"
+  // (see its own comment above) so browsing an older game survives
+  // realtime reloads — but that also meant it silently stayed pinned to
+  // the just-finished game after declareGameWinner advances
+  // match.current_game_number server-side. An admin who clicked "Declare
+  // Game Winner" then "Start draft" from the phase stepper was drafting
+  // back into Game 1 instead of Game 2, since `game` never followed the
+  // server's own current_game_number forward. Only auto-follows when the
+  // admin was actually looking at the live game when it advanced (their
+  // selection equals the *previous* current_game_number) — deliberately
+  // reviewing an older game is untouched by this.
+  const prevCurrentGameNumberRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!match) return;
+    const prev = prevCurrentGameNumberRef.current;
+    if (prev !== null && prev !== match.current_game_number && selectedGameNumber === prev) {
+      setSelectedGameNumber(match.current_game_number);
+    }
+    prevCurrentGameNumberRef.current = match.current_game_number;
+  }, [match?.current_game_number, selectedGameNumber, match]);
+
   useEffect(() => {
     loadAll();
   }, [loadAll]);
@@ -3657,6 +3678,15 @@ export default function LiveConsolePage() {
       .update({ state: "MATCH_NOT_STARTED", status: "scheduled", current_game_number: 1, series_winner_team_id: null })
       .eq("id", match.id);
     if (error) setError(error.message);
+    // Every games row for this match was just deleted and current_game_number
+    // reset to 1 — but selectedGameNumber is local state Reset match never
+    // touched. Left stale (e.g. 3, if the admin was mid-series when they
+    // reset), the next loadAll() would target game_number 3 against a
+    // match whose current_game_number is now 1, find no row (everything
+    // was just deleted), and silently upsert a *new* "draft" Game 3 row
+    // instead of following the fresh Game 1 — the same class of bug as the
+    // declareGameWinner staleness fix above, just via a different trigger.
+    setSelectedGameNumber(null);
     loadAll();
   }
 
@@ -5848,9 +5878,18 @@ export default function LiveConsolePage() {
               ))}
             </select>
             {game.game_number !== match.current_game_number && (
-              <span className="lv-badge bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                Not the live game — phase controls below still act on the live match state
-              </span>
+              <>
+                <span className="lv-badge bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  Not the live game — phase controls below still act on the live match state
+                </span>
+                <button
+                  onClick={() => setSelectedGameNumber(match.current_game_number)}
+                  className="text-xs border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 font-semibold"
+                  title="This normally follows automatically when a game finishes and the next one starts — use this if it doesn't."
+                >
+                  ↦ Jump to live (Game {match.current_game_number})
+                </button>
+              </>
             )}
           </div>
         );

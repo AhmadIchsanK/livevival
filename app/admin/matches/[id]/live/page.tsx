@@ -2067,6 +2067,12 @@ export default function LiveConsolePage() {
   }
 
   const DRAFT_PHASES = ["DRAFT_STARTED", "DRAFT_COMPLETE"];
+  // Roster is fixed once the draft starts — the players set before then are
+  // the final list for this game. "+ Add player" on the Live scoreboard
+  // (for a substitute the draft didn't already pick up) only reopens
+  // before the draft begins, or again once the game's over (or the match
+  // gets reset back to MATCH_NOT_STARTED).
+  const ROSTER_ADD_PHASES = new Set(["MATCH_NOT_STARTED", "GAME_FINISHED", "SERIES_FINISHED"]);
 
   // ── Draft: manual ban/pick simulation ─────────────────────────────────
   // Replaces OCR/AI-vision draft detection entirely. Bans show no text on
@@ -4900,6 +4906,24 @@ export default function LiveConsolePage() {
   const teamBKillsTotal =
     game?.team_b_kills_override ??
     stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  // Live scoreboard's own "Team kills" readout — strictly the sum of that
+  // team's players' kills (no override), cross-checked against the enemy's
+  // summed deaths: every kill is someone else's death, so the two must
+  // match exactly. Only true once every player's K/D/A is actually filled
+  // in (a still-TBD row leaves both sides under-counted, which would also
+  // "match" at 0 — teamStatsComplete guards against reporting that as
+  // valid). Never rendered when this doesn't hold — a mismatch means a
+  // KDA entry is wrong or still missing, not a number to show and trust.
+  const teamADeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
+  const teamBDeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
+  const teamStatsComplete =
+    teamAPlayers.length > 0 &&
+    teamBPlayers.length > 0 &&
+    teamAPlayers.every((p) => statForPlayer(p)?.kills != null && statForPlayer(p)?.deaths != null) &&
+    teamBPlayers.every((p) => statForPlayer(p)?.kills != null && statForPlayer(p)?.deaths != null);
+  const computedTeamAKills = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  const computedTeamBKills = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  const teamKillsValid = teamStatsComplete && computedTeamAKills === teamBDeathsTotal && computedTeamBKills === teamADeathsTotal;
   async function addScoreboardPlayer(playerId: string) {
     await ensureStatRow(playerId);
     loadAll();
@@ -5161,6 +5185,121 @@ export default function LiveConsolePage() {
             width: "100%",
           }}
         >
+          {/* Declare Game Winner + game/map selector — moved to the very
+              top of the monitor pane, above the livestream itself, so the
+              controls an admin reaches for constantly (who won, which
+              game/map is being edited) are visible without scrolling past
+              the video. Moved from the action deck below. */}
+          <div className="p-3 lg:p-4 pb-0 shrink-0 space-y-3">
+            {!DRAFT_PHASES.includes(match.state) && game.status === "live" && !gameFinished && (
+              <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
+                <h3 className="font-semibold text-sm">Declare Game Winner</h3>
+                <div className="flex gap-2 flex-wrap">
+                  {[match.team_a, match.team_b].map((team) =>
+                    team ? (
+                      <button
+                        key={team.id}
+                        onClick={() => declareGameWinner(team.id)}
+                        className={`text-xs px-3 py-1.5 rounded font-semibold transition-colors ${
+                          game.winner_team_id === team.id
+                            ? "bg-signal text-white"
+                            : "border border-white/20 hover:bg-white/10"
+                        }`}
+                      >
+                        🏆 {team.name}
+                      </button>
+                    ) : null
+                  )}
+                </div>
+              </section>
+            )}
+            {(() => {
+              const MAX_GAMES_FOR_FORMAT: Record<string, number> = { BO1: 1, BO2: 2, BO3: 3, BO5: 5, BO7: 7 };
+              const maxGames = MAX_GAMES_FOR_FORMAT[match.format ?? "BO3"] ?? 3;
+              const knownNumbers = new Set([...pastGames.map((g) => g.game_number), game.game_number]);
+              const allNumbers = Array.from({ length: Math.max(maxGames, ...knownNumbers) }, (_, i) => i + 1);
+              const gameLabel = (n: number) => {
+                if (n === match.current_game_number) return `Game ${n} — Live`;
+                const found = pastGames.find((g) => g.game_number === n);
+                if (found?.winner_team_id) {
+                  const winnerName = found.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
+                  return `Game ${n} — Finished (${winnerName})`;
+                }
+                if (found) return `Game ${n} — Finished`;
+                if (n === game.game_number) return `Game ${n} — Editing`;
+                return `Game ${n} — Upcoming`;
+              };
+              return (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="text-xs text-white/50">Viewing / editing</label>
+                  <select
+                    value={game.game_number}
+                    onChange={(e) => setSelectedGameNumber(Number(e.target.value))}
+                    className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
+                  >
+                    {allNumbers.map((n) => (
+                      <option key={n} value={n}>
+                        {gameLabel(n)}
+                      </option>
+                    ))}
+                  </select>
+                  {game.game_number !== match.current_game_number && (
+                    <>
+                      <span className="lv-badge bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                        Not the live game — phase controls below still act on the live match state
+                      </span>
+                      <button
+                        onClick={() => setSelectedGameNumber(match.current_game_number)}
+                        className="text-xs border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 font-semibold"
+                        title="This normally follows automatically when a game finishes and the next one starts — use this if it doesn't."
+                      >
+                        ↦ Jump to live (Game {match.current_game_number})
+                      </button>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+            <section className="flex items-center gap-3 flex-wrap">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-white/50">Map</label>
+                <select
+                  value={game.map ?? ""}
+                  onChange={(e) => setGameMap(e.target.value)}
+                  disabled={!isEditable}
+                  className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+                >
+                  <option value="">Not set</option>
+                  {MAPS.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </div>
+              {game.status === "finished" && (
+                <div className="flex items-center gap-2">
+                  <span className="lv-badge bg-emerald-500/15 text-emerald-400">
+                    Game {game.game_number} winner: {game.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
+                  </span>
+                  {isEditable && match.team_a && match.team_b && (
+                    <span className="flex gap-1">
+                      {[match.team_a, match.team_b].map((t) =>
+                        t.id === game.winner_team_id ? null : (
+                          <button
+                            key={t.id}
+                            onClick={() => correctGameWinner(game.id, t.id)}
+                            className="text-xs text-white/30 hover:text-signal"
+                            title={`Correct: ${t.name} actually won Game ${game.game_number}`}
+                          >
+                            → {t.name}
+                          </button>
+                        )
+                      )}
+                    </span>
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
           {/* Livestream embed — deliberately NOT part of the scrollable
               area below, and no allowFullScreen. This is now also the
               actual OCR capture source: local capture shares THIS admin
@@ -5690,7 +5829,7 @@ export default function LiveConsolePage() {
             same reasoning as the monitor pane above — no shared row to
             stretch either one to match the other's height. */}
         <div
-          className="flex flex-col overflow-y-auto rounded-lg border border-white/10 w-full max-w-full lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
+          className="flex flex-col rounded-lg border border-white/10 w-full max-w-full"
           style={{ width: "100%" }}
         >
           <div className="space-y-6 p-3 lg:p-4">
@@ -5708,6 +5847,92 @@ export default function LiveConsolePage() {
                 }}
               >
                 ⏸ Technical pause — clock frozen, capture halted. Resume with the phase stepper above once play restarts.
+              </div>
+            )}
+
+            {/* Public clock source — moved above the Moment Timeline so it's
+                the first thing an admin sees in this column; everything
+                below fits without its own scroll, only the Moment Timeline
+                (right below) scrolls internally. */}
+            {match.update_source === "local_ocr" && (
+              <div className="space-y-2">
+                <p className="text-xs text-white/50">
+                  Current minute mark (used for every log action below): <span className="font-bold text-white text-sm tabular-nums">{minute}&apos;</span>
+                  {" "}— follows whichever clock source is selected, no manual entry needed.
+                </p>
+                <label className="text-xs text-white/50 block pt-2">Public clock source</label>
+                <div className="flex gap-1">
+                  {(["ocr", "manual"] as const).map((src) => (
+                    <button
+                      key={src}
+                      onClick={() => setClockSource(src)}
+                      className={`text-[10px] px-2 py-1 rounded border ${
+                        game.clock_source === src ? "border-signal text-signal" : "border-white/10 text-white/50"
+                      }`}
+                    >
+                      {src === "ocr" ? "OCR clock" : "Manual stopwatch"}
+                    </button>
+                  ))}
+                </div>
+                {/* Only one of these two blocks at a time — previously both
+                    rendered together regardless of which source was selected,
+                    so pressing "Start" here always ran the manual stopwatch
+                    even with "OCR clock" selected above, which read as "OCR
+                    shows manual seconds instead of the real time." */}
+                {game.clock_source === "manual" ? (
+                  <div className="flex items-center gap-2 pt-1">
+                    <span className="text-lg font-bold tabular-nums w-16">
+                      {String(Math.floor(manualElapsedSeconds(game) / 60)).padStart(2, "0")}:
+                      {String(manualElapsedSeconds(game) % 60).padStart(2, "0")}
+                    </span>
+                    {game.manual_time_running ? (
+                      <button onClick={pauseManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
+                        ⏸ Pause
+                      </button>
+                    ) : (
+                      <button onClick={startManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
+                        ▶ Start
+                      </button>
+                    )}
+                    <button onClick={() => adjustManualClock(-60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                      −1m
+                    </button>
+                    <button onClick={() => adjustManualClock(60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                      +1m
+                    </button>
+                    <input
+                      type="text"
+                      placeholder="MM:SS"
+                      title="Set the clock directly, e.g. 12:30"
+                      className="w-16 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                      onBlur={(e) => {
+                        if (e.target.value === "") return;
+                        const m = e.target.value.trim().match(/^(\d{1,3}):(\d{2})$/);
+                        if (m) setManualClockSeconds(Number(m[1]) * 60 + Number(m[2]));
+                        e.target.value = "";
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 pt-1">
+                    <span className="text-lg font-bold tabular-nums w-16">
+                      {game.current_time_seconds != null
+                        ? `${String(Math.floor(game.current_time_seconds / 60)).padStart(2, "0")}:${String(game.current_time_seconds % 60).padStart(2, "0")}`
+                        : "—:—"}
+                    </span>
+                    <span className="text-[10px] text-white/40">
+                      {readings.game_timer
+                        ? `Last OCR read: "${readings.game_timer}"`
+                        : "No OCR read yet — calibrate the Game timer region below and start capture."}
+                    </span>
+                  </div>
+                )}
+                <p className="text-[10px] text-white/40">
+                  {game.clock_source === "manual"
+                    ? "Manual stopwatch — a fallback for when OCR can't read the on-screen timer."
+                    : "OCR clock — reads the Game timer region below every tick while capture is running."}
+                  {" "}Whichever source is selected above is what the public page shows.
+                </p>
               </div>
             )}
 
@@ -5747,7 +5972,10 @@ export default function LiveConsolePage() {
                 )}
               </div>
               <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
-                {[...keyMoments].reverse().map((km) => {
+                {/* Ascending by minute_mark (query order) — newest moment at
+                    the bottom, matching the public match page instead of a
+                    reversed admin-only order. */}
+                {keyMoments.map((km) => {
                   const player = players.find((p) => p.id === km.player_id);
                   const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
                   // Pick/ban moments carry the hero name only inside the
@@ -5833,110 +6061,295 @@ export default function LiveConsolePage() {
               </div>
             </section>
 
-            {/* Everything a live game needs constantly — declare the
-                winner, log an objective, log a moment — sits at the very
-                top of this column, ahead of the draft board and the rest
-                of the game-data sections below. Objectives' +/- counters
-                and the moment-template logger are Hot (local_ocr) match
-                features; a Normal match's objectives/moments come from the
-                Liquipedia sync instead, so it only gets the read-only
-                objectives list. */}
+            {/* Declare Game Winner now lives at the top of the monitor
+                pane (left column), above the livestream — see there.
+                Everything else a live game needs constantly — log an
+                objective, log a moment — still sits at the very top of this
+                column, ahead of the draft board and the rest of the
+                game-data sections below. Objectives' +/- counters and the
+                moment-template logger are Hot (local_ocr) match features; a
+                Normal match's objectives/moments come from the Liquipedia
+                sync instead, so it only gets the read-only objectives
+                list. */}
             {!DRAFT_PHASES.includes(match.state) && (
               <>
-                {/* Declare Game Winner */}
-                {game.status === "live" && !gameFinished && (
-                  <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
-                    <h3 className="font-semibold text-sm">Declare Game Winner</h3>
-                    <div className="flex gap-2 flex-wrap">
-                      {[match.team_a, match.team_b].map((team) =>
-                        team ? (
-                          <button
-                            key={team.id}
-                            onClick={() => declareGameWinner(team.id)}
-                            className={`text-xs px-3 py-1.5 rounded font-semibold transition-colors ${
-                              game.winner_team_id === team.id
-                                ? "bg-signal text-white"
-                                : "border border-white/20 hover:bg-white/10"
-                            }`}
-                          >
-                            🏆 {team.name}
-                          </button>
-                        ) : null
-                      )}
-                    </div>
-                  </section>
-                )}
-
-                {/* Objectives — Hot matches get the tap-to-log +/- counters
-                    (same write path/state as before, just relocated here);
-                    a Normal match's objectives come from Liquipedia, so it
-                    only gets this read-only list. */}
+                {/* Objectives — simplified to a single tap-to-log counter
+                    per type (no separate decrement button or direct-number
+                    input; a misclick is rare enough that it's not worth the
+                    width) — freeing up room for Live scoreboard, moved in
+                    here alongside it so both sit in the same row, right
+                    under the moment list. */}
                 {match.update_source === "local_ocr" ? (
-                  <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-sm">Objectives</h3>
-                      <button
-                        onClick={() =>
-                          postToTelegram(buildObjectivesMessage(), { entityType: "match", entityId: match.id, notificationType: "objectives_share" })
-                        }
-                        className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-                      >
-                        📢 Share to Telegram
-                      </button>
-                    </div>
-                    <div className="flex flex-wrap gap-6 sm:gap-8">
-                      {[match.team_a, match.team_b].map((team, idx) =>
-                        team ? (
-                          <div key={team.id} className="space-y-1.5">
-                            <p className="text-xs text-white/50">{team.name}</p>
-                            <div className="flex flex-wrap gap-2 sm:gap-4">
-                              {OBJECTIVE_TYPES.map((type) => (
-                                <div key={type} className="flex items-center gap-1.5">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                    <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-semibold text-sm">Objectives</h3>
+                        <button
+                          onClick={() =>
+                            postToTelegram(buildObjectivesMessage(), { entityType: "match", entityId: match.id, notificationType: "objectives_share" })
+                          }
+                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                        >
+                          📢 Share
+                        </button>
+                      </div>
+                      <div className="space-y-2">
+                        {[match.team_a, match.team_b].map((team, idx) =>
+                          team ? (
+                            <div key={team.id} className="space-y-1">
+                              <p className="text-xs text-white/50">{team.name}</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {OBJECTIVE_TYPES.map((type) => (
                                   <button
+                                    key={type}
                                     onClick={() => incrementObjective(team.id, type)}
+                                    onContextMenu={(e) => {
+                                      e.preventDefault();
+                                      decrementObjective(team.id, type);
+                                    }}
                                     disabled={!objectivesEditable}
-                                    title={`${team.name} takes a ${type}`}
-                                    className="text-xs border border-white/10 rounded px-2.5 py-1.5 sm:px-2 sm:py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
+                                    title={`${team.name} takes a ${type} — right-click to undo`}
+                                    className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
                                   >
                                     <span>{OBJECTIVE_ICONS[type]}</span>
                                     <span className="capitalize">{type}</span>
                                     <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
                                   </button>
-                                  <button
-                                    onClick={() => decrementObjective(team.id, type)}
-                                    disabled={!objectivesEditable}
-                                    title="Undo last"
-                                    className="w-7 h-7 sm:w-5 sm:h-5 flex items-center justify-center text-xs border border-white/10 rounded hover:bg-white/10 disabled:opacity-40"
-                                  >
-                                    −
-                                  </button>
-                                  {/* Direct correction — the +/-/click
-                                      buttons only move one at a time,
-                                      fine for logging live but slow to fix
-                                      a count that's drifted. */}
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    disabled={!objectivesEditable}
-                                    placeholder={String(objectiveCount(team.id, type))}
-                                    title={`Set ${team.name}'s ${type} count directly`}
-                                    onBlur={(e) => {
-                                      if (e.target.value === "") return;
-                                      setObjectiveCount(team.id, type, Number(e.target.value));
-                                      e.target.value = "";
-                                    }}
-                                    className="w-10 bg-white/10 border border-white/10 rounded px-1 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
-                                  />
-                                </div>
-                              ))}
+                                ))}
+                              </div>
                             </div>
-                          </div>
+                          ) : (
+                            <span key={idx} />
+                          )
+                        )}
+                      </div>
+                    </section>
+
+                    {/* Live scoreboard — moved here from further down so it
+                        sits in the same row as Objectives, right under the
+                        moment list. Team kills is strictly the sum of that
+                        team's players' kills (see teamKillsValid above) —
+                        it must equal the enemy's summed deaths or it isn't
+                        shown at all, never a number that doesn't reconcile
+                        with the KDA rows below it. */}
+                    <section className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h2 className="font-bold">Live scoreboard</h2>
+                        <div className="flex items-center gap-2">
+                          {gameFinished && (
+                            <button
+                              onClick={() => setEditingFinishedGame((v) => !v)}
+                              title="This game is finished — result data (scoreboard, objectives, net worth, hero picks/bans) is read-only until unlocked"
+                              className={`text-xs rounded px-2 py-1 border ${
+                                editingFinishedGame ? "border-signal/50 text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
+                              }`}
+                            >
+                              {editingFinishedGame ? "🔓 Unlock" : "🔒 Locked"}
+                            </button>
+                          )}
+                          <button
+                            onClick={() =>
+                              postToTelegram(buildLiveScoreboardMessage(), {
+                                entityType: "match",
+                                entityId: match.id,
+                                notificationType: "scoreboard_share",
+                              })
+                            }
+                            className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
+                          >
+                            📢 Share
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-4 text-xs">
+                        <span className="text-white/50">Team kills:</span>
+                        {teamKillsValid ? (
+                          <span className="font-bold tabular-nums">
+                            {match.team_a?.name} {computedTeamAKills} – {computedTeamBKills} {match.team_b?.name}
+                          </span>
                         ) : (
-                          <span key={idx} />
-                        )
-                      )}
-                    </div>
-                  </section>
+                          <span className="text-amber-300" title="Team kills must equal the enemy's summed deaths — fix the mismatched K/D/A row(s) below before this shows">
+                            Not shown — kills/deaths don&apos;t reconcile yet
+                          </span>
+                        )}
+                      </div>
+                      {/* Each player row is ~10 fixed-width fields wide (photo, name,
+                          hero picker, K/D/A, action icons) — comfortably fits a desktop
+                          window but not a phone screen, and there's no good way to stack
+                          a K/D/A entry row without turning every field into its own
+                          labeled block. Rather than a wholesale redesign, this scrolls
+                          horizontally as one unit (same pattern as the tracker readings
+                          table above) — min-w-max on every row keeps columns aligned
+                          with the header while scrolling. Zero effect at desktop widths,
+                          where the row already fits and overflow-x-auto never engages. */}
+                      {[teamAPlayers, teamBPlayers].map((teamPlayers, idx) => (
+                        <div key={idx} className="space-y-1 overflow-x-auto">
+                          <p className="text-xs text-white/50">{idx === 0 ? match.team_a?.name : match.team_b?.name}</p>
+                          <div className="flex gap-2 items-center text-[10px] text-white/40 pl-8 min-w-max">
+                            <span className="w-24">Player</span>
+                            <span className="w-20">Role</span>
+                            <span className="w-24">Hero</span>
+                            <span className="w-[122px]">K/D/A</span>
+                          </div>
+                          {teamPlayers.map((p) => {
+                            const stat = statForPlayer(p);
+                            const isEditingRoster = editingScoreboardPlayerId === p.id;
+                            return (
+                              <div key={p.id} className="flex gap-2 items-center text-sm min-w-max">
+                                {p.photo_url ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={proxiedImageUrl(p.photo_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10 shrink-0" />
+                                ) : (
+                                  <span className="w-6 h-6 rounded-full bg-white/10 shrink-0" />
+                                )}
+                                {isEditingRoster ? (
+                                  <input
+                                    value={editingScoreboardIgn}
+                                    onChange={(e) => setEditingScoreboardIgn(e.target.value)}
+                                    className="w-24 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
+                                    autoFocus
+                                  />
+                                ) : (
+                                  <span className="w-24 truncate">{p.ign}</span>
+                                )}
+                                <span className="w-20 truncate text-white/40 uppercase text-[10px] tracking-wide">{p.role ?? "—"}</span>
+                                {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
+                                  <HeroIcon url={heroes.find((h) => h.name === stat?.hero_name)!.icon_url} name={stat?.hero_name} size="xs" className="-mr-1" />
+                                )}
+                                {/* Once this player has a locked-in pick (real or
+                                    positionally matched — see effectivePickFor), the
+                                    Draft board above is the single place to correct
+                                    their hero — that edit already propagates here via
+                                    updateStat (see correctPickBanHero/assignHeroToPlayer),
+                                    so this dropdown used to be a second, independent way
+                                    to set the exact same field: pick a wrong hero here and
+                                    it silently disagreed with the Draft board's own record
+                                    until the next full reload. Read-only display instead.
+                                    Falls back to the dropdown only when there's genuinely
+                                    no pick to read from (Normal/Liquipedia matches with no
+                                    local draft tracking, or a substitute added straight to
+                                    the scoreboard) — that's still the only place to set
+                                    it. */}
+                                {effectivePickFor(p.id, idx === 0 ? match.team_a!.id : match.team_b!.id, teamPlayers) ? (
+                                  <span className="w-24 truncate text-xs" title="Set from the Draft board above — correct it there">
+                                    {stat?.hero_name || "—"}
+                                  </span>
+                                ) : (
+                                  <select
+                                    value={stat?.hero_name ?? ""}
+                                    onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
+                                    disabled={!scoreboardEditable}
+                                    className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
+                                  >
+                                    <option value="">Hero</option>
+                                    {heroes.map((h) => (
+                                      <option key={h.id} value={h.name}>{h.name}</option>
+                                    ))}
+                                  </select>
+                                )}
+                                {/* K/D/A as one visually-grouped "0/0/0" unit (slash
+                                    separators between the three fields) instead of three
+                                    unlabeled inputs floating side by side — each stays
+                                    independently editable, just read together like the
+                                    standard K/D/A notation everywhere else on the site. */}
+                                <div className="flex items-center gap-0.5">
+                                  {(["kills", "deaths", "assists"] as const).map((field, i) => (
+                                    <span key={field} className="flex items-center gap-0.5">
+                                      {i > 0 && <span className="text-white/30">/</span>}
+                                      <input
+                                        type="number"
+                                        defaultValue={stat?.[field] ?? ""}
+                                        placeholder="TBD"
+                                        onBlur={(e) => {
+                                          if (e.target.value === "") return; // leave TBD, don't coerce a cleared field to 0
+                                          updateStat(p.id, field, Number(e.target.value));
+                                        }}
+                                        disabled={!scoreboardEditable}
+                                        className="w-12 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
+                                      />
+                                    </span>
+                                  ))}
+                                </div>
+                                <div className="flex gap-1.5 ml-auto">
+                                  {isEditingRoster ? (
+                                    <>
+                                      <button onClick={() => saveScoreboardPlayerEdit(p.id)} className="text-white/50 hover:text-emerald-400 text-xs">✓</button>
+                                      <button onClick={() => setEditingScoreboardPlayerId(null)} className="text-white/30 hover:text-red-400 text-xs">✕</button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        onClick={() => {
+                                          setEditingScoreboardPlayerId(p.id);
+                                          setEditingScoreboardIgn(p.ign);
+                                        }}
+                                        title="Edit player"
+                                        className="text-white/30 hover:text-white/70 text-xs"
+                                      >
+                                        ✎
+                                      </button>
+                                      <button
+                                        onClick={() => deleteScoreboardPlayer(p.id, p.ign)}
+                                        title="Delete player"
+                                        className="text-white/30 hover:text-red-400 text-xs"
+                                      >
+                                        🗑
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {/* For a substitute the scoreboard didn't already pick up
+                              automatically (no hero pick logged for them this game) —
+                              adding them here creates their player_stats row, which
+                              activeFive() above now also treats as "in the game". Only
+                              reachable before the draft locks the roster in, or again
+                              once the game's finished (or the match is reset) — the
+                              roster set before draft start is the final list while a
+                              game is actually in progress. */}
+                          {isEditable && ROSTER_ADD_PHASES.has(match.state) && (
+                            <div className="flex items-center gap-2 pl-8 pt-1">
+                              {(() => {
+                                const teamId = idx === 0 ? match.team_a?.id : match.team_b?.id;
+                                if (!teamId) return null;
+                                const shownIds = new Set(teamPlayers.map((p) => p.id));
+                                const available = rosterFor(teamId).filter((p) => !shownIds.has(p.id));
+                                if (available.length === 0) return null;
+                                return (
+                                  <>
+                                    <select
+                                      value={addPlayerSelect[teamId] ?? ""}
+                                      onChange={(e) => setAddPlayerSelect((prev) => ({ ...prev, [teamId]: e.target.value }))}
+                                      className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                                    >
+                                      <option value="">Add player...</option>
+                                      {available.map((p) => (
+                                        <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
+                                      ))}
+                                    </select>
+                                    <button
+                                      onClick={() => {
+                                        const playerId = addPlayerSelect[teamId];
+                                        if (!playerId) return;
+                                        addScoreboardPlayer(playerId);
+                                        setAddPlayerSelect((prev) => ({ ...prev, [teamId]: "" }));
+                                      }}
+                                      disabled={!addPlayerSelect[teamId]}
+                                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+                                    >
+                                      + Add
+                                    </button>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </section>
+                  </div>
                 ) : (
                   <section className="space-y-2">
                     <h3 className="font-semibold text-sm">Objectives</h3>
@@ -6552,65 +6965,10 @@ export default function LiveConsolePage() {
         </div>
       )}
 
-      {/* Game selector, map, and past/finished results — grouped into one
-          visual block. Declare Game Winner itself now lives only at the top
-          of this column (see the "Declare Game Winner" section above this
-          one), not duplicated down here anymore — this block used to have
-          its own second copy of the same declare-winner buttons. */}
+      {/* Game selector and Map are now at the top of the monitor pane
+          (left column), next to Declare Game Winner — see there. Only the
+          game history block stays here. */}
       <div className="border border-white/10 rounded-lg p-3 space-y-4">
-      {/* Game selector — everything below (moment list, scoreboard, hero
-          picks/bans, net worth, screenshots) operates on whichever game is
-          selected here, not necessarily the live one. Lets an admin fix up
-          a finished game's data, or stage picks for a game that hasn't
-          started yet, without that game ever having been "current". */}
-      {game && (() => {
-        const MAX_GAMES_FOR_FORMAT: Record<string, number> = { BO1: 1, BO2: 2, BO3: 3, BO5: 5, BO7: 7 };
-        const maxGames = MAX_GAMES_FOR_FORMAT[match.format ?? "BO3"] ?? 3;
-        const knownNumbers = new Set([...pastGames.map((g) => g.game_number), game.game_number]);
-        const allNumbers = Array.from({ length: Math.max(maxGames, ...knownNumbers) }, (_, i) => i + 1);
-        const gameLabel = (n: number) => {
-          if (n === match.current_game_number) return `Game ${n} — Live`;
-          const found = pastGames.find((g) => g.game_number === n);
-          if (found?.winner_team_id) {
-            const winnerName = found.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
-            return `Game ${n} — Finished (${winnerName})`;
-          }
-          if (found) return `Game ${n} — Finished`;
-          if (n === game.game_number) return `Game ${n} — Editing`;
-          return `Game ${n} — Upcoming`;
-        };
-        return (
-          <div className="flex items-center gap-2 flex-wrap">
-            <label className="text-xs text-white/50">Viewing / editing</label>
-            <select
-              value={game.game_number}
-              onChange={(e) => setSelectedGameNumber(Number(e.target.value))}
-              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
-            >
-              {allNumbers.map((n) => (
-                <option key={n} value={n}>
-                  {gameLabel(n)}
-                </option>
-              ))}
-            </select>
-            {game.game_number !== match.current_game_number && (
-              <>
-                <span className="lv-badge bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                  Not the live game — phase controls below still act on the live match state
-                </span>
-                <button
-                  onClick={() => setSelectedGameNumber(match.current_game_number)}
-                  className="text-xs border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 font-semibold"
-                  title="This normally follows automatically when a game finishes and the next one starts — use this if it doesn't."
-                >
-                  ↦ Jump to live (Game {match.current_game_number})
-                </button>
-              </>
-            )}
-          </div>
-        );
-      })()}
-
       {/* Game history — the per-game results that previously showed nowhere in this console */}
       {pastGames.length > 0 && (
         <section className="space-y-2">
@@ -6646,140 +7004,8 @@ export default function LiveConsolePage() {
         </section>
       )}
 
-      {/* This game: map + result */}
-      <section className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
-          <label className="text-xs text-white/50">Map</label>
-          <select
-            value={game.map ?? ""}
-            onChange={(e) => setGameMap(e.target.value)}
-            disabled={!isEditable}
-            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
-          >
-            <option value="">Not set</option>
-            {MAPS.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-        </div>
-        {game.status === "finished" && (
-          <div className="flex items-center gap-2">
-            <span className="lv-badge bg-emerald-500/15 text-emerald-400">
-              Game {game.game_number} winner: {game.winner_team_id === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
-            </span>
-            {/* Not hard-locked after finished — a wrong call can still be
-                corrected via the same direct-update path as past games. */}
-            {isEditable && match.team_a && match.team_b && (
-              <span className="flex gap-1">
-                {[match.team_a, match.team_b].map((t) =>
-                  t.id === game.winner_team_id ? null : (
-                    <button
-                      key={t.id}
-                      onClick={() => correctGameWinner(game.id, t.id)}
-                      className="text-xs text-white/30 hover:text-signal"
-                      title={`Correct: ${t.name} actually won Game ${game.game_number}`}
-                    >
-                      → {t.name}
-                    </button>
-                  )
-                )}
-              </span>
-            )}
-          </div>
-        )}
-      </section>
-
-      {/* grid-cols-2 used to apply unconditionally for a Hot match, squeezing
-          the stream preview and clock controls into two ~180px columns on a
-          phone. Stacked below md (768px, unchanged from desktop's real
-          window width) fixes that; nothing changes at md and up. */}
-      {/* Stream embed moved to the bottom of this panel (was first) — the
-          site owner called it out as distracting sitting where the admin's
-          eye lands first; the OCR clock controls are what actually needs
-          glancing at repeatedly during a broadcast. */}
-      <div className={`grid gap-6 ${match.update_source === "local_ocr" ? "grid-cols-1 md:grid-cols-2" : "grid-cols-1"}`}>
-        {match.update_source === "local_ocr" && (
-          <div className="space-y-2">
-            <p className="text-xs text-white/50">
-              Current minute mark (used for every log action below): <span className="font-bold text-white text-sm tabular-nums">{minute}&apos;</span>
-              {" "}— follows whichever clock source is selected, no manual entry needed.
-            </p>
-            <label className="text-xs text-white/50 block pt-2">Public clock source</label>
-            <div className="flex gap-1">
-              {(["ocr", "manual"] as const).map((src) => (
-                <button
-                  key={src}
-                  onClick={() => setClockSource(src)}
-                  className={`text-[10px] px-2 py-1 rounded border ${
-                    game.clock_source === src ? "border-signal text-signal" : "border-white/10 text-white/50"
-                  }`}
-                >
-                  {src === "ocr" ? "OCR clock" : "Manual stopwatch"}
-                </button>
-              ))}
-            </div>
-            {/* Only one of these two blocks at a time — previously both
-                rendered together regardless of which source was selected,
-                so pressing "Start" here always ran the manual stopwatch
-                even with "OCR clock" selected above, which read as "OCR
-                shows manual seconds instead of the real time." */}
-            {game.clock_source === "manual" ? (
-              <div className="flex items-center gap-2 pt-1">
-                <span className="text-lg font-bold tabular-nums w-16">
-                  {String(Math.floor(manualElapsedSeconds(game) / 60)).padStart(2, "0")}:
-                  {String(manualElapsedSeconds(game) % 60).padStart(2, "0")}
-                </span>
-                {game.manual_time_running ? (
-                  <button onClick={pauseManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
-                    ⏸ Pause
-                  </button>
-                ) : (
-                  <button onClick={startManualClock} className="text-xs border border-white/10 rounded px-2 py-1.5 hover:bg-white/10">
-                    ▶ Start
-                  </button>
-                )}
-                <button onClick={() => adjustManualClock(-60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
-                  −1m
-                </button>
-                <button onClick={() => adjustManualClock(60)} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
-                  +1m
-                </button>
-                <input
-                  type="text"
-                  placeholder="MM:SS"
-                  title="Set the clock directly, e.g. 12:30"
-                  className="w-16 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                  onBlur={(e) => {
-                    if (e.target.value === "") return;
-                    const m = e.target.value.trim().match(/^(\d{1,3}):(\d{2})$/);
-                    if (m) setManualClockSeconds(Number(m[1]) * 60 + Number(m[2]));
-                    e.target.value = "";
-                  }}
-                />
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 pt-1">
-                <span className="text-lg font-bold tabular-nums w-16">
-                  {game.current_time_seconds != null
-                    ? `${String(Math.floor(game.current_time_seconds / 60)).padStart(2, "0")}:${String(game.current_time_seconds % 60).padStart(2, "0")}`
-                    : "—:—"}
-                </span>
-                <span className="text-[10px] text-white/40">
-                  {readings.game_timer
-                    ? `Last OCR read: "${readings.game_timer}"`
-                    : "No OCR read yet — calibrate the Game timer region below and start capture."}
-                </span>
-              </div>
-            )}
-            <p className="text-[10px] text-white/40">
-              {game.clock_source === "manual"
-                ? "Manual stopwatch — a fallback for when OCR can't read the on-screen timer."
-                : "OCR clock — reads the Game timer region below every tick while capture is running."}
-              {" "}Whichever source is selected above is what the public page shows.
-            </p>
-          </div>
-        )}
-      </div>
+      {/* Public clock source moved to the top of this column, above the
+          Moment Timeline — see there. */}
 
       {/* Game screenshots — the only thing still living down here from what
           used to be a longer local_ocr-only block; Moment list and
@@ -6883,212 +7109,8 @@ export default function LiveConsolePage() {
         </div>
       </section>
 
-      {/* Scoreboard */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-bold">Live scoreboard</h2>
-          <div className="flex items-center gap-2">
-            {gameFinished && (
-              <button
-                onClick={() => setEditingFinishedGame((v) => !v)}
-                title="This game is finished — result data (scoreboard, objectives, net worth, hero picks/bans) is read-only until unlocked"
-                className={`text-xs rounded px-2 py-1 border ${
-                  editingFinishedGame ? "border-signal/50 text-signal bg-signal/10" : "border-white/10 hover:bg-white/10"
-                }`}
-              >
-                {editingFinishedGame ? "🔓 Editing finished game — click to lock" : "🔒 Unlock to edit"}
-              </button>
-            )}
-            <button
-              onClick={() =>
-                postToTelegram(buildLiveScoreboardMessage(), {
-                  entityType: "match",
-                  entityId: match.id,
-                  notificationType: "scoreboard_share",
-                })
-              }
-              className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-            >
-              📢 Share to Telegram
-            </button>
-          </div>
-        </div>
-        {/* Each player row is ~10 fixed-width fields wide (photo, name,
-            hero picker, K/D/A, action icons) — comfortably fits a desktop
-            window but not a phone screen, and there's no good way to stack
-            a K/D/A entry row without turning every field into its own
-            labeled block. Rather than a wholesale redesign, this scrolls
-            horizontally as one unit (same pattern as the tracker readings
-            table above) — min-w-max on every row keeps columns aligned
-            with the header while scrolling. Zero effect at desktop widths,
-            where the row already fits and overflow-x-auto never engages. */}
-        {[teamAPlayers, teamBPlayers].map((teamPlayers, idx) => (
-          <div key={idx} className="space-y-1 overflow-x-auto">
-            <p className="text-xs text-white/50">{idx === 0 ? match.team_a?.name : match.team_b?.name}</p>
-            <div className="flex gap-2 items-center text-[10px] text-white/40 pl-8 min-w-max">
-              <span className="w-24">Player</span>
-              <span className="w-20">Role</span>
-              <span className="w-24">Hero</span>
-              <span className="w-[122px]">K/D/A</span>
-            </div>
-            {teamPlayers.map((p) => {
-              const stat = statForPlayer(p);
-              const isEditingRoster = editingScoreboardPlayerId === p.id;
-              return (
-                <div key={p.id} className="flex gap-2 items-center text-sm min-w-max">
-                  {p.photo_url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={proxiedImageUrl(p.photo_url)} alt="" className="w-6 h-6 rounded-full object-cover border border-white/10 shrink-0" />
-                  ) : (
-                    <span className="w-6 h-6 rounded-full bg-white/10 shrink-0" />
-                  )}
-                  {isEditingRoster ? (
-                    <input
-                      value={editingScoreboardIgn}
-                      onChange={(e) => setEditingScoreboardIgn(e.target.value)}
-                      className="w-24 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
-                      autoFocus
-                    />
-                  ) : (
-                    <span className="w-24 truncate">{p.ign}</span>
-                  )}
-                  <span className="w-20 truncate text-white/40 uppercase text-[10px] tracking-wide">{p.role ?? "—"}</span>
-                  {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
-                    <HeroIcon url={heroes.find((h) => h.name === stat?.hero_name)!.icon_url} name={stat?.hero_name} size="xs" className="-mr-1" />
-                  )}
-                  {/* Once this player has a locked-in pick (real or
-                      positionally matched — see effectivePickFor), the
-                      Draft board above is the single place to correct
-                      their hero — that edit already propagates here via
-                      updateStat (see correctPickBanHero/assignHeroToPlayer),
-                      so this dropdown used to be a second, independent way
-                      to set the exact same field: pick a wrong hero here and
-                      it silently disagreed with the Draft board's own record
-                      until the next full reload. Read-only display instead.
-                      Falls back to the dropdown only when there's genuinely
-                      no pick to read from (Normal/Liquipedia matches with no
-                      local draft tracking, or a substitute added straight to
-                      the scoreboard) — that's still the only place to set
-                      it. */}
-                  {effectivePickFor(p.id, idx === 0 ? match.team_a!.id : match.team_b!.id, teamPlayers) ? (
-                    <span className="w-24 truncate text-xs" title="Set from the Draft board above — correct it there">
-                      {stat?.hero_name || "—"}
-                    </span>
-                  ) : (
-                    <select
-                      value={stat?.hero_name ?? ""}
-                      onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
-                      disabled={!scoreboardEditable}
-                      className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
-                    >
-                      <option value="">Hero</option>
-                      {heroes.map((h) => (
-                        <option key={h.id} value={h.name}>{h.name}</option>
-                      ))}
-                    </select>
-                  )}
-                  {/* K/D/A as one visually-grouped "0/0/0" unit (slash
-                      separators between the three fields) instead of three
-                      unlabeled inputs floating side by side — each stays
-                      independently editable, just read together like the
-                      standard K/D/A notation everywhere else on the site. */}
-                  <div className="flex items-center gap-0.5">
-                    {(["kills", "deaths", "assists"] as const).map((field, i) => (
-                      <span key={field} className="flex items-center gap-0.5">
-                        {i > 0 && <span className="text-white/30">/</span>}
-                        <input
-                          type="number"
-                          defaultValue={stat?.[field] ?? ""}
-                          placeholder="TBD"
-                          onBlur={(e) => {
-                            if (e.target.value === "") return; // leave TBD, don't coerce a cleared field to 0
-                            updateStat(p.id, field, Number(e.target.value));
-                          }}
-                          disabled={!scoreboardEditable}
-                          className="w-12 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
-                        />
-                      </span>
-                    ))}
-                  </div>
-                  <div className="flex gap-1.5 ml-auto">
-                    {isEditingRoster ? (
-                      <>
-                        <button onClick={() => saveScoreboardPlayerEdit(p.id)} className="text-white/50 hover:text-emerald-400 text-xs">✓</button>
-                        <button onClick={() => setEditingScoreboardPlayerId(null)} className="text-white/30 hover:text-red-400 text-xs">✕</button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => {
-                            setEditingScoreboardPlayerId(p.id);
-                            setEditingScoreboardIgn(p.ign);
-                          }}
-                          title="Edit player"
-                          className="text-white/30 hover:text-white/70 text-xs"
-                        >
-                          ✎
-                        </button>
-                        <button
-                          onClick={() => deleteScoreboardPlayer(p.id, p.ign)}
-                          title="Delete player"
-                          className="text-white/30 hover:text-red-400 text-xs"
-                        >
-                          🗑
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-            {/* For a substitute the scoreboard didn't already pick up
-                automatically (no hero pick logged for them this game) —
-                adding them here creates their player_stats row, which
-                activeFive() above now also treats as "in the game". */}
-            {isEditable && match.state === "MATCH_NOT_STARTED" && (
-              <div className="flex items-center gap-2 pl-8 pt-1">
-                {(() => {
-                  const teamId = idx === 0 ? match.team_a?.id : match.team_b?.id;
-                  if (!teamId) return null;
-                  const shownIds = new Set(teamPlayers.map((p) => p.id));
-                  const available = rosterFor(teamId).filter((p) => !shownIds.has(p.id));
-                  if (available.length === 0) return null;
-                  return (
-                    <>
-                      <select
-                        value={addPlayerSelect[teamId] ?? ""}
-                        onChange={(e) => setAddPlayerSelect((prev) => ({ ...prev, [teamId]: e.target.value }))}
-                        className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                      >
-                        <option value="">Add player...</option>
-                        {available.map((p) => (
-                          <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={() => {
-                          const playerId = addPlayerSelect[teamId];
-                          if (!playerId) return;
-                          addScoreboardPlayer(playerId);
-                          setAddPlayerSelect((prev) => ({ ...prev, [teamId]: "" }));
-                        }}
-                        disabled={!addPlayerSelect[teamId]}
-                        className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
-                      >
-                        + Add
-                      </button>
-                    </>
-                  );
-                })()}
-              </div>
-            )}
-          </div>
-        ))}
-      </section>
-
-      {/* Moment Timeline moved to the top of the action deck — see the
-          section right after the paused-state banner near the start of
-          this pane. */}
+      {/* Live scoreboard moved up to sit alongside Objectives, right under
+          the moment list — see there. */}
         </>
       )}
 

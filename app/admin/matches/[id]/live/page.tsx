@@ -2834,10 +2834,43 @@ export default function LiveConsolePage() {
     if (!slash) return null;
     return { kills: Number(slash[1]), deaths: Number(slash[2]), assists: Number(slash[3]) };
   }
+  // Domain-rule gate for OCR-automatic objective reads only — manual
+  // clicks (incrementObjective called directly) always bypass this, same
+  // as every other manual-override path in this file: an admin correcting
+  // a genuine misread needs to be able to enter a value this heuristic
+  // itself would reject. Returns the highest count this tick should
+  // actually advance to (clamped, not a hard reject), so a correct-but-
+  // partial read still lands instead of the whole tick being discarded.
+  function plausibleObjectiveTarget(teamId: string, type: string, rawTarget: number): number {
+    const current = objectiveCount(teamId, type);
+    if (rawTarget <= current) return rawTarget; // never-decreases is already enforced by the caller's loop bound
+    const gameClockSeconds = minute * 60 + secondOfMinute;
+    // Turtle: first spawn exactly 2:00, no genuine turtle-take reading is
+    // possible before that.
+    if (type === "turtle" && gameClockSeconds < 120) return current;
+    // Lord: first spawn 8:00 (a Turtle left alone from ~8:00-9:00
+    // transforms into an early Lord, but that's still not reachable before
+    // 8:00 either way).
+    if (type === "lord" && gameClockSeconds < 480) return current;
+    if (type === "tower") {
+      // 9 enemy towers per team, hard cap — never a real read past that.
+      const capped = Math.min(rawTarget, 9);
+      // "Can only destroy a maximum of 3 towers simultaneously, then a
+      // window before the 4th" — a single reading jumping the count by
+      // more than 3 in one tick is far more likely an OCR digit misread
+      // than four-plus towers actually falling in one 5s capture tick.
+      // Clamped to +3 rather than rejected outright, so a real (if fast)
+      // multi-tower push still lands the plausible portion.
+      return Math.min(capped, current + 3);
+    }
+    return rawTarget;
+  }
+
   async function applySingleObjectiveReading(teamId: string, type: string, text: string) {
     const n = text.match(/\d+/);
     if (!n) return;
-    const target = Number(n[0]);
+    const rawTarget = Number(n[0]);
+    const target = plausibleObjectiveTarget(teamId, type, rawTarget);
     const current = objectiveCount(teamId, type);
     for (let i = current; i < target; i++) await incrementObjective(teamId, type);
   }
@@ -3052,8 +3085,19 @@ export default function LiveConsolePage() {
       // correctly-read side still lands even if the other side glitched.
       const knownAGold = latestNetWorth?.team_a_gold ?? null;
       const knownBGold = latestNetWorth?.team_b_gold ?? null;
-      const safeTeamAGold = knownAGold != null && teamAGold < knownAGold ? knownAGold : teamAGold;
-      const safeTeamBGold = knownBGold != null && teamBGold < knownBGold ? knownBGold : teamBGold;
+      // Net worth "can't be spiked directly, should gradually increase" —
+      // on top of the never-decreases clamp above, also cap how far a
+      // single 5s tick can raise a side: a genuine burst (a full team wipe
+      // plus an objective) plausibly adds a few thousand gold at once, but
+      // a jump far beyond that in one tick is far more likely a stray
+      // digit inflating the OCR read (e.g. "1.2K" misread as "120K") than
+      // real gold. Clamped to the ceiling rather than rejected outright,
+      // same "take the plausible part" approach as everywhere else here.
+      const MAX_NET_WORTH_GAIN_PER_TICK = 8000;
+      const capGain = (known: number | null, read: number) =>
+        known != null && read - known > MAX_NET_WORTH_GAIN_PER_TICK ? known + MAX_NET_WORTH_GAIN_PER_TICK : read;
+      const safeTeamAGold = capGain(knownAGold, knownAGold != null && teamAGold < knownAGold ? knownAGold : teamAGold);
+      const safeTeamBGold = capGain(knownBGold, knownBGold != null && teamBGold < knownBGold ? knownBGold : teamBGold);
       await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: safeTeamAGold, team_b_gold: safeTeamBGold });
     }
 
@@ -3088,7 +3132,35 @@ export default function LiveConsolePage() {
 
     const heroesSeen = kdaParsed.map((r) => r.heroName).filter((h): h is string => Boolean(h));
     const duplicateHero = heroesSeen.find((h, i) => heroesSeen.indexOf(h) !== i);
-    setConsistencyWarning(duplicateHero ? `"${duplicateHero}" read as picked on two different K/D/A trackers — check hero OCR/roster data.` : null);
+
+    // Soft signal only, never blocks a write — team kills and per-player
+    // kills are read from entirely separate OCR regions on independent
+    // ticks, so some lag between them is normal and a hard reject here
+    // would just throw away good data on the slower-updating side. Surfaced
+    // the same way the duplicate-hero check already is: a dismissible
+    // banner, not a silent drop.
+    let kdaMismatch: string | null = null;
+    if (game) {
+      for (const [label, teamId, override] of [
+        ["Team A", match?.team_a?.id, game.team_a_kills_override] as const,
+        ["Team B", match?.team_b?.id, game.team_b_kills_override] as const,
+      ]) {
+        if (!teamId || override == null) continue;
+        const playerSum = stats
+          .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === teamId)
+          .reduce((sum, s) => sum + (s.kills ?? 0), 0);
+        if (Math.abs(playerSum - override) >= 3) {
+          kdaMismatch = `${label}: team kills (${override}) doesn't match the sum of per-player kills (${playerSum}) — one of the two OCR reads may be stale or wrong.`;
+          break;
+        }
+      }
+    }
+
+    setConsistencyWarning(
+      duplicateHero
+        ? `"${duplicateHero}" read as picked on two different K/D/A trackers — check hero OCR/roster data.`
+        : kdaMismatch
+    );
 
     if (game && kdaParsed.length > 0) loadAll();
   }

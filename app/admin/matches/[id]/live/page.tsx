@@ -4656,25 +4656,23 @@ export default function LiveConsolePage() {
                 </div>
                 <div
                   data-crop-container
-                  // Enlarged from a fixed 50vw to ~75vw ("6/8 full screen") —
-                  // a separate full-screen portal mode used to exist for
-                  // this (removed: its coordinate-locking broke whenever the
-                  // browser/video resized or moved mid-session). A single
-                  // bigger inline canvas needs no coordinate-locking trick at
-                  // all since there's only ever one rendered box to compute
-                  // percentages against. All the crop-box math reads
-                  // getBoundingClientRect() live at drag time, so a fixed
-                  // size needs no other code changes.
-                  // min-w-[480px] used to apply unconditionally, which forced
-                  // this whole box (and everything below it, since nothing
-                  // wrapping it constrains overflow) wider than any phone
-                  // viewport — the page would horizontally scroll just to
-                  // accommodate a calibration canvas a phone can't even
-                  // screen-share into. Full width below sm, unchanged 75vw/
-                  // 480px min at sm and up (real desktop use is always
-                  // ≥640px), so the drag-to-calibrate math (reads
-                  // getBoundingClientRect live) is completely unaffected.
-                  className="relative w-full sm:w-[75vw] sm:min-w-[480px] max-w-[1800px] border border-white/10 rounded overflow-hidden select-none"
+                  // Used to force itself to ~75vw ("6/8 full screen") once
+                  // tracker edit mode turned on, from back when the admin
+                  // page had no width-adjustable Monitor/action-deck split —
+                  // sizing off the *viewport* instead of this canvas's own
+                  // parent meant it ballooned past whatever width the split
+                  // ratio actually gave the monitor pane, overflowing into
+                  // (or past) the action deck the instant capture/edit mode
+                  // started, with no way to rein it back in via the split
+                  // control ("automatically bigger and cover the whole
+                  // area, can't be adjusted via Monitor/action deck
+                  // split"). Now plain w-full: fills whatever width its
+                  // actual parent (the monitor pane, sized by the split
+                  // slider above) gives it — the drag-to-calibrate math
+                  // reads getBoundingClientRect() live at drag time
+                  // regardless of the container's width, so this needed no
+                  // other code changes.
+                  className="relative w-full border border-white/10 rounded overflow-hidden select-none"
                   onMouseDown={(e) => {
                     // Two draw-first flows share this canvas: pick-tracker-
                     // then-draw (calibratingField already set, writes

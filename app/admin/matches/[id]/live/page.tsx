@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
@@ -11,6 +11,11 @@ import { getLegalTransitions, type MatchPhase, type PhaseSignals } from "@/lib/m
 import { PhaseStepper } from "@/components/PhaseStepper";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
+
+// CSS custom properties aren't part of React's CSSProperties type — this
+// widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
+// without an `any` cast.
+type CSSPropertiesWithVars = CSSProperties & Record<`--${string}`, string>;
 
 // Auto-detected moment triggers only — narrowed to the four kill-streak
 // callouts (each still requires a player name attached, extracted by the
@@ -216,60 +221,21 @@ export default function LiveConsolePage() {
   const mmssTimestamp = () => `${String(minute).padStart(2, "0")}:${String(secondOfMinute).padStart(2, "0")}`;
   const [error, setError] = useState<string | null>(null);
 
-  // Three-column layout resize state with localStorage persistence
-  const [menuOpen, setMenuOpen] = useState(true);
-  const [greenWidth, setGreenWidth] = useState(400);
-  const [yellowWidth, setYellowWidth] = useState(600);
-  const [redWidth, setRedWidth] = useState(400);
-  const [isResizing, setIsResizing] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Measures the sticky top header's real rendered height (it wraps to a
+  // different number of lines depending on match state/badges) so the
+  // monitor pane's own `sticky top-[...]` offset in the 60/40 layout below
+  // can sit exactly beneath it instead of guessing a fixed pixel value.
+  const adminHeaderRef = useRef<HTMLDivElement>(null);
+  const [adminHeaderH, setAdminHeaderH] = useState(0);
   useEffect(() => {
-    const saved = localStorage.getItem("match-admin-column-widths");
-    if (saved) {
-      try {
-        const { green, yellow, red } = JSON.parse(saved);
-        setGreenWidth(green);
-        setYellowWidth(yellow);
-        setRedWidth(red);
-      } catch {}
-    }
+    const el = adminHeaderRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => setAdminHeaderH(entry.contentRect.height));
+    observer.observe(el);
+    return () => observer.disconnect();
   }, []);
-
-  useEffect(() => {
-    localStorage.setItem(
-      "match-admin-column-widths",
-      JSON.stringify({ green: greenWidth, yellow: yellowWidth, red: redWidth })
-    );
-  }, [greenWidth, yellowWidth, redWidth]);
-
-  useEffect(() => {
-    if (!isResizing) return;
-    const startX = 0;
-    const startGreen = greenWidth;
-    const startYellow = yellowWidth;
-    const startRed = redWidth;
-
-    function handleMouseMove(e: MouseEvent) {
-      const delta = e.clientX - (startX || e.clientX);
-      if (isResizing === "green-yellow") {
-        setGreenWidth(Math.max(300, startGreen + delta));
-      } else if (isResizing === "yellow-red") {
-        setYellowWidth(Math.max(300, startYellow + delta));
-      }
-    }
-
-    function handleMouseUp() {
-      setIsResizing(null);
-    }
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-    };
-  }, [isResizing, greenWidth, yellowWidth, redWidth]);
 
   // ── Undo (Ctrl+Z) for the most recently logged event ──────────────────
   // Deliberately single-level, not a full undo stack — every write site
@@ -4114,20 +4080,14 @@ export default function LiveConsolePage() {
   }
 
   return (
-    <div className="text-white space-y-8 max-w-7xl">
+    <div className="text-white space-y-8 max-w-7xl" style={{ "--lv-admin-header-h": `${adminHeaderH}px` } as CSSPropertiesWithVars}>
       {/* Sticky — phase changes and the stream link are the two things an
           admin needs reachable no matter how far down the page they've
-          scrolled (moment log, scoreboard, calibration UI are all long). */}
-      <div className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
-        <div className="flex items-center gap-2 mb-2">
-          <button
-            onClick={() => setMenuOpen(!menuOpen)}
-            className="text-xl p-1.5 hover:bg-white/10 rounded transition-colors"
-            title={menuOpen ? "Hide menu" : "Show menu"}
-          >
-            ☰
-          </button>
-        </div>
+          scrolled (moment log, scoreboard, calibration UI are all long).
+          Its rendered height is measured below (adminHeaderH) so the
+          monitor pane's own sticky offset can sit exactly below it
+          instead of guessing a fixed pixel value against wrapping text. */}
+      <div ref={adminHeaderRef} className="sticky top-0 z-20 bg-ink/95 backdrop-blur border-b border-white/10 pb-3 -mx-6 px-6">
         <h1 className="lv-heading text-lg flex items-center gap-2.5 flex-wrap">
           {/* Each team's own little "live-score box" — logo + name, with
               the last-captured net worth pinned to its top-right corner
@@ -4332,21 +4292,20 @@ export default function LiveConsolePage() {
         )}
       </div>
 
-      {/* Three-column layout with resize handles - responsive for mobile/tablet */}
-      <div
-        className="flex flex-col lg:flex-row gap-0 rounded-lg border border-white/10 overflow-hidden"
-        style={{
-          height: "auto",
-          minHeight: "calc(100vh - 300px)"
-        }}
-      >
-        {/* GREEN COLUMN: Livestream & Capture - Mobile: full width, lg: resizable */}
+      {/* THE MONITOR (60%) + ACTION DECK (40%) — a fixed two-pane split
+          instead of the old three-column resizable layout. The monitor
+          (stream + OCR capture) is pinned on large screens so it's always
+          in view; the action deck is the one scrollable column holding
+          everything else, phase-collapsed further down so only what's
+          relevant to the current match phase is expanded by default. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[60fr_40fr] lg:items-start gap-4 lg:gap-0 rounded-lg border border-white/10 overflow-hidden">
+        {/* THE MONITOR — livestream + OCR capture. Sticky on large screens
+            so the stream never scrolls out of view while the action deck
+            scrolls independently beside it. */}
         <div
-          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full lg:w-auto max-w-full"
+          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full max-w-full lg:sticky lg:top-[calc(var(--lv-admin-header-h,0px)+1px)] lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
           style={{
-            width: menuOpen ? greenWidth : 40,
-            transition: menuOpen ? "none" : "width 0.3s",
-            minWidth: "40px"
+            width: "100%",
           }}
         >
           <div className="p-3 lg:p-4 space-y-4">
@@ -5103,23 +5062,31 @@ export default function LiveConsolePage() {
           </div>
         </div>
 
-        {/* Resize handle GREEN-YELLOW - Hidden on mobile */}
+        {/* ACTION DECK (40%) — the one scrollable column. Yellow (game
+            data) and Red (moment timeline) merge into this single pane;
+            phase-relevant content is prioritized further down instead of
+            splitting into more side-by-side columns. */}
         <div
-          className="hidden lg:block w-1 bg-white/10 hover:bg-signal/50 cursor-col-resize transition-colors"
-          onMouseDown={() => setIsResizing("green-yellow")}
-          style={{ display: menuOpen ? "block" : "none" }}
-        />
-
-        {/* YELLOW COLUMN: Game Data (Middle) - Mobile: full width, lg: resizable */}
-        <div
-          className="flex flex-col overflow-y-auto border-b lg:border-b-0 lg:border-r border-white/10 w-full lg:w-auto flex-1 lg:flex-none max-w-full"
-          style={{
-            width: menuOpen ? yellowWidth : "flex-1",
-            transition: menuOpen ? "none" : "width 0.3s",
-            minWidth: "40px"
-          }}
+          className="flex flex-col overflow-y-auto w-full max-w-full lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
+          style={{ width: "100%" }}
         >
           <div className="space-y-6 p-3 lg:p-4">
+            {/* Paused-state banner — the console already halts capture and
+                locks Scoreboard/Objectives edits during TECHNICAL_PAUSE
+                (see captureActive/SCOREBOARD_EDITABLE_PHASES above); this
+                just makes that state impossible to miss at a glance, per
+                the blueprint's "clearly indicate paused state" ask. */}
+            {match.state === "TECHNICAL_PAUSE" && (
+              <div
+                className="rounded px-3 py-2 text-xs font-semibold text-amber-200 border-2 border-amber-400/60"
+                style={{
+                  backgroundImage:
+                    "repeating-linear-gradient(45deg, rgba(251,191,36,0.12), rgba(251,191,36,0.12) 10px, rgba(251,191,36,0.04) 10px, rgba(251,191,36,0.04) 20px)",
+                }}
+              >
+                ⏸ Technical pause — clock frozen, capture halted. Resume with the phase stepper above once play restarts.
+              </div>
+            )}
             {/* Everything a live game needs constantly — declare the
                 winner, log an objective, log a moment — sits at the very
                 top of this column, ahead of the draft board and the rest
@@ -5311,10 +5278,27 @@ export default function LiveConsolePage() {
           the same scroll region matters more than the
           "which comes textually first" grouping that used to place this
           next to the game/map selector further down. */}
-      {/* Hero picks/bans */}
-      <section className="space-y-3">
+      {/* Hero picks/bans + roster setup — collapsed by default once the
+          game is actually live. It's the primary, always-open surface
+          during roster setup and drafting; once GAME_STARTED, correcting a
+          hero here already propagates straight into the Live Scoreboard
+          below (see updateStat calls in correctPickBanHero/
+          assignHeroToPlayer), which is now the read-only display for it —
+          so keeping this expanded too just duplicates that same
+          information on screen for no reason. Still one click away for the
+          rare live correction (open={} only sets the *default*; a manual
+          toggle during this phase isn't fought on re-render since the
+          prop's value doesn't change again until the phase itself does). */}
+      <details className="space-y-3 group" open={DRAFT_PHASES.includes(match.state) || match.state === "MATCH_NOT_STARTED"}>
+        {/* Only the title toggles — the action buttons below are a
+            sibling, not nested inside <summary>, so clicking "Announce
+            draft" etc. doesn't also collapse/expand the section (a button
+            click inside <summary> bubbles into summary's own default
+            toggle behavior otherwise). */}
+        <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden font-bold flex items-center gap-1.5">
+          <span className="text-white/40 text-xs transition-transform group-open:rotate-90">▸</span> Hero picks & bans
+        </summary>
         <div className="flex items-center justify-between">
-          <h2 className="font-bold">Hero picks & bans</h2>
           <div className="flex gap-2">
             {/* Also rendered near Live scoreboard below for Hot matches —
                 duplicated here (same shared editingFinishedGame state) so
@@ -5779,7 +5763,7 @@ export default function LiveConsolePage() {
             </div>
           </div>
         )}
-      </section>
+      </details>
 
 
       {!isEditable && (
@@ -6103,22 +6087,11 @@ export default function LiveConsolePage() {
       {match.update_source === "local_ocr" && (
         <>
 
-      {/* Team kills — derived from K/D/A, same as the public page */}
-      <section className="space-y-2">
-        <h2 className="font-bold">Team kills</h2>
-        {/* flex-wrap + a smaller mobile base size — two full team names at
-            text-3xl unwrapped could run past a phone's width with nowhere
-            to go; sm: restores the exact original size/gap once there's
-            room for it. */}
-        <div className="flex flex-wrap gap-4 sm:gap-8 text-2xl sm:text-3xl font-bold tabular-nums">
-          <span className={teamAKillsTotal > teamBKillsTotal ? "text-signal" : "text-white"}>
-            {match.team_a?.name}: {teamAKillsTotal}
-          </span>
-          <span className={teamBKillsTotal > teamAKillsTotal ? "text-signal" : "text-white"}>
-            {match.team_b?.name}: {teamBKillsTotal}
-          </span>
-        </div>
-      </section>
+      {/* A standalone "Team kills" readout used to sit here, showing the
+          exact same teamAKillsTotal/teamBKillsTotal numbers already big
+          and always-visible in the sticky header above (see the h1's
+          local_ocr branch) — a pure duplicate display with no editing
+          function of its own, removed rather than collapsed. */}
 
       {/* Net worth — OCR-fed each tick, but directly editable too */}
       <section className="space-y-2">
@@ -6230,17 +6203,35 @@ export default function LiveConsolePage() {
                   {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
                     <HeroIcon url={heroes.find((h) => h.name === stat?.hero_name)!.icon_url} name={stat?.hero_name} size="xs" className="-mr-1" />
                   )}
-                  <select
-                    value={stat?.hero_name ?? ""}
-                    onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
-                    disabled={!scoreboardEditable}
-                    className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
-                  >
-                    <option value="">Hero</option>
-                    {heroes.map((h) => (
-                      <option key={h.id} value={h.name}>{h.name}</option>
-                    ))}
-                  </select>
+                  {/* Once this player has a locked-in pick (hero_picks_bans),
+                      the Draft board above is the single place to correct
+                      their hero — that edit already propagates here via
+                      updateStat (see correctPickBanHero/assignHeroToPlayer),
+                      so this dropdown used to be a second, independent way
+                      to set the exact same field: pick a wrong hero here and
+                      it silently disagreed with the Draft board's own record
+                      until the next full reload. Read-only display instead.
+                      Falls back to the dropdown only when there's no pick to
+                      read from yet (Normal/Liquipedia matches with no local
+                      draft tracking, or a substitute added straight to the
+                      scoreboard) — that's still the only place to set it. */}
+                  {pickBans.some((pb) => pb.type === "pick" && pb.player_id === p.id) ? (
+                    <span className="w-24 truncate text-xs" title="Set from the Draft board above — correct it there">
+                      {stat?.hero_name || "—"}
+                    </span>
+                  ) : (
+                    <select
+                      value={stat?.hero_name ?? ""}
+                      onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
+                      disabled={!scoreboardEditable}
+                      className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
+                    >
+                      <option value="">Hero</option>
+                      {heroes.map((h) => (
+                        <option key={h.id} value={h.name}>{h.name}</option>
+                      ))}
+                    </select>
+                  )}
                   {(["kills", "deaths", "assists"] as const).map((field) => (
                     <input
                       key={field}
@@ -6420,91 +6411,17 @@ export default function LiveConsolePage() {
       )}
 
           </div>
-        </div>
 
-        {/* Resize handle YELLOW-RED - Hidden on mobile */}
-        <div
-          className="hidden lg:block w-1 bg-white/10 hover:bg-signal/50 cursor-col-resize transition-colors"
-          onMouseDown={() => setIsResizing("yellow-red")}
-          style={{ display: menuOpen ? "block" : "none" }}
-        />
-
-        {/* RED COLUMN: Moment Timeline (Right) - Mobile: full width, lg: resizable */}
-        <div
-          className="flex flex-col overflow-y-auto w-full lg:w-auto max-w-full"
-          style={{
-            width: menuOpen ? redWidth : 40,
-            minWidth: "40px",
-            transition: menuOpen ? "none" : "width 0.3s"
-          }}
-        >
-          <div className="p-3 lg:p-4 space-y-4">
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-sm">Moment Timeline</h3>
-                {lastAction && (
-                  <button
-                    onClick={undoLastAction}
-                    className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 text-white/60"
-                    title="Ctrl+Z"
-                  >
-                    ⎌
-                  </button>
-                )}
-              </div>
-              <div className="space-y-1 max-h-96 overflow-y-auto">
-                {[...keyMoments].reverse().slice(0, 5).map((km) => {
-                  const player = players.find((p) => p.id === km.player_id);
-                  const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
-
-                  if (editingMomentId === km.id) {
-                    return (
-                      <div key={km.id} className="px-2 py-1 rounded bg-signal/20 flex items-center gap-1.5 text-xs">
-                        <input
-                          value={editingMomentText}
-                          onChange={(e) => setEditingMomentText(e.target.value)}
-                          className="bg-white/10 border border-white/10 rounded px-1 py-0.5 text-xs flex-1"
-                          autoFocus
-                        />
-                        <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400">✓</button>
-                        <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400">✕</button>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div key={km.id} className={`px-2 py-1 rounded flex items-center gap-1.5 text-xs ${km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"}`}>
-                      <span className="flex-1 min-w-0 truncate">
-                        {km.is_key_moment && "⭐ "}
-                        {km.minute_mark}' {label}
-                        {km.screenshot_url && " 📸"}
-                      </span>
-                      <div className="flex gap-0.5 shrink-0">
-                        <button
-                          onClick={() => {
-                            setEditingMomentId(km.id);
-                            setEditingMomentText(label);
-                          }}
-                          className="text-white/30 hover:text-white/70 text-xs"
-                          title="Edit"
-                        >
-                          ✎
-                        </button>
-                        <button
-                          onClick={() => deleteKeyMoment(km.id)}
-                          className="text-white/30 hover:text-red-400 text-xs"
-                          title="Delete"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {keyMoments.length === 0 && <p className="text-xs text-white/40">No moments logged yet</p>}
-              </div>
-            </div>
-          </div>
+          {/* A second, compact "Moment Timeline" widget used to live here —
+              exact same keyMoments data, same edit/delete/undo, just the 5
+              most recent instead of the full scrollable list in the
+              "Moment Timeline" section above. It made sense back when this
+              was its own third column (a some-of-it-always-visible glance
+              panel while the fuller list sat elsewhere); now that both
+              live in the same scrollable action deck, one above the other,
+              it was showing the same moments twice with two separate edit
+              controls for the same rows. Removed — the section above is
+              the one Moment Timeline. */}
         </div>
       </div>
 

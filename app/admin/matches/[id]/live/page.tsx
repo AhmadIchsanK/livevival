@@ -6,7 +6,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
-import { DraftOverlay, type DraftOverlayPickBan, type DraftOverlaySlotAction } from "@/components/DraftOverlay";
+import { DraftOverlay, type DraftOverlayPickBan, type DraftOverlaySlotAction, type DraftOverlayPlayer } from "@/components/DraftOverlay";
 import { getLegalTransitions, type MatchPhase, type PhaseSignals } from "@/lib/matchPhase";
 import { PhaseStepper } from "@/components/PhaseStepper";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
@@ -984,6 +984,41 @@ export default function LiveConsolePage() {
     | { mode: "add-pick"; teamId: string; playerId: string; label: string }
     | { mode: "add-ban"; teamId: string; label: string };
   const [heroPickerTarget, setHeroPickerTarget] = useState<HeroPickerTarget | null>(null);
+
+  // Swap-which-player-a-hero-is-credited-to — replaces the old post-draft
+  // "Assign player" dropdown screen. First ⇄ click on the draft board
+  // records the source; a second ⇄ click on a *different* player commits
+  // the swap (see swapPlayerAssignment); clicking the same player again
+  // cancels. Both players' picks get real player_id rows either way, even
+  // if one or both started out only positionally matched (see
+  // DraftOverlay's file comment) — a swap is what turns a positional guess
+  // into a confirmed assignment.
+  const [swapSource, setSwapSource] = useState<{ playerId: string; pb: DraftOverlayPickBan } | null>(null);
+  function handleSwapClick(player: DraftOverlayPlayer, pb: DraftOverlayPickBan) {
+    if (!swapSource) {
+      setSwapSource({ playerId: player.id, pb });
+      return;
+    }
+    if (swapSource.playerId === player.id) {
+      setSwapSource(null);
+      return;
+    }
+    if (swapSource.pb.team_id !== pb.team_id) {
+      setError("Can only swap between two players on the same team.");
+      setSwapSource(null);
+      return;
+    }
+    swapPlayerAssignment(swapSource.pb, swapSource.playerId, pb, player.id);
+    setSwapSource(null);
+  }
+  async function swapPlayerAssignment(pbA: DraftOverlayPickBan, playerAId: string, pbB: DraftOverlayPickBan, playerBId: string) {
+    const realA = pickBans.find((p) => p.id === pbA.id);
+    const realB = pickBans.find((p) => p.id === pbB.id);
+    if (!realA || !realB) return;
+    await assignHeroToPlayer(realA.id, playerBId, realA.hero_name);
+    await assignHeroToPlayer(realB.id, playerAId, realB.hero_name);
+  }
+
   function closeHeroPicker() {
     setShowHeroPicker(false);
     setHeroPickerTarget(null);
@@ -3977,6 +4012,29 @@ export default function LiveConsolePage() {
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
   const rosterFor = (teamId: string) => players.filter((p) => p.team_id === teamId);
+  // Same positional-fallback DraftOverlay uses internally (see its file
+  // comment) — a team's Nth still-unassigned pick (by pick_order) matches
+  // that team's Nth player in `orderedTeamPlayers` (role-ordered, same as
+  // teamAPlayers/teamBPlayers). Shared here so the Live Scoreboard's
+  // read-only-once-picked gate agrees with what the Draft board is
+  // already showing, instead of only recognizing a *real* player_id and
+  // treating every positionally-matched (not yet explicitly swapped) pick
+  // as if it didn't exist.
+  function effectivePickFor(playerId: string, teamId: string, orderedTeamPlayers: { id: string }[]): PickBan | undefined {
+    const real = pickBans.find((pb) => pb.type === "pick" && pb.player_id === playerId);
+    if (real) return real;
+    const idx = orderedTeamPlayers.findIndex((p) => p.id === playerId);
+    if (idx === -1) return undefined;
+    const unassigned = pickBans
+      .filter((pb) => pb.type === "pick" && pb.team_id === teamId && !pb.player_id)
+      .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
+    let unassignedIdx = 0;
+    for (let i = 0; i < idx; i++) {
+      const hasReal = pickBans.some((pb) => pb.type === "pick" && pb.player_id === orderedTeamPlayers[i].id);
+      if (!hasReal) unassignedIdx++;
+    }
+    return unassigned[unassignedIdx];
+  }
   // Same custom-vs-real branch as ensureStatRow/updateStat, for the read
   // side — every scoreboard row's stat lookup goes through this instead of
   // a raw `stats.find(s => s.player_id === p.id)`, which would never match
@@ -5468,8 +5526,10 @@ export default function LiveConsolePage() {
             turnSide={overlayTurnSide}
             turnLabel={overlayTurnLabel}
             stepProgress={overlayStepProgress}
-            interactive={pickBanEditable}
+            interactive={pickBanEditable && !draftSim}
             onSlotClick={handleDraftSlotClick}
+            onSwapClick={pickBanEditable ? handleSwapClick : undefined}
+            swapSelectedPlayerId={swapSource?.playerId ?? null}
           />
         )}
 
@@ -5725,60 +5785,44 @@ export default function LiveConsolePage() {
           </div>
         )}
 
-        {/* Player -> hero assignment — post-simulation, pre-Finish. Each
-            dropdown only ever lists this team's picks that don't have a
-            player yet, so it shrinks as assignments land instead of
-            needing its own "already assigned" filter logic. */}
+        {/* Substitute (not-in-roster) player — the normal case no longer
+            needs an assignment step at all: the draft board above already
+            positionally matches each team's Nth pick to their Nth roster
+            player automatically (see DraftOverlay's file comment), and the
+            ⇄ swap button on each portrait fixes it when the actual draft
+            order didn't go role-by-role. This is only for the genuine edge
+            case — a sub who isn't one of the 5 active roster players at
+            all — kept as a lightweight prompt() flow (matching this page's
+            existing pattern for other rare admin-only actions, e.g.
+            handlePromote) rather than its own dropdown UI for something
+            that rarely comes up. */}
         {match.state === "DRAFT_COMPLETE" &&
           [match.team_a, match.team_b].some(
-            (team) => team && pickBans.some((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id && !pb.custom_player_name)
+            (team) => team && pickBans.some((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.custom_player_name)
           ) && (
-            <div className="border border-white/10 rounded-lg p-3 space-y-3">
-              <p className="text-xs text-white/50">
-                Assign each picked hero to the player actually playing it — or add a custom player (a sub who&apos;s not
-                in the roster) scoped to just this match:
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {[match.team_a, match.team_b].map((team, idx) => {
-                  if (!team) return <span key={idx} />;
-                  const unassigned = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.player_id && !pb.custom_player_name);
-                  if (unassigned.length === 0) return <span key={team.id} />;
-                  const activeRoster = rosterFor(team.id).filter((p) => p.is_active_roster);
-                  return (
-                    <div key={team.id} className="space-y-2">
-                      <p className="text-xs text-white/50">{team.name}</p>
-                      {unassigned.map((pb) => {
-                        const hero = heroes.find((h) => h.name === pb.hero_name);
-                        return (
-                          <div key={pb.id} className="flex items-center gap-2">
-                            <HeroIcon url={hero?.icon_url} name={pb.hero_name} size="xs" />
-                            <span className="text-xs w-24 truncate">{pb.hero_name}</span>
-                            <select
-                              defaultValue=""
-                              onChange={(e) => {
-                                if (e.target.value === "__custom__") {
-                                  addCustomPlayerToPick(pb.id);
-                                } else if (e.target.value) {
-                                  assignHeroToPlayer(pb.id, e.target.value, pb.hero_name);
-                                }
-                              }}
-                              className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                            >
-                              <option value="">Assign player...</option>
-                              {activeRoster
-                                .filter((p) => !pickBans.some((other) => other.player_id === p.id && other.type === "pick"))
-                                .map((p) => (
-                                  <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
-                                ))}
-                              <option value="__custom__">+ Custom player (not in roster)...</option>
-                            </select>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-              </div>
+            <div className="flex flex-wrap gap-2">
+              {[match.team_a, match.team_b].map((team) => {
+                if (!team) return null;
+                const picks = pickBans
+                  .filter((pb) => pb.team_id === team.id && pb.type === "pick" && !pb.custom_player_name)
+                  .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
+                if (picks.length === 0) return null;
+                return (
+                  <button
+                    key={team.id}
+                    onClick={() => {
+                      const list = picks.map((pb, i) => `${i + 1}. ${pb.hero_name}`).join("\n");
+                      const choice = prompt(`${team.name} — which pick was actually played by a substitute?\n\n${list}\n\nEnter a number:`);
+                      const idx = Number(choice) - 1;
+                      if (!choice || idx < 0 || idx >= picks.length) return;
+                      addCustomPlayerToPick(picks[idx].id);
+                    }}
+                    className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 text-white/50"
+                  >
+                    + Mark a {team.name} pick as a substitute
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -6297,19 +6341,21 @@ export default function LiveConsolePage() {
                   {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
                     <HeroIcon url={heroes.find((h) => h.name === stat?.hero_name)!.icon_url} name={stat?.hero_name} size="xs" className="-mr-1" />
                   )}
-                  {/* Once this player has a locked-in pick (hero_picks_bans),
-                      the Draft board above is the single place to correct
+                  {/* Once this player has a locked-in pick (real or
+                      positionally matched — see effectivePickFor), the
+                      Draft board above is the single place to correct
                       their hero — that edit already propagates here via
                       updateStat (see correctPickBanHero/assignHeroToPlayer),
                       so this dropdown used to be a second, independent way
                       to set the exact same field: pick a wrong hero here and
                       it silently disagreed with the Draft board's own record
                       until the next full reload. Read-only display instead.
-                      Falls back to the dropdown only when there's no pick to
-                      read from yet (Normal/Liquipedia matches with no local
-                      draft tracking, or a substitute added straight to the
-                      scoreboard) — that's still the only place to set it. */}
-                  {pickBans.some((pb) => pb.type === "pick" && pb.player_id === p.id) ? (
+                      Falls back to the dropdown only when there's genuinely
+                      no pick to read from (Normal/Liquipedia matches with no
+                      local draft tracking, or a substitute added straight to
+                      the scoreboard) — that's still the only place to set
+                      it. */}
+                  {effectivePickFor(p.id, idx === 0 ? match.team_a!.id : match.team_b!.id, teamPlayers) ? (
                     <span className="w-24 truncate text-xs" title="Set from the Draft board above — correct it there">
                       {stat?.hero_name || "—"}
                     </span>

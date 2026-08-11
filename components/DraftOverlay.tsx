@@ -14,6 +14,23 @@ import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 // per-turn deadline, so showing one was always fiction. See the "Hero
 // picks & bans" section of the live console page for the callback wiring
 // (onSlotClick) and the shared hero-picker modal all three actions open.
+//
+// Positional fallback + swap (replaces the old post-draft "Assign player"
+// dropdown screen): a pick logged by the draft simulation has no
+// player_id yet (nobody knows which of a team's 5 exact roster slots each
+// hero belongs to until the caster/HUD confirms it) — this board no longer
+// waits for that. Each team's Nth still-unassigned pick (by pick_order)
+// renders under that team's Nth roster player (in the same fixed role
+// order the live console's roster panel already sorts by), so a hero
+// appears in place of a player's photo the instant it's picked — same
+// positional-match trick the public match page's draft board already uses
+// for the same reason (see PublicDraftTeamPanel there). Wrong by position
+// only when the actual draft order didn't go role-by-role; the swap
+// affordance (onSwapClick) exists for exactly that — pick two players on
+// the same team, swap which hero they're actually credited with. Clicking
+// the portrait itself still only ever corrects the *hero*, never touches
+// who it's assigned to (see correctPickBanHero) — the two actions are
+// deliberately separate buttons, not overloaded onto one click.
 
 export type DraftOverlayPlayer = {
   id: string;
@@ -70,6 +87,9 @@ function PlayerRow({
   align,
   onClick,
   addable,
+  positional,
+  onSwapClick,
+  swapSelected,
 }: {
   player: DraftOverlayPlayer;
   pick: DraftOverlayPickBan | undefined;
@@ -77,33 +97,57 @@ function PlayerRow({
   align: "left" | "right";
   onClick?: () => void;
   addable?: boolean;
+  // True when `pick` is a positional-fallback match (team's Nth
+  // unassigned pick shown under their Nth roster player) rather than a
+  // real player_id record — see the file-level comment above.
+  positional?: boolean;
+  // Present only once there's an actual pick to reassign — clicking
+  // toggles this player as the swap source/target. Separate button from
+  // the row's own onClick (hero correction) so the two never conflict.
+  onSwapClick?: () => void;
+  swapSelected?: boolean;
 }) {
   const Wrapper = onClick ? "button" : "div";
   return (
-    <Wrapper
-      type={onClick ? "button" : undefined}
-      onClick={onClick}
-      title={onClick ? (pick ? `Correct ${player.ign}'s pick` : `Add a pick for ${player.ign}`) : undefined}
-      className={`w-full flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors ${
-        align === "right" ? "flex-row-reverse" : ""
-      } ${onClick ? "cursor-pointer group hover:bg-white/5" : ""}`}
-    >
-      <div className={`relative shrink-0 ${addable ? "rounded-lg ring-1 ring-dashed ring-white/20 group-hover:ring-signal/60" : ""}`}>
-        {pick ? <HeroIcon url={heroIconUrl} name={pick.hero_name} size="md" /> : <PlayerPhoto url={player.photo_url} name={player.ign} />}
-        {addable && (
-          <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-white/10 border border-white/20 text-[10px] leading-4 text-center text-white/50 group-hover:text-signal group-hover:border-signal/60">
-            +
-          </span>
-        )}
-      </div>
-      <div className={`min-w-0 flex-1 ${align === "right" ? "text-right" : "text-left"}`}>
-        <p className="text-sm font-semibold truncate">{pick ? pick.hero_name : "—"}</p>
-        <p className="text-[10px] text-white/40 uppercase tracking-wide truncate">
-          {player.ign}
-          {player.role ? ` · ${player.role}` : ""}
-        </p>
-      </div>
-    </Wrapper>
+    <div className={`w-full flex items-center gap-1 ${align === "right" ? "flex-row-reverse" : ""}`}>
+      <Wrapper
+        type={onClick ? "button" : undefined}
+        onClick={onClick}
+        title={onClick ? (pick ? `Correct ${player.ign}'s hero` : `Add a pick for ${player.ign}`) : undefined}
+        className={`min-w-0 flex-1 flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors ${
+          align === "right" ? "flex-row-reverse" : ""
+        } ${onClick ? "cursor-pointer group hover:bg-white/5" : ""}`}
+      >
+        <div className={`relative shrink-0 ${addable ? "rounded-lg ring-1 ring-dashed ring-white/20 group-hover:ring-signal/60" : ""}`}>
+          {pick ? <HeroIcon url={heroIconUrl} name={pick.hero_name} size="md" /> : <PlayerPhoto url={player.photo_url} name={player.ign} />}
+          {addable && (
+            <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-white/10 border border-white/20 text-[10px] leading-4 text-center text-white/50 group-hover:text-signal group-hover:border-signal/60">
+              +
+            </span>
+          )}
+        </div>
+        <div className={`min-w-0 flex-1 ${align === "right" ? "text-right" : "text-left"}`}>
+          <p className="text-sm font-semibold truncate">{pick ? pick.hero_name : "—"}</p>
+          <p className="text-[10px] text-white/40 uppercase tracking-wide truncate">
+            {player.ign}
+            {player.role ? ` · ${player.role}` : ""}
+            {positional && <span className="text-white/25 normal-case"> · auto</span>}
+          </p>
+        </div>
+      </Wrapper>
+      {onSwapClick && (
+        <button
+          type="button"
+          onClick={onSwapClick}
+          title={swapSelected ? "Cancel swap" : `Swap ${player.ign}'s hero with a teammate`}
+          className={`shrink-0 w-6 h-6 rounded border text-xs flex items-center justify-center transition-colors ${
+            swapSelected ? "border-signal bg-signal/25 text-signal" : "border-white/15 text-white/40 hover:border-signal/50 hover:text-signal"
+          }`}
+        >
+          ⇄
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -143,6 +187,8 @@ export function DraftOverlay({
   stepProgress,
   interactive,
   onSlotClick,
+  onSwapClick,
+  swapSelectedPlayerId,
 }: {
   leftTeam: DraftOverlayTeam;
   rightTeam: DraftOverlayTeam;
@@ -154,7 +200,7 @@ export function DraftOverlay({
   phaseLabel: string;
   // Which side currently has the turn — highlights that whole side's
   // panel, not one specific player, since a ban never has a player_id and
-  // a sim pick doesn't get one until the post-draft assignment step —
+  // a sim pick doesn't get one until it's positionally matched below —
   // there's no reliable "which exact player" signal available mid-step.
   turnSide: "left" | "right" | null;
   turnLabel: string | null;
@@ -165,7 +211,23 @@ export function DraftOverlay({
   // modal and the actual insert/update/swap logic; this component only
   // ever reports "here's what was clicked."
   onSlotClick: (action: DraftOverlaySlotAction) => void;
+  // Optional — omit to hide the swap button entirely (e.g. while a draft
+  // simulation is actively running and this board is read-only). Passed
+  // the clicked player; the page owns tracking which one's selected as the
+  // swap source and committing the actual swap once a second is clicked.
+  onSwapClick?: (player: DraftOverlayPlayer, pick: DraftOverlayPickBan) => void;
+  swapSelectedPlayerId?: string | null;
 }) {
+  // Real assignment first; falls back to this team's Nth still-unassigned
+  // pick (by pick_order) for the Nth player in the given (role-ordered)
+  // list — see the file-level comment for why. Computed once per team per
+  // render, consumed in list order as renderPlayers walks each row.
+  function unassignedPicksFor(teamId: string | undefined) {
+    if (!teamId) return [];
+    return pickBans
+      .filter((pb) => pb.type === "pick" && pb.team_id === teamId && !pb.player_id)
+      .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
+  }
   function pickFor(playerId: string) {
     return pickBans.find((pb) => pb.type === "pick" && pb.player_id === playerId);
   }
@@ -177,17 +239,37 @@ export function DraftOverlay({
   const rightBans = bansFor(rightTeam?.id);
 
   function renderPlayers(playersList: DraftOverlayPlayer[], team: DraftOverlayTeam, align: "left" | "right") {
+    const fallbackQueue = unassignedPicksFor(team?.id);
+    let fallbackIdx = 0;
     return playersList.map((p) => {
-      const pick = pickFor(p.id);
+      const realPick = pickFor(p.id);
+      let pick = realPick;
+      let positional = false;
+      if (!pick && fallbackIdx < fallbackQueue.length) {
+        pick = fallbackQueue[fallbackIdx];
+        fallbackIdx++;
+        positional = true;
+      }
       const onClick = !interactive
         ? undefined
         : pick
-        ? () => onSlotClick({ mode: "correct", pb: pick, label: `${p.ign} — ${pick.hero_name}` })
+        ? () => onSlotClick({ mode: "correct", pb: pick!, label: `${p.ign} — ${pick!.hero_name}` })
         : team
         ? () => onSlotClick({ mode: "add-pick", teamId: team.id, playerId: p.id, label: `${p.ign}${p.role ? ` (${p.role})` : ""}` })
         : undefined;
       return (
-        <PlayerRow key={p.id} player={p} pick={pick} heroIconUrl={pick ? heroIconFor(pick.hero_name) : null} align={align} onClick={onClick} addable={!pick && !!onClick} />
+        <PlayerRow
+          key={p.id}
+          player={p}
+          pick={pick}
+          heroIconUrl={pick ? heroIconFor(pick.hero_name) : null}
+          align={align}
+          onClick={onClick}
+          addable={!pick && !!onClick}
+          positional={positional}
+          onSwapClick={onSwapClick && pick ? () => onSwapClick(p, pick!) : undefined}
+          swapSelected={swapSelectedPlayerId === p.id}
+        />
       );
     });
   }
@@ -242,9 +324,15 @@ export function DraftOverlay({
         </div>
       </div>
 
-      {interactive && (
-        <p className="text-center text-[10px] text-white/30 pb-2">Click any slot — filled to correct it, empty to add a pick or ban.</p>
-      )}
+      {swapSelectedPlayerId ? (
+        <p className="text-center text-[10px] text-signal pb-2">Now click ⇄ on a teammate to swap heroes with them, or click their ⇄ again to cancel.</p>
+      ) : interactive ? (
+        <p className="text-center text-[10px] text-white/30 pb-2">
+          Click any slot — filled to correct its hero, empty to add a pick or ban.{onSwapClick && " ⇄ swaps which player a hero is credited to."}
+        </p>
+      ) : onSwapClick ? (
+        <p className="text-center text-[10px] text-white/30 pb-2">⇄ swaps which player a hero is credited to.</p>
+      ) : null}
     </div>
   );
 }

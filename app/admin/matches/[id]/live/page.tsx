@@ -164,7 +164,6 @@ const DEFAULT_MOMENT_LABELS: Record<string, string> = {
   lord_steal: "Lord slain!",
   turtle_steal: "Turtle slain!",
   ace: "ACE!",
-  game_pause: "Game paused",
 };
 
 // Same fixed left-to-right draft order used across the admin (Players page
@@ -1476,6 +1475,18 @@ export default function LiveConsolePage() {
     return [`🏰 <b>Objectives</b>`, `${match?.team_a?.name} vs ${match?.team_b?.name}\n${match?.tournament?.name}`, ...lines.filter(Boolean)].join("\n\n");
   }
   const OBJECTIVE_ICONS: Record<string, string> = { tower: "🗼", lord: "👑", turtle: "🐢" };
+  // Surfaced in the button/input tooltips below — the actual timing/cap
+  // guards live in plausibleObjectiveTarget, this is just putting the same
+  // rules in front of the admin instead of leaving them invisible until an
+  // OCR read gets silently held back. A manual click/edit still always
+  // goes through (see incrementObjective/setObjectiveCount, which never
+  // gate the admin the way OCR reads do) — these are what OCR is allowed
+  // to auto-apply, not a hard limit on the admin's own count.
+  const OBJECTIVE_RULE_HINTS: Record<string, string> = {
+    tower: "Max 9 per team. OCR won't jump the count by more than 3 in one tick (a bigger jump is treated as a misread, not 4+ towers falling at once).",
+    lord: "First spawns ~08:00. Respawns exactly 3:00 after being slain — OCR won't count another kill sooner than that.",
+    turtle: "Max 4 per match (shared, not per side). First spawns ~02:00. No further turtle after ~06:00 since the last one — it becomes an early Lord instead.",
+  };
   async function incrementObjective(teamId: string, type: string) {
     if (!game || !match) return;
     // A one-click objective button is otherwise silent on the public Moment
@@ -2194,21 +2205,6 @@ export default function LiveConsolePage() {
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
-  // Tracks how long game_timer has failed to parse a valid mm:ss, in real
-  // elapsed time rather than a raw tick count — a plain "3 ticks" counter
-  // (at the 5s capture interval, 15s total) turned out to fire on brief,
-  // ordinary OCR misreads (a kill-cam or overlay transition briefly
-  // obscuring the timer), not just an actual pause, since tesseract isn't
-  // perfectly reliable frame-to-frame even mid-game. Widened to a real
-  // 30s-elapsed threshold instead, which also stays correct if a tick is
-  // ever delayed (a strict tick count would under-count real elapsed time
-  // in that case). The one case this is reserved for is "tracker went
-  // blank" inference (technical pause) — a blank timer alone can't
-  // otherwise distinguish a pause from a caster cutaway or the game
-  // actually ending (those have their own, better signals: the
-  // victory-banner OCR and the deterministic win-count math below).
-  const unreadableTimerSince = useRef<number | null>(null);
-  const pauseSuggested = useRef(false);
   // Map-setting detection only ever needs to fire once per game — without
   // this guard every OCR tick that still sees the map-select overlay on
   // screen would keep re-writing games.map, which is wasted work at best
@@ -2298,7 +2294,20 @@ export default function LiveConsolePage() {
     apply: () => void | Promise<void>;
   };
   const [flaggedReadings, setFlaggedReadings] = useState<Record<string, FlaggedReading>>({});
+  // Low-confidence reads (the same yellow/red bands confidenceColor below
+  // draws) are auto-ignored instead of queued for confirmation — a guard
+  // holding back a read Tesseract itself wasn't confident about in the
+  // first place is almost always a genuine misread, not a real correction
+  // worth interrupting the admin for. Only a genuinely high-confidence
+  // (green, 80+) read that a guard still held back, or one with no
+  // Tesseract confidence attached at all (null — can't be judged either
+  // way, so it's given the benefit of the doubt), actually reaches the
+  // "N readings need your confirmation" queue now.
   function flagReading(field: string, entry: Omit<FlaggedReading, "field" | "flaggedAt">) {
+    if (entry.confidence != null && entry.confidence < 80) {
+      dismissFlaggedReading(field);
+      return;
+    }
     setFlaggedReadings((prev) => ({ ...prev, [field]: { field, flaggedAt: Date.now(), ...entry } }));
   }
   function dismissFlaggedReading(field: string) {
@@ -3465,19 +3474,16 @@ export default function LiveConsolePage() {
   // Client-side ticking (in the public page) fills the gap between these
   // writes, using current_time_updated_at as the anchor.
   const lastPersistedSeconds = useRef<number | null>(null);
-  // This, unreadableTimerSince, and pauseSuggested all hold state for
-  // "the game currently being tracked" — reset whenever that changes
-  // (Game 1 finishes, Game 2 starts). lastPersistedSeconds is the
-  // never-decreases guard's memory of the last game-clock reading: left
-  // unreset, Game 2 starting back near 00:00 would look like a garbled
-  // decrease against Game 1's final ~20:00+ reading and get permanently
-  // rejected forever — "a new game is detected" (the validation spec's
-  // explicit exception to never-decreases) has to mean something, and a
-  // new game.id is exactly that signal.
+  // Reset whenever the game currently being tracked changes (Game 1
+  // finishes, Game 2 starts) — this is the never-decreases guard's memory
+  // of the last game-clock reading: left unreset, Game 2 starting back
+  // near 00:00 would look like a garbled decrease against Game 1's final
+  // ~20:00+ reading and get permanently rejected forever — "a new game is
+  // detected" (the validation spec's explicit exception to
+  // never-decreases) has to mean something, and a new game.id is exactly
+  // that signal.
   useEffect(() => {
     lastPersistedSeconds.current = null;
-    unreadableTimerSince.current = null;
-    pauseSuggested.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game?.id]);
   async function updateGameClock(mm: number, ss: number) {
@@ -4025,22 +4031,17 @@ export default function LiveConsolePage() {
             // normal one.
             const isGarbledDecrease = newSeconds != null && knownSeconds != null && newSeconds < knownSeconds;
             if (mmss && !isGarbledDecrease) {
-              unreadableTimerSince.current = null;
-              pauseSuggested.current = false;
               setMinute(Number(mmss[1]));
               setSecondOfMinute(Number(mmss[2]));
               updateGameClock(Number(mmss[1]), Number(mmss[2]));
               maybeAutoStartGame();
-            } else if (match?.state === "GAME_STARTED") {
-              // The one case reserved for "tracker went blank" inference — see
-              // the comment on unreadableTimerSince above.
-              if (unreadableTimerSince.current === null) unreadableTimerSince.current = Date.now();
-              const unreadableForMs = Date.now() - unreadableTimerSince.current;
-              if (unreadableForMs >= 30000 && !pauseSuggested.current) {
-                pauseSuggested.current = true;
-                setSuggestion({ type: "game_pause", raw: "Game timer unreadable for 30+ seconds" });
-              }
             }
+            // No-longer-needed feature (removed per explicit request): this
+            // used to infer a "game paused" suggestion after the timer went
+            // unreadable for 30+ seconds. Timer just does nothing on a
+            // blank/garbled read now — same as every other unreadable
+            // tracker — an admin sets Technical Pause manually via the
+            // phase stepper instead of being prompted to.
             break;
           }
           case "countdown": {
@@ -4190,10 +4191,6 @@ export default function LiveConsolePage() {
               const teamId = guessWinnerFromText(trimmed);
               if (teamId) setSuggestedWinner(teamId);
             }
-            break;
-          }
-          case "pause_word": {
-            if (/pause/i.test(trimmed)) setSuggestion({ type: "game_pause", raw: trimmed });
             break;
           }
         }
@@ -4355,6 +4352,19 @@ export default function LiveConsolePage() {
             .reduce((sum, s) => sum + (s.deaths ?? 0), 0);
           if (Math.abs(opponentDeathSum - override) >= 3) {
             kdaMismatch = `${label}: team kills (${override}) doesn't match the opposing team's total deaths (${opponentDeathSum}) — one kill should always mean one death somewhere.`;
+            break;
+          }
+          // "A player's deaths cannot exceed enemy team kills" — every
+          // death of an opposing player was caused by one of this team's
+          // kills, so no single opposing player's death count can exceed
+          // this team's total. Same tolerance/soft-signal treatment as
+          // the two checks above.
+          const overDyingPlayer = stats
+            .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === opponentTeamId)
+            .find((s) => (s.deaths ?? 0) > playerKillSum + 2);
+          if (overDyingPlayer) {
+            const name = players.find((p) => p.id === overDyingPlayer.player_id)?.ign ?? "A player";
+            kdaMismatch = `${name}'s deaths (${overDyingPlayer.deaths}) exceed ${label}'s total kills (${playerKillSum}) — a death can't outnumber the enemy's kills, one of the two OCR reads is likely stale or wrong.`;
             break;
           }
         }
@@ -7260,7 +7270,7 @@ export default function LiveConsolePage() {
                                         decrementObjective(team.id, type);
                                       }}
                                       disabled={!objectivesEditable}
-                                      title={`${team.name} takes a ${type} — right-click to undo`}
+                                      title={`${team.name} takes a ${type} — right-click to undo. ${OBJECTIVE_RULE_HINTS[type]} (This button always applies — those limits are what OCR auto-reads are held to, not you.)`}
                                       className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
                                     >
                                       <span>{OBJECTIVE_ICONS[type]}</span>
@@ -7490,15 +7500,28 @@ export default function LiveConsolePage() {
                           </button>
                         </div>
                       </div>
+                      {/* Same teamAKillsTotal/teamBKillsTotal the sticky
+                          header above and the public match page both use
+                          (Math.max of the OCR team-kills override and the
+                          summed player kills) — this used to show a
+                          different, stricter number (pure player-kill sum,
+                          or "Not shown" entirely when it didn't reconcile
+                          with enemy deaths), which meant this page could
+                          show two different Team Kills counts for the same
+                          game at the same time. teamKillsValid still drives
+                          a warning note, just not a second, disagreeing
+                          number. */}
                       <div className="flex items-center gap-4 text-xs">
                         <span className="text-white/50">Team kills:</span>
-                        {teamKillsValid ? (
-                          <span className="font-bold tabular-nums">
-                            {match.team_a?.name} {computedTeamAKills} – {computedTeamBKills} {match.team_b?.name}
-                          </span>
-                        ) : (
-                          <span className="text-amber-300" title="Team kills must equal the enemy's summed deaths — fix the mismatched K/D/A row(s) below before this shows">
-                            Not shown — kills/deaths don&apos;t reconcile yet
+                        <span className="font-bold tabular-nums">
+                          {match.team_a?.name} {teamAKillsTotal} – {teamBKillsTotal} {match.team_b?.name}
+                        </span>
+                        {!teamKillsValid && (
+                          <span
+                            className="text-amber-300"
+                            title="Team A's summed kills should equal Team B's summed deaths (and vice versa) — one of the K/D/A rows below is likely lagging or misread"
+                          >
+                            ⚠ kills/deaths not fully reconciled yet
                           </span>
                         )}
                       </div>

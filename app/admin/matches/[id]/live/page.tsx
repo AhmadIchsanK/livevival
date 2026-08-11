@@ -5254,6 +5254,105 @@ export default function LiveConsolePage() {
                 ⏸ Technical pause — clock frozen, capture halted. Resume with the phase stepper above once play restarts.
               </div>
             )}
+
+            {/* Moment Timeline — moved to the very top of the action deck
+                (was at the bottom, "where an operator's eye lands after
+                every other control" — but that meant it was the thing
+                most often scrolled past, not seen). Full keyMoments list
+                now, not sliced to 5 — the public match page shows every
+                logged moment for the game and this should match it
+                exactly; a truncated admin-side list was actually showing
+                *less* than what viewers see, including losing early
+                pick/ban entries off the end once enough later moments
+                logged. The max-h/overflow-y-auto below is what keeps this
+                compact (~5 rows visible) — scrolling reveals the rest,
+                nothing is discarded. */}
+            <section className="space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="font-bold">Moment Timeline</h2>
+                {lastAction && (
+                  <button
+                    onClick={undoLastAction}
+                    title="Ctrl+Z also does this — undoes only the single most recent logged action"
+                    className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 text-white/60 hover:text-white"
+                  >
+                    ⎌ Undo: {lastAction.label} (Ctrl+Z)
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
+                {[...keyMoments].reverse().map((km) => {
+                  const player = players.find((p) => p.id === km.player_id);
+                  const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
+                  // Pick/ban moments carry the hero name only inside the
+                  // formatted description text (no separate column on
+                  // key_moments) — logPickBanMoment always writes it as
+                  // "<team> picks|bans <hero>[ — <player>]", so this parses
+                  // it back out to look up the icon. Falls back to no icon
+                  // if the text doesn't match (a manually-edited entry).
+                  const heroName =
+                    (km.type === "pick" || km.type === "ban") && km.description
+                      ? km.description.split(" — ")[0].match(/ (?:picks|bans) (.+)$/)?.[1] ?? null
+                      : null;
+                  const heroIconUrl = heroName ? heroIconFor(heroName) : null;
+                  if (editingMomentId === km.id) {
+                    return (
+                      <div key={km.id} className="px-3 py-2 rounded bg-signal/20 flex items-center gap-1.5">
+                        <input
+                          value={editingMomentText}
+                          onChange={(e) => setEditingMomentText(e.target.value)}
+                          className="bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
+                          autoFocus
+                        />
+                        <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
+                        <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div
+                      key={km.id}
+                      className={`px-3 py-2 rounded flex items-center gap-1.5 ${
+                        km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
+                      }`}
+                    >
+                      {heroIconUrl && <HeroIcon url={heroIconUrl} name={heroName} size="xs" className="shrink-0" />}
+                      <span className="flex-1 min-w-0 truncate">
+                        {km.is_key_moment && "⭐ "}
+                        {km.minute_mark}&apos; {label}
+                        {km.screenshot_url && " 📸"}
+                      </span>
+                      <button
+                        onClick={() => {
+                          setEditingMomentId(km.id);
+                          setEditingMomentText(label);
+                        }}
+                        className="text-white/30 hover:text-white/70 normal-case shrink-0"
+                        title="Edit"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        onClick={() =>
+                          postToTelegram(
+                            `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
+                            { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" },
+                            km.screenshot_url ?? undefined
+                          )
+                        }
+                        className="text-white/30 hover:text-signal normal-case shrink-0"
+                        title="Post to Telegram"
+                      >
+                        📢
+                      </button>
+                      <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case shrink-0">✕</button>
+                    </div>
+                  );
+                })}
+                {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
+              </div>
+            </section>
+
             {/* Everything a live game needs constantly — declare the
                 winner, log an objective, log a moment — sits at the very
                 top of this column, ahead of the draft board and the rest
@@ -6486,91 +6585,9 @@ export default function LiveConsolePage() {
         ))}
       </section>
 
-      {/* Moment Timeline — the actual output (what's already been logged),
-          physically separated from the "add a moment" controls above,
-          which stay next to the map selector/objectives/screenshot
-          controls further up. Living at the bottom of this column, right
-          after the scoreboard, is where an operator's eye lands after
-          every other control on this page — the newest logged action is
-          always the last thing rendered here. */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="font-bold">Moment Timeline</h2>
-          {lastAction && (
-            <button
-              onClick={undoLastAction}
-              title="Ctrl+Z also does this — undoes only the single most recent logged action"
-              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 text-white/60 hover:text-white"
-            >
-              ⎌ Undo: {lastAction.label} (Ctrl+Z)
-            </button>
-          )}
-        </div>
-        {/* Vertical, not a wrapping row of chips — sized to show ~6
-            moments before scrolling (a tall unbounded list was pushing
-            everything below it too far down the page), newest first (the
-            query orders by minute_mark ascending, so this reverses it for
-            display), same pattern as the public page's own Moment list. */}
-        <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
-          {[...keyMoments].reverse().slice(0, 5).map((km) => {
-            const player = players.find((p) => p.id === km.player_id);
-            const label = km.description ?? `${km.type.replace(/_/g, " ")}${player ? ` — ${player.ign}` : ""}`;
-            if (editingMomentId === km.id) {
-              return (
-                <div key={km.id} className="px-3 py-2 rounded bg-signal/20 flex items-center gap-1.5">
-                  <input
-                    value={editingMomentText}
-                    onChange={(e) => setEditingMomentText(e.target.value)}
-                    className="bg-white/10 border border-white/10 rounded px-1.5 py-0.5 text-xs w-48"
-                    autoFocus
-                  />
-                  <button onClick={() => updateKeyMoment(km.id, editingMomentText)} className="text-white/60 hover:text-emerald-400 normal-case">✓</button>
-                  <button onClick={() => setEditingMomentId(null)} className="text-white/30 hover:text-red-400 normal-case">✕</button>
-                </div>
-              );
-            }
-            return (
-              <div
-                key={km.id}
-                className={`px-3 py-2 rounded flex items-center gap-1.5 ${
-                  km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
-                }`}
-              >
-                <span className="flex-1 min-w-0 truncate">
-                  {km.is_key_moment && "⭐ "}
-                  {km.minute_mark}&apos; {label}
-                  {km.screenshot_url && " 📸"}
-                </span>
-                <button
-                  onClick={() => {
-                    setEditingMomentId(km.id);
-                    setEditingMomentText(label);
-                  }}
-                  className="text-white/30 hover:text-white/70 normal-case shrink-0"
-                  title="Edit"
-                >
-                  ✎
-                </button>
-                <button
-                  onClick={() =>
-                    postToTelegram(
-                      `🔥 <b>${label}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}`,
-                      { entityType: "key_moment", entityId: km.id, notificationType: "key_moment" },
-                      km.screenshot_url ?? undefined
-                    )
-                  }
-                  className="text-white/30 hover:text-signal normal-case shrink-0"
-                  title="Post to Telegram"
-                >
-                  📢
-                </button>
-                <button onClick={() => deleteKeyMoment(km.id)} className="text-white/30 hover:text-red-400 normal-case shrink-0">✕</button>
-              </div>
-            );
-          })}
-          {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
-        </div>
-      </section>
+      {/* Moment Timeline moved to the top of the action deck — see the
+          section right after the paused-state banner near the start of
+          this pane. */}
         </>
       )}
 

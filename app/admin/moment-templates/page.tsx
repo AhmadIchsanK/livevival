@@ -27,7 +27,7 @@ const TYPES = [
 // template regardless of the match's/game's current phase.
 const PHASES = [
   "MATCH_NOT_STARTED", "DRAFT_STARTED", "DRAFT_COMPLETE", "GAME_STARTED",
-  "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM", "STREAM_ENDED",
+  "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "STREAM_ENDED",
 ];
 
 export default function MomentTemplatesPage() {

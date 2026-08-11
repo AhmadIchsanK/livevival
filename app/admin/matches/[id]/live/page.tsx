@@ -1267,7 +1267,25 @@ export default function LiveConsolePage() {
   // "phase_notice" rows are Telegram config only (see /admin/moment-templates)
   // — a phase transition, not something the admin picks from this dropdown.
   const availableTemplates = momentTemplates.filter((t) => t.type !== "phase_notice" && (!t.phase || t.phase === match?.state));
-  const selectedTemplate = momentTemplates.find((t) => t.id === kmTemplateId) ?? null;
+  // Free-typed moments used to depend on some admin having pre-created a
+  // "custom"-typed row on /admin/moment-templates for this phase —
+  // otherwise the option never appeared in the dropdown at all, and
+  // "Log a moment" had no way to log anything that wasn't a template.
+  // This sentinel makes a genuinely custom entry always available, no
+  // setup required — logKeyMoment already knows what to do with
+  // type "custom" (see its kmCustomText branch), this just constructs
+  // that template object on the fly instead of requiring one in the DB.
+  const CUSTOM_TEMPLATE_ID = "__custom__";
+  const CUSTOM_TEMPLATE: MomentTemplate = {
+    id: CUSTOM_TEMPLATE_ID,
+    type: "custom",
+    label_template: "Custom moment...",
+    phase: null,
+    telegram_enabled: false,
+    telegram_message_template: null,
+  };
+  const selectedTemplate =
+    kmTemplateId === CUSTOM_TEMPLATE_ID ? CUSTOM_TEMPLATE : momentTemplates.find((t) => t.id === kmTemplateId) ?? null;
 
   // Shared {placeholder} substitution for both moment-log and phase-notice
   // Telegram messages — {team}/{hero}/{player} match the moment_templates
@@ -1651,8 +1669,8 @@ export default function LiveConsolePage() {
   // catalog for the selected phase, minus whatever's already added. Kept
   // deliberately narrow per-phase (only what's reliably readable and
   // actually needed) rather than every variable that could theoretically
-  // be scraped off screen — GAME_FINISHED/TECHNICAL_PAUSE/SERIES_FINISHED/
-  // CUSTOM have no tracker of their own at all (victory/pause banners
+  // be scraped off screen — GAME_FINISHED/TECHNICAL_PAUSE/SERIES_FINISHED
+  // have no tracker of their own at all (victory/pause banners
   // proved unreliable and the phase transitions themselves are driven by
   // the admin's own controls, not OCR); DRAFT_COMPLETE likewise has none
   // (draft results come from the manual ban/pick simulation, not OCR).
@@ -1908,12 +1926,6 @@ export default function LiveConsolePage() {
   // outline. ON: full drag/resize/click-to-edit behavior, unchanged from
   // before this toggle existed.
   const [trackerEditMode, setTrackerEditMode] = useState(false);
-  // Show/hide the tracker management tools (auto-place, add tracker, the
-  // full tracker table) — once a match's regions are all calibrated this
-  // is rarely touched again, so it's collapsed by default and reachable
-  // via a small toggle instead of always taking up space above the
-  // capture readings.
-  const [showTrackerTools, setShowTrackerTools] = useState(false);
   const [pendingBox, setPendingBox] = useState<RegionBox | null>(null);
   const [pendingBoxPhase, setPendingBoxPhase] = useState<string>("");
   const [pendingBoxField, setPendingBoxField] = useState<string>("");
@@ -2367,25 +2379,6 @@ export default function LiveConsolePage() {
     })();
   }, [matchId, match?.tournament_id]);
 
-  // Adding a tracker creates the capture_regions row with no coordinates yet
-  // (calibration is a separate, explicit step below) — the phase-scoped
-  // unique index (match_id, phase, field) is the hard backstop against a
-  // duplicate slipping through; a friendly message covers the common case
-  // instead of just surfacing the raw constraint-violation error.
-  async function addTracker(phase: string, category: TrackerCategory, field: string, label: string) {
-    const { data, error } = await supabase
-      .from("capture_regions")
-      .insert({ match_id: matchId, phase, category, field, label })
-      .select("id")
-      .single();
-    if (error || !data) {
-      setError(error?.message.includes("duplicate key") ? `"${label}" is already tracked for this phase.` : error?.message ?? "Failed to add tracker");
-      return;
-    }
-    setTrackers((prev) => [...prev, { id: data.id, phase, category, field, label }]);
-    setRegions((prev) => ({ ...prev, [field]: null }));
-  }
-
   async function removeTracker(tracker: Tracker) {
     await supabase.from("capture_regions").delete().eq("id", tracker.id);
     setTrackers((prev) => prev.filter((t) => t.id !== tracker.id));
@@ -2417,43 +2410,6 @@ export default function LiveConsolePage() {
       return next;
     });
   }
-
-  // ── Tracker list: add + sortable/searchable/filterable table ─────────
-  const [newTrackerPhase, setNewTrackerPhase] = useState<string>(
-    match?.state && TRACKER_PHASES.includes(match.state) ? match.state : TRACKER_PHASES[0]
-  );
-  const [newTrackerChoice, setNewTrackerChoice] = useState("");
-  const [trackerSearch, setTrackerSearch] = useState("");
-  const [trackerPhaseFilter, setTrackerPhaseFilter] = useState("");
-  const [trackerCategoryFilter, setTrackerCategoryFilter] = useState("");
-  const [trackerSort, setTrackerSort] = useState<{ key: "phase" | "category" | "label" | "calibrated"; dir: 1 | -1 }>({
-    key: "phase",
-    dir: 1,
-  });
-  function toggleTrackerSort(key: typeof trackerSort.key) {
-    setTrackerSort((prev) => (prev.key === key ? { key, dir: prev.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
-  }
-  // Whatever's in the catalog for the selected phase, minus fields already
-  // tracked there — the phase-scoped unique index is the hard backstop,
-  // this is just so the dropdown doesn't even offer a duplicate.
-  const trackerCatalogOptions = catalogForPhase(newTrackerPhase).filter(
-    (opt) => !trackers.some((t) => t.phase === newTrackerPhase && t.field === opt.field)
-  );
-  async function handleAddTracker() {
-    const opt = trackerCatalogOptions.find((o) => o.field === newTrackerChoice);
-    if (!opt) return;
-    await addTracker(newTrackerPhase, opt.category, opt.field, opt.label);
-    setNewTrackerChoice("");
-  }
-  const visibleTrackers = trackers
-    .filter((t) => (trackerPhaseFilter ? t.phase === trackerPhaseFilter : true))
-    .filter((t) => (trackerCategoryFilter ? t.category === trackerCategoryFilter : true))
-    .filter((t) => (trackerSearch ? t.label.toLowerCase().includes(trackerSearch.toLowerCase()) : true))
-    .sort((a, b) => {
-      const dir = trackerSort.dir;
-      if (trackerSort.key === "calibrated") return (Number(!!regions[a.field]) - Number(!!regions[b.field])) * dir;
-      return a[trackerSort.key].localeCompare(b[trackerSort.key]) * dir;
-    });
 
   async function saveRegion(field: string, box: RegionBox) {
     setRegions((prev) => ({ ...prev, [field]: box }));
@@ -2568,6 +2524,94 @@ export default function LiveConsolePage() {
       setAutoPlacingTrackers(false);
     }
   }
+  // ── Named tracker templates ────────────────────────────────────────
+  // defaultTrackerLayout() above is one hardcoded guess at a "standard"
+  // MLBB broadcast layout — real broadcasts vary tournament to
+  // tournament. This lets an admin save whatever they've actually
+  // calibrated (fully or partially) under a name, then apply that same
+  // layout to any other match instead of nudging every box by hand again.
+  // capture_regions rows with template_name set (match_id/tournament_id
+  // both null) are the third scope alongside the existing per-match and
+  // per-tournament-default rows.
+  type TrackerTemplate = { name: string; regionCount: number };
+  const [trackerTemplates, setTrackerTemplates] = useState<TrackerTemplate[]>([]);
+  const [templatesLoaded, setTemplatesLoaded] = useState(false);
+  const [savingTemplateAs, setSavingTemplateAs] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState("");
+  const [selectedTrackerTemplate, setSelectedTrackerTemplate] = useState("");
+  const [applyingTemplate, setApplyingTemplate] = useState(false);
+
+  const loadTrackerTemplates = useCallback(async () => {
+    const { data } = await supabase.from("capture_regions").select("template_name").not("template_name", "is", null);
+    const counts = new Map<string, number>();
+    for (const row of data ?? []) {
+      const name = (row as { template_name: string }).template_name;
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    setTrackerTemplates(Array.from(counts, ([name, regionCount]) => ({ name, regionCount })).sort((a, b) => a.name.localeCompare(b.name)));
+    setTemplatesLoaded(true);
+  }, []);
+  useEffect(() => {
+    loadTrackerTemplates();
+  }, [loadTrackerTemplates]);
+
+  // Saves every currently-calibrated region (any phase, not just
+  // GAME_STARTED — a real template should carry the draft/technical-pause
+  // layouts too) under the given name. Upserts per field, so re-saving
+  // under the same name after recalibrating a few boxes just updates
+  // those rows rather than erroring on the unique index.
+  async function saveTrackersAsTemplate(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    setSavingTemplateAs(true);
+    try {
+      const rows = trackers
+        .filter((t) => regions[t.field])
+        .map((t) => {
+          const box = regions[t.field]!;
+          return {
+            template_name: trimmed,
+            phase: t.phase,
+            category: t.category,
+            field: t.field,
+            label: t.label,
+            x_pct: box.xPct,
+            y_pct: box.yPct,
+            w_pct: box.wPct,
+            h_pct: box.hPct,
+          };
+        });
+      if (rows.length === 0) return;
+      await supabase.from("capture_regions").upsert(rows, { onConflict: "template_name,phase,field" });
+      setNewTemplateName("");
+      await loadTrackerTemplates();
+    } finally {
+      setSavingTemplateAs(false);
+    }
+  }
+
+  // Same "only ever fills in whatever's missing" contract as
+  // autoPlaceDefaultTrackers — applying a template never overwrites a
+  // tracker/region that's already there, across every phase the template
+  // covers, not just GAME_STARTED.
+  async function applyTrackerTemplate(name: string) {
+    if (!name) return;
+    setApplyingTemplate(true);
+    try {
+      const { data } = await supabase
+        .from("capture_regions")
+        .select("phase, category, field, label, x_pct, y_pct, w_pct, h_pct")
+        .eq("template_name", name);
+      for (const row of data ?? []) {
+        const r = row as { phase: string; category: TrackerCategory; field: string; label: string; x_pct: number; y_pct: number; w_pct: number; h_pct: number };
+        if (trackers.some((t) => t.phase === r.phase && t.field === r.field)) continue;
+        await addTrackerWithRegion(r.phase, r.category, r.field, r.label, { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct });
+      }
+    } finally {
+      setApplyingTemplate(false);
+    }
+  }
+
   // Fires once per match, the first time it has zero GAME_STARTED trackers
   // after the tournament-defaults/match-regions load effect has actually
   // resolved (trackersLoaded guards against firing on the transient empty
@@ -3383,60 +3427,6 @@ export default function LiveConsolePage() {
     if (game && kdaParsed.length > 0) loadAll();
   }
 
-  // Tesseract page-confidence below which a *recent* read still gets
-  // flagged — small stylized broadcast-overlay text runs lower than prose
-  // even on a correct read, so this only catches genuinely rough ones
-  // rather than second-guessing every normal read.
-  const OCR_CONFIDENCE_WARN_THRESHOLD = 40;
-  // At-a-glance dot for one tracker's live reading — see trackerHealth
-  // above. Diagnostic only: never read by anything else in this file.
-  // Two independent failure modes collapse into one glance here — a field
-  // that's stopped updating, and a field that IS updating but with a
-  // garbage OCR read (Tesseract's own confidence on the last successful
-  // read is low) — both show the same amber/red, while a healthy field
-  // stays a small, easy-to-ignore dim dot. Skipped entirely for a tracker
-  // outside the match's current live phase — that row is already dimmed
-  // and isn't being read this tick, so a stale dot there would just be
-  // noise, not a diagnosis.
-  function renderFreshnessDot(field: string, isActivePhase: boolean) {
-    if (!isActivePhase) return null;
-    const health = trackerHealth[field];
-    const confPart = health?.confidence != null ? ` (${Math.round(health.confidence)}% OCR confidence)` : "";
-    if (!health || health.lastGoodAt == null) {
-      return (
-        <span
-          title={`No successful OCR read yet${confPart}`}
-          className="inline-block w-1.5 h-1.5 rounded-full bg-white/20 align-middle ml-1.5 shrink-0"
-        />
-      );
-    }
-    const ageSec = Math.round((Date.now() - health.lastGoodAt) / 1000);
-    const ageLabel = ageSec < 1 ? "just now" : `${ageSec}s ago`;
-    const lowConfidence = health.confidence != null && health.confidence < OCR_CONFIDENCE_WARN_THRESHOLD;
-    if (ageSec > 30) {
-      return (
-        <span
-          title={`No successful read in ${ageLabel} — check this region${confPart}`}
-          className="inline-block w-2.5 h-2.5 rounded-full bg-red-500 ring-2 ring-red-500/40 animate-pulse align-middle ml-1.5 shrink-0"
-        />
-      );
-    }
-    if (ageSec > 15 || lowConfidence) {
-      return (
-        <span
-          title={`${lowConfidence ? "Low-confidence read" : "Getting stale"} — updated ${ageLabel}${confPart}`}
-          className="inline-block w-2 h-2 rounded-full bg-yellow-400 align-middle ml-1.5 shrink-0"
-        />
-      );
-    }
-    return (
-      <span
-        title={`Updated ${ageLabel}${confPart}`}
-        className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500/50 align-middle ml-1.5 shrink-0"
-      />
-    );
-  }
-
   // captureTick/captureFrameAndAnalyze are plain functions recreated on
   // every render, closing over that render's state — regions, match, game,
   // players, heroes, stagedDraftActions, all of it. A bare
@@ -4094,13 +4084,10 @@ export default function LiveConsolePage() {
     TECHNICAL_PAUSE: "Technical pause — tracker just looks for the word \"pause\" to confirm what you already flagged manually.",
   };
   const NO_TRACKER_PHASE_HINT = "No tracker for this phase — OCR capture only runs during Game ongoing or Technical pause. Everything else here is driven by the manual controls above.";
-  const [customLabelDraft, setCustomLabelDraft] = useState("");
   async function setMatchPhase(newState: string) {
     if (!match) return;
     const previousState = match.state;
-    const payload: { state: string; custom_state_label?: string | null } = { state: newState };
-    if (newState !== "CUSTOM") payload.custom_state_label = null;
-    const { error } = await supabase.from("matches").update(payload).eq("id", match.id);
+    const { error } = await supabase.from("matches").update({ state: newState }).eq("id", match.id);
     if (error) {
       setError(error.message);
       return;
@@ -4197,12 +4184,6 @@ export default function LiveConsolePage() {
     }
     loadAll();
   }
-  async function saveCustomLabel() {
-    if (!match) return;
-    await supabase.from("matches").update({ custom_state_label: customLabelDraft }).eq("id", match.id);
-    loadAll();
-  }
-
   // Only a genuine load failure (the match/game never came back at all)
   // is worth a full-page message — every other setError() call happens
   // once the console is already up and running (a rejected phase change,
@@ -4262,8 +4243,8 @@ export default function LiveConsolePage() {
   // Phase floors: neither of these made any sense before draft's done
   // (hero picks aren't final) or before the game's actually started
   // (nothing to count yet) — previously clickable in every phase.
-  const SCOREBOARD_EDITABLE_PHASES = new Set(["DRAFT_COMPLETE", "GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM"]);
-  const OBJECTIVES_EDITABLE_PHASES = new Set(["GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE", "CUSTOM"]);
+  const SCOREBOARD_EDITABLE_PHASES = new Set(["DRAFT_COMPLETE", "GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE"]);
+  const OBJECTIVES_EDITABLE_PHASES = new Set(["GAME_STARTED", "GAME_FINISHED", "SERIES_FINISHED", "TECHNICAL_PAUSE"]);
   // A finished game/series needs one extra explicit click before its
   // result data (scoreboard, objectives, hero picks/bans) opens back up
   // for editing — guards against an accidental click quietly altering a
@@ -4410,29 +4391,85 @@ export default function LiveConsolePage() {
             ))}
           </div>
         )}
-        {/* Floating label + Lock/Cancel, positioned right above or below
-            the box itself (see regionOverlayPos) instead of only in a
-            control strip below the whole canvas — the variable name is
-            shown here inline, not just via the box's hover title, so
-            selecting/placing a tracker is immediately legible without a
-            scroll or a hover. */}
-        {calibratingField && draftBox && (
-          <div
-            className="absolute z-10 flex items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg whitespace-nowrap"
-            style={{ left: `${regionOverlayPos(draftBox).left}%`, top: `${regionOverlayPos(draftBox).top}%` }}
-            onMouseDown={(e) => e.stopPropagation()}
-          >
-            <span className="text-[11px] font-semibold text-white">
-              {trackers.find((t) => t.field === calibratingField)?.label ?? calibratingField}
-            </span>
-            <button onClick={lockDraftBox} className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10">
-              🔒 Lock
-            </button>
-            <button onClick={cancelDraftBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
-              Cancel
-            </button>
-          </div>
-        )}
+        {/* Floating tracker-management panel, positioned right above or
+            below the box itself (see regionOverlayPos) instead of only in
+            a control strip below the whole canvas. This is now the only
+            place add/remove/rename/clear/save-default live — the old
+            tracker management table below the video is gone; clicking any
+            calibrated box (or finishing a new one) opens this instead. */}
+        {calibratingField && draftBox && (() => {
+          const tracker = trackers.find((t) => t.field === calibratingField);
+          const isRenaming = tracker && trackerLabelDrafts[tracker.id] != null;
+          return (
+            <div
+              className="absolute z-10 flex flex-col gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg whitespace-nowrap"
+              style={{ left: `${regionOverlayPos(draftBox).left}%`, top: `${regionOverlayPos(draftBox).top}%` }}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              {isRenaming ? (
+                <div className="flex gap-1">
+                  <input
+                    autoFocus
+                    value={trackerLabelDrafts[tracker!.id]}
+                    onChange={(e) => setTrackerLabelDrafts((prev) => ({ ...prev, [tracker!.id]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") renameTracker(tracker!, trackerLabelDrafts[tracker!.id]);
+                    }}
+                    className="bg-white/10 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-32"
+                  />
+                  <button onClick={() => renameTracker(tracker!, trackerLabelDrafts[tracker!.id])} className="text-emerald-400 text-xs">✓</button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => tracker && setTrackerLabelDrafts((prev) => ({ ...prev, [tracker.id]: tracker.label }))}
+                  title="Click to rename"
+                  className="text-[11px] font-semibold text-white text-left hover:text-signal"
+                >
+                  {tracker?.label ?? calibratingField}
+                </button>
+              )}
+              <div className="flex items-center gap-1.5">
+                <button onClick={lockDraftBox} className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10">
+                  🔒 Lock
+                </button>
+                {regions[calibratingField] && (
+                  <button
+                    onClick={() => {
+                      clearRegionCoords(calibratingField);
+                      setDraftBox(null);
+                    }}
+                    title="Clear calibration (keeps the tracker)"
+                    className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10"
+                  >
+                    Clear
+                  </button>
+                )}
+                {tracker && regions[calibratingField] && (
+                  <button
+                    onClick={() => saveRegionAsTournamentDefault(tracker)}
+                    title="New matches in this tournament will start with this tracker already calibrated"
+                    className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10"
+                  >
+                    {savedDefaultField === tracker.field ? "Saved ✓" : "Save default"}
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    if (tracker) removeTracker(tracker);
+                    cancelDraftBox();
+                  }}
+                  title="Remove this tracker entirely"
+                  className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
+                >
+                  Remove
+                </button>
+                <button onClick={cancelDraftBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          );
+        })()}
         {/* Not yet drawn at all — a one-line hint since the empty
             container gives no other cue to click-drag. */}
         {calibratingField && !draftBox && (
@@ -4870,17 +4907,6 @@ export default function LiveConsolePage() {
               onSelect={(phase) => handlePhaseChange(phase)}
               disabled={isContributor}
             />
-          )}
-          {match.state === "CUSTOM" && (
-            <span className="flex items-center gap-1">
-              <input
-                value={customLabelDraft || match.custom_state_label || ""}
-                onChange={(e) => setCustomLabelDraft(e.target.value)}
-                placeholder="e.g. TVC / caster session"
-                className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs w-48"
-              />
-              <button onClick={saveCustomLabel} className="lv-btn-ghost !px-2 !py-1 text-xs">Save</button>
-            </span>
           )}
           {/* Match status — previously only settable from the admin/matches
               list, so an admin already deep in the live console had to leave
@@ -5346,222 +5372,76 @@ export default function LiveConsolePage() {
                   </div>
                 )}
 
+                {/* Tracker management is now entirely on the video itself
+                    (see trackerOverlay above): drag empty space to add,
+                    click any box to resize/rename/clear/remove. This
+                    strip is just the two things that don't make sense as
+                    a drag gesture — bulk-filling a starting layout, and a
+                    manual override for the countdown clock. */}
                 {captureMode === "manual" && (
-                  <button
-                    onClick={() => setShowTrackerTools((v) => !v)}
-                    className="w-full text-left text-xs rounded px-3 py-2 border border-white/10 hover:bg-white/10 flex items-center justify-between gap-2 text-white/60"
-                  >
-                    <span>Tracker management (auto-place, add/edit trackers)</span>
-                    <span>{showTrackerTools ? "▾ Hide" : "▸ Show"}</span>
-                  </button>
-                )}
-
-                {captureMode === "manual" && showTrackerTools && (
-                  <div className="space-y-3">
-                    {/* Fires automatically once per match the first time it
-                        has zero GAME_STARTED trackers (see the
-                        autoPlacedForMatch effect) — this button is only for
-                        re-running it later, e.g. after clearing everything
-                        out, since it only ever fills in fields that aren't
-                        already tracked. */}
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={autoPlaceDefaultTrackers}
                       disabled={autoPlacingTrackers}
-                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40"
+                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 whitespace-nowrap"
                       title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
                     >
-                      {autoPlacingTrackers ? "Placing default trackers…" : "⊞ Auto-place default trackers"}
+                      {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place default trackers"}
                     </button>
-                    {/* Add tracker — categorized by phase, catalog already
-                        excludes whatever's tracked for that phase; the
-                        phase-scoped DB unique index is the hard backstop. */}
-                    <div className="border border-white/10 rounded p-2 flex flex-wrap gap-2 items-center">
-                      <select
-                        value={newTrackerPhase}
-                        onChange={(e) => {
-                          setNewTrackerPhase(e.target.value);
-                          setNewTrackerChoice("");
-                        }}
-                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                      >
-                        {TRACKER_PHASES.map((p) => (
-                          <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={newTrackerChoice}
-                        onChange={(e) => setNewTrackerChoice(e.target.value)}
-                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs flex-1 min-w-[220px]"
-                      >
-                        <option value="">
-                          {catalogForPhase(newTrackerPhase).length === 0
-                            ? "Nothing to track in this phase"
-                            : trackerCatalogOptions.length === 0
-                            ? "Everything available is already tracked for this phase"
-                            : "Select a variable to track..."}
-                        </option>
-                        {trackerCatalogOptions.map((opt) => (
-                          <option key={opt.field} value={opt.field}>{opt.label}</option>
-                        ))}
-                      </select>
+                    {templatesLoaded && trackerTemplates.length > 0 && (
+                      <div className="flex items-center gap-1">
+                        <select
+                          value={selectedTrackerTemplate}
+                          onChange={(e) => setSelectedTrackerTemplate(e.target.value)}
+                          className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                        >
+                          <option value="">Apply a saved template...</option>
+                          {trackerTemplates.map((t) => (
+                            <option key={t.name} value={t.name}>{t.name} ({t.regionCount})</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={() => applyTrackerTemplate(selectedTrackerTemplate)}
+                          disabled={!selectedTrackerTemplate || applyingTemplate}
+                          className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                          title="Fills in whatever this template has for any field not already tracked — never touches ones that already are"
+                        >
+                          {applyingTemplate ? "Applying…" : "Apply"}
+                        </button>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1">
+                      <input
+                        value={newTemplateName}
+                        onChange={(e) => setNewTemplateName(e.target.value)}
+                        placeholder="Save current layout as..."
+                        className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
+                      />
                       <button
-                        onClick={handleAddTracker}
-                        disabled={!newTrackerChoice}
-                        className="lv-btn-primary !px-3 !py-1.5 disabled:opacity-40"
+                        onClick={() => saveTrackersAsTemplate(newTemplateName)}
+                        disabled={!newTemplateName.trim() || savingTemplateAs}
+                        className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                        title="Saves every currently-calibrated region under this name, reusable on any future match"
                       >
-                        + Add tracker
+                        {savingTemplateAs ? "Saving…" : "Save as template"}
                       </button>
                     </div>
-
-                    {trackers.length === 0 ? (
-                      <p className="text-xs text-white/40 border border-white/10 rounded p-3">
-                        No trackers configured yet for this match — add one above for whichever phase you want to start with.
-                      </p>
-                    ) : (
-                      <>
-                        <div className="flex flex-wrap gap-2 items-center">
-                          <input
-                            value={trackerSearch}
-                            onChange={(e) => setTrackerSearch(e.target.value)}
-                            placeholder="Search trackers..."
-                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs flex-1 min-w-[160px]"
-                          />
-                          <select
-                            value={trackerPhaseFilter}
-                            onChange={(e) => setTrackerPhaseFilter(e.target.value)}
-                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                          >
-                            <option value="">All phases</option>
-                            {TRACKER_PHASES.map((p) => (
-                              <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                            ))}
-                          </select>
-                          <select
-                            value={trackerCategoryFilter}
-                            onChange={(e) => setTrackerCategoryFilter(e.target.value)}
-                            className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-                          >
-                            <option value="">All categories</option>
-                            {Array.from(new Set(trackers.map((t) => t.category))).map((c) => (
-                              <option key={c} value={c}>{c.replace(/_/g, " ")}</option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-xs border-collapse">
-                            <thead>
-                              <tr className="text-white/40 text-left border-b border-white/10">
-                                {(["phase", "category", "label", "calibrated"] as const).map((key) => (
-                                  <th key={key} className="py-1 pr-2 font-normal cursor-pointer select-none whitespace-nowrap" onClick={() => toggleTrackerSort(key)}>
-                                    {key === "calibrated" ? "Status" : key} {trackerSort.key === key ? (trackerSort.dir === 1 ? "▲" : "▼") : ""}
-                                  </th>
-                                ))}
-                                <th className="py-1 pr-2 font-normal">Reading</th>
-                                <th className="py-1 font-normal">Actions</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {visibleTrackers.map((t) => {
-                                const calibrated = !!regions[t.field];
-                                const isCountdownLike = t.category === "countdown";
-                                return (
-                                  <tr key={t.id} className={`border-b border-white/5 ${t.phase === match.state ? "" : "opacity-50"}`}>
-                                    <td className="py-1.5 pr-2 whitespace-nowrap">{t.phase.replace(/_/g, " ")}</td>
-                                    <td className="py-1.5 pr-2 whitespace-nowrap capitalize">{t.category.replace(/_/g, " ")}</td>
-                                    <td className="py-1.5 pr-2 min-w-[160px]">
-                                      {trackerLabelDrafts[t.id] != null ? (
-                                        <div className="flex gap-1">
-                                          <input
-                                            autoFocus
-                                            value={trackerLabelDrafts[t.id]}
-                                            onChange={(e) => setTrackerLabelDrafts((prev) => ({ ...prev, [t.id]: e.target.value }))}
-                                            onKeyDown={(e) => {
-                                              if (e.key === "Enter") renameTracker(t, trackerLabelDrafts[t.id]);
-                                            }}
-                                            className="bg-white/10 border border-signal/40 rounded px-1.5 py-0.5 text-xs w-full"
-                                          />
-                                          <button onClick={() => renameTracker(t, trackerLabelDrafts[t.id])} className="text-emerald-400">✓</button>
-                                        </div>
-                                      ) : (
-                                        <button onClick={() => setTrackerLabelDrafts((prev) => ({ ...prev, [t.id]: t.label }))} className="text-left hover:text-signal" title="Click to rename">
-                                          {t.label}
-                                        </button>
-                                      )}
-                                    </td>
-                                    <td className="py-1.5 pr-2 whitespace-nowrap">
-                                      <span className={calibrated ? "text-emerald-400" : "text-yellow-300"}>{calibrated ? "Calibrated" : "Not calibrated"}</span>
-                                    </td>
-                                    <td className="py-1.5 pr-2 text-white/60 max-w-[160px]" title={readings[t.field]}>
-                                      <span className="inline-flex items-center max-w-full">
-                                        <span className="truncate">{readings[t.field] || "—"}</span>
-                                        {renderFreshnessDot(t.field, t.phase === match.state)}
-                                      </span>
-                                    </td>
-                                    <td className="py-1.5">
-                                      <div className="flex flex-wrap gap-1 items-center">
-                                        <button
-                                          onClick={() => startCalibrating(t.field)}
-                                          disabled={calibratingField === t.field || t.phase !== match.state}
-                                          title={t.phase !== match.state ? "Switch the phase dropdown to this tracker's phase to calibrate it" : undefined}
-                                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
-                                        >
-                                          {calibratingField === t.field ? "Adjusting..." : calibrated ? "Resize" : "Calibrate"}
-                                        </button>
-                                        {calibrated && (
-                                          <>
-                                            <button
-                                              onClick={() => {
-                                                clearRegionCoords(t.field);
-                                                if (calibratingField === t.field) setDraftBox(null);
-                                              }}
-                                              title="Clear calibration (keeps the tracker)"
-                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-                                            >
-                                              Clear
-                                            </button>
-                                            <button
-                                              onClick={() => saveRegionAsTournamentDefault(t)}
-                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-                                              title="New matches in this tournament will start with this tracker already calibrated"
-                                            >
-                                              {savedDefaultField === t.field ? "Saved ✓" : "Save as default"}
-                                            </button>
-                                          </>
-                                        )}
-                                        <button
-                                          onClick={() => removeTracker(t)}
-                                          title="Remove this tracker entirely"
-                                          className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-red-500/10 hover:text-red-400"
-                                        >
-                                          Remove
-                                        </button>
-                                        {isCountdownLike && (
-                                          <span className="flex gap-1">
-                                            <input
-                                              value={manualTimeInputs[t.field] ?? ""}
-                                              onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, [t.field]: e.target.value }))}
-                                              placeholder="MM:SS"
-                                              className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
-                                            />
-                                            <button
-                                              onClick={() => setManualCountdown(manualTimeInputs[t.field] ?? "")}
-                                              title="Set this directly instead of waiting on OCR"
-                                              className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-                                            >
-                                              Set
-                                            </button>
-                                          </span>
-                                        )}
-                                      </div>
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      </>
+                    {activeTrackers.some((t) => t.category === "countdown") && (
+                      <div className="flex items-center gap-1">
+                        <input
+                          value={manualTimeInputs.countdown ?? ""}
+                          onChange={(e) => setManualTimeInputs((prev) => ({ ...prev, countdown: e.target.value }))}
+                          placeholder="MM:SS"
+                          className="w-16 bg-white/10 border border-white/10 rounded px-1.5 py-1.5 text-xs"
+                        />
+                        <button
+                          onClick={() => setManualCountdown(manualTimeInputs.countdown ?? "")}
+                          title="Set the countdown clock directly instead of waiting on OCR"
+                          className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 whitespace-nowrap"
+                        >
+                          Set countdown
+                        </button>
+                      </div>
                     )}
                   </div>
                 )}
@@ -5961,6 +5841,7 @@ export default function LiveConsolePage() {
                         className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
                       >
                         <option value="">Choose a template...</option>
+                        <option value={CUSTOM_TEMPLATE_ID}>✎ Custom...</option>
                         {availableTemplates.map((t) => (
                           <option key={t.id} value={t.id}>{t.label_template}</option>
                         ))}
@@ -5996,7 +5877,11 @@ export default function LiveConsolePage() {
                           className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
                         />
                       )}
-                      <button onClick={logKeyMoment} disabled={!selectedTemplate || !isEditable} className="lv-btn-ghost disabled:opacity-40">
+                      <button
+                        onClick={logKeyMoment}
+                        disabled={!selectedTemplate || !isEditable || (selectedTemplate.type === "custom" && !kmCustomText.trim())}
+                        className="lv-btn-ghost disabled:opacity-40"
+                      >
                         Log moment
                       </button>
                     </div>

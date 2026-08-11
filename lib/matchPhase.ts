@@ -20,7 +20,6 @@ export const MATCH_PHASES = [
   "TECHNICAL_PAUSE",
   "GAME_FINISHED",
   "SERIES_FINISHED",
-  "CUSTOM",
 ] as const;
 
 export type MatchPhase = (typeof MATCH_PHASES)[number];
@@ -33,7 +32,6 @@ export const PHASE_LABELS: Record<MatchPhase, string> = {
   TECHNICAL_PAUSE: "Technical pause",
   GAME_FINISHED: "Game finished",
   SERIES_FINISHED: "Match finished",
-  CUSTOM: "Custom",
 };
 
 // Short imperative verb for the phase-stepper button that MAKES this phase
@@ -81,8 +79,8 @@ function seriesWinner(s: PhaseSignals): "a" | "b" | null {
 }
 
 // The forward path every match/game takes under normal play. Branches
-// (TECHNICAL_PAUSE, CUSTOM, back to DRAFT_STARTED for the next game) are
-// handled as special cases in getLegalTransitions below, not in this list —
+// (TECHNICAL_PAUSE, back to DRAFT_STARTED for the next game) are handled
+// as special cases in getLegalTransitions below, not in this list —
 // keeping the "happy path" readable as a straight line.
 const FORWARD_SEQUENCE: MatchPhase[] = [
   "MATCH_NOT_STARTED",
@@ -182,13 +180,6 @@ export function getLegalTransitions(signals: PhaseSignals): PhaseTransition[] {
         }
         return { phase, legal: true, blockedReason: null };
       }
-
-      case "CUSTOM":
-        // Explicit manual escape hatch for whatever OCR/Liquipedia sync
-        // can't represent (per the existing "Manual phase override"
-        // control) — always reachable except from the terminal state,
-        // already excluded above.
-        return { phase, legal: true, blockedReason: null };
     }
   }
 
@@ -204,11 +195,10 @@ export function canTransitionTo(signals: PhaseSignals, target: MatchPhase): Phas
 // Where FORWARD_SEQUENCE is actually consulted — the stepper's "what's
 // next" shorthand, e.g. for a single primary "Advance" button alongside
 // the full per-phase row. Returns null at the end of the sequence (game
-// finished + series decided) or while in a branch phase (TECHNICAL_PAUSE,
-// CUSTOM) that has its own explicit return path instead of a "next."
+// finished + series decided) or while in a branch phase (TECHNICAL_PAUSE)
+// that has its own explicit return path instead of a "next."
 export function nextForwardPhase(current: MatchPhase): MatchPhase | null {
   if (current === "TECHNICAL_PAUSE") return "GAME_STARTED";
-  if (current === "CUSTOM") return null;
   const idx = FORWARD_SEQUENCE.indexOf(current);
   if (idx === -1 || idx === FORWARD_SEQUENCE.length - 1) return null;
   return FORWARD_SEQUENCE[idx + 1];

@@ -52,7 +52,7 @@ const PHASE_LABELS: Record<string, string> = {
 // Realtime-driven re-render with no extra effect/mount logic of its own.
 // Four buckets over the match_state enum (MATCH_NOT_STARTED, DRAFT_STARTED,
 // DRAFT_COMPLETE, GAME_STARTED, GAME_FINISHED, SERIES_FINISHED,
-// TECHNICAL_PAUSE, CUSTOM — same set the admin live console uses):
+// TECHNICAL_PAUSE — same set the admin live console uses):
 //  - "default": MATCH_NOT_STARTED (nothing live yet — switcher, stream,
 //    moment list, full player/role roster) AND GAME_FINISHED (the
 //    in-between-games intermission once one game of a Bo3+ ends but the
@@ -65,8 +65,8 @@ const PHASE_LABELS: Record<string, string> = {
 //    so this is a bounded, literal reading of that hedge, not a full
 //    separate per-game state machine.
 //  - "draft": DRAFT_STARTED, DRAFT_COMPLETE.
-//  - "game": GAME_STARTED, TECHNICAL_PAUSE, CUSTOM — actively-playing
-//    states with a live scoreboard worth showing.
+//  - "game": GAME_STARTED, TECHNICAL_PAUSE — actively-playing states with
+//    a live scoreboard worth showing.
 //  - "finished": SERIES_FINISHED — the one state that's actually terminal.
 type LayoutBucket = "default" | "draft" | "game" | "finished";
 function layoutBucketFor(state: string, selectedGame: Game | null, liveGameId: string | null): LayoutBucket {
@@ -987,7 +987,7 @@ export default function PublicMatchPage() {
           )}
           {match.status === "live" && (
             <span className="lv-badge bg-white/10 text-white/70">
-              {match.state === "CUSTOM" ? match.custom_state_label || "Custom" : PHASE_LABELS[match.state] ?? match.state}
+              {PHASE_LABELS[match.state] ?? match.state}
             </span>
           )}
           {liveGameClockLabel && (
@@ -1253,7 +1253,7 @@ export default function PublicMatchPage() {
               </span>
             )}
             <span className="text-sm text-white/60">
-              {match.state === "CUSTOM" ? match.custom_state_label || "Custom" : PHASE_LABELS[match.state] ?? match.state}
+              {PHASE_LABELS[match.state] ?? match.state}
             </span>
           </div>
           {/* Reads top-to-bottom like a chat log — oldest first, newest at

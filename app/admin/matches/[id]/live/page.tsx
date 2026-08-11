@@ -1495,7 +1495,7 @@ export default function LiveConsolePage() {
   const OBJECTIVE_RULE_HINTS: Record<string, string> = {
     tower: "Max 9 per team. OCR won't jump the count by more than 3 in one tick (a bigger jump is treated as a misread, not 4+ towers falling at once).",
     lord: "First spawns ~08:00. Respawns exactly 3:00 after being slain — OCR won't count another kill sooner than that.",
-    turtle: "Max 4 per match (shared, not per side). First spawns ~02:00. No further turtle after ~06:00 since the last one — it becomes an early Lord instead.",
+    turtle: "Max 4 per match (shared, not per side). First spawns ~02:00. None after ~09:00 — a surviving turtle becomes an early Lord instead.",
   };
   async function incrementObjective(teamId: string, type: string) {
     if (!game || !match) return;
@@ -2700,15 +2700,61 @@ export default function LiveConsolePage() {
       // alreadyApplied is set — the relay route already committed these
       // (with the same guards) server-side.
       if (!alreadyApplied) {
-        for (const row of detection.player_stats ?? []) {
-          const teamId = matchTeamId(row.team_name);
-          const playerId = matchPlayerId(row.player_name, teamId);
-          if (!playerId) continue;
-          const existing = stats.find((s) => s.player_id === playerId);
-          const kills = row.kills != null ? (existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills) : existing?.kills ?? null;
-          const deaths = row.deaths != null ? (existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths) : existing?.deaths ?? null;
-          const assists = row.assists != null ? (existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists) : existing?.assists ?? null;
-          const gold = row.gold != null ? (existing?.gold != null ? Math.max(row.gold, existing.gold) : row.gold) : existing?.gold ?? null;
+        // Same §3 rule 5 / §4 guards the Tesseract pipeline and the relay
+        // route apply — per-tick spike ceiling plus the deaths-vs-enemy-
+        // kills impossibility check, on top of never-decreases. This is
+        // the local fallback for the same vision detection the relay route
+        // normally commits, so leaving it with only the monotonic clamp
+        // meant the guards could be bypassed entirely just by the relay
+        // write not having happened.
+        const MAX_KILL_GAIN_PER_TICK = 10;
+        const MAX_DEATH_GAIN_PER_TICK = 10;
+        const MAX_ASSIST_GAIN_PER_TICK = 15;
+        const clampStat = (read: number | null, stored: number | null | undefined, maxGain: number): number | null => {
+          if (read == null) return stored ?? null;
+          const floor = stored ?? 0;
+          if (stored != null && read < stored) return stored;
+          return read - floor > maxGain ? floor + maxGain : read;
+        };
+        const aiCandidates = (detection.player_stats ?? [])
+          .map((row) => {
+            const teamId = matchTeamId(row.team_name);
+            const playerId = matchPlayerId(row.player_name, teamId);
+            if (!playerId) return null;
+            const existing = stats.find((s) => s.player_id === playerId);
+            return {
+              row,
+              playerId,
+              teamId: teamId ?? players.find((p) => p.id === playerId)?.team_id ?? null,
+              existing,
+              kills: clampStat(row.kills, existing?.kills, MAX_KILL_GAIN_PER_TICK),
+              deaths: clampStat(row.deaths, existing?.deaths, MAX_DEATH_GAIN_PER_TICK),
+              assists: clampStat(row.assists, existing?.assists, MAX_ASSIST_GAIN_PER_TICK),
+              gold: row.gold != null ? (existing?.gold != null ? Math.max(row.gold, existing.gold) : row.gold) : existing?.gold ?? null,
+            };
+          })
+          .filter((c): c is NonNullable<typeof c> => c !== null);
+        const aiTeamKillTotal = (teamId: string | null) => {
+          if (!teamId) return 0;
+          return players
+            .filter((p) => p.team_id === teamId)
+            .reduce((sum, p) => {
+              const c = aiCandidates.find((c) => c.playerId === p.id);
+              if (c) return sum + (c.kills ?? 0);
+              return sum + (stats.find((s) => s.player_id === p.id)?.kills ?? 0);
+            }, 0);
+        };
+        for (const c of aiCandidates) {
+          if (c.deaths == null || !c.teamId) continue;
+          const enemyTeamId = c.teamId === match.team_a?.id ? match.team_b?.id ?? null : c.teamId === match.team_b?.id ? match.team_a?.id ?? null : null;
+          if (!enemyTeamId) continue;
+          const enemyKills = aiTeamKillTotal(enemyTeamId);
+          if (c.deaths > enemyKills) {
+            c.deaths = Math.min(c.deaths, Math.max(c.existing?.deaths ?? 0, enemyKills));
+          }
+        }
+        for (const c of aiCandidates) {
+          const { row, existing, playerId, kills, deaths, assists, gold } = c;
           await supabase.from("player_stats").upsert(
             {
               game_id: game.id,
@@ -3819,6 +3865,15 @@ export default function LiveConsolePage() {
     if (type === "turtle") {
       if (gameClockSeconds < 120 - OCR_TIMING_TOLERANCE_SECONDS) return current;
       if (totalObjectiveCount("turtle") >= 4) return current;
+      // Absolute upper bound — the spec's "a surviving Turtle transitions
+      // into the early Lord phase around 08:00-09:00" means no turtle
+      // exists to be taken after that window closes, so a turtle read at
+      // (say) 12:00 is impossible regardless of the count or when the last
+      // one died. This was the missing half of the turtle timing rules:
+      // the last-kill check below only blocks a FOLLOW-UP turtle after a
+      // late kill, and never fired at all if no turtle had been recorded
+      // yet, so a mid/late-game misread could still add one.
+      if (gameClockSeconds > 540 + OCR_TIMING_TOLERANCE_SECONDS) return current;
       const lastKillSeconds = lastObjectiveSeconds("turtle");
       if (lastKillSeconds != null && lastKillSeconds > 360) return current;
       return rawTarget;
@@ -4387,7 +4442,44 @@ export default function LiveConsolePage() {
     // worth flagging (a real data problem: two teams can't have picked the
     // same hero).
     if (game) {
-      for (const row of kdaParsed) {
+      // Validation-spec §4 ("treat K/D/A changes as one atomic kill event
+      // and validate all affected players together") and §3 rules 5/7
+      // ("suspicious increase → candidate/pending", "impossible
+      // relationship → reject"). Both need the whole tick's readings
+      // resolved before any single row can be judged, so the per-row
+      // monotonic clamp is computed for everyone FIRST, then the
+      // cross-player relationship checks run against those candidates, and
+      // only what survives is committed. Previously each row was clamped
+      // and written independently with no relationship validation at all
+      // at write time — the "deaths can't exceed enemy kills" rule existed
+      // only as an after-the-fact warning banner, which by then had
+      // already let the impossible value into the database.
+      //
+      // Per-tick spike ceiling — the one guard K/D/A was missing entirely
+      // while net worth (MAX_NET_WORTH_GAIN_PER_TICK) and towers (+3/tick)
+      // both had one. Without it a single garbled digit (2 kills read as
+      // 22) commits instantly and is then locked in permanently by the
+      // never-decreases clamp, exactly the failure mode that produced a
+      // team kill count in the fifties with every player still at 0.
+      // Deliberately generous — well above any real 5s burst (a savage is
+      // 5 kills) so genuine fast play never trips it, tight enough to
+      // catch a misread digit.
+      const MAX_KILL_GAIN_PER_TICK = 10;
+      const MAX_DEATH_GAIN_PER_TICK = 10;
+      // Assists accrue fastest of the three (0-4 per kill event, and a
+      // single teamfight can credit several at once), so this runs looser.
+      const MAX_ASSIST_GAIN_PER_TICK = 15;
+
+      type KdaCandidate = {
+        row: (typeof kdaParsed)[number];
+        existing: PlayerStat | undefined;
+        teamId: string | undefined;
+        kills: number;
+        deaths: number;
+        assists: number;
+        heldBack: string[];
+      };
+      const candidates: KdaCandidate[] = kdaParsed.map((row) => {
         // Never-decreases, per stat independently — kills/deaths/assists
         // only ever go up during a live game, so a noisy read lower than
         // what's already stored for this player is a misread, not a real
@@ -4396,9 +4488,59 @@ export default function LiveConsolePage() {
         // correctly-read higher kill count still lands even if deaths or
         // assists misread low on the same tick.
         const existing = stats.find((s) => s.player_id === row.playerId);
-        const kills = existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills;
-        const deaths = existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths;
-        const assists = existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists;
+        const heldBack: string[] = [];
+        const clamp = (read: number, stored: number | null | undefined, maxGain: number, name: string) => {
+          const floor = stored ?? 0;
+          if (stored != null && read < stored) return stored; // never-decreases (flagged separately below)
+          if (read - floor > maxGain) {
+            heldBack.push(`${name} ${read} → capped at ${floor + maxGain} (jump of ${read - floor} in one tick)`);
+            return floor + maxGain;
+          }
+          return read;
+        };
+        return {
+          row,
+          existing,
+          teamId: players.find((p) => p.id === row.playerId)?.team_id,
+          kills: clamp(row.kills, existing?.kills, MAX_KILL_GAIN_PER_TICK, "kills"),
+          deaths: clamp(row.deaths, existing?.deaths, MAX_DEATH_GAIN_PER_TICK, "deaths"),
+          assists: clamp(row.assists, existing?.assists, MAX_ASSIST_GAIN_PER_TICK, "assists"),
+          heldBack,
+        };
+      });
+
+      // §4 "Player deaths cannot exceed enemy team kills" as a real reject
+      // (§3 rule 7: impossible relationship → keep the previous value),
+      // not just a warning. Enemy kill totals are taken from this tick's
+      // candidates where a player was read and their stored value
+      // otherwise, so a whole-team read validates against itself rather
+      // than against a half-stale snapshot. Only the offending player's
+      // DEATHS are rolled back — their kills/assists on the same read are
+      // independent and stay.
+      const teamKillTotal = (teamId: string | undefined) => {
+        if (!teamId) return 0;
+        return stats
+          .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === teamId)
+          .reduce((sum, s) => {
+            const c = candidates.find((c) => c.row.playerId === s.player_id);
+            return sum + (c ? c.kills : s.kills ?? 0);
+          }, 0);
+      };
+      const teamAId = match?.team_a?.id;
+      const teamBId = match?.team_b?.id;
+      for (const c of candidates) {
+        const enemyTeamId = c.teamId === teamAId ? teamBId : c.teamId === teamBId ? teamAId : undefined;
+        if (!enemyTeamId) continue;
+        const enemyKills = teamKillTotal(enemyTeamId);
+        if (c.deaths > enemyKills) {
+          c.heldBack.push(`deaths ${c.deaths} exceed the enemy team's ${enemyKills} total kills (impossible — a death requires an enemy kill)`);
+          c.deaths = Math.min(c.deaths, Math.max(c.existing?.deaths ?? 0, enemyKills));
+        }
+      }
+
+      for (const c of candidates) {
+        const { row, existing, heldBack } = c;
+        const { kills, deaths, assists } = c;
         // The kda_group combined tracker never reads a hero name per row
         // (see its case above) — row.heroName is always null there. Fall
         // back to whatever's already stored instead of writing null over
@@ -4407,18 +4549,27 @@ export default function LiveConsolePage() {
         // already set.
         const heroName = row.heroName ?? existing?.hero_name ?? null;
         const heroId = matchHeroId(heroName);
-        // A read below what's already stored, on any of the three stats,
-        // is held back by the clamp above — flag it instead of silently
-        // discarding, in case it's a genuine correction the admin wants
-        // to force through rather than a misread.
-        if ((existing?.kills != null && row.kills < existing.kills) ||
-            (existing?.deaths != null && row.deaths < existing.deaths) ||
-            (existing?.assists != null && row.assists < existing.assists)) {
+        // Anything the guards above held back — a read below what's
+        // already stored (never-decreases), a single-tick spike, or an
+        // impossible deaths-vs-enemy-kills relationship — is flagged
+        // rather than silently discarded, so a genuine correction can
+        // still be forced through by the admin. Confirming applies the
+        // RAW reading, which is the whole point: the guard's job is to
+        // keep an unverified value out of the database, not to decide the
+        // admin is wrong.
+        const decreased =
+          (existing?.kills != null && row.kills < existing.kills) ||
+          (existing?.deaths != null && row.deaths < existing.deaths) ||
+          (existing?.assists != null && row.assists < existing.assists);
+        if (decreased || heldBack.length > 0) {
+          const reason = decreased
+            ? `Read ${row.kills}/${row.deaths}/${row.assists}, below the stored ${existing?.kills ?? 0}/${existing?.deaths ?? 0}/${existing?.assists ?? 0} — never-decreases guard held it back`
+            : `Read ${row.kills}/${row.deaths}/${row.assists} — ${heldBack.join("; ")}. Confirm to apply the full reading.`;
           flagReading(row.field, {
             label: row.label,
             raw: row.raw,
             confidence: row.confidence,
-            reason: `Read ${row.kills}/${row.deaths}/${row.assists}, below the stored ${existing?.kills ?? 0}/${existing?.deaths ?? 0}/${existing?.assists ?? 0} — never-decreases guard held it back`,
+            reason,
             apply: async () => {
               await supabase.from("player_stats").upsert(
                 { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: heroName, hero_id: heroId, kills: row.kills, deaths: row.deaths, assists: row.assists },

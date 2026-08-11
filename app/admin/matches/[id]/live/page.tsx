@@ -1807,23 +1807,26 @@ export default function LiveConsolePage() {
   }
   type RegionBox = { xPct: number; yPct: number; wPct: number; hPct: number };
 
-  // Where the "Livestream" embed iframe sits within the captured tab, as a
-  // fraction of the browser viewport (0-100, same convention as
-  // RegionBox) — measured once capture starts (see the stream-attach
-  // effect below) and re-measured on window resize. This is what makes
-  // "isolate capture to just the livestream" possible at all: the tab
-  // self-capture necessarily includes the whole admin page (header,
-  // controls, everything), so every OCR/screenshot read has to know where
-  // within that full frame the actual livestream lives and crop down to
-  // just that rectangle. Null until measured (or if there's no embeddable
-  // stream URL, in which case calibration/reading falls back to the
-  // legacy whole-tab behavior).
+  // Historical: back when local capture self-shared this admin tab, this
+  // tracked where the "Livestream" embed sat within the captured frame, so
+  // every OCR/screenshot read could crop down to just the stream instead
+  // of the whole admin page around it. Capture now shares a separate,
+  // dedicated tab instead (see startCapture) — the whole captured frame
+  // *is* the stream, nothing to crop out — so this always stays null.
+  // Kept (not deleted) purely because toFullFramePct/cropVideoToEmbed
+  // still take it as a parameter and already treat null as "box
+  // coordinates are already whole-frame percentages," which is exactly
+  // today's behavior; removing it would mean touching both call sites for
+  // no behavior change.
   type EmbedFrame = { xPct: number; yPct: number; wPct: number; hPct: number };
-  const [embedFrame, setEmbedFrame] = useState<EmbedFrame | null>(null);
-  const embedFrameContainerRef = useRef<HTMLDivElement>(null);
+  const embedFrame: EmbedFrame | null = null;
 
   const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  // The dedicated tab startCapture opens for the actual livestream — kept
+  // so a second "Start capture" click (after Stop) reuses/refocuses it
+  // instead of spawning a new tab every time.
+  const captureTabRef = useRef<Window | null>(null);
   const workerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Corner-drag resize state for region calibration. dragMode covers a
@@ -3600,24 +3603,34 @@ export default function LiveConsolePage() {
 
   async function startCapture() {
     try {
-      // preferCurrentTab + displaySurface:"browser" captures this admin
-      // tab directly, skipping the OS-level "share your screen" picker
-      // entirely in browsers that support it (Chrome/Edge as of this
-      // writing) — this is what fixes single-monitor capture: a tab
-      // captured this way keeps delivering real, live frames even while
-      // the OS focus moves to another app, since the capture happens at
-      // the browser/tab level rather than the OS window level (a captured
-      // *window* on a single monitor commonly stops refreshing once the
-      // OS stops compositing it as the focused window). preferCurrentTab
-      // isn't in TypeScript's lib.dom types yet on many TS versions, hence
-      // the cast. Both options are safe to pass unconditionally: a browser
-      // that doesn't recognize them (Firefox, Safari) just ignores the
-      // unsupported keys per the getDisplayMedia spec and falls back to
-      // its normal picker — no feature-detection needed.
+      // Opens the actual stream in its own dedicated tab before asking for
+      // capture — this is the whole point of the separate-tab redesign:
+      // that tab can go fullscreen (F11, or its own player's fullscreen
+      // button) purely for read accuracy, independent of whatever width
+      // the admin console's own layout gives the old in-page embed, and it
+      // keeps rendering at full rate even while backgrounded (Chrome does
+      // NOT throttle a tab it knows is actively being screen-captured —
+      // that's a different mechanism from the self-tab-capture recursion
+      // blackout this project hit before, which only ever applied to a tab
+      // capturing *itself*). Reused if one from this session is still
+      // open, instead of spawning a fresh tab on every "Start capture"
+      // click.
+      const streamUrl = match?.youtube_url;
+      if (streamUrl) {
+        if (captureTabRef.current && !captureTabRef.current.closed) {
+          captureTabRef.current.focus();
+        } else {
+          captureTabRef.current = window.open(streamUrl, "lv-capture-source");
+        }
+      }
+      // No preferCurrentTab — the picker shows its normal tab list now, and
+      // the admin picks the tab just opened above (usually the most recent,
+      // easiest to spot). displaySurface:"browser" still restricts the
+      // offered choices to tabs, ruling out a full-desktop/window capture
+      // that would drag in the OS taskbar or other apps.
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { displaySurface: "browser" },
-        preferCurrentTab: true,
-      } as any);
+      });
       streamRef.current = stream;
       // previewRef.current is null here — the <video> only exists in the
       // DOM once captureActive is true, and this runs before that state
@@ -3656,28 +3669,6 @@ export default function LiveConsolePage() {
     setAiStatus(null);
   }
 
-  // Reads the "Livestream" iframe's current on-screen rect as a fraction
-  // of the viewport — the viewport is what tab self-capture actually
-  // delivers as the video frame (matching CSS-pixel proportions
-  // regardless of device pixel ratio), so these fractions are exactly
-  // what's needed to crop the captured frame down to just the embed later
-  // (see toFullFramePct/cropCanvasFor). Returns null if the embed isn't
-  // mounted (no stream URL) or has zero size (not laid out yet).
-  function measureEmbedFrame(): EmbedFrame | null {
-    const el = embedFrameContainerRef.current;
-    if (!el) return null;
-    const rect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    if (!vw || !vh || !rect.width || !rect.height) return null;
-    return {
-      xPct: (rect.left / vw) * 100,
-      yPct: (rect.top / vh) * 100,
-      wPct: (rect.width / vw) * 100,
-      hPct: (rect.height / vh) * 100,
-    };
-  }
-
   // Runs after captureActive flips true and React has actually mounted the
   // <video> element — this is what attaches the shared stream, not
   // startCapture() itself (see the comment there).
@@ -3687,17 +3678,7 @@ export default function LiveConsolePage() {
     video.srcObject = streamRef.current;
     video.play().catch((err) => console.error("Preview play() failed", err));
 
-    // The embed's on-page rect only matters once there's an actual frame
-    // to crop from, and re-measuring on resize keeps it correct if the
-    // window (or the split ratio's effect on layout) changes mid-session —
-    // cheap, since it's just a getBoundingClientRect() read.
-    setEmbedFrame(measureEmbedFrame());
-    const handleResize = () => setEmbedFrame(measureEmbedFrame());
-    window.addEventListener("resize", handleResize);
-
-    if (captureMode !== "ai") {
-      return () => window.removeEventListener("resize", handleResize);
-    }
+    if (captureMode !== "ai") return;
     // setInterval (in startCapture) never fires its callback immediately —
     // only after the first full 60s pacing window — so without this, the
     // console sits on "Waiting for first frame..." for a full minute after
@@ -3707,10 +3688,7 @@ export default function LiveConsolePage() {
     const fireFirstFrame = () => captureFrameAndAnalyze();
     if (video.readyState >= 1) fireFirstFrame(); // HAVE_METADATA already reached
     else video.addEventListener("loadedmetadata", fireFirstFrame, { once: true });
-    return () => {
-      window.removeEventListener("resize", handleResize);
-      video.removeEventListener("loadedmetadata", fireFirstFrame);
-    };
+    return () => video.removeEventListener("loadedmetadata", fireFirstFrame);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captureActive]);
 
@@ -4410,14 +4388,16 @@ export default function LiveConsolePage() {
   const pickBanEditable = isEditable && (!gameFinished || finishedEditUnlocked);
   const netWorthEditable = isEditable && (!gameFinished || finishedEditUnlocked);
 
+  // "Livestream" below is now reference-only (a normal iframe embed, not
+  // wired to capture at all) — the actual OCR/AI capture source is a
+  // separate dedicated tab (see startCapture), and the Match capture
+  // canvas mirrors whatever that tab shares.
   const embedUrl = youtubeEmbedUrl(match.youtube_url) ?? facebookEmbedUrl(match.youtube_url);
-  // The tracker-calibration overlay itself — identical whether it's drawn
-  // on top of the livestream embed or, lacking an embeddable URL, on top
-  // of the raw shared-tab fallback video (see the two data-crop-container
-  // branches below). Computed once here instead of duplicated in both
-  // branches. Pointer-events only turn on with Tracker edit mode; off,
-  // clicks fall through to whatever's underneath (the player's own
-  // controls, in the embed case), matching the edit-mode toggle's tooltip.
+  // The tracker-calibration overlay itself, drawn on top of the Match
+  // capture canvas (the raw shared-tab video). Pointer-events only turn on
+  // with Tracker edit mode; off, clicks pass through to the video
+  // underneath (inert either way — it's just a captured frame, not an
+  // interactive player).
   const trackerOverlay =
     match.update_source === "local_ocr" &&
     captureMode === "manual" &&
@@ -5371,79 +5351,35 @@ export default function LiveConsolePage() {
               )}
             </section>
           </div>
-          {/* Livestream embed — deliberately NOT part of the scrollable
-              area below, and no allowFullScreen. This is now also the
-              actual OCR capture source: local capture shares THIS admin
-              tab (see startCapture's preferCurrentTab), and since the
-              stream plays right here in the tab, that self-capture
-              legitimately contains it — no more sharing the wrong tab, no
-              more the capture recursively mirroring the admin page into
-              itself. Calibration drags directly on this iframe's own box
-              (data-crop-container below), so region percentages mean
-              "percent of the livestream," not "percent of the whole
-              admin page" — that's also what makes every OCR/screenshot
-              read crop down to just the stream instead of capturing the
-              header, sidebar, and everything else in the tab (see
-              embedFrame/toFullFramePct/cropVideoToEmbed). Scrolling the
-              pane or the stream escaping into fullscreen would shift
-              exactly what's on screen relative to every %-based tracker
-              region already calibrated against it — silently breaking
-              detection mid-match — so this block stays fixed at the top
-              of the pane and fullscreen stays off; only the capture
-              tools below it scroll. */}
+          {/* Match capture — deliberately NOT part of the scrollable area
+              below, so it never scrolls out of view while everything else
+              in this pane does. "Start capture" now shares a SEPARATE,
+              dedicated tab (see startCapture) instead of this admin page
+              itself — that tab can go fullscreen purely for read accuracy,
+              independent of whatever width this pane's own layout gives
+              it, and keeps rendering at full rate even while backgrounded
+              (Chrome doesn't throttle a tab it knows is being actively
+              screen-captured). No more self-capture recursion risk either,
+              since there's no "wrong tab" that's actually this one.
+              Calibration drags directly on this raw video; every box's
+              coordinates are already whole-frame percentages
+              (toFullFramePct/cropVideoToEmbed treat embedFrame as null,
+              since nothing sets it anymore — this replaces the old
+              embed-relative cropping entirely, not just as a fallback). */}
           <div className="p-3 lg:p-4 pb-0 shrink-0 space-y-2">
-            <h3 className="font-semibold text-sm">Livestream</h3>
-            {embedUrl ? (
-              <div
-                ref={embedFrameContainerRef}
-                data-crop-container
-                className="relative w-full aspect-video rounded overflow-hidden select-none"
-              >
-                <iframe src={embedUrl} className="w-full h-full" allow="autoplay; encrypted-media" />
-                {/* Tracker calibration overlay — sits on top of the iframe
-                    so drags land on this page instead of vanishing into
-                    the iframe's own document (mouse events never bubble
-                    out of an iframe to the parent). Pointer-events only
-                    turn on with Tracker edit mode; off, clicks fall
-                    through to the player underneath (play/pause/mute),
-                    matching the edit-mode toggle's own tooltip below. */}
-                {trackerOverlay}
-              </div>
-            ) : (
-              <div
-                data-crop-container
-                className="relative w-full border border-white/10 rounded overflow-hidden select-none bg-white/5 min-h-[120px]"
-              >
-                {/* No embeddable stream URL (not a recognizable YouTube or
-                    Facebook link) — nothing to isolate the capture to, so
-                    this falls back to calibrating against the raw
-                    shared-tab frame directly, same as before this pane
-                    existed. embedFrameContainerRef is deliberately NOT
-                    attached here — embedFrame stays null in this case,
-                    which is exactly what makes toFullFramePct/
-                    cropVideoToEmbed treat box coordinates as already being
-                    whole-frame percentages, matching the legacy behavior. */}
-                <video ref={previewRef} muted className="w-full block" />
-                {!captureActive && (
-                  <div className="absolute inset-0 flex items-center justify-center text-white/30 text-xs px-4 text-center">
-                    No livestream URL — start capture to calibrate against the raw shared-tab feed instead
-                  </div>
-                )}
-                {trackerOverlay}
-              </div>
-            )}
-            {/* Raw shared-tab feed — hidden, exists only to feed the OCR
-                canvas sampling above (cropCanvasFor/cropVideoToEmbed read
-                pixels from this element). Not meant to be looked at: it's
-                a mirror of the whole captured tab, which self-capture
-                always blacks out wherever this exact element is on
-                screen (Chrome's own recursion guard) — irrelevant here
-                since every read crops to the livestream iframe's
-                position instead, never this element's. Only rendered in
-                the embed branch — the no-embed fallback above already has
-                its own (visible, un-hidden) previewRef video, and a
-                single ref can't back two mounted elements at once. */}
-            {embedUrl && <video ref={previewRef} muted className="hidden" />}
+            <h3 className="font-semibold text-sm">Match capture</h3>
+            <div
+              data-crop-container
+              className="relative w-full border border-white/10 rounded overflow-hidden select-none bg-white/5 min-h-[120px]"
+            >
+              <video ref={previewRef} muted className="w-full block" />
+              {!captureActive && (
+                <div className="absolute inset-0 flex items-center justify-center text-white/30 text-xs px-4 text-center">
+                  Not capturing yet — click "Start capture" below, then choose the livestream tab it just opened from the share picker.
+                </div>
+              )}
+              {trackerOverlay}
+            </div>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3 lg:p-4 space-y-4">
 
@@ -5470,11 +5406,12 @@ export default function LiveConsolePage() {
           )}
         </div>
         <p className="text-[10px] text-white/40">
-          Every field on this game reads from a screen-share of this admin tab — the Livestream player above is both
-          what you watch and what gets captured, so when the share picker appears, choose &quot;This Tab&quot;. Team
-          kills, team net worth, the game timer, each player&apos;s K/D/A, objectives, and kill moments
-          (double/triple/maniac/savage, attributed to the player named in the kill banner) all live in the tracker
-          overlay drawn directly on that livestream.
+          Clicking "Start capture" opens the livestream in its own tab (or refocuses it if already open) — when the
+          share picker appears, choose that tab, not this admin console. Fullscreen it there for the most accurate
+          reads; it'll keep capturing even while you're working in this tab instead. Team kills, team net worth, the
+          game timer, each player&apos;s K/D/A, objectives, and kill moments (double/triple/maniac/savage,
+          attributed to the player named in the kill banner) all live in the tracker overlay drawn on the Match
+          capture canvas above.
         </p>
 
         {match.update_source === "local_ocr" && (
@@ -5654,8 +5591,8 @@ export default function LiveConsolePage() {
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <span className="text-[10px] text-white/40">
                     {trackerEditMode
-                      ? "Tracker edit mode is ON — drag directly on the Livestream above to place a new tracker, or click an existing outlined region to move/resize it."
-                      : "Tracker edit mode is OFF — the Livestream above plays normally; turn this on to place or adjust tracker boxes on it."}
+                      ? "Tracker edit mode is ON — drag directly on the Match capture canvas above to place a new tracker, or click an existing outlined region to move/resize it."
+                      : "Tracker edit mode is OFF — turn this on to place or adjust tracker boxes on the Match capture canvas above."}
                   </span>
                   <div className="flex items-center gap-2">
                     {/* Explicit toggle instead of guessing "tap to play" vs.
@@ -5889,6 +5826,20 @@ export default function LiveConsolePage() {
           </>
         )}
       </section>
+            )}
+
+            {/* Livestream — demoted to the bottom of this pane, reference
+                only. It's no longer the capture source (see Match capture
+                above, now sourced from a separate dedicated tab), so
+                there's nothing left tying its position or size to
+                calibration accuracy — fullscreen is fine here too. */}
+            {embedUrl && (
+              <section className="space-y-2">
+                <h3 className="font-semibold text-sm text-white/60">Livestream (reference only)</h3>
+                <div className="relative w-full aspect-video rounded overflow-hidden select-none border border-white/10">
+                  <iframe src={embedUrl} className="w-full h-full" allow="autoplay; encrypted-media" allowFullScreen />
+                </div>
+              </section>
             )}
           </div>
         </div>

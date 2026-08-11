@@ -41,7 +41,12 @@ export default function TournamentsAdminPage() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [filter, setFilter] = useState("");
   const [tierFilter, setTierFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<Status | "">("");
+  // Only ongoing/upcoming tournaments are ever admin-relevant day to day —
+  // completed ones have nothing left to edit. Tabbed the same way as
+  // /admin/matches instead of always stacking every status section, and
+  // "completed" is deliberately not one of the tabs (it's still reachable
+  // via search if an old tournament needs a one-off fix).
+  const [activeTab, setActiveTab] = useState<"ongoing" | "upcoming">("ongoing");
   const [sortKey, setSortKey] = useState<SortKey>("start_desc");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -136,7 +141,7 @@ export default function TournamentsAdminPage() {
     const q = filter.trim().toLowerCase();
     const base = tournaments.filter((t) => {
       if (tierFilter && t.tier !== tierFilter) return false;
-      if (statusFilter && categorize(t) !== statusFilter) return false;
+      if (categorize(t) !== activeTab) return false;
       if (!q) return true;
       return t.name.toLowerCase().includes(q) || (t.liquipedia_slug ?? "").toLowerCase().includes(q);
     });
@@ -146,18 +151,7 @@ export default function TournamentsAdminPage() {
       const bDate = b.start_date ?? "";
       return sortKey === "start_asc" ? aDate.localeCompare(bDate) : bDate.localeCompare(aDate);
     });
-  }, [tournaments, filter, tierFilter, statusFilter, sortKey]);
-
-  const sections: { key: Status; title: string }[] = [
-    { key: "ongoing", title: "Ongoing" },
-    { key: "upcoming", title: "Upcoming" },
-    { key: "completed", title: "Completed" },
-  ];
-  const grouped = useMemo(() => {
-    const byStatus: Record<Status, Tournament[]> = { ongoing: [], upcoming: [], completed: [] };
-    for (const t of filtered) byStatus[categorize(t)].push(t);
-    return byStatus;
-  }, [filtered]);
+  }, [tournaments, filter, tierFilter, activeTab, sortKey]);
 
   function toggleSelected(id: string) {
     setSelected((prev) => {
@@ -398,6 +392,26 @@ export default function TournamentsAdminPage() {
 
       {error && <p className="text-sm text-red-400">{error}</p>}
 
+      <div className="flex gap-1">
+        {([
+          { key: "ongoing", label: "🟢 Ongoing" },
+          { key: "upcoming", label: "Upcoming" },
+        ] as const).map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => {
+              setActiveTab(tab.key);
+              setSelected(new Set());
+            }}
+            className={`text-sm px-4 py-2 rounded-t ${
+              activeTab === tab.key ? "bg-white/10 text-white font-semibold" : "text-white/40 hover:text-white/70"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex gap-2 flex-1 flex-wrap">
           <input
@@ -414,16 +428,6 @@ export default function TournamentsAdminPage() {
             <option value="">All tiers</option>
             <option value="S">S-Tier</option>
             <option value="A">A-Tier</option>
-          </select>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as Status | "")}
-            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
-          >
-            <option value="">All statuses</option>
-            <option value="ongoing">Ongoing</option>
-            <option value="upcoming">Upcoming</option>
-            <option value="completed">Completed</option>
           </select>
           <select
             value={sortKey}
@@ -456,16 +460,7 @@ export default function TournamentsAdminPage() {
         </label>
       )}
 
-      {sections.map(({ key, title }) => {
-        const items = grouped[key];
-        if (statusFilter && statusFilter !== key) return null;
-        if (items.length === 0 && statusFilter !== key) return null;
-        return (
-          <section key={key} className="space-y-2">
-            <h2 className="lv-heading text-sm flex items-center gap-2">
-              {key === "ongoing" && <span className="w-2 h-2 rounded-full bg-emerald-400" />}
-              {title} ({items.length})
-            </h2>
+      <section className="space-y-2">
             <table className="w-full text-sm">
               <thead className="text-white/40 text-left">
                 <tr>
@@ -483,7 +478,7 @@ export default function TournamentsAdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((t) => (
+                {filtered.map((t) => (
                   <tr key={t.id} className="border-t border-white/10">
                     {editingId === t.id ? (
                       <>
@@ -654,20 +649,16 @@ export default function TournamentsAdminPage() {
                     )}
                   </tr>
                 ))}
-                {items.length === 0 && (
+                {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="py-4 text-white/30 text-center">
-                      None.
+                    <td colSpan={9} className="py-4 text-white/30 text-center">
+                      No tournaments match.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
-          </section>
-        );
-      })}
-
-      {filtered.length === 0 && <p className="text-white/30 text-sm">No tournaments match.</p>}
+      </section>
     </div>
   );
 }

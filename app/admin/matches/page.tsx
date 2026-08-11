@@ -134,8 +134,9 @@ export default function MatchesPage() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [streams, setStreams] = useState<{ id: string; url: string; overlay_template: string }[]>([]);
   const [activeTab, setActiveTab] = useState<"scheduled" | "live" | "finished">("live");
-  const [hasMoreFinished, setHasMoreFinished] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [searchFilter, setSearchFilter] = useState("");
+  const [tierFilter, setTierFilter] = useState<MatchTier | "">("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "status">("newest");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
@@ -240,26 +241,26 @@ export default function MatchesPage() {
     setStreams(st ?? []);
   }
 
-  const MATCHES_PAGE_SIZE = 30;
-
-  async function loadMatches(tab: "scheduled" | "live" | "finished", offset = 0) {
+  async function loadMatches(tab: "scheduled" | "live" | "finished", offset = 0, tier: MatchTier | "" = tierFilter) {
     try {
       // Use cached API endpoint for much better performance on large lists
-      const response = await fetch(`/api/admin/matches-by-status?status=${tab}&offset=${offset}`);
+      const params = new URLSearchParams({ status: tab, offset: String(offset) });
+      if (tier) params.set("tier", tier);
+      const response = await fetch(`/api/admin/matches-by-status?${params}`);
       if (!response.ok) {
         const errorData = await response.json();
         setError(errorData.error || "Failed to load matches");
         return;
       }
 
-      const { matches, hasMore } = await response.json();
+      const { matches, hasMore: more } = await response.json();
 
-      if (tab === "finished" && offset > 0) {
+      if (offset > 0) {
         setMatches((prev) => [...prev, ...((matches as unknown as Match[]) ?? [])]);
       } else {
         setMatches((matches as unknown as Match[]) ?? []);
       }
-      setHasMoreFinished(hasMore);
+      setHasMore(more);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load matches");
     }
@@ -270,8 +271,8 @@ export default function MatchesPage() {
   }, []);
 
   useEffect(() => {
-    loadMatches(activeTab);
-  }, [activeTab]);
+    loadMatches(activeTab, 0, tierFilter);
+  }, [activeTab, tierFilter]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -621,6 +622,17 @@ export default function MatchesPage() {
               <option value="oldest">Oldest first</option>
               <option value="status">Sort by status</option>
             </select>
+            <select
+              value={tierFilter}
+              onChange={(e) => setTierFilter(e.target.value as MatchTier | "")}
+              title="Filter by Normal / Priority / Hot"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+            >
+              <option value="">All tiers</option>
+              {(Object.keys(MATCH_TIER_LABELS) as MatchTier[]).map((t) => (
+                <option key={t} value={t}>{MATCH_TIER_LABELS[t]}</option>
+              ))}
+            </select>
             {selected.size > 0 && (
               <button
                 onClick={bulkDeleteMatches}
@@ -910,12 +922,12 @@ export default function MatchesPage() {
           ))}
           {filteredMatches.length === 0 && <p className="text-white/30 text-sm">No matches match.</p>}
         </div>
-        {activeTab === "finished" && hasMoreFinished && (
+        {(activeTab === "finished" || activeTab === "scheduled") && hasMore && (
           <button
-            onClick={() => loadMatches("finished", matches.length)}
+            onClick={() => loadMatches(activeTab, matches.length)}
             className="mt-3 text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5"
           >
-            Load more finished matches
+            Load more {activeTab === "finished" ? "finished" : "upcoming"} matches
           </button>
         )}
       </div>

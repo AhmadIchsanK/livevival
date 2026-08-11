@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Option = { id: string; label: string };
@@ -148,12 +148,47 @@ export default function StreamsPage() {
     }
   }
 
+  // Every stream must show a real title + thumbnail, never fall back to a
+  // bare link — streams added before title auto-fetch existed (or added via
+  // a path that skipped it) are still stuck on the "default" placeholder.
+  // Runs once per stream id (not on every 10s poll below) so it never
+  // re-hits the YouTube API for streams it already backfilled or that
+  // simply failed once.
+  const backfilledRef = useRef<Set<string>>(new Set());
+  async function backfillMissingTitles(list: Stream[]) {
+    const missing = list.filter(
+      (s) => (!s.overlay_template || s.overlay_template === "default") && !backfilledRef.current.has(s.id)
+    );
+    for (const s of missing) {
+      backfilledRef.current.add(s.id);
+      try {
+        const res = await fetch(`/api/youtube-title?url=${encodeURIComponent(s.url)}`);
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.title) {
+          await supabase.from("streams").update({ overlay_template: data.title }).eq("id", s.id);
+          setStreams((prev) => prev.map((x) => (x.id === s.id ? { ...x, overlay_template: data.title } : x)));
+        }
+      } catch {
+        // Best-effort — leaves the stream on "default" (URL fallback still
+        // shown), retried next time this page loads.
+      }
+    }
+  }
+
   useEffect(() => {
     loadTournaments();
     loadStreams();
+  }, []);
+
+  useEffect(() => {
     const interval = setInterval(loadStreams, 10000); // refresh so the "last seen" panel stays current
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    backfillMissingTitles(streams);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streams.length]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();

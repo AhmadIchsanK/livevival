@@ -41,3 +41,21 @@ export const flags = {
 } as const;
 
 export type FeatureFlags = typeof flags;
+
+// Client-side shadow toggle for the admin Hot Match capture loop. The
+// server-side flags above are not readable in the browser (only NEXT_PUBLIC_*
+// vars are inlined), so the live shadow adapter is gated by this instead:
+// a NEXT_PUBLIC env var OR a per-browser localStorage override
+// (`livevival:shadow` = "1"), so an admin can turn shadow mode on for their own
+// session to test — without any deploy — and it is OFF for everyone by default.
+// With it off, the capture loop's only added cost is populating a small local
+// object per tick; no reconstruction runs and nothing changes.
+export function clientShadowModeEnabled(): boolean {
+  if (process.env.NEXT_PUBLIC_RECONSTRUCTION_SHADOW_MODE === "1") return true;
+  try {
+    if (typeof window !== "undefined" && window.localStorage.getItem("livevival:shadow") === "1") return true;
+  } catch {
+    // localStorage can throw in private-mode / sandboxed contexts — treat as off.
+  }
+  return false;
+}

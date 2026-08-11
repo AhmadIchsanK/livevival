@@ -12,6 +12,9 @@ import { getLegalTransitions, type MatchPhase, type PhaseSignals } from "@/lib/m
 import { PhaseStepper } from "@/components/PhaseStepper";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
+import { clientShadowModeEnabled } from "@/lib/featureFlags";
+import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, type ShadowTickReads } from "@/lib/reconstruction/shadowCapture";
+import type { LegacyState } from "@/lib/reconstruction/snapshot";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
 // widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
@@ -2228,6 +2231,13 @@ export default function LiveConsolePage() {
   // Guards the auto GAME_STARTED transition below so it only fires once
   // per game, not on every OCR tick that finds a readable timer.
   const autoStartedGameId = useRef<string | null>(null);
+  // Shadow-mode reconstruction session (spec Phase 2). Off by default
+  // (clientShadowModeEnabled) — when on, each capture tick ALSO feeds the same
+  // real OCR reads into the reconstruction engine and compares its confirmed
+  // state to the legacy values, surfacing divergences in a diagnostic panel.
+  // Never controls public/legacy state; wrapped so it can't break capture.
+  const shadowSessionRef = useRef<ShadowSession | null>(null);
+  const [shadowDivergences, setShadowDivergences] = useState<ShadowSession["divergences"]>([]);
   // Map-setting detection only ever needs to fire once per game — without
   // this guard every OCR tick that still sees the map-select overlay on
   // screen would keep re-writing games.map, which is wasted work at best
@@ -4121,6 +4131,11 @@ export default function LiveConsolePage() {
       deaths: number;
       assists: number;
     }[] = [];
+    // Shadow-mode accumulator (spec Phase 2) — records this tick's RAW OCR
+    // reads (pre-legacy-guard) so the reconstruction engine can run its own
+    // independent validation. Populated with trivial assignments below and
+    // flushed once at the end; costs nothing observable when shadow is off.
+    const shadowReads: ShadowTickReads = emptyShadowReads();
 
     for (const tracker of activeTrackers) {
       const box = regions[tracker.field];
@@ -4184,6 +4199,7 @@ export default function LiveConsolePage() {
           }
           case "game_timer": {
             const newSeconds = mmss ? Number(mmss[1]) * 60 + Number(mmss[2]) : null;
+            if (newSeconds != null) shadowReads.timerSeconds = newSeconds; // shadow (raw)
             const knownSeconds = lastPersistedSeconds.current ?? game?.current_time_seconds ?? null;
             // Never-decreases — the timer only counts up during live play,
             // so a reading smaller than what's already recorded is always a
@@ -4225,6 +4241,7 @@ export default function LiveConsolePage() {
             if (!digitsOnly) break;
             const kills = Number(digitsOnly);
             if (!Number.isFinite(kills) || kills < 0 || kills > 300) break;
+            if (sideTeamId) shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)
             const column = sideTeamId === match?.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
             // Never-decreases — a noisy read lower than what's already
             // recorded is always a misread (kill counts only go up); the
@@ -4292,6 +4309,10 @@ export default function LiveConsolePage() {
           }
           case "objective": {
             if (sideTeamId && objectiveType) {
+              const om = trimmed.match(/\d+/);
+              if (om && (objectiveType === "turtle" || objectiveType === "lord" || objectiveType === "tower")) {
+                shadowReads.objectives[objectiveType][sideTeamId] = Number(om[0]); // shadow (raw)
+              }
               await applySingleObjectiveReading(sideTeamId, objectiveType, trimmed, tracker.field, tracker.label, data.confidence);
             }
             break;
@@ -4306,6 +4327,10 @@ export default function LiveConsolePage() {
             if (counts.length !== 3) break;
             const order = OBJECTIVE_GROUP_ORDER[side];
             for (let i = 0; i < 3; i++) {
+              const ot = order[i];
+              if (ot === "turtle" || ot === "lord" || ot === "tower") {
+                shadowReads.objectives[ot][sideTeamId] = counts[i]; // shadow (raw)
+              }
               await applySingleObjectiveReading(
                 sideTeamId,
                 order[i],
@@ -4667,6 +4692,48 @@ export default function LiveConsolePage() {
         ? `"${duplicateHero}" read as picked on two different K/D/A trackers — check hero OCR/roster data.`
         : kdaMismatch
     );
+
+    // ── Shadow-mode flush (spec Phase 2) ──────────────────────────────────
+    // Feed the SAME real reads into the reconstruction engine and compare its
+    // confirmed state to the legacy values. Entirely off by default; wrapped
+    // so it can never affect the legacy writes above or break capture.
+    if (clientShadowModeEnabled() && game && match?.team_a && match?.team_b) {
+      try {
+        // Net worth: map left/right raw reads to team ids.
+        if (networthLeft != null) shadowReads.netWorth[leftTeamId ?? ""] = networthLeft;
+        if (networthRight != null) shadowReads.netWorth[rightTeamId ?? ""] = networthRight;
+        delete shadowReads.netWorth[""];
+        // Player KDA: attach each parsed row to its team.
+        shadowReads.playerKda = kdaParsed
+          .map((k) => {
+            const teamId = players.find((p) => p.id === k.playerId)?.team_id;
+            return teamId ? { playerId: k.playerId, teamId, kills: k.kills, deaths: k.deaths, assists: k.assists } : null;
+          })
+          .filter((x): x is NonNullable<typeof x> => x !== null);
+
+        const session = ensureSession(shadowSessionRef.current, game.id, match.team_a.id, match.team_b.id);
+        // Legacy snapshot (what the legacy path currently holds) to compare against.
+        const legacy: LegacyState = {
+          timerSeconds: game.current_time_seconds ?? null,
+          teamKills: {
+            [match.team_a.id]: Math.max(game.team_a_kills_override ?? 0, stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a!.id).reduce((a, s) => a + (s.kills ?? 0), 0)),
+            [match.team_b.id]: Math.max(game.team_b_kills_override ?? 0, stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b!.id).reduce((a, s) => a + (s.kills ?? 0), 0)),
+          },
+          netWorth: {
+            ...(latestNetWorth?.team_a_gold != null ? { [match.team_a.id]: latestNetWorth.team_a_gold } : {}),
+            ...(latestNetWorth?.team_b_gold != null ? { [match.team_b.id]: latestNetWorth.team_b_gold } : {}),
+          },
+          players: Object.fromEntries(
+            stats.filter((s) => s.player_id).map((s) => [s.player_id, { kills: s.kills ?? 0, deaths: s.deaths ?? 0, assists: s.assists ?? 0 }])
+          ),
+        };
+        shadowSessionRef.current = runShadowTick(session, shadowReads, legacy);
+        setShadowDivergences(shadowSessionRef.current.divergences);
+      } catch (err) {
+        // Shadow must never break capture.
+        console.warn("[shadow] flush error (ignored):", err);
+      }
+    }
 
     if (game && kdaParsed.length > 0) loadAll();
   }
@@ -7762,6 +7829,42 @@ export default function LiveConsolePage() {
                         above) — it must equal the enemy's summed deaths or
                         it isn't shown at all, never a number that doesn't
                         reconcile with the KDA rows below it. */}
+                    {/* Shadow-mode reconstruction diagnostics (spec Phase 5).
+                        Only renders when the admin has enabled shadow mode for
+                        their browser (localStorage `livevival:shadow`=1). Shows,
+                        per field, where the reconstruction engine's confirmed
+                        state diverges from the legacy value — the corruption the
+                        engine would have rejected. Never affects legacy state. */}
+                    {clientShadowModeEnabled() && (
+                      <section className="space-y-2 bg-amber-500/5 border border-amber-500/20 rounded p-3">
+                        <div className="flex items-center justify-between">
+                          <h3 className="font-semibold text-sm text-amber-300">🔬 Shadow reconstruction — divergences</h3>
+                          <span className="text-[10px] text-white/40">legacy vs reconstructed (confirmed state)</span>
+                        </div>
+                        {shadowDivergences.length === 0 ? (
+                          <p className="text-xs text-white/50">No divergence this tick — legacy and reconstruction agree.</p>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="text-xs w-full">
+                              <thead className="text-white/40">
+                                <tr><th className="text-left pr-3">Field</th><th className="text-left pr-3">Legacy</th><th className="text-left pr-3">Reconstructed</th><th className="text-left">Category</th></tr>
+                              </thead>
+                              <tbody>
+                                {shadowDivergences.map((d, i) => (
+                                  <tr key={i} className="border-t border-white/5">
+                                    <td className="pr-3 py-0.5 font-mono">{d.field}</td>
+                                    <td className="pr-3 tabular-nums">{JSON.stringify(d.legacy)}</td>
+                                    <td className="pr-3 tabular-nums text-emerald-300">{JSON.stringify(d.reconstructed)}</td>
+                                    <td className="text-amber-300">{d.category}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </section>
+                    )}
+
                     <section className="space-y-3">
                       <div className="flex items-center justify-between">
                         <h2 className="font-bold">Live scoreboard</h2>

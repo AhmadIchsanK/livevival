@@ -110,7 +110,26 @@ post-game frames, false vs real reset, duplicate frames, illegal objectives).
 
 ## Integration status
 
-The engine is **complete, tested, and shipped dark**. It is not yet wired into
-the live Hot Match capture loop as the authoritative writer — that switch is
-gated behind shadow-mode acceptance per the migration strategy (§38–§40). See
-`LIVEVIVAL_AI_EXECUTION_STATE.md` for the exact next steps.
+The engine is **complete, tested, and integrated into the real Hot Match
+capture loop in shadow mode** (off by default). The additive DB migration is
+**applied to the live database**. The engine has been **validated against real
+production telemetry** (`lib/reconstruction/realReplay.test.ts`) — it rejects
+genuine corruption already in the live DB (a 73-kill garbled override on a game
+with 0 summed kills, three impossible same-minute Lord kills, and dozens of
+non-monotonic/noise net-worth readings the legacy path stored).
+
+It is **not** yet the authoritative public source — public reads stay legacy
+until shadow-mode acceptance on a live match. See
+`LIVEVIVAL_AI_EXECUTION_STATE.md` for evidence, observation mappings, and the
+exact next steps.
+
+## Live shadow adapter
+
+`lib/reconstruction/shadowCapture.ts` runs the engine alongside the legacy
+capture path in the admin browser, off the same real OCR reads. It is gated by
+`clientShadowModeEnabled()` (a `NEXT_PUBLIC_RECONSTRUCTION_SHADOW_MODE` env var
+or a per-browser `localStorage['livevival:shadow']='1'`), defaults **off**, and
+is wrapped so a thrown error can never break capture. When on, an admin panel in
+the live page shows per-field divergences (legacy vs reconstructed) with a
+category (LEGACY_WRONG / RECONSTRUCTION_WRONG / OCR_AMBIGUITY / TIMING_ALIGNMENT
+/ MISSING_OBSERVATION / DATA_MAPPING_BUG / EXPECTED_DIFFERENCE).

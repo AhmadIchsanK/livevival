@@ -191,6 +191,82 @@ function facebookEmbedUrl(url: string | null) {
   return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false`;
 }
 
+// A native <select> renders its open dropdown as an OS-level popup
+// window in most browsers — on Windows especially, that popup stealing
+// window-manager focus is enough to force a *different*, unrelated
+// window (e.g. the admin's screen-shared livestream, fullscreened on a
+// second monitor) out of exclusive fullscreen back to windowed. This
+// in-page listbox never leaves the DOM/JS world — clicking it opens a
+// normal absolutely-positioned <div>, not a native popup — so it can't
+// have that side effect. Used anywhere on this page an admin is likely
+// to reach for a dropdown while capture/the livestream is running.
+function InlineMenuSelect({
+  value,
+  options,
+  onChange,
+  placeholder,
+  className,
+  title,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  placeholder?: string;
+  className?: string;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [open]);
+  const current = options.find((o) => o.value === value);
+  return (
+    <div ref={rootRef} className={`relative inline-block ${className ?? ""}`}>
+      <button
+        type="button"
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs text-left flex items-center justify-between gap-1.5 whitespace-nowrap hover:bg-white/15"
+      >
+        <span className="truncate">{current?.label ?? placeholder ?? "Select..."}</span>
+        <span className="text-white/40 shrink-0">▾</span>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          className="absolute z-20 mt-1 min-w-full max-h-64 overflow-y-auto bg-[#111116] border border-white/15 rounded shadow-lg py-1"
+        >
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              role="option"
+              aria-selected={opt.value === value}
+              onClick={() => {
+                onChange(opt.value);
+                setOpen(false);
+              }}
+              className={`block w-full text-left px-2.5 py-1.5 text-xs whitespace-nowrap hover:bg-white/10 ${
+                opt.value === value ? "text-signal font-semibold" : "text-white/80"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function LiveConsolePage() {
   const params = useParams();
   const matchId = params.id as string;
@@ -1216,6 +1292,22 @@ export default function LiveConsolePage() {
   // recently inserted row of that type/team, so the displayed number is
   // always just objectives.filter(...).length.
   const OBJECTIVE_TYPES = ["tower", "lord", "turtle"] as const;
+  // Left-to-right (or top-to-bottom — whatever order the icon cluster
+  // reads in) icon order for the "objectives_group" combined tracker, per
+  // side. MLBB broadcasts consistently show a team's tower/lord/turtle
+  // icons as one fixed-order cluster, but which order — and most
+  // tournaments mirror the right team's panel around the center of the
+  // HUD, so its reading order is usually the reverse of the left team's —
+  // isn't the same across every broadcast overlay. This is a starting
+  // guess (tower→lord→turtle scanning left-to-right for the left panel,
+  // reversed for the mirrored right one), not a hardcoded certainty; it's
+  // exactly as adjustable as any other tracker box; if a broadcast doesn't
+  // match this order, calibrate the box tighter or fall back to the 3
+  // individual per-type trackers instead.
+  const OBJECTIVE_GROUP_ORDER: Record<Side, (typeof OBJECTIVE_TYPES)[number][]> = {
+    left: ["tower", "lord", "turtle"],
+    right: ["turtle", "lord", "tower"],
+  };
   function objectiveCount(teamId: string, type: string) {
     return objectives.filter((o) => o.team_id === teamId && o.type === type).length;
   }
@@ -1512,7 +1604,7 @@ export default function LiveConsolePage() {
         resolve(null);
         return;
       }
-      const canvas = cropVideoToEmbed(video, embedFrame);
+      const canvas = cropVideoToEmbed(video, captureArea);
       const ctx = canvas?.getContext("2d");
       if (!canvas || !ctx) {
         resolve(null);
@@ -1716,7 +1808,7 @@ export default function LiveConsolePage() {
   async function captureScreenshotFromPreview(noteOverride?: string) {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
-    const canvas = cropVideoToEmbed(video, embedFrame);
+    const canvas = cropVideoToEmbed(video, captureArea);
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
     // Same Livevival watermark as the moment-attach capture path
@@ -1778,6 +1870,17 @@ export default function LiveConsolePage() {
     | "game_timer"
     | "team_kills"
     | "objective"
+    // Single-region alternatives to 3 "objective"/5 "player_kda" trackers
+    // per side — one box spanning the whole tower/lord/turtle icon cluster
+    // (or the whole 5-row KDA column) instead of one box per number, read
+    // and split apart in one OCR pass (see parseObjectivesGroupCounts/
+    // parseKdaGroupLines below). Faster to calibrate (one drag instead of
+    // three or five) at the cost of needing every number in the region to
+    // read cleanly on the same tick — the individual per-type/per-player
+    // trackers stay available for broadcasts where that trade isn't worth
+    // it (a laggy connection, a cramped HUD).
+    | "objectives_group"
+    | "kda_group"
     | "net_worth"
     | "player_kda"
     | "kill_banner"
@@ -1838,6 +1941,16 @@ export default function LiveConsolePage() {
             });
           }
         }
+        // One box around the whole tower/lord/turtle icon cluster instead
+        // of three — see OBJECTIVE_GROUP_ORDER for how the 3 numbers it
+        // reads get split back out to a type each.
+        for (const side of SIDES) {
+          items.push({
+            category: "objectives_group",
+            field: `objectives_group_${side.key}`,
+            label: `Objectives (combined) — ${side.label}: ${OBJECTIVE_GROUP_ORDER[side.key].join(" / ")}`,
+          });
+        }
         for (const side of SIDES) {
           for (let n = 1; n <= 5; n++) {
             items.push({
@@ -1846,6 +1959,18 @@ export default function LiveConsolePage() {
               label: `K/D/A — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
             });
           }
+        }
+        // One box around the whole 5-row KDA column instead of five — see
+        // parseKdaGroupLines. Requires all 5 rows to read as clean x/x/x
+        // triples on the same tick, in role order top-to-bottom, or the
+        // whole read is skipped that tick (never a partial/misaligned
+        // assignment — see the case "kda_group" handler).
+        for (const side of SIDES) {
+          items.push({
+            category: "kda_group",
+            field: `kda_group_${side.key}`,
+            label: `K/D/A (combined) — ${side.label}: all 5, role order`,
+          });
         }
         return items;
       }
@@ -1880,17 +2005,43 @@ export default function LiveConsolePage() {
 
   // Historical: back when local capture self-shared this admin tab, this
   // tracked where the "Livestream" embed sat within the captured frame, so
-  // every OCR/screenshot read could crop down to just the stream instead
-  // of the whole admin page around it. Capture now shares a separate,
-  // dedicated tab instead (see startCapture) — the whole captured frame
-  // *is* the stream, nothing to crop out — so this always stays null.
-  // Kept (not deleted) purely because toFullFramePct/cropVideoToEmbed
-  // still take it as a parameter and already treat null as "box
-  // coordinates are already whole-frame percentages," which is exactly
-  // today's behavior; removing it would mean touching both call sites for
-  // no behavior change.
+  // every OCR read could crop down to just the stream instead of the whole
+  // admin page around it. Capture now shares a separate, dedicated tab
+  // instead (see startCapture) — the whole captured frame *is* the
+  // stream — so this always stays null. Kept (not deleted) purely because
+  // toFullFramePct/cropCanvasFor (the OCR tracker-read path) still take it
+  // as a parameter and already treat null as "box coordinates are already
+  // whole-frame percentages," which is exactly today's behavior; removing
+  // it would mean touching that call site for no behavior change. The
+  // screenshot/moment-capture paths no longer use this — they take the
+  // real, admin-drawn captureArea below instead (see cropVideoToEmbed call
+  // sites), since unlike tracker regions those crop straight from the
+  // frame with no embed-relative composition to worry about.
   type EmbedFrame = { xPct: number; yPct: number; wPct: number; hPct: number };
   const embedFrame: EmbedFrame | null = null;
+
+  // ── Captured area ─────────────────────────────────────────────────────
+  // Optional hard boundary (full-frame percentages, same shape as
+  // RegionBox) admins can draw on the Match capture canvas — useful when
+  // the OS-level screen/window share includes more than just the
+  // broadcast itself (extra desktop chrome, a second monitor). When set:
+  // every tracker region gets clamped inside it on save (clampBoxToArea,
+  // used by saveRegion/addTrackerWithRegion, so this also covers
+  // auto-place and template-apply), and Screenshot/moment captures crop
+  // to it directly (cropVideoToEmbed call sites now pass captureArea
+  // instead of the always-null embedFrame above). null means "the whole
+  // captured frame counts", identical to today's behavior. Stored as its
+  // own capture_regions row (field "__capture_area__", category
+  // "capture_area", phase "ANY") rather than a real tracker, so it's
+  // filtered out of the trackers/regions load and never shows up in the
+  // tracker catalog.
+  const [captureArea, setCaptureArea] = useState<RegionBox | null>(null);
+  const [captureAreaEditMode, setCaptureAreaEditMode] = useState(false);
+  const [captureAreaDraft, setCaptureAreaDraft] = useState<RegionBox | null>(null);
+  const captureAreaDragMode = useRef<DragMode | null>(null);
+  const captureAreaDragStartPct = useRef<{ x: number; y: number } | null>(null);
+  const captureAreaDragStartBox = useRef<RegionBox | null>(null);
+  const captureAreaCropRectRef = useRef<DOMRect | null>(null);
 
   const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -1961,6 +2112,13 @@ export default function LiveConsolePage() {
   // already finished setting a match up shouldn't have to scroll past this
   // every reload just to reach Livestream/Declare Winner/Moment log above.
   const [ocrDetailsOpen, setOcrDetailsOpen] = useState(true);
+  // Reference livestream thumbnail (see the "Match capture" pane below) —
+  // starts collapsed since the capture canvas above it is the thing an
+  // admin actually calibrates/reads against; this is just a quick "does
+  // the broadcast still match what I calibrated" glance, one click away,
+  // pinned next to the canvas instead of buried at the bottom of a
+  // separately-scrolling section like it used to be.
+  const [referenceStreamOpen, setReferenceStreamOpen] = useState(false);
   const ocrAutoCollapsedRef = useRef(false);
   const [calibratingField, setCalibratingField] = useState<string | null>(null);
   // Live-editable draft of the region currently being calibrated — shown
@@ -2488,6 +2646,10 @@ export default function LiveConsolePage() {
   async function captureFrameAndAnalyze() {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
+    // Same hard stop as the manual-OCR pipeline (captureTickBody) — once
+    // this game is finished, no further gameplay stats get written or even
+    // sent for analysis.
+    if (game?.status === "finished") return;
 
     // Vision models tokenize images by pixel area, not file size — sending
     // the full 1920x1080 (or higher) capture straight through burned ~6.2k
@@ -2497,7 +2659,7 @@ export default function LiveConsolePage() {
     // readable well below full resolution, so downscale to a fixed max
     // width before encoding — this is the actual fix, independent of model
     // choice.
-    const embedCanvas = cropVideoToEmbed(video, embedFrame);
+    const embedCanvas = cropVideoToEmbed(video, captureArea);
     if (!embedCanvas) return;
     const MAX_WIDTH = 960;
     const scale = Math.min(1, MAX_WIDTH / embedCanvas.width);
@@ -2541,6 +2703,97 @@ export default function LiveConsolePage() {
     }
   }
 
+  // ── AI-suggested tracker layout ──────────────────────────────────────
+  // One screenshot of the current capture → a vision model locates each
+  // standard HUD element → those boxes get placed as real trackers, same
+  // "never touches a field that's already tracked" contract as Auto-place/
+  // Apply-template. Separate from the AI full-frame *capture* pipeline
+  // above (captureFrameAndAnalyze/applyAiDetection, which reads game state
+  // on a recurring interval) — this only ever runs once, on demand, and
+  // only ever proposes tracker positions, never writes any game data
+  // itself.
+  const AI_LAYOUT_FIELD_MAP: Record<string, { category: TrackerCategory; label: string }> = {
+    game_timer: { category: "game_timer", label: "Game timer" },
+    kill_banner: { category: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)" },
+    net_worth_left: { category: "net_worth", label: "Net worth — Left" },
+    net_worth_right: { category: "net_worth", label: "Net worth — Right" },
+    team_kills_left: { category: "team_kills", label: "Team kills — Left" },
+    team_kills_right: { category: "team_kills", label: "Team kills — Right" },
+    objectives_group_left: { category: "objectives_group", label: `Objectives (combined) — Left: ${OBJECTIVE_GROUP_ORDER.left.join(" / ")}` },
+    objectives_group_right: { category: "objectives_group", label: `Objectives (combined) — Right: ${OBJECTIVE_GROUP_ORDER.right.join(" / ")}` },
+    kda_group_left: { category: "kda_group", label: "K/D/A (combined) — Left: all 5, role order" },
+    kda_group_right: { category: "kda_group", label: "K/D/A (combined) — Right: all 5, role order" },
+  };
+  const [aiLayoutSuggesting, setAiLayoutSuggesting] = useState(false);
+  const [aiLayoutStatus, setAiLayoutStatus] = useState<string | null>(null);
+  async function suggestLayoutFromScreenshot() {
+    const video = previewRef.current;
+    if (!video || video.videoWidth === 0) {
+      setAiLayoutStatus("No capture frame available yet — start capture first.");
+      return;
+    }
+    setAiLayoutSuggesting(true);
+    setAiLayoutStatus(null);
+    try {
+      // Cropped to captureArea (if set) so the model only ever sees the
+      // same region trackers are constrained to — composeFromCaptureArea
+      // below converts its response back to full-frame percentages.
+      const embedCanvas = cropVideoToEmbed(video, captureArea);
+      if (!embedCanvas) {
+        setAiLayoutStatus("Capture frame too small to read.");
+        return;
+      }
+      const MAX_WIDTH = 960;
+      const scale = Math.min(1, MAX_WIDTH / embedCanvas.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(embedCanvas.width * scale);
+      canvas.height = Math.round(embedCanvas.height * scale);
+      canvas.getContext("2d")?.drawImage(embedCanvas, 0, 0, canvas.width, canvas.height);
+      const imageBase64 = canvas.toDataURL("image/jpeg", 0.85);
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        setAiLayoutStatus("Not signed in.");
+        return;
+      }
+
+      const res = await fetch("/api/admin/ai-layout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ imageBase64 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAiLayoutStatus(data.error ?? "Layout suggestion failed.");
+        return;
+      }
+      const regions = (data.regions ?? []) as { field: string; x_pct: number; y_pct: number; w_pct: number; h_pct: number }[];
+      let placed = 0;
+      let skipped = 0;
+      for (const r of regions) {
+        const mapping = AI_LAYOUT_FIELD_MAP[r.field];
+        if (!mapping) continue;
+        if (trackers.some((t) => t.phase === "GAME_STARTED" && t.field === r.field)) {
+          skipped++;
+          continue;
+        }
+        const box = composeFromCaptureArea({ xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct }, captureArea);
+        await addTrackerWithRegion("GAME_STARTED", mapping.category, r.field, mapping.label, box);
+        placed++;
+      }
+      setAiLayoutStatus(
+        regions.length === 0
+          ? "The model didn't confidently locate any tracker elements in this frame — try again once the scoreboard/HUD is clearly visible, or place trackers manually."
+          : `Placed ${placed} tracker${placed === 1 ? "" : "s"} from the screenshot${skipped > 0 ? `, skipped ${skipped} already tracked` : ""}.`
+      );
+    } catch (err) {
+      setAiLayoutStatus((err as Error).message);
+    } finally {
+      setAiLayoutSuggesting(false);
+    }
+  }
+
   // Set once the tournament-defaults/match-regions fetch below has actually
   // resolved (success or not) — gates autoPlaceDefaultTrackers further down
   // so it never fires against the transient "trackers is still []" state
@@ -2566,7 +2819,7 @@ export default function LiveConsolePage() {
       const nextTrackers: Tracker[] = [];
       const nextRegions: Record<string, RegionBox | null> = {};
       for (const r of [...(tournamentDefaults ?? []), ...(matchRegions ?? [])]) {
-        if (r.category === "overlay_hint") continue;
+        if (r.category === "overlay_hint" || r.category === "capture_area") continue;
         const idx = nextTrackers.findIndex((t) => t.field === r.field);
         const tracker: Tracker = { id: r.id, phase: r.phase, category: r.category as TrackerCategory, field: r.field, label: r.label ?? r.field };
         if (idx === -1) nextTrackers.push(tracker);
@@ -2578,6 +2831,15 @@ export default function LiveConsolePage() {
       const tournamentHint = tournamentDefaults?.find((r) => r.category === "overlay_hint")?.hint_text;
       const matchHint = matchRegions?.find((r) => r.category === "overlay_hint")?.hint_text;
       if (matchHint ?? tournamentHint) setOverlayHint(matchHint ?? tournamentHint ?? "");
+      // Captured area is per-machine (tied to whatever the admin actually
+      // shares), so only ever comes from the match-specific row — no
+      // tournament-default fallback the way overlay_hint/trackers get.
+      const matchCaptureArea = matchRegions?.find((r) => r.category === "capture_area");
+      setCaptureArea(
+        matchCaptureArea?.x_pct != null
+          ? { xPct: matchCaptureArea.x_pct, yPct: matchCaptureArea.y_pct!, wPct: matchCaptureArea.w_pct!, hPct: matchCaptureArea.h_pct! }
+          : null
+      );
       setTrackersLoaded(true);
     })();
   }, [matchId, match?.tournament_id]);
@@ -2614,13 +2876,47 @@ export default function LiveConsolePage() {
     });
   }
 
+  // Shrinks/shifts a box so it never sticks out of the given area — used
+  // to enforce "trackers always stay inside the captured area" at every
+  // save point (manual drag, auto-place, template apply) rather than just
+  // during the drag gesture itself, so it can't be bypassed. A no-op when
+  // area is null (no captured area drawn — today's unconstrained behavior).
+  function clampBoxToArea(box: RegionBox, area: RegionBox | null): RegionBox {
+    if (!area) return box;
+    const wPct = Math.min(box.wPct, area.wPct);
+    const hPct = Math.min(box.hPct, area.hPct);
+    const xPct = Math.min(Math.max(box.xPct, area.xPct), area.xPct + area.wPct - wPct);
+    const yPct = Math.min(Math.max(box.yPct, area.yPct), area.yPct + area.hPct - hPct);
+    return { xPct, yPct, wPct, hPct };
+  }
+
+  // Inverse of clampBoxToArea's coordinate space: the AI layout screenshot
+  // (see suggestLayoutFromScreenshot) is cropped to captureArea before
+  // being sent off (cropVideoToEmbed(video, captureArea)), so every
+  // percentage the model returns is relative to THAT sub-frame, not the
+  // full captured video — this composes it back to full-frame percentages
+  // (same math as the old toFullFramePct, just against captureArea
+  // instead of the always-null embedFrame) before it's stored as a real
+  // tracker region. A no-op when no captured area is set, since the
+  // screenshot was the full frame in that case.
+  function composeFromCaptureArea(box: RegionBox, area: RegionBox | null): RegionBox {
+    if (!area) return box;
+    return {
+      xPct: area.xPct + (box.xPct / 100) * area.wPct,
+      yPct: area.yPct + (box.yPct / 100) * area.hPct,
+      wPct: (box.wPct / 100) * area.wPct,
+      hPct: (box.hPct / 100) * area.hPct,
+    };
+  }
+
   async function saveRegion(field: string, box: RegionBox) {
-    setRegions((prev) => ({ ...prev, [field]: box }));
+    const clamped = clampBoxToArea(box, captureArea);
+    setRegions((prev) => ({ ...prev, [field]: clamped }));
     const tracker = trackers.find((t) => t.field === field);
     if (!tracker) return;
     await supabase
       .from("capture_regions")
-      .update({ x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct })
+      .update({ x_pct: clamped.xPct, y_pct: clamped.yPct, w_pct: clamped.wPct, h_pct: clamped.hPct })
       .eq("id", tracker.id);
   }
   async function clearRegionCoords(field: string) {
@@ -2636,9 +2932,10 @@ export default function LiveConsolePage() {
   // addTracker() followed by a separate saveRegion() call that would read
   // back from `trackers` state before the just-added row has landed there.
   async function addTrackerWithRegion(phase: string, category: TrackerCategory, field: string, label: string, box: RegionBox) {
+    const clamped = clampBoxToArea(box, captureArea);
     const { data, error } = await supabase
       .from("capture_regions")
-      .insert({ match_id: matchId, phase, category, field, label, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct })
+      .insert({ match_id: matchId, phase, category, field, label, x_pct: clamped.xPct, y_pct: clamped.yPct, w_pct: clamped.wPct, h_pct: clamped.hPct })
       .select("id")
       .single();
     if (error || !data) {
@@ -2646,7 +2943,7 @@ export default function LiveConsolePage() {
       return;
     }
     setTrackers((prev) => [...prev, { id: data.id, phase, category, field, label }]);
-    setRegions((prev) => ({ ...prev, [field]: box }));
+    setRegions((prev) => ({ ...prev, [field]: clamped }));
   }
 
   // ── Auto-placed default trackers (standard MLBB broadcast layout) ────
@@ -2743,6 +3040,8 @@ export default function LiveConsolePage() {
   const [newTemplateName, setNewTemplateName] = useState("");
   const [selectedTrackerTemplate, setSelectedTrackerTemplate] = useState("");
   const [applyingTemplate, setApplyingTemplate] = useState(false);
+  const [renamingTemplate, setRenamingTemplate] = useState(false);
+  const [deletingTemplate, setDeletingTemplate] = useState(false);
 
   const loadTrackerTemplates = useCallback(async () => {
     const { data } = await supabase.from("capture_regions").select("template_name").not("template_name", "is", null);
@@ -2812,6 +3111,51 @@ export default function LiveConsolePage() {
       }
     } finally {
       setApplyingTemplate(false);
+    }
+  }
+
+  // Renames a template in place — every row under the old template_name
+  // becomes the new one, so matches that already applied it are
+  // unaffected (they got their own capture_regions rows at apply time;
+  // template rows are only ever a source to copy from, never referenced
+  // live). Blocks on a name collision instead of silently merging two
+  // templates together.
+  async function renameTrackerTemplate(oldName: string) {
+    if (!oldName) return;
+    const newName = prompt(`Rename template "${oldName}" to:`, oldName)?.trim();
+    if (!newName || newName === oldName) return;
+    if (trackerTemplates.some((t) => t.name === newName)) {
+      setError(`A template named "${newName}" already exists.`);
+      return;
+    }
+    setRenamingTemplate(true);
+    try {
+      const { error } = await supabase.from("capture_regions").update({ template_name: newName }).eq("template_name", oldName);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      if (selectedTrackerTemplate === oldName) setSelectedTrackerTemplate(newName);
+      await loadTrackerTemplates();
+    } finally {
+      setRenamingTemplate(false);
+    }
+  }
+
+  async function deleteTrackerTemplate(name: string) {
+    if (!name) return;
+    if (!confirm(`Delete template "${name}"? Matches that already applied it keep their trackers — this only removes it from the list.`)) return;
+    setDeletingTemplate(true);
+    try {
+      const { error } = await supabase.from("capture_regions").delete().eq("template_name", name);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      if (selectedTrackerTemplate === name) setSelectedTrackerTemplate("");
+      await loadTrackerTemplates();
+    } finally {
+      setDeletingTemplate(false);
     }
   }
 
@@ -2885,6 +3229,28 @@ export default function LiveConsolePage() {
     if (!matchId) return;
     await supabase.from("capture_regions").upsert(
       { match_id: matchId, phase: "ANY", category: "overlay_hint", field: "overlay_hint", label: "Overlay hint", hint_text: overlayHint || null },
+      { onConflict: "match_id,phase,field" }
+    );
+  }
+
+  // null clears it (see clearCaptureArea) — every existing tracker region
+  // is left exactly where it is when that happens, only future saves stop
+  // being constrained.
+  async function saveCaptureArea(box: RegionBox | null) {
+    setCaptureArea(box);
+    if (!matchId) return;
+    await supabase.from("capture_regions").upsert(
+      {
+        match_id: matchId,
+        phase: "ANY",
+        category: "capture_area",
+        field: "__capture_area__",
+        label: "Captured area",
+        x_pct: box?.xPct ?? null,
+        y_pct: box?.yPct ?? null,
+        w_pct: box?.wPct ?? null,
+        h_pct: box?.hPct ?? null,
+      },
       { onConflict: "match_id,phase,field" }
     );
   }
@@ -3207,6 +3573,32 @@ export default function LiveConsolePage() {
     if (!slash) return null;
     return { kills: Number(slash[1]), deaths: Number(slash[2]), assists: Number(slash[3]) };
   }
+  // The "kda_group" combined tracker's whole point: one region spanning
+  // all 5 KDA rows, one OCR pass, split back into 5 readings by line. Only
+  // a real "N/N/N" line counts — anything else on the same line (a spell
+  // cooldown digit, a partial/garbled row) simply doesn't match the shape
+  // and is dropped rather than guessed at, exactly the "ignore it if it
+  // doesn't follow x/x/x" behavior asked for. Order in, order out: relies
+  // entirely on Tesseract preserving top-to-bottom line order, which is
+  // what a role-ordered column of rows naturally OCRs as.
+  function parseKdaGroupLines(text: string): { kills: number; deaths: number; assists: number }[] {
+    return text
+      .split(/\n+/)
+      .map((line) => parseKda(line))
+      .filter((k): k is { kills: number; deaths: number; assists: number } => k !== null);
+  }
+  // The "objectives_group" combined tracker's equivalent: one region
+  // spanning the tower/lord/turtle icon cluster, digit-only OCR (icons
+  // themselves are images, never text, so they can't appear in the
+  // output — only the 3 numbers next to them can). Every digit run found,
+  // in reading order. Deliberately does NOT try to cope with a partial
+  // read (2 numbers instead of 3, a run split by OCR into two) — the
+  // caller requires exactly 3 or skips the tick entirely, since a
+  // miscounted split would silently misassign which number is which
+  // objective type.
+  function parseObjectivesGroupCounts(text: string): number[] {
+    return (text.match(/\d+/g) ?? []).map(Number);
+  }
   // Domain-rule gate for OCR-automatic objective reads only — manual
   // clicks (incrementObjective called directly) always bypass this, same
   // as every other manual-override path in this file: an admin correcting
@@ -3311,16 +3703,54 @@ export default function LiveConsolePage() {
 
   // Direct correction, either direction — the +/- buttons only ever move
   // one at a time, which is fine for logging live but slow for fixing a
-  // count that's drifted (a missed OCR tick, a double-click). Reuses the
-  // same increment/decrement writes one at a time rather than a bespoke
-  // bulk delete/insert, so nothing about how an objective gets logged
-  // changes — this is just a faster way to reach the same end state.
+  // count that's drifted (a missed OCR tick, a double-click).
+  //
+  // Increasing reuses incrementObjective in a loop — each call is a plain
+  // insert that doesn't depend on reading back what the previous call did,
+  // so looping it with await is safe.
+  //
+  // Decreasing does NOT reuse decrementObjective in a loop (that was the
+  // actual bug behind "force-changing the value does nothing" on the
+  // Objectives tab): decrementObjective computes "the most recent row" by
+  // reading the `objectives` React-state array, but that array only
+  // updates once loadAll()'s async refetch resolves — well after this
+  // function's while-loop has already fired off its next iteration. Every
+  // iteration in the same batch was reading the exact same stale array,
+  // so each one recomputed the identical "most recent" row: the first
+  // delete succeeded, every delete after it matched zero rows (already
+  // gone) and returned no error, so a correction like 4→1 only ever
+  // actually removed one objective no matter how many the admin typed.
+  // Fixed by computing the whole batch of rows to remove from a single
+  // snapshot up front, then deleting them all in one request.
   async function setObjectiveCount(teamId: string, type: string, target: number) {
     const clamped = Math.max(0, Math.round(target));
-    let current = objectiveCount(teamId, type);
+    const current = objectiveCount(teamId, type);
     markManualObjectiveEdit(teamId, type);
-    while (current < clamped) { await incrementObjective(teamId, type); current++; }
-    while (current > clamped) { await decrementObjective(teamId, type); current--; }
+    if (clamped > current) {
+      for (let i = current; i < clamped; i++) await incrementObjective(teamId, type);
+      return;
+    }
+    if (clamped === current) return;
+    const toRemove = objectives
+      .filter((o) => o.team_id === teamId && o.type === type)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, current - clamped);
+    if (toRemove.length === 0) return;
+    const ids = toRemove.map((o) => o.id);
+    if (isContributor) {
+      for (const row of toRemove) {
+        pushPendingEdit({ table: "objectives", action: "delete", before: row as unknown as Record<string, unknown>, after: null });
+      }
+      setObjectives((prev) => prev.filter((o) => !ids.includes(o.id)));
+      return;
+    }
+    const { error } = await supabase.from("objectives").delete().in("id", ids);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setObjectives((prev) => prev.filter((o) => !ids.includes(o.id)));
+    loadAll();
   }
 
   async function captureTick() {
@@ -3348,6 +3778,7 @@ export default function LiveConsolePage() {
   function charWhitelistFor(category: string): string | null {
     switch (category) {
       case "player_kda":
+      case "kda_group":
         return "0123456789/";
       case "net_worth":
         return "0123456789.";
@@ -3356,6 +3787,7 @@ export default function LiveConsolePage() {
         return "0123456789:";
       case "team_kills":
       case "objective":
+      case "objectives_group":
         return "0123456789";
       default:
         return null; // kill_banner, victory_banner, pause_word, map_setting — real words expected
@@ -3363,6 +3795,16 @@ export default function LiveConsolePage() {
   }
 
   async function captureTickBody(video: HTMLVideoElement, worker: NonNullable<typeof workerRef.current>) {
+    // Hard stop once this game is done — validation-spec golden rule: "after
+    // GAME_FINISHED, reject any additional kills/deaths/assists/net worth/
+    // objective/turret updates." Phase-scoping (activeTrackers below) gets
+    // most of the way there already since GAME_STARTED trackers stop being
+    // "active" the moment the admin moves the match off that phase, but
+    // that's a step the admin has to actually take — this covers the gap
+    // where game.status is already "finished" (Declare Winner clicked) but
+    // match.state/trackers haven't been walked forward yet, so a straggling
+    // OCR tick can't write a post-game stat.
+    if (game?.status === "finished") return;
     // Only scan the trackers configured for whatever phase the admin has
     // this match set to right now — this is what makes each phase's
     // tracker genuinely distinct instead of always reading the same fields
@@ -3537,6 +3979,27 @@ export default function LiveConsolePage() {
             }
             break;
           }
+          case "objectives_group": {
+            if (!sideTeamId || !side) break;
+            const counts = parseObjectivesGroupCounts(trimmed);
+            // Anything other than exactly 3 clean digit runs isn't a
+            // trustworthy split — same treatment as a blank/unreadable
+            // tracker everywhere else in this pipeline: skip the tick
+            // rather than guess which number is which objective.
+            if (counts.length !== 3) break;
+            const order = OBJECTIVE_GROUP_ORDER[side];
+            for (let i = 0; i < 3; i++) {
+              await applySingleObjectiveReading(
+                sideTeamId,
+                order[i],
+                String(counts[i]),
+                `${tracker.field}_${order[i]}`,
+                `${tracker.label} — ${order[i]}`,
+                data.confidence
+              );
+            }
+            break;
+          }
           case "net_worth": {
             const gold = parseGoldText(trimmed);
             if (gold == null) break;
@@ -3564,6 +4027,39 @@ export default function LiveConsolePage() {
                 raw: trimmed,
                 confidence: data.confidence,
                 ...kda,
+              });
+            }
+            break;
+          }
+          case "kda_group": {
+            if (!side) break;
+            const lines = parseKdaGroupLines(trimmed);
+            // Same all-or-nothing logic as objectives_group: fewer than 5
+            // clean x/x/x rows means at least one player's row didn't read
+            // this tick, and there's no reliable way to tell WHICH slot
+            // was the one that failed (a cooldown timer breaking up the
+            // block, a row cut off at the edge of the box) — so the whole
+            // reading is skipped rather than risk assigning row 3's stats
+            // to role slot 4. More than 5 (something outside the 5 rows
+            // leaked into the box) is dropped for the same reason.
+            if (lines.length !== 5) break;
+            for (let i = 0; i < 5; i++) {
+              const playerRow = slotPlayer(side, i + 1);
+              if (!playerRow) continue;
+              kdaParsed.push({
+                playerId: playerRow.id,
+                // No per-row hero OCR for the combined box — findHeroInText
+                // matches against the whole blob, which would misattribute
+                // a hero name to every row rather than just the one it
+                // actually belongs to. Hero stays whatever it already was;
+                // the individual player_kda trackers are the way to get
+                // per-tick hero detection if that matters for a broadcast.
+                heroName: null,
+                field: `${tracker.field}_${i + 1}`,
+                label: `${tracker.label} — ${KDA_SLOT_LABELS[i]}`,
+                raw: trimmed,
+                confidence: data.confidence,
+                ...lines[i],
               });
             }
             break;
@@ -3667,6 +4163,14 @@ export default function LiveConsolePage() {
         const kills = existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills;
         const deaths = existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths;
         const assists = existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists;
+        // The kda_group combined tracker never reads a hero name per row
+        // (see its case above) — row.heroName is always null there. Fall
+        // back to whatever's already stored instead of writing null over
+        // it, so switching a side to the combined tracker can't wipe hero
+        // data that a draft-pick sync or an individual player_kda tracker
+        // already set.
+        const heroName = row.heroName ?? existing?.hero_name ?? null;
+        const heroId = matchHeroId(heroName);
         // A read below what's already stored, on any of the three stats,
         // is held back by the clamp above — flag it instead of silently
         // discarding, in case it's a genuine correction the admin wants
@@ -3681,14 +4185,14 @@ export default function LiveConsolePage() {
             reason: `Read ${row.kills}/${row.deaths}/${row.assists}, below the stored ${existing?.kills ?? 0}/${existing?.deaths ?? 0}/${existing?.assists ?? 0} — never-decreases guard held it back`,
             apply: async () => {
               await supabase.from("player_stats").upsert(
-                { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills: row.kills, deaths: row.deaths, assists: row.assists },
+                { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: heroName, hero_id: heroId, kills: row.kills, deaths: row.deaths, assists: row.assists },
                 { onConflict: "game_id,player_id" }
               );
             },
           });
         }
         await supabase.from("player_stats").upsert(
-          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills, deaths, assists },
+          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: heroName, hero_id: heroId, kills, deaths, assists },
           { onConflict: "game_id,player_id" }
         );
       }
@@ -3705,17 +4209,33 @@ export default function LiveConsolePage() {
     // banner, not a silent drop.
     let kdaMismatch: string | null = null;
     if (game) {
-      for (const [label, teamId, override] of [
-        ["Team A", match?.team_a?.id, game.team_a_kills_override] as const,
-        ["Team B", match?.team_b?.id, game.team_b_kills_override] as const,
+      for (const [label, teamId, opponentTeamId, override] of [
+        ["Team A", match?.team_a?.id, match?.team_b?.id, game.team_a_kills_override] as const,
+        ["Team B", match?.team_b?.id, match?.team_a?.id, game.team_b_kills_override] as const,
       ]) {
         if (!teamId || override == null) continue;
-        const playerSum = stats
+        const playerKillSum = stats
           .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === teamId)
           .reduce((sum, s) => sum + (s.kills ?? 0), 0);
-        if (Math.abs(playerSum - override) >= 3) {
-          kdaMismatch = `${label}: team kills (${override}) doesn't match the sum of per-player kills (${playerSum}) — one of the two OCR reads may be stale or wrong.`;
+        if (Math.abs(playerKillSum - override) >= 3) {
+          kdaMismatch = `${label}: team kills (${override}) doesn't match the sum of per-player kills (${playerKillSum}) — one of the two OCR reads may be stale or wrong.`;
           break;
+        }
+        // "Team A kills must equal Team B deaths" (and vice versa) — every
+        // kill has exactly one victim, so a team's kill total and the
+        // opposing team's total deaths should track each other. Same
+        // tolerance/soft-signal-only treatment as the within-team check
+        // above, for the same reason: these numbers come from
+        // independently-timed OCR reads, so brief lag between them is
+        // normal and not worth a hard reject.
+        if (opponentTeamId) {
+          const opponentDeathSum = stats
+            .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === opponentTeamId)
+            .reduce((sum, s) => sum + (s.deaths ?? 0), 0);
+          if (Math.abs(opponentDeathSum - override) >= 3) {
+            kdaMismatch = `${label}: team kills (${override}) doesn't match the opposing team's total deaths (${opponentDeathSum}) — one kill should always mean one death somewhere.`;
+            break;
+          }
         }
       }
     }
@@ -3984,6 +4504,103 @@ export default function LiveConsolePage() {
     // to the drag that's about to happen, rather than requiring a second
     // manual toggle click right after.
     setTrackerEditMode(true);
+  }
+
+  // ── Captured area drag ───────────────────────────────────────────────
+  // Deliberately its own small drag implementation (mirroring
+  // startBoxDrag/onMove above) rather than a third dragTarget on that
+  // shared one — this box has no "which tracker" step, no corner-handle
+  // MIN-size floor tied to OCR usability, and only ever exists one at a
+  // time, so keeping it separate means calibrating a tracker can never
+  // accidentally drag the area (or vice versa) through shared drag state.
+  function startCaptureAreaDrag(mode: DragMode, e: React.MouseEvent) {
+    e.stopPropagation();
+    const container = e.currentTarget.closest("[data-crop-container]");
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    captureAreaCropRectRef.current = rect;
+    captureAreaDragMode.current = mode;
+    captureAreaDragStartPct.current = clientToPct(e.clientX, e.clientY, rect);
+    captureAreaDragStartBox.current = captureAreaDraft;
+  }
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const mode = captureAreaDragMode.current;
+      const rect = captureAreaCropRectRef.current;
+      const start = captureAreaDragStartPct.current;
+      if (!mode || !rect || !start) return;
+      const pt = clientToPct(e.clientX, e.clientY, rect);
+      if (mode === "draw") {
+        setCaptureAreaDraft({
+          xPct: Math.min(start.x, pt.x),
+          yPct: Math.min(start.y, pt.y),
+          wPct: Math.abs(pt.x - start.x),
+          hPct: Math.abs(pt.y - start.y),
+        });
+        return;
+      }
+      const startBox = captureAreaDragStartBox.current;
+      if (!startBox) return;
+      if (mode === "move") {
+        const dx = pt.x - start.x;
+        const dy = pt.y - start.y;
+        setCaptureAreaDraft({
+          ...startBox,
+          xPct: Math.min(100 - startBox.wPct, Math.max(0, startBox.xPct + dx)),
+          yPct: Math.min(100 - startBox.hPct, Math.max(0, startBox.yPct + dy)),
+        });
+        return;
+      }
+      const right = startBox.xPct + startBox.wPct;
+      const bottom = startBox.yPct + startBox.hPct;
+      let { xPct, yPct, wPct, hPct } = startBox;
+      const MIN = 3; // pct — the captured area is a coarse boundary box, not a fine OCR crop
+      if (mode.includes("w")) {
+        xPct = Math.min(pt.x, right - MIN);
+        wPct = right - xPct;
+      }
+      if (mode.includes("e")) {
+        wPct = Math.max(MIN, pt.x - startBox.xPct);
+      }
+      if (mode.includes("n")) {
+        yPct = Math.min(pt.y, bottom - MIN);
+        hPct = bottom - yPct;
+      }
+      if (mode.includes("s")) {
+        hPct = Math.max(MIN, pt.y - startBox.yPct);
+      }
+      setCaptureAreaDraft({ xPct, yPct, wPct, hPct });
+    }
+    function onUp() {
+      captureAreaDragMode.current = null;
+      captureAreaDragStartPct.current = null;
+      captureAreaDragStartBox.current = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+  function startEditingCaptureArea() {
+    setCaptureAreaDraft(captureArea);
+    setCaptureAreaEditMode(true);
+  }
+  function lockCaptureArea() {
+    if (!captureAreaDraft) return;
+    if (captureAreaDraft.wPct < 3 || captureAreaDraft.hPct < 3) return; // too small to be a real boundary — ignore
+    saveCaptureArea(captureAreaDraft);
+    setCaptureAreaEditMode(false);
+  }
+  function cancelCaptureAreaEdit() {
+    setCaptureAreaDraft(captureArea);
+    setCaptureAreaEditMode(false);
+  }
+  function clearCaptureArea() {
+    setCaptureAreaDraft(null);
+    saveCaptureArea(null);
+    setCaptureAreaEditMode(false);
   }
 
   async function confirmSuggestion() {
@@ -4845,6 +5462,62 @@ export default function LiveConsolePage() {
         )}
       </div>
     ) : null;
+  // Captured area — drawn on top of trackerOverlay so it's visible (as a
+  // yellow guide outline) while placing/adjusting trackers even when it's
+  // not actively being edited. Only intercepts clicks while
+  // captureAreaEditMode is on; otherwise pointer-events pass straight
+  // through to trackerOverlay/the video underneath, same as every other
+  // inert overlay box on this canvas.
+  const captureAreaOverlay =
+    match.update_source === "local_ocr" && captureMode === "manual" && ocrDetailsOpen && captureActive && match.state !== "TECHNICAL_PAUSE" ? (
+      <div
+        className="absolute inset-0"
+        style={{ pointerEvents: captureAreaEditMode ? "auto" : "none" }}
+        onMouseDown={(e) => {
+          if (!captureAreaEditMode || captureAreaDraft) return;
+          startCaptureAreaDrag("draw", e);
+        }}
+      >
+        {!captureAreaEditMode && captureArea && (
+          <div
+            title="Captured area — trackers and screenshots are kept inside this boundary"
+            className="absolute border-2 border-dashed border-yellow-400/50 pointer-events-none"
+            style={{ left: `${captureArea.xPct}%`, top: `${captureArea.yPct}%`, width: `${captureArea.wPct}%`, height: `${captureArea.hPct}%` }}
+          />
+        )}
+        {captureAreaEditMode && captureAreaDraft && (
+          <div
+            className="absolute border-2 border-dashed border-yellow-400 bg-yellow-400/10 cursor-move"
+            style={{ left: `${captureAreaDraft.xPct}%`, top: `${captureAreaDraft.yPct}%`, width: `${captureAreaDraft.wPct}%`, height: `${captureAreaDraft.hPct}%` }}
+            onMouseDown={(e) => startCaptureAreaDrag("move", e)}
+          >
+            <span className="absolute -top-5 left-0 text-[10px] text-yellow-300 bg-black/70 px-1 rounded whitespace-nowrap">
+              Captured area
+            </span>
+            {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+              <div
+                key={corner}
+                onMouseDown={(e) => startCaptureAreaDrag(corner, e)}
+                className="absolute w-5 h-5 flex items-center justify-center"
+                style={{
+                  left: corner.includes("w") ? 0 : "100%",
+                  top: corner.includes("n") ? 0 : "100%",
+                  transform: "translate(-50%, -50%)",
+                  cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                }}
+              >
+                <span className="w-2.5 h-2.5 bg-yellow-400 rounded-full border border-black block" />
+              </div>
+            ))}
+          </div>
+        )}
+        {captureAreaEditMode && !captureAreaDraft && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag to draw the captured area</span>
+          </div>
+        )}
+      </div>
+    ) : null;
   const activeTrackers = trackers.filter((t) => t.phase === match.state);
   const allTrackersCalibrated = activeTrackers.length > 0 && activeTrackers.every((t) => regions[t.field]);
   // "Every indicator is red right after Game ongoing starts" diagnostic —
@@ -5553,7 +6226,31 @@ export default function LiveConsolePage() {
                 </div>
               )}
               {trackerOverlay}
+              {captureAreaOverlay}
             </div>
+            {/* Reference livestream — pinned here (inside the sticky,
+                non-scrolling header above the action deck) instead of at
+                the bottom of the scrollable section below, which used to
+                mean scrolling down to check calibration/OCR readings
+                scrolled the one thing worth comparing them against clean
+                out of view. Collapsed by default to keep the pane compact
+                — the capture canvas above is what actually gets read. */}
+            {embedUrl && (
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setReferenceStreamOpen((v) => !v)}
+                  className="text-[10px] text-white/40 hover:text-white/60 flex items-center gap-1"
+                >
+                  {referenceStreamOpen ? "▾" : "▸"} Livestream (reference only)
+                </button>
+                {referenceStreamOpen && (
+                  <div className="relative w-full max-w-[220px] aspect-video rounded overflow-hidden select-none border border-white/10">
+                    <iframe src={embedUrl} className="w-full h-full" allow="autoplay; encrypted-media" allowFullScreen />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3 lg:p-4 space-y-4">
 
@@ -5786,6 +6483,15 @@ export default function LiveConsolePage() {
             )}
             {captureActive && match.state !== "TECHNICAL_PAUSE" && (
               <div className="space-y-3">
+                {/* Sticky toolbar — the edit-mode toggle, phase filter, and
+                    captured-area controls are what an admin reaches for
+                    over and over while calibrating, so they stay pinned to
+                    the top of this scrolling section instead of scrolling
+                    out of reach the moment the flagged-readings list or
+                    tracker table below grows past one screen. Auto-place/
+                    template/countdown stay below, unpinned — those are
+                    occasional actions, not a running toolbar. */}
+                <div className="sticky top-0 z-10 -mx-3 lg:-mx-4 px-3 lg:px-4 py-2 space-y-2 bg-ink/95 backdrop-blur border-b border-white/10">
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <span className="text-[10px] text-white/40">
                     {trackerEditMode
@@ -5809,18 +6515,72 @@ export default function LiveConsolePage() {
                     >
                       {trackerEditMode ? "✏️ Tracker edit mode: ON" : "Tracker edit mode: OFF"}
                     </button>
-                    <select
+                    <InlineMenuSelect
                       value={canvasPhaseFilter}
-                      onChange={(e) => setCanvasPhaseFilter(e.target.value)}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
+                      onChange={setCanvasPhaseFilter}
                       title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
-                    >
-                      <option value="">All phases</option>
-                      {TRACKER_PHASES.map((p) => (
-                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: "", label: "All phases" },
+                        ...TRACKER_PHASES.map((p) => ({ value: p, label: p.replace(/_/g, " ") })),
+                      ]}
+                    />
                   </div>
+                </div>
+                {/* Captured area — an optional hard boundary trackers get
+                    clamped inside on save and screenshots get cropped to
+                    (see clampBoxToArea/cropVideoToEmbed). Its own toggle
+                    rather than folded into trackerEditMode above, since
+                    turning it on hijacks the same canvas drag gesture for
+                    a completely different purpose (one boundary box vs.
+                    per-tracker regions) — conflating the two would mean a
+                    drag's meaning depends on invisible state. */}
+                <div className="flex flex-wrap items-center gap-2 border border-white/10 rounded px-2.5 py-2">
+                  <span className="text-[10px] text-white/40 flex-1 min-w-[220px]">
+                    {captureAreaEditMode
+                      ? "Drag on the canvas above to draw/adjust the captured area, then Lock it in."
+                      : captureArea
+                      ? "Captured area set — every tracker save and screenshot is kept inside it (yellow outline on the canvas above)."
+                      : "No captured area set — trackers and screenshots use the whole captured frame, same as before."}
+                  </span>
+                  {!captureAreaEditMode ? (
+                    <button
+                      type="button"
+                      onClick={startEditingCaptureArea}
+                      className="text-xs rounded px-3 py-1.5 border border-yellow-400/40 text-yellow-300 hover:bg-yellow-400/10 whitespace-nowrap"
+                    >
+                      {captureArea ? "Adjust captured area" : "🖼 Set captured area"}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={lockCaptureArea}
+                        disabled={!captureAreaDraft}
+                        className="text-xs rounded px-3 py-1.5 bg-yellow-400 text-ink font-semibold disabled:opacity-40 whitespace-nowrap"
+                      >
+                        Lock captured area
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelCaptureAreaEdit}
+                        className="text-xs rounded px-3 py-1.5 border border-white/20 text-white/70 hover:bg-white/10 whitespace-nowrap"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                  {captureArea && !captureAreaEditMode && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm("Clear the captured area? Trackers/screenshots go back to using the whole captured frame.")) clearCaptureArea();
+                      }}
+                      className="text-xs rounded px-3 py-1.5 border border-red-500/40 text-red-300 hover:bg-red-500/10 whitespace-nowrap"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
                 </div>
                 {/* The drag-to-calibrate canvas itself now lives up in the
                     Livestream pane, overlaid directly on the embed iframe
@@ -5853,26 +6613,21 @@ export default function LiveConsolePage() {
                     manual override for the countdown clock. */}
                 {captureMode === "manual" && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={autoPlaceDefaultTrackers}
-                      disabled={autoPlacingTrackers}
-                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 whitespace-nowrap"
-                      title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
-                    >
-                      {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place default trackers"}
-                    </button>
+                    {/* Saved templates first — checking whether a matching
+                        broadcast layout already exists is the natural first
+                        move before falling back to the generic auto-place
+                        guess below, not an afterthought bolted on beside it. */}
                     {templatesLoaded && trackerTemplates.length > 0 && (
                       <div className="flex items-center gap-1">
-                        <select
+                        <InlineMenuSelect
                           value={selectedTrackerTemplate}
-                          onChange={(e) => setSelectedTrackerTemplate(e.target.value)}
-                          className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                        >
-                          <option value="">Apply a saved template...</option>
-                          {trackerTemplates.map((t) => (
-                            <option key={t.name} value={t.name}>{t.name} ({t.regionCount})</option>
-                          ))}
-                        </select>
+                          onChange={setSelectedTrackerTemplate}
+                          placeholder="Apply a saved template..."
+                          options={[
+                            { value: "", label: "Apply a saved template..." },
+                            ...trackerTemplates.map((t) => ({ value: t.name, label: `${t.name} (${t.regionCount})` })),
+                          ]}
+                        />
                         <button
                           onClick={() => applyTrackerTemplate(selectedTrackerTemplate)}
                           disabled={!selectedTrackerTemplate || applyingTemplate}
@@ -5881,8 +6636,40 @@ export default function LiveConsolePage() {
                         >
                           {applyingTemplate ? "Applying…" : "Apply"}
                         </button>
+                        <button
+                          onClick={() => renameTrackerTemplate(selectedTrackerTemplate)}
+                          disabled={!selectedTrackerTemplate || renamingTemplate}
+                          title="Rename this template"
+                          className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => deleteTrackerTemplate(selectedTrackerTemplate)}
+                          disabled={!selectedTrackerTemplate || deletingTemplate}
+                          title="Delete this template — matches already using it keep their trackers, this only removes it from the list"
+                          className="text-xs border border-red-500/40 text-red-300 rounded px-2 py-1.5 hover:bg-red-500/10 disabled:opacity-40 whitespace-nowrap"
+                        >
+                          Delete
+                        </button>
                       </div>
                     )}
+                    <button
+                      onClick={autoPlaceDefaultTrackers}
+                      disabled={autoPlacingTrackers}
+                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 whitespace-nowrap"
+                      title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
+                    >
+                      {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place default trackers"}
+                    </button>
+                    <button
+                      onClick={suggestLayoutFromScreenshot}
+                      disabled={aiLayoutSuggesting || !captureActive}
+                      className="text-xs border border-purple-400/40 text-purple-300 rounded px-3 py-1.5 hover:bg-purple-400/10 disabled:opacity-40 whitespace-nowrap"
+                      title="Takes one screenshot of the current capture and asks a vision model to locate the standard HUD elements, then places trackers on whatever it finds — for any field not already tracked. Needs GROQ_API_KEY configured."
+                    >
+                      {aiLayoutSuggesting ? "Analyzing screenshot…" : "📸 AI-suggest layout from screenshot"}
+                    </button>
                     <div className="flex items-center gap-1">
                       <input
                         value={newTemplateName}
@@ -5915,6 +6702,9 @@ export default function LiveConsolePage() {
                           Set countdown
                         </button>
                       </div>
+                    )}
+                    {aiLayoutStatus && (
+                      <span className="text-[10px] text-white/50 w-full">{aiLayoutStatus}</span>
                     )}
                   </div>
                 )}
@@ -6041,19 +6831,6 @@ export default function LiveConsolePage() {
       </section>
             )}
 
-            {/* Livestream — demoted to the bottom of this pane, reference
-                only. It's no longer the capture source (see Match capture
-                above, now sourced from a separate dedicated tab), so
-                there's nothing left tying its position or size to
-                calibration accuracy — fullscreen is fine here too. */}
-            {embedUrl && (
-              <section className="space-y-2">
-                <h3 className="font-semibold text-sm text-white/60">Livestream (reference only)</h3>
-                <div className="relative w-full aspect-video rounded overflow-hidden select-none border border-white/10">
-                  <iframe src={embedUrl} className="w-full h-full" allow="autoplay; encrypted-media" allowFullScreen />
-                </div>
-              </section>
-            )}
           </div>
         </div>
 

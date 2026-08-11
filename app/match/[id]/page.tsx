@@ -564,6 +564,29 @@ export default function PublicMatchPage() {
   const liveGameClockLabel =
     liveGameClock != null ? `${String(Math.floor(liveGameClock / 60)).padStart(2, "0")}:${String(liveGameClock % 60).padStart(2, "0")}` : null;
 
+  // Surfaces the same "is this actually still updating" signal the admin
+  // console already has internally (per-tracker OCR health/confidence)
+  // out to viewers, in the one place they'd notice a stuck read without
+  // being told: the live clock itself. Manual clock source is admin-driven
+  // in real time (no capture pipeline behind it to go stale), and this is
+  // only meaningful while a game is actually in progress — a paused/
+  // finished game not "ticking" is expected, not a fault to flag. 90s is
+  // 3x the little jitter a single missed 5s OCR tick could ever cause, so
+  // it only fires on something a viewer would actually want to know about
+  // (capture crashed, admin's tab lost focus, browser throttled it).
+  const CLOCK_STALE_AFTER_SEC = 90;
+  const clockSecondsSinceSync =
+    match.state === "GAME_STARTED" && selectedGame?.clock_source !== "manual" && selectedGame?.current_time_updated_at
+      ? Math.floor((nowMs - new Date(selectedGame.current_time_updated_at).getTime()) / 1000)
+      : null;
+  const clockIsStale = clockSecondsSinceSync != null && clockSecondsSinceSync > CLOCK_STALE_AFTER_SEC;
+  const clockFreshnessTitle =
+    clockSecondsSinceSync == null
+      ? "Live in-game clock"
+      : clockIsStale
+      ? `Live in-game clock — last synced ${clockSecondsSinceSync}s ago, may be behind`
+      : "Live in-game clock — syncing normally";
+
   function formatMMSS(totalSeconds: number) {
     const clamped = Math.max(0, totalSeconds);
     return `${String(Math.floor(clamped / 60)).padStart(2, "0")}:${String(clamped % 60).padStart(2, "0")}`;
@@ -1012,7 +1035,8 @@ export default function PublicMatchPage() {
             </span>
           )}
           {liveGameClockLabel && (
-            <span className="lv-badge bg-signal/15 text-signal tabular-nums" title="Live in-game clock">
+            <span className="lv-badge bg-signal/15 text-signal tabular-nums inline-flex items-center gap-1.5" title={clockFreshnessTitle}>
+              <span className={`w-1.5 h-1.5 rounded-full ${clockIsStale ? "bg-amber-400" : "bg-emerald-400 animate-pulse"}`} />
               ⏱ {liveGameClockLabel}
             </span>
           )}
@@ -1269,7 +1293,8 @@ export default function PublicMatchPage() {
                 status is still visible without scrolling back up while
                 reading the moment feed. */}
             {liveGameClockLabel && (
-              <span className="text-xl font-bold text-signal tabular-nums" title="Live in-game clock">
+              <span className="text-xl font-bold text-signal tabular-nums inline-flex items-center gap-1.5" title={clockFreshnessTitle}>
+                <span className={`w-2 h-2 rounded-full ${clockIsStale ? "bg-amber-400" : "bg-emerald-400 animate-pulse"}`} />
                 ⏱ {liveGameClockLabel}
               </span>
             )}

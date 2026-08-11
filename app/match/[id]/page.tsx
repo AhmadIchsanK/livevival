@@ -568,6 +568,35 @@ export default function PublicMatchPage() {
     return `${String(Math.floor(clamped / 60)).padStart(2, "0")}:${String(clamped % 60).padStart(2, "0")}`;
   }
 
+  // Shared moment-list rendering — used by both the "key moment" (starred)
+  // and the plain-row branches below, so pick/ban color-coding and the
+  // hero icon behave identically in either. key_moments has no hero_name
+  // column of its own — logPickBanMoment (admin side) always writes the
+  // description as "<team> picks|bans <hero>[ — <player>]", so this parses
+  // it back out and looks the icon up against the match's own
+  // hero_picks_bans (already fetched with a heroes join for the Draft
+  // board/recap above) by name. Same fixed format the admin console's own
+  // Moment Timeline parses, kept in sync deliberately — see that file's
+  // matching helper.
+  function renderMomentLabel(km: KeyMoment) {
+    const raw = km.description ?? `${km.type.replace(/_/g, " ")}${km.player?.ign ? ` — ${km.player.ign}` : ""}`;
+    if (km.type !== "pick" && km.type !== "ban") return <>{raw}</>;
+    const verbMatch = raw.match(/^(.+?) (picks|bans) (.+?)(?: — .+)?$/);
+    if (!verbMatch) return <>{raw}</>;
+    const [, teamPart, verb, heroPart] = verbMatch;
+    const heroIconUrl = pickBans.find((pb) => pb.hero_name.toLowerCase() === heroPart.toLowerCase())?.hero?.icon_url ?? null;
+    const rest = raw.slice(raw.indexOf(heroPart) + heroPart.length);
+    return (
+      <>
+        {heroIconUrl && <HeroIcon url={heroIconUrl} name={heroPart} size="xs" className="inline-block align-text-bottom mr-1" />}
+        {teamPart}{" "}
+        <span className={verb === "picks" ? "text-emerald-500 font-bold" : "text-signal font-bold"}>{verb}</span>{" "}
+        {heroPart}
+        {rest}
+      </>
+    );
+  }
+
   // Same 24h-out countdown as the home page's Upcoming cards, keyed off
   // the match's own scheduled_at rather than an OCR-read value — this
   // works for any scheduled match regardless of update_source, not just
@@ -1104,14 +1133,17 @@ export default function PublicMatchPage() {
           )
         )}
 
-        {/* Video always full width, same treatment across every phase —
-            chat is a floating toggle + overlay panel instead of a second
+        {/* Chat is a floating toggle + overlay panel instead of a second
             flex column, so opening it never shrinks or reflows the video
             underneath ("without interfere the watching experience"). One
             block for every layoutBucket instead of two near-identical
             copies (draft used to reorder chat before video and give it a
-            permanent — if empty — 2/5 column even while closed). */}
-        <div className="max-w-5xl mx-auto relative">
+            permanent — if empty — 2/5 column even while closed).
+            Small mode keeps the video genuinely small (~35% width,
+            centered) since the point of that mode is prioritizing the
+            stats below it; Theater/Big instead fill their whole grid
+            column (no cap) so "Big" actually reads as a big video. */}
+        <div className={videoSize === "small" ? "max-w-[38%] min-w-[280px] mx-auto relative" : "mx-auto relative"}>
           {embedUrl ? (
             <div className="lv-card-flush overflow-hidden">
               <iframe
@@ -1174,9 +1206,12 @@ export default function PublicMatchPage() {
       {match.update_source === "local_ocr" && (
         <section>
           <div className="flex items-center gap-3 mb-2 flex-wrap">
-            {/* "Moment list" during Draft/Game, "Timeline" once the series
-                is done — same underlying feed, per-bucket framing only. */}
-            <h2 className="lv-heading">{layoutBucket === "finished" ? "Timeline" : "Moment list"}</h2>
+            {/* One term everywhere — was "Timeline" once the series ended,
+                "Moment list" otherwise; the admin console calls this same
+                panel "Moment Timeline" regardless of phase, so this now
+                matches that exactly instead of the two sides using
+                different names for the same feed. */}
+            <h2 className="lv-heading">Moment Timeline</h2>
             {/* Header badges above can wrap/scroll out of view on mobile —
                 repeating the live clock + phase here, bigger, means the
                 status is still visible without scrolling back up while
@@ -1223,8 +1258,7 @@ export default function PublicMatchPage() {
                       )}
                       <div className="space-y-0.5">
                         <p className="text-signal font-semibold text-sm">
-                          ⭐ {km.description ?? km.type.replace(/_/g, " ")}
-                          {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
+                          ⭐ {renderMomentLabel(km)}
                         </p>
                         <p className="text-[10px] text-white/40">
                           {new Date(km.created_at).toLocaleTimeString()}
@@ -1239,10 +1273,7 @@ export default function PublicMatchPage() {
                       {match.state === "GAME_STARTED" && km.minute_mark != null && (
                         <span className="text-white/30 tabular-nums">{formatMMSS(km.minute_mark * 60 + (km.second_mark ?? 0))}</span>
                       )}
-                      <span>
-                        {km.description ?? km.type.replace(/_/g, " ")}
-                        {!km.description && km.player?.ign ? ` — ${km.player.ign}` : ""}
-                      </span>
+                      <span>{renderMomentLabel(km)}</span>
                       {km.screenshot_url && <span>📸</span>}
                     </div>
                   )}
@@ -1475,7 +1506,7 @@ export default function PublicMatchPage() {
               <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
               <table className="w-full text-xs">
                 <thead className="text-white/40 text-left uppercase tracking-wide">
-                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Role</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K</th><th className="pb-1.5">D</th><th className="pb-1.5">A</th></tr>
+                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Role</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K/D/A</th></tr>
                 </thead>
                 <tbody>
                   {t.list.map((s) => (
@@ -1486,13 +1517,11 @@ export default function PublicMatchPage() {
                         {s.heroIconUrl && <HeroIcon url={s.heroIconUrl} name={s.heroName} size="xs" />}
                         {s.heroName ?? (s.heroIconUrl === null && s.heroName === null ? "—" : "")}
                       </td>
-                      <td className="tabular-nums">{s.kills !== null ? s.kills : <span className="text-white/30">0</span>}</td>
-                      <td className="tabular-nums">{s.deaths !== null ? s.deaths : <span className="text-white/30">0</span>}</td>
-                      <td className="tabular-nums">{s.assists !== null ? s.assists : <span className="text-white/30">0</span>}</td>
+                      <td className="tabular-nums">{s.kills ?? 0}/{s.deaths ?? 0}/{s.assists ?? 0}</td>
                     </tr>
                   ))}
                   {t.list.length === 0 && (
-                    <tr><td colSpan={6} className="py-2 text-white/30">No stats yet.</td></tr>
+                    <tr><td colSpan={4} className="py-2 text-white/30">No stats yet.</td></tr>
                   )}
                 </tbody>
               </table>

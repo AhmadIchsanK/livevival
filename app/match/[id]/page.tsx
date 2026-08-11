@@ -684,16 +684,32 @@ export default function PublicMatchPage() {
   type ScoreRow = { id: string; ign: string; role: string | null; heroIconUrl: string | null; heroName: string | null; kills: number | null; deaths: number | null; assists: number | null };
   function scoreRowsFor(stats: PlayerStat[], activeRoster: RosterPlayer[]): ScoreRow[] {
     if (stats.length > 0) {
-      return stats.map((s) => ({
-        id: s.id,
-        ign: s.player?.ign ?? "?",
-        role: s.player?.role ?? null,
-        heroIconUrl: s.hero?.icon_url ?? null,
-        heroName: s.hero_name,
-        kills: s.kills,
-        deaths: s.deaths,
-        assists: s.assists,
-      }));
+      // player_stats.hero_name/hero can lag behind the draft (the admin
+      // console syncs it once the draft's saved, but an older game or a
+      // sync that hasn't landed yet can still have it null) — falling back
+      // to this player's own locked-in pick keeps the hero showing
+      // regardless, instead of it visibly disappearing the moment the
+      // game moves past the draft phase.
+      // Sorted by role, not whatever order the rows came back in (creation
+      // order — first OCR/AI read, first "+Add player" click — which
+      // isn't a stable position and reads as the roster reshuffling every
+      // time a new row lands). Always Exp Laner, Jungler, Mid Laner,
+      // Roamer, Gold Laner, same convention as the admin console.
+      return [...stats]
+        .sort((a, b) => roleIndex(a.player?.role ?? null) - roleIndex(b.player?.role ?? null))
+        .map((s) => {
+          const pick = gamePickBans.find((pb) => pb.type === "pick" && pb.player_id === s.player_id);
+          return {
+            id: s.id,
+            ign: s.player?.ign ?? "?",
+            role: s.player?.role ?? null,
+            heroIconUrl: s.hero?.icon_url ?? pick?.hero?.icon_url ?? null,
+            heroName: s.hero_name ?? pick?.hero_name ?? null,
+            kills: s.kills,
+            deaths: s.deaths,
+            assists: s.assists,
+          };
+        });
     }
     if (!rosterDecided || match?.state === "MATCH_NOT_STARTED") return [];
     return [...activeRoster]

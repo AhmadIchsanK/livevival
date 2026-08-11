@@ -21,6 +21,132 @@ import { createClient } from "@supabase/supabase-js";
 // has no service-role credential and spends the GROQ_API_KEY quota on
 // every call.
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SupabaseLike = any; // no generated Database types wired up for this route; see createClient() call below
+
+function normalize(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Same fuzzy substring matching the admin console's client-side
+// matchTeamId/matchPlayerId/matchHeroId use (app/admin/matches/[id]/
+// live/page.tsx) — kept in lockstep with those on purpose, not
+// reimplemented independently, since this route exists to be a drop-in
+// alternative write path for the exact same detections, not a divergent
+// one.
+function matchTeamId(teams: { id: string; name: string }[], teamName?: string | null): string | null {
+  if (!teamName) return null;
+  const n = normalize(teamName);
+  return teams.find((t) => normalize(t.name).includes(n) || n.includes(normalize(t.name)))?.id ?? null;
+}
+function matchHeroId(heroes: { id: string; name: string }[], heroName?: string | null): string | null {
+  if (!heroName) return null;
+  const n = normalize(heroName);
+  return (heroes.find((h) => normalize(h.name) === n) ?? heroes.find((h) => normalize(h.name).includes(n) || n.includes(normalize(h.name))))?.id ?? null;
+}
+function matchPlayerId(players: { id: string; ign: string; team_id: string | null }[], playerName?: string | null, teamId?: string | null): string | null {
+  if (!playerName) return null;
+  const n = normalize(playerName);
+  const pool = teamId ? players.filter((p) => p.team_id === teamId) : players;
+  return (pool.find((p) => normalize(p.ign) === n) ?? pool.find((p) => normalize(p.ign).includes(n) || n.includes(normalize(p.ign))))?.id ?? null;
+}
+
+// The "relay" write path — same never-decreases-guarded writes
+// app/admin/matches/[id]/live/page.tsx's applyAiDetection performs
+// client-side, just run here instead so a browser tab only has to
+// capture a frame and forward it: the vision call AND the DB commit both
+// land within this one request, instead of depending on the tab staying
+// open and connected long enough to receive the response and apply it
+// itself. Only ever touches player_stats/net_worth (the two writes
+// worth protecting against a dropped connection) — the game timer and
+// key-moment/winner suggestions stay client-side, since those either
+// need a live UI to confirm against or are cheap enough to just retry
+// next tick.
+async function applyDetectionServerSide(
+  supabase: SupabaseLike,
+  matchId: string,
+  gameId: string,
+  detection: {
+    player_stats?: { player_name: string; team_name: string; hero_name: string | null; kills: number | null; deaths: number | null; assists: number | null; gold: number | null }[];
+    net_worth?: { team_a_gold: number | null; team_b_gold: number | null };
+  }
+): Promise<{ playerStatsApplied: number; netWorthApplied: boolean; skippedReason?: string }> {
+  const { data: match } = await supabase
+    .from("matches")
+    .select("state, team_a:teams!matches_team_a_id_fkey(id, name), team_b:teams!matches_team_b_id_fkey(id, name)")
+    .eq("id", matchId)
+    .single();
+  if (!match) return { playerStatsApplied: 0, netWorthApplied: false, skippedReason: "Match not found" };
+  if (match.state !== "GAME_STARTED") {
+    return { playerStatsApplied: 0, netWorthApplied: false, skippedReason: `Match phase is ${match.state}, not GAME_STARTED — nothing applied` };
+  }
+  const teamA = match.team_a as unknown as { id: string; name: string } | null;
+  const teamB = match.team_b as unknown as { id: string; name: string } | null;
+  const teams = [teamA, teamB].filter((t): t is { id: string; name: string } => !!t);
+
+  const [{ data: players }, { data: heroes }, { data: existingStats }, { data: latestNetWorthRows }] = await Promise.all([
+    supabase.from("players").select("id, ign, team_id").in("team_id", teams.map((t) => t.id)),
+    supabase.from("heroes").select("id, name"),
+    supabase.from("player_stats").select("player_id, hero_name, kills, deaths, assists, gold").eq("game_id", gameId),
+    supabase.from("net_worth_snapshots").select("team_a_gold, team_b_gold").eq("game_id", gameId).order("minute_mark", { ascending: false }).limit(1),
+  ]);
+  const playerPool = (players ?? []) as { id: string; ign: string; team_id: string | null }[];
+  const heroPool = (heroes ?? []) as { id: string; name: string }[];
+  const statsPool = (existingStats ?? []) as { player_id: string | null; hero_name: string | null; kills: number | null; deaths: number | null; assists: number | null; gold: number | null }[];
+  const latestNetWorth = (latestNetWorthRows ?? [])[0] as { team_a_gold: number; team_b_gold: number } | undefined;
+
+  let playerStatsApplied = 0;
+  for (const row of detection.player_stats ?? []) {
+    const teamId = matchTeamId(teams, row.team_name);
+    const playerId = matchPlayerId(playerPool, row.player_name, teamId);
+    if (!playerId) continue;
+    const existing = statsPool.find((s) => s.player_id === playerId);
+    const kills = row.kills != null ? (existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills) : existing?.kills ?? null;
+    const deaths = row.deaths != null ? (existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths) : existing?.deaths ?? null;
+    const assists = row.assists != null ? (existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists) : existing?.assists ?? null;
+    const gold = row.gold != null ? (existing?.gold != null ? Math.max(row.gold, existing.gold) : row.gold) : existing?.gold ?? null;
+    await supabase.from("player_stats").upsert(
+      {
+        game_id: gameId,
+        match_id: matchId,
+        player_id: playerId,
+        hero_name: row.hero_name ?? null,
+        hero_id: matchHeroId(heroPool, row.hero_name),
+        kills,
+        deaths,
+        assists,
+        gold,
+      },
+      { onConflict: "game_id,player_id" }
+    );
+    playerStatsApplied++;
+  }
+
+  let netWorthApplied = false;
+  if (detection.net_worth?.team_a_gold != null || detection.net_worth?.team_b_gold != null) {
+    const MAX_NET_WORTH_GAIN_PER_TICK = 8000;
+    const knownAGold = latestNetWorth?.team_a_gold ?? null;
+    const knownBGold = latestNetWorth?.team_b_gold ?? null;
+    const clamp = (known: number | null, read: number | null) => {
+      if (read == null) return known ?? null;
+      const floored = known != null && read < known ? known : read;
+      return known != null && floored - known > MAX_NET_WORTH_GAIN_PER_TICK ? known + MAX_NET_WORTH_GAIN_PER_TICK : floored;
+    };
+    const { data: game } = await supabase.from("games").select("current_time_seconds").eq("id", gameId).single();
+    const minuteMark = Math.floor((game?.current_time_seconds ?? 0) / 60);
+    await supabase.from("net_worth_snapshots").insert({
+      game_id: gameId,
+      match_id: matchId,
+      minute_mark: minuteMark,
+      team_a_gold: clamp(knownAGold, detection.net_worth?.team_a_gold ?? null),
+      team_b_gold: clamp(knownBGold, detection.net_worth?.team_b_gold ?? null),
+    });
+    netWorthApplied = true;
+  }
+
+  return { playerStatsApplied, netWorthApplied };
+}
+
 function buildPrompt(overlayHint?: string | null) {
   return `You are watching a single frame from a Mobile Legends: Bang Bang (MLBB) \
 esports broadcast. Identify what is currently on screen and respond with ONLY a \
@@ -120,6 +246,12 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const imageBase64: string | undefined = body?.imageBase64;
   const overlayHint: string | undefined = body?.overlayHint;
+  // Optional — pass both to have this request also commit the write
+  // (player_stats/net_worth) before responding, instead of just returning
+  // the raw detection for the caller to apply itself. Omit either to keep
+  // the original analyze-only behavior.
+  const matchId: string | undefined = body?.matchId;
+  const gameId: string | undefined = body?.gameId;
   if (!imageBase64 || typeof imageBase64 !== "string") {
     return NextResponse.json({ error: "Missing imageBase64" }, { status: 400 });
   }
@@ -170,10 +302,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  let parsed: Record<string, unknown>;
   try {
-    const parsed = JSON.parse(extracted);
-    return NextResponse.json(parsed);
+    parsed = JSON.parse(extracted);
   } catch {
     return NextResponse.json({ error: "Model response wasn't valid JSON" }, { status: 502 });
   }
+
+  if (matchId && gameId) {
+    try {
+      const applied = await applyDetectionServerSide(supabase, matchId, gameId, parsed);
+      return NextResponse.json({ ...parsed, applied });
+    } catch (err) {
+      // The vision read itself succeeded — still return it so the caller
+      // isn't left with nothing, just flagged as unwritten rather than
+      // failing the whole request over a write-side error.
+      return NextResponse.json({ ...parsed, applied: { playerStatsApplied: 0, netWorthApplied: false, skippedReason: (err as Error).message } });
+    }
+  }
+
+  return NextResponse.json(parsed);
 }

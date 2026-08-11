@@ -2242,13 +2242,29 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
-  async function applyAiDetection(detection: AiDetection) {
+  // `alreadyApplied` comes from /api/ocr/analyze-frame's own response when
+  // the relay write path ran server-side (see captureFrameAndAnalyze,
+  // which now passes matchId/gameId so the route commits player_stats/
+  // net_worth itself instead of just returning the detection) — skips
+  // redoing those two writes client-side so a frame's data never lands
+  // twice. Everything else here (timer, suggestions) still runs
+  // client-side regardless, since those either need a live UI to confirm
+  // against or are cheap enough not to bother moving.
+  async function applyAiDetection(detection: AiDetection, alreadyApplied?: { playerStatsApplied: number; netWorthApplied: boolean }) {
     if (!game || !match) return;
 
     const timerMatch = detection.game_timer_mm_ss?.match(/(\d{1,2}):(\d{2})/);
     if (timerMatch) {
-      setMinute(Number(timerMatch[1]));
-      updateGameClock(Number(timerMatch[1]), Number(timerMatch[2]));
+      const newSeconds = Number(timerMatch[1]) * 60 + Number(timerMatch[2]);
+      const knownSeconds = lastPersistedSeconds.current ?? game.current_time_seconds ?? null;
+      // Same never-decreases guard the manual OCR path's game_timer case
+      // applies — a vision-model misread clock is exactly as capable of
+      // reading a garbled lower value as Tesseract is, and the clock only
+      // counts up during live play.
+      if (knownSeconds == null || newSeconds >= knownSeconds) {
+        setMinute(Number(timerMatch[1]));
+        updateGameClock(Number(timerMatch[1]), Number(timerMatch[2]));
+      }
     }
     if (detection.phase === "IN_GAME") maybeAutoStartGame();
 
@@ -2263,34 +2279,61 @@ export default function LiveConsolePage() {
     // vision-model reading during e.g. a Technical pause could write
     // nonsense stats nobody asked for.
     if (match.state === "GAME_STARTED") {
-      for (const row of detection.player_stats ?? []) {
-        const teamId = matchTeamId(row.team_name);
-        const playerId = matchPlayerId(row.player_name, teamId);
-        if (!playerId) continue;
-        await supabase.from("player_stats").upsert(
-          {
+      // Same never-decreases invariant the manual OCR path enforces
+      // (captureTickBody) — a vision-model misread is exactly as capable
+      // of reporting a garbled lower number as a Tesseract misread is, and
+      // kills/deaths/assists/gold only ever go up during a live game.
+      // Clamped per-field so a correctly-read stat still lands even if
+      // another field on the same row misread low. Skipped entirely when
+      // alreadyApplied is set — the relay route already committed these
+      // (with the same guards) server-side.
+      if (!alreadyApplied) {
+        for (const row of detection.player_stats ?? []) {
+          const teamId = matchTeamId(row.team_name);
+          const playerId = matchPlayerId(row.player_name, teamId);
+          if (!playerId) continue;
+          const existing = stats.find((s) => s.player_id === playerId);
+          const kills = row.kills != null ? (existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills) : existing?.kills ?? null;
+          const deaths = row.deaths != null ? (existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths) : existing?.deaths ?? null;
+          const assists = row.assists != null ? (existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists) : existing?.assists ?? null;
+          const gold = row.gold != null ? (existing?.gold != null ? Math.max(row.gold, existing.gold) : row.gold) : existing?.gold ?? null;
+          await supabase.from("player_stats").upsert(
+            {
+              game_id: game.id,
+              match_id: matchId,
+              player_id: playerId,
+              hero_name: row.hero_name ?? existing?.hero_name ?? null,
+              hero_id: matchHeroId(row.hero_name),
+              kills,
+              deaths,
+              assists,
+              gold,
+            },
+            { onConflict: "game_id,player_id" }
+          );
+        }
+
+        if (detection.net_worth?.team_a_gold != null || detection.net_worth?.team_b_gold != null) {
+          // Same never-decreases + per-tick spike-cap guard as the manual
+          // path's net-worth block — a vision-model read jumping far
+          // beyond a plausible single-tick gain is far more likely a
+          // misread digit than real gold.
+          const MAX_NET_WORTH_GAIN_PER_TICK = 8000;
+          const knownAGold = latestNetWorth?.team_a_gold ?? null;
+          const knownBGold = latestNetWorth?.team_b_gold ?? null;
+          const clamp = (known: number | null, read: number | null) => {
+            if (read == null) return known ?? null;
+            const floored = known != null && read < known ? known : read;
+            return known != null && floored - known > MAX_NET_WORTH_GAIN_PER_TICK ? known + MAX_NET_WORTH_GAIN_PER_TICK : floored;
+          };
+          await supabase.from("net_worth_snapshots").insert({
             game_id: game.id,
             match_id: matchId,
-            player_id: playerId,
-            hero_name: row.hero_name ?? null,
-            hero_id: matchHeroId(row.hero_name),
-            kills: row.kills ?? null,
-            deaths: row.deaths ?? null,
-            assists: row.assists ?? null,
-            gold: row.gold ?? null,
-          },
-          { onConflict: "game_id,player_id" }
-        );
-      }
-
-      if (detection.net_worth?.team_a_gold != null || detection.net_worth?.team_b_gold != null) {
-        await supabase.from("net_worth_snapshots").insert({
-          game_id: game.id,
-          match_id: matchId,
-          minute_mark: minute,
-          team_a_gold: detection.net_worth?.team_a_gold ?? null,
-          team_b_gold: detection.net_worth?.team_b_gold ?? null,
-        });
+            minute_mark: minute,
+            team_a_gold: clamp(knownAGold, detection.net_worth?.team_a_gold ?? null),
+            team_b_gold: clamp(knownBGold, detection.net_worth?.team_b_gold ?? null),
+          });
+        }
       }
 
       // Dedup within a cooldown — a banner lingers on screen for several
@@ -2363,19 +2406,27 @@ export default function LiveConsolePage() {
     }
 
     try {
+      // matchId/gameId opt this request into the relay write path — the
+      // route commits player_stats/net_worth itself (same guards as
+      // below) before responding, instead of this tab needing to survive
+      // long enough to receive the response and write them itself. See
+      // applyAiDetection's alreadyApplied param.
       const res = await fetch("/api/ocr/analyze-frame", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ imageBase64, overlayHint: overlayHint || undefined }),
+        body: JSON.stringify({ imageBase64, overlayHint: overlayHint || undefined, matchId, gameId: game?.id }),
       });
       const data = await res.json();
       if (!res.ok) {
         setAiStatus(data.error ?? "Analysis failed.");
         return;
       }
-      setAiDetection(data as AiDetection);
-      setAiStatus(null);
-      await applyAiDetection(data as AiDetection);
+      const { applied, ...detection } = data as AiDetection & {
+        applied?: { playerStatsApplied: number; netWorthApplied: boolean; skippedReason?: string };
+      };
+      setAiDetection(detection as AiDetection);
+      setAiStatus(applied?.skippedReason ?? null);
+      await applyAiDetection(detection as AiDetection, applied);
     } catch (err) {
       setAiStatus((err as Error).message);
     }
@@ -5316,10 +5367,43 @@ export default function LiveConsolePage() {
           </p>
         ) : !ocrDetailsOpen ? null : (
           <>
+            {/* Two independent capture pipelines, either one drives the
+                same downstream writes (never-decreases guards, phase
+                scoping, flagged-reading review) — Manual is the original,
+                deterministic per-region Tesseract read; AI sends the whole
+                cropped frame to a vision model instead, so there's no
+                tracker calibration to draw or maintain at all. Switching
+                is locked out mid-capture (stop first) since the two modes
+                run on different intervals and read from different state. */}
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-white/40">Capture pipeline:</span>
+              <div className="inline-flex rounded border border-white/10 overflow-hidden">
+                <button
+                  onClick={() => setCaptureMode("manual")}
+                  disabled={captureActive}
+                  className={`text-[10px] px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    captureMode === "manual" ? "bg-signal text-ink font-semibold" : "text-white/60 hover:bg-white/10"
+                  }`}
+                >
+                  Manual region OCR
+                </button>
+                <button
+                  onClick={() => setCaptureMode("ai")}
+                  disabled={captureActive}
+                  className={`text-[10px] px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed ${
+                    captureMode === "ai" ? "bg-signal text-ink font-semibold" : "text-white/60 hover:bg-white/10"
+                  }`}
+                  title="Sends the whole cropped livestream frame to a vision model every 60s instead of reading hand-calibrated regions — no trackers to draw, but needs GROQ_API_KEY configured and costs a model call per tick"
+                >
+                  AI full-frame (beta)
+                </button>
+              </div>
+              {captureActive && <span className="text-[10px] text-white/30">Stop capture to switch</span>}
+            </div>
             <p className="text-[10px] text-white/40 bg-white/5 border border-white/10 rounded px-2 py-1.5">
-              Manual region OCR — deterministic, runs entirely in your browser, no AI involved. Full-frame AI
-              capture is disabled for now until this manual pipeline is proven out end-to-end; the option
-              reappears here once that's done.
+              {captureMode === "manual"
+                ? "Manual region OCR — deterministic, runs entirely in your browser, no AI involved. Needs each field's region calibrated below before it reads anything."
+                : "AI full-frame — a vision model reads the whole livestream frame directly (game timer, objectives, K/D/A, kill banners), no region calibration needed. Beta: less predictable than manual OCR, and each read costs a model call. Same never-decreases safety guards apply either way."}
             </p>
 
             {captureMode === "ai" && (

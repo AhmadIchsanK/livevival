@@ -111,12 +111,21 @@ export function getLegalTransitions(signals: PhaseSignals): PhaseTransition[] {
     }
 
     switch (phase) {
-      case "MATCH_NOT_STARTED":
-        // Only reachable via Reset, never as a forward/lateral move — a
-        // draft or game already in progress has real data attached
-        // (roster locks, picks, kills) that a plain phase click shouldn't
-        // silently discard.
+      case "MATCH_NOT_STARTED": {
+        // Back to roster review before the next game's draft starts — a
+        // non-destructive lateral move (unlike Reset match, which wipes
+        // every game/pick/stat for the whole series). current_game_number
+        // already points at the next game by this point (declareGameWinner
+        // advances it when closing out the previous one), so this just
+        // re-shows the roster-setup UI scoped to that upcoming game — the
+        // just-finished game's own data is untouched, it's a different
+        // game_id.
+        if (currentPhase === "GAME_FINISHED" && !signals.isLastGameOfSeries) return { phase, legal: true, blockedReason: null };
+        // Otherwise only reachable via Reset — a draft or game already in
+        // progress has real data attached (roster locks, picks, kills)
+        // that a plain phase click shouldn't silently discard.
         return { phase, legal: false, blockedReason: "Use Reset match to return to Not started." };
+      }
 
       case "DRAFT_STARTED": {
         if (currentPhase === "MATCH_NOT_STARTED") {

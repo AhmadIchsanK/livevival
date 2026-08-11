@@ -627,9 +627,45 @@ export default function LiveConsolePage() {
   // rather than a raw update, so it picks up the same phase-notice
   // Telegram post and key_moments phase_change log every other transition
   // already gets, instead of a one-off that skips those side effects.
+  // A pick shown as "· auto" on the draft board (DraftOverlay's own
+  // positional-fallback match: this team's Nth still-unassigned pick, by
+  // pick_order, matched to the Nth player in role order) reads as
+  // resolved on screen but was never actually written to that pick's
+  // player_id — draftFullyResolved() (and anything downstream keyed off
+  // player_id: K/D/A trackers, map sync) only sees a real assignment, not
+  // the positional guess. That's the "left on auto, draft still errors"
+  // bug: nothing was wrong with the pick, it just never got locked in.
+  // Not every pick needs a manual adjustment — this locks in exactly the
+  // same pairing the board is already showing, using the identical
+  // algorithm (see DraftOverlay's unassignedPicksFor/renderPlayers), so
+  // there's no behavior change for the admin, just the write that was
+  // missing.
+  async function lockInPositionalPicks(): Promise<PickBan[]> {
+    let merged = pickBans;
+    if (!match?.team_a || !match?.team_b) return merged;
+    for (const teamId of [match.team_a.id, match.team_b.id]) {
+      const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
+      const fallbackQueue = merged
+        .filter((pb) => pb.type === "pick" && pb.team_id === teamId && !pb.player_id)
+        .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
+      let idx = 0;
+      for (const p of teamPlayers) {
+        if (merged.some((pb) => pb.type === "pick" && pb.player_id === p.id)) continue; // already has a real assignment
+        if (idx >= fallbackQueue.length) continue; // no pick left to positionally match
+        const pb = fallbackQueue[idx];
+        idx++;
+        await supabase.from("hero_picks_bans").update({ player_id: p.id }).eq("id", pb.id);
+        merged = merged.map((row) => (row.id === pb.id ? { ...row, player_id: p.id } : row));
+      }
+    }
+    setPickBans(merged);
+    return merged;
+  }
+
   async function saveDraftAndStartGame() {
     if (!match || !game) return;
-    if (match.state !== "DRAFT_COMPLETE" && !draftFullyResolved()) {
+    const lockedInPickBans = await lockInPositionalPicks();
+    if (match.state !== "DRAFT_COMPLETE" && !draftFullyResolved(lockedInPickBans)) {
       setError("Can't save the draft yet — not all 10 players have a hero assigned.");
       return;
     }
@@ -641,12 +677,19 @@ export default function LiveConsolePage() {
     await setMatchPhase("GAME_STARTED");
   }
 
-  function draftFullyResolved(): boolean {
+  // Takes an optional explicit pickBans list instead of always reading
+  // component state — needed right after lockInPositionalPicks(), whose
+  // supabase writes land before the setPickBans state update actually
+  // commits (React state, not a synchronous mutation), so checking this
+  // immediately afterward against the stale `pickBans` closure would
+  // still see the pre-lock-in (unresolved) picks.
+  function draftFullyResolved(pickBansOverride?: PickBan[]): boolean {
+    const list = pickBansOverride ?? pickBans;
     if (!match?.team_a || !match?.team_b) return false;
     for (const teamId of [match.team_a.id, match.team_b.id]) {
       const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
       if (teamPlayers.length < 5) return false;
-      if (teamPlayers.some((p) => !pickBans.some((pb) => pb.player_id === p.id && pb.type === "pick"))) return false;
+      if (teamPlayers.some((p) => !list.some((pb) => pb.player_id === p.id && pb.type === "pick"))) return false;
     }
     return true;
   }
@@ -3910,6 +3953,7 @@ export default function LiveConsolePage() {
     match && game
       ? {
           currentPhase: match.state as MatchPhase,
+          matchIsLive: match.status === "live",
           hasBothTeams: Boolean(match.team_a && match.team_b),
           rosterReady:
             Boolean(match.team_a) && Boolean(match.team_b)
@@ -5956,25 +6000,10 @@ export default function LiveConsolePage() {
                 {editingFinishedGame ? "🔓 Editing finished game — click to lock" : "🔒 Unlock to edit"}
               </button>
             )}
-            {DRAFT_PHASES.includes(match.state) && (
-              <button
-                onClick={() => setShowHeroPicker(true)}
-                className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-              >
-                🖼 Hero reference
-              </button>
-            )}
-            <button
-              onClick={() =>
-                postToTelegram(
-                  `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
-                  { entityType: "game", entityId: game.id, notificationType: "draft_result" }
-                )
-              }
-              className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10"
-            >
-              📢 Announce draft
-            </button>
+            {/* "Hero reference" (browse-only) and "Announce draft" (a
+                manual duplicate of the recap saveDraftAndStartGame already
+                posts) are gone — dead weight next to the one button that
+                actually matters here. */}
             {match.state === "DRAFT_COMPLETE" && (
               <button
                 onClick={saveDraftAndStartGame}
@@ -5984,7 +6013,11 @@ export default function LiveConsolePage() {
                 💾 SAVE draft &amp; start game
               </button>
             )}
-            {match.update_source === "local_ocr" && (
+            {/* Correcting picks against Liquipedia's own bracket page only
+                makes sense once the actual broadcast has settled the
+                result — mid-draft/mid-game there's nothing on Liquipedia
+                yet to sync against. */}
+            {match.update_source === "local_ocr" && gameFinished && (
               <button
                 onClick={syncDraftFromLiquipedia}
                 disabled={syncingDraft}
@@ -5997,6 +6030,94 @@ export default function LiveConsolePage() {
           </div>
         </div>
         {syncDraftStatus && <p className="text-xs text-white/50">{syncDraftStatus}</p>}
+
+        {/* Draft ban/pick simulation — an optional structured alternative to
+            clicking picks/bans onto the board below one at a time: enforces
+            the exact fixed order a tournament draft follows and logs each
+            step from a searchable hero grid. Moved to the top of this
+            section — it's the first thing an admin running a simulated
+            draft actually needs, ahead of the board it feeds. DRAFT_STARTED
+            only — once the draft is done (or the sim completes and
+            auto-advances the phase), this stays gone instead of
+            resurfacing a confusing "restart the draft?" prompt during
+            Final Adjustments. */}
+        {match.state === "DRAFT_STARTED" && (
+          <div className="border border-white/10 rounded-lg p-3 space-y-3">
+            {!draftSim ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-white/50">Draft simulation — pick Blue side (first pick, first ban):</span>
+                {match.team_a && (
+                  <button onClick={() => startDraftSimulation(match.team_a!.id)} className="lv-btn-ghost !text-xs">
+                    {match.team_a.name} is Blue
+                  </button>
+                )}
+                {match.team_b && (
+                  <button onClick={() => startDraftSimulation(match.team_b!.id)} className="lv-btn-ghost !text-xs">
+                    {match.team_b.name} is Blue
+                  </button>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <p className="text-sm font-semibold">
+                    {DRAFT_SEQUENCE[draftSim.stepIndex].side === "blue"
+                      ? draftSim.blueTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name
+                      : draftSim.redTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
+                    {" — "}
+                    <span className={DRAFT_SEQUENCE[draftSim.stepIndex].type === "ban" ? "text-red-400" : "text-emerald-400"}>
+                      {draftStepLabel(draftSim.stepIndex)}
+                    </span>
+                    <span className="text-white/30 text-xs"> ({draftSim.stepIndex + 1}/{DRAFT_SEQUENCE.length})</span>
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={undoLastDraftStep}
+                      disabled={draftSim.stepIndex === 0}
+                      title="Undo the last pick/ban — removes it from Hero picks & bans and the Moment list"
+                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      ↩ Undo
+                    </button>
+                    <button onClick={stopDraftSimulation} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
+                      Stop
+                    </button>
+                    <button onClick={resetDraftSimulation} className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10">
+                      Reset draft
+                    </button>
+                  </div>
+                </div>
+                <input
+                  value={simHeroSearch}
+                  onChange={(e) => setSimHeroSearch(e.target.value)}
+                  placeholder="Search heroes..."
+                  className="w-full bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
+                />
+                <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-2 max-h-64 overflow-y-auto">
+                  {heroes
+                    .filter((h) => h.name.toLowerCase().includes(simHeroSearch.toLowerCase()))
+                    .map((h) => {
+                      const taken = draftSim.committed.some((c) => c.heroName.toLowerCase() === h.name.toLowerCase());
+                      return (
+                        <button
+                          key={h.id}
+                          onClick={() => logSimulationStep(h.name)}
+                          disabled={taken}
+                          title={h.name}
+                          className={`flex flex-col items-center gap-1 group ${taken ? "opacity-30 cursor-not-allowed" : ""}`}
+                        >
+                          <HeroIcon url={h.icon_url} name={h.name} size="sm" />
+                          <span className="text-[9px] text-white/60 group-hover:text-white text-center leading-tight truncate w-full">
+                            {h.name}
+                          </span>
+                        </button>
+                      );
+                    })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Broadcast-style draft board — THE editing surface for
             hero_picks_bans, not just a presentation layer. Player photos
@@ -6194,91 +6315,6 @@ export default function LiveConsolePage() {
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {/* Draft ban/pick simulation — an optional structured alternative to
-            clicking picks/bans onto the board above one at a time: enforces
-            the exact fixed order a tournament draft follows and logs each
-            step from a searchable hero grid. DRAFT_STARTED only — once the
-            draft is done (or the sim completes and auto-advances the
-            phase), this stays gone instead of resurfacing a confusing
-            "restart the draft?" prompt during Final Adjustments. */}
-        {match.state === "DRAFT_STARTED" && (
-          <div className="border border-white/10 rounded-lg p-3 space-y-3">
-            {!draftSim ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-white/50">Draft simulation — pick Blue side (first pick, first ban):</span>
-                {match.team_a && (
-                  <button onClick={() => startDraftSimulation(match.team_a!.id)} className="lv-btn-ghost !text-xs">
-                    {match.team_a.name} is Blue
-                  </button>
-                )}
-                {match.team_b && (
-                  <button onClick={() => startDraftSimulation(match.team_b!.id)} className="lv-btn-ghost !text-xs">
-                    {match.team_b.name} is Blue
-                  </button>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <p className="text-sm font-semibold">
-                    {DRAFT_SEQUENCE[draftSim.stepIndex].side === "blue"
-                      ? draftSim.blueTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name
-                      : draftSim.redTeamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name}
-                    {" — "}
-                    <span className={DRAFT_SEQUENCE[draftSim.stepIndex].type === "ban" ? "text-red-400" : "text-emerald-400"}>
-                      {draftStepLabel(draftSim.stepIndex)}
-                    </span>
-                    <span className="text-white/30 text-xs"> ({draftSim.stepIndex + 1}/{DRAFT_SEQUENCE.length})</span>
-                  </p>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={undoLastDraftStep}
-                      disabled={draftSim.stepIndex === 0}
-                      title="Undo the last pick/ban — removes it from Hero picks & bans and the Moment list"
-                      className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                      ↩ Undo
-                    </button>
-                    <button onClick={stopDraftSimulation} className="text-xs border border-white/10 rounded px-2 py-1 hover:bg-white/10">
-                      Stop
-                    </button>
-                    <button onClick={resetDraftSimulation} className="text-xs border border-red-500/30 text-red-300 rounded px-2 py-1 hover:bg-red-500/10">
-                      Reset draft
-                    </button>
-                  </div>
-                </div>
-                <input
-                  value={simHeroSearch}
-                  onChange={(e) => setSimHeroSearch(e.target.value)}
-                  placeholder="Search heroes..."
-                  className="w-full bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
-                />
-                <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-10 gap-2 max-h-64 overflow-y-auto">
-                  {heroes
-                    .filter((h) => h.name.toLowerCase().includes(simHeroSearch.toLowerCase()))
-                    .map((h) => {
-                      const taken = draftSim.committed.some((c) => c.heroName.toLowerCase() === h.name.toLowerCase());
-                      return (
-                        <button
-                          key={h.id}
-                          onClick={() => logSimulationStep(h.name)}
-                          disabled={taken}
-                          title={h.name}
-                          className={`flex flex-col items-center gap-1 group ${taken ? "opacity-30 cursor-not-allowed" : ""}`}
-                        >
-                          <HeroIcon url={h.icon_url} name={h.name} size="sm" />
-                          <span className="text-[9px] text-white/60 group-hover:text-white text-center leading-tight truncate w-full">
-                            {h.name}
-                          </span>
-                        </button>
-                      );
-                    })}
-                </div>
-              </>
-            )}
           </div>
         )}
 

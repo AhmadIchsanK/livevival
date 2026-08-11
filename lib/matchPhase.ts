@@ -51,6 +51,7 @@ export const PHASE_ACTION_LABELS: Partial<Record<MatchPhase, string>> = {
 // into component state directly — keeps this module testable in isolation.
 export type PhaseSignals = {
   currentPhase: MatchPhase;
+  matchIsLive: boolean; // match.status === "live" — a draft has nothing real to start against otherwise
   hasBothTeams: boolean;
   rosterReady: boolean; // exactly 5 active players a side
   draftFullyResolved: boolean; // all 10 starters have a locked-in hero
@@ -127,6 +128,7 @@ export function getLegalTransitions(signals: PhaseSignals): PhaseTransition[] {
 
       case "DRAFT_STARTED": {
         if (currentPhase === "MATCH_NOT_STARTED") {
+          if (!signals.matchIsLive) return { phase, legal: false, blockedReason: "Set the match status to Live before starting the draft." };
           if (!signals.hasBothTeams) return { phase, legal: false, blockedReason: "Both teams must be set on this match first." };
           if (!signals.rosterReady) return { phase, legal: false, blockedReason: "Both teams need exactly 5 active roster players." };
           return { phase, legal: true, blockedReason: null };

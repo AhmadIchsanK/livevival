@@ -1512,7 +1512,7 @@ export default function LiveConsolePage() {
         resolve(null);
         return;
       }
-      const canvas = cropVideoToEmbed(video, embedFrame);
+      const canvas = cropVideoToEmbed(video, captureArea);
       const ctx = canvas?.getContext("2d");
       if (!canvas || !ctx) {
         resolve(null);
@@ -1716,7 +1716,7 @@ export default function LiveConsolePage() {
   async function captureScreenshotFromPreview(noteOverride?: string) {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
-    const canvas = cropVideoToEmbed(video, embedFrame);
+    const canvas = cropVideoToEmbed(video, captureArea);
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
     // Same Livevival watermark as the moment-attach capture path
@@ -1880,17 +1880,43 @@ export default function LiveConsolePage() {
 
   // Historical: back when local capture self-shared this admin tab, this
   // tracked where the "Livestream" embed sat within the captured frame, so
-  // every OCR/screenshot read could crop down to just the stream instead
-  // of the whole admin page around it. Capture now shares a separate,
-  // dedicated tab instead (see startCapture) — the whole captured frame
-  // *is* the stream, nothing to crop out — so this always stays null.
-  // Kept (not deleted) purely because toFullFramePct/cropVideoToEmbed
-  // still take it as a parameter and already treat null as "box
-  // coordinates are already whole-frame percentages," which is exactly
-  // today's behavior; removing it would mean touching both call sites for
-  // no behavior change.
+  // every OCR read could crop down to just the stream instead of the whole
+  // admin page around it. Capture now shares a separate, dedicated tab
+  // instead (see startCapture) — the whole captured frame *is* the
+  // stream — so this always stays null. Kept (not deleted) purely because
+  // toFullFramePct/cropCanvasFor (the OCR tracker-read path) still take it
+  // as a parameter and already treat null as "box coordinates are already
+  // whole-frame percentages," which is exactly today's behavior; removing
+  // it would mean touching that call site for no behavior change. The
+  // screenshot/moment-capture paths no longer use this — they take the
+  // real, admin-drawn captureArea below instead (see cropVideoToEmbed call
+  // sites), since unlike tracker regions those crop straight from the
+  // frame with no embed-relative composition to worry about.
   type EmbedFrame = { xPct: number; yPct: number; wPct: number; hPct: number };
   const embedFrame: EmbedFrame | null = null;
+
+  // ── Captured area ─────────────────────────────────────────────────────
+  // Optional hard boundary (full-frame percentages, same shape as
+  // RegionBox) admins can draw on the Match capture canvas — useful when
+  // the OS-level screen/window share includes more than just the
+  // broadcast itself (extra desktop chrome, a second monitor). When set:
+  // every tracker region gets clamped inside it on save (clampBoxToArea,
+  // used by saveRegion/addTrackerWithRegion, so this also covers
+  // auto-place and template-apply), and Screenshot/moment captures crop
+  // to it directly (cropVideoToEmbed call sites now pass captureArea
+  // instead of the always-null embedFrame above). null means "the whole
+  // captured frame counts", identical to today's behavior. Stored as its
+  // own capture_regions row (field "__capture_area__", category
+  // "capture_area", phase "ANY") rather than a real tracker, so it's
+  // filtered out of the trackers/regions load and never shows up in the
+  // tracker catalog.
+  const [captureArea, setCaptureArea] = useState<RegionBox | null>(null);
+  const [captureAreaEditMode, setCaptureAreaEditMode] = useState(false);
+  const [captureAreaDraft, setCaptureAreaDraft] = useState<RegionBox | null>(null);
+  const captureAreaDragMode = useRef<DragMode | null>(null);
+  const captureAreaDragStartPct = useRef<{ x: number; y: number } | null>(null);
+  const captureAreaDragStartBox = useRef<RegionBox | null>(null);
+  const captureAreaCropRectRef = useRef<DOMRect | null>(null);
 
   const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -2497,7 +2523,7 @@ export default function LiveConsolePage() {
     // readable well below full resolution, so downscale to a fixed max
     // width before encoding — this is the actual fix, independent of model
     // choice.
-    const embedCanvas = cropVideoToEmbed(video, embedFrame);
+    const embedCanvas = cropVideoToEmbed(video, captureArea);
     if (!embedCanvas) return;
     const MAX_WIDTH = 960;
     const scale = Math.min(1, MAX_WIDTH / embedCanvas.width);
@@ -2566,7 +2592,7 @@ export default function LiveConsolePage() {
       const nextTrackers: Tracker[] = [];
       const nextRegions: Record<string, RegionBox | null> = {};
       for (const r of [...(tournamentDefaults ?? []), ...(matchRegions ?? [])]) {
-        if (r.category === "overlay_hint") continue;
+        if (r.category === "overlay_hint" || r.category === "capture_area") continue;
         const idx = nextTrackers.findIndex((t) => t.field === r.field);
         const tracker: Tracker = { id: r.id, phase: r.phase, category: r.category as TrackerCategory, field: r.field, label: r.label ?? r.field };
         if (idx === -1) nextTrackers.push(tracker);
@@ -2578,6 +2604,15 @@ export default function LiveConsolePage() {
       const tournamentHint = tournamentDefaults?.find((r) => r.category === "overlay_hint")?.hint_text;
       const matchHint = matchRegions?.find((r) => r.category === "overlay_hint")?.hint_text;
       if (matchHint ?? tournamentHint) setOverlayHint(matchHint ?? tournamentHint ?? "");
+      // Captured area is per-machine (tied to whatever the admin actually
+      // shares), so only ever comes from the match-specific row — no
+      // tournament-default fallback the way overlay_hint/trackers get.
+      const matchCaptureArea = matchRegions?.find((r) => r.category === "capture_area");
+      setCaptureArea(
+        matchCaptureArea?.x_pct != null
+          ? { xPct: matchCaptureArea.x_pct, yPct: matchCaptureArea.y_pct!, wPct: matchCaptureArea.w_pct!, hPct: matchCaptureArea.h_pct! }
+          : null
+      );
       setTrackersLoaded(true);
     })();
   }, [matchId, match?.tournament_id]);
@@ -2614,13 +2649,28 @@ export default function LiveConsolePage() {
     });
   }
 
+  // Shrinks/shifts a box so it never sticks out of the given area — used
+  // to enforce "trackers always stay inside the captured area" at every
+  // save point (manual drag, auto-place, template apply) rather than just
+  // during the drag gesture itself, so it can't be bypassed. A no-op when
+  // area is null (no captured area drawn — today's unconstrained behavior).
+  function clampBoxToArea(box: RegionBox, area: RegionBox | null): RegionBox {
+    if (!area) return box;
+    const wPct = Math.min(box.wPct, area.wPct);
+    const hPct = Math.min(box.hPct, area.hPct);
+    const xPct = Math.min(Math.max(box.xPct, area.xPct), area.xPct + area.wPct - wPct);
+    const yPct = Math.min(Math.max(box.yPct, area.yPct), area.yPct + area.hPct - hPct);
+    return { xPct, yPct, wPct, hPct };
+  }
+
   async function saveRegion(field: string, box: RegionBox) {
-    setRegions((prev) => ({ ...prev, [field]: box }));
+    const clamped = clampBoxToArea(box, captureArea);
+    setRegions((prev) => ({ ...prev, [field]: clamped }));
     const tracker = trackers.find((t) => t.field === field);
     if (!tracker) return;
     await supabase
       .from("capture_regions")
-      .update({ x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct })
+      .update({ x_pct: clamped.xPct, y_pct: clamped.yPct, w_pct: clamped.wPct, h_pct: clamped.hPct })
       .eq("id", tracker.id);
   }
   async function clearRegionCoords(field: string) {
@@ -2636,9 +2686,10 @@ export default function LiveConsolePage() {
   // addTracker() followed by a separate saveRegion() call that would read
   // back from `trackers` state before the just-added row has landed there.
   async function addTrackerWithRegion(phase: string, category: TrackerCategory, field: string, label: string, box: RegionBox) {
+    const clamped = clampBoxToArea(box, captureArea);
     const { data, error } = await supabase
       .from("capture_regions")
-      .insert({ match_id: matchId, phase, category, field, label, x_pct: box.xPct, y_pct: box.yPct, w_pct: box.wPct, h_pct: box.hPct })
+      .insert({ match_id: matchId, phase, category, field, label, x_pct: clamped.xPct, y_pct: clamped.yPct, w_pct: clamped.wPct, h_pct: clamped.hPct })
       .select("id")
       .single();
     if (error || !data) {
@@ -2646,7 +2697,7 @@ export default function LiveConsolePage() {
       return;
     }
     setTrackers((prev) => [...prev, { id: data.id, phase, category, field, label }]);
-    setRegions((prev) => ({ ...prev, [field]: box }));
+    setRegions((prev) => ({ ...prev, [field]: clamped }));
   }
 
   // ── Auto-placed default trackers (standard MLBB broadcast layout) ────
@@ -2743,6 +2794,8 @@ export default function LiveConsolePage() {
   const [newTemplateName, setNewTemplateName] = useState("");
   const [selectedTrackerTemplate, setSelectedTrackerTemplate] = useState("");
   const [applyingTemplate, setApplyingTemplate] = useState(false);
+  const [renamingTemplate, setRenamingTemplate] = useState(false);
+  const [deletingTemplate, setDeletingTemplate] = useState(false);
 
   const loadTrackerTemplates = useCallback(async () => {
     const { data } = await supabase.from("capture_regions").select("template_name").not("template_name", "is", null);
@@ -2812,6 +2865,51 @@ export default function LiveConsolePage() {
       }
     } finally {
       setApplyingTemplate(false);
+    }
+  }
+
+  // Renames a template in place — every row under the old template_name
+  // becomes the new one, so matches that already applied it are
+  // unaffected (they got their own capture_regions rows at apply time;
+  // template rows are only ever a source to copy from, never referenced
+  // live). Blocks on a name collision instead of silently merging two
+  // templates together.
+  async function renameTrackerTemplate(oldName: string) {
+    if (!oldName) return;
+    const newName = prompt(`Rename template "${oldName}" to:`, oldName)?.trim();
+    if (!newName || newName === oldName) return;
+    if (trackerTemplates.some((t) => t.name === newName)) {
+      setError(`A template named "${newName}" already exists.`);
+      return;
+    }
+    setRenamingTemplate(true);
+    try {
+      const { error } = await supabase.from("capture_regions").update({ template_name: newName }).eq("template_name", oldName);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      if (selectedTrackerTemplate === oldName) setSelectedTrackerTemplate(newName);
+      await loadTrackerTemplates();
+    } finally {
+      setRenamingTemplate(false);
+    }
+  }
+
+  async function deleteTrackerTemplate(name: string) {
+    if (!name) return;
+    if (!confirm(`Delete template "${name}"? Matches that already applied it keep their trackers — this only removes it from the list.`)) return;
+    setDeletingTemplate(true);
+    try {
+      const { error } = await supabase.from("capture_regions").delete().eq("template_name", name);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      if (selectedTrackerTemplate === name) setSelectedTrackerTemplate("");
+      await loadTrackerTemplates();
+    } finally {
+      setDeletingTemplate(false);
     }
   }
 
@@ -2885,6 +2983,28 @@ export default function LiveConsolePage() {
     if (!matchId) return;
     await supabase.from("capture_regions").upsert(
       { match_id: matchId, phase: "ANY", category: "overlay_hint", field: "overlay_hint", label: "Overlay hint", hint_text: overlayHint || null },
+      { onConflict: "match_id,phase,field" }
+    );
+  }
+
+  // null clears it (see clearCaptureArea) — every existing tracker region
+  // is left exactly where it is when that happens, only future saves stop
+  // being constrained.
+  async function saveCaptureArea(box: RegionBox | null) {
+    setCaptureArea(box);
+    if (!matchId) return;
+    await supabase.from("capture_regions").upsert(
+      {
+        match_id: matchId,
+        phase: "ANY",
+        category: "capture_area",
+        field: "__capture_area__",
+        label: "Captured area",
+        x_pct: box?.xPct ?? null,
+        y_pct: box?.yPct ?? null,
+        w_pct: box?.wPct ?? null,
+        h_pct: box?.hPct ?? null,
+      },
       { onConflict: "match_id,phase,field" }
     );
   }
@@ -3986,6 +4106,103 @@ export default function LiveConsolePage() {
     setTrackerEditMode(true);
   }
 
+  // ── Captured area drag ───────────────────────────────────────────────
+  // Deliberately its own small drag implementation (mirroring
+  // startBoxDrag/onMove above) rather than a third dragTarget on that
+  // shared one — this box has no "which tracker" step, no corner-handle
+  // MIN-size floor tied to OCR usability, and only ever exists one at a
+  // time, so keeping it separate means calibrating a tracker can never
+  // accidentally drag the area (or vice versa) through shared drag state.
+  function startCaptureAreaDrag(mode: DragMode, e: React.MouseEvent) {
+    e.stopPropagation();
+    const container = e.currentTarget.closest("[data-crop-container]");
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    captureAreaCropRectRef.current = rect;
+    captureAreaDragMode.current = mode;
+    captureAreaDragStartPct.current = clientToPct(e.clientX, e.clientY, rect);
+    captureAreaDragStartBox.current = captureAreaDraft;
+  }
+  useEffect(() => {
+    function onMove(e: MouseEvent) {
+      const mode = captureAreaDragMode.current;
+      const rect = captureAreaCropRectRef.current;
+      const start = captureAreaDragStartPct.current;
+      if (!mode || !rect || !start) return;
+      const pt = clientToPct(e.clientX, e.clientY, rect);
+      if (mode === "draw") {
+        setCaptureAreaDraft({
+          xPct: Math.min(start.x, pt.x),
+          yPct: Math.min(start.y, pt.y),
+          wPct: Math.abs(pt.x - start.x),
+          hPct: Math.abs(pt.y - start.y),
+        });
+        return;
+      }
+      const startBox = captureAreaDragStartBox.current;
+      if (!startBox) return;
+      if (mode === "move") {
+        const dx = pt.x - start.x;
+        const dy = pt.y - start.y;
+        setCaptureAreaDraft({
+          ...startBox,
+          xPct: Math.min(100 - startBox.wPct, Math.max(0, startBox.xPct + dx)),
+          yPct: Math.min(100 - startBox.hPct, Math.max(0, startBox.yPct + dy)),
+        });
+        return;
+      }
+      const right = startBox.xPct + startBox.wPct;
+      const bottom = startBox.yPct + startBox.hPct;
+      let { xPct, yPct, wPct, hPct } = startBox;
+      const MIN = 3; // pct — the captured area is a coarse boundary box, not a fine OCR crop
+      if (mode.includes("w")) {
+        xPct = Math.min(pt.x, right - MIN);
+        wPct = right - xPct;
+      }
+      if (mode.includes("e")) {
+        wPct = Math.max(MIN, pt.x - startBox.xPct);
+      }
+      if (mode.includes("n")) {
+        yPct = Math.min(pt.y, bottom - MIN);
+        hPct = bottom - yPct;
+      }
+      if (mode.includes("s")) {
+        hPct = Math.max(MIN, pt.y - startBox.yPct);
+      }
+      setCaptureAreaDraft({ xPct, yPct, wPct, hPct });
+    }
+    function onUp() {
+      captureAreaDragMode.current = null;
+      captureAreaDragStartPct.current = null;
+      captureAreaDragStartBox.current = null;
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+  function startEditingCaptureArea() {
+    setCaptureAreaDraft(captureArea);
+    setCaptureAreaEditMode(true);
+  }
+  function lockCaptureArea() {
+    if (!captureAreaDraft) return;
+    if (captureAreaDraft.wPct < 3 || captureAreaDraft.hPct < 3) return; // too small to be a real boundary — ignore
+    saveCaptureArea(captureAreaDraft);
+    setCaptureAreaEditMode(false);
+  }
+  function cancelCaptureAreaEdit() {
+    setCaptureAreaDraft(captureArea);
+    setCaptureAreaEditMode(false);
+  }
+  function clearCaptureArea() {
+    setCaptureAreaDraft(null);
+    saveCaptureArea(null);
+    setCaptureAreaEditMode(false);
+  }
+
   async function confirmSuggestion() {
     if (!suggestion || !game) return;
     const tpl = momentTemplates.find((t) => t.type === suggestion.type && (!t.phase || t.phase === match?.state));
@@ -4845,6 +5062,62 @@ export default function LiveConsolePage() {
         )}
       </div>
     ) : null;
+  // Captured area — drawn on top of trackerOverlay so it's visible (as a
+  // yellow guide outline) while placing/adjusting trackers even when it's
+  // not actively being edited. Only intercepts clicks while
+  // captureAreaEditMode is on; otherwise pointer-events pass straight
+  // through to trackerOverlay/the video underneath, same as every other
+  // inert overlay box on this canvas.
+  const captureAreaOverlay =
+    match.update_source === "local_ocr" && captureMode === "manual" && ocrDetailsOpen && captureActive && match.state !== "TECHNICAL_PAUSE" ? (
+      <div
+        className="absolute inset-0"
+        style={{ pointerEvents: captureAreaEditMode ? "auto" : "none" }}
+        onMouseDown={(e) => {
+          if (!captureAreaEditMode || captureAreaDraft) return;
+          startCaptureAreaDrag("draw", e);
+        }}
+      >
+        {!captureAreaEditMode && captureArea && (
+          <div
+            title="Captured area — trackers and screenshots are kept inside this boundary"
+            className="absolute border-2 border-dashed border-yellow-400/50 pointer-events-none"
+            style={{ left: `${captureArea.xPct}%`, top: `${captureArea.yPct}%`, width: `${captureArea.wPct}%`, height: `${captureArea.hPct}%` }}
+          />
+        )}
+        {captureAreaEditMode && captureAreaDraft && (
+          <div
+            className="absolute border-2 border-dashed border-yellow-400 bg-yellow-400/10 cursor-move"
+            style={{ left: `${captureAreaDraft.xPct}%`, top: `${captureAreaDraft.yPct}%`, width: `${captureAreaDraft.wPct}%`, height: `${captureAreaDraft.hPct}%` }}
+            onMouseDown={(e) => startCaptureAreaDrag("move", e)}
+          >
+            <span className="absolute -top-5 left-0 text-[10px] text-yellow-300 bg-black/70 px-1 rounded whitespace-nowrap">
+              Captured area
+            </span>
+            {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+              <div
+                key={corner}
+                onMouseDown={(e) => startCaptureAreaDrag(corner, e)}
+                className="absolute w-5 h-5 flex items-center justify-center"
+                style={{
+                  left: corner.includes("w") ? 0 : "100%",
+                  top: corner.includes("n") ? 0 : "100%",
+                  transform: "translate(-50%, -50%)",
+                  cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                }}
+              >
+                <span className="w-2.5 h-2.5 bg-yellow-400 rounded-full border border-black block" />
+              </div>
+            ))}
+          </div>
+        )}
+        {captureAreaEditMode && !captureAreaDraft && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag to draw the captured area</span>
+          </div>
+        )}
+      </div>
+    ) : null;
   const activeTrackers = trackers.filter((t) => t.phase === match.state);
   const allTrackersCalibrated = activeTrackers.length > 0 && activeTrackers.every((t) => regions[t.field]);
   // "Every indicator is red right after Game ongoing starts" diagnostic —
@@ -5553,6 +5826,7 @@ export default function LiveConsolePage() {
                 </div>
               )}
               {trackerOverlay}
+              {captureAreaOverlay}
             </div>
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3 lg:p-4 space-y-4">
@@ -5822,6 +6096,61 @@ export default function LiveConsolePage() {
                     </select>
                   </div>
                 </div>
+                {/* Captured area — an optional hard boundary trackers get
+                    clamped inside on save and screenshots get cropped to
+                    (see clampBoxToArea/cropVideoToEmbed). Its own toggle
+                    rather than folded into trackerEditMode above, since
+                    turning it on hijacks the same canvas drag gesture for
+                    a completely different purpose (one boundary box vs.
+                    per-tracker regions) — conflating the two would mean a
+                    drag's meaning depends on invisible state. */}
+                <div className="flex flex-wrap items-center gap-2 border border-white/10 rounded px-2.5 py-2">
+                  <span className="text-[10px] text-white/40 flex-1 min-w-[220px]">
+                    {captureAreaEditMode
+                      ? "Drag on the canvas above to draw/adjust the captured area, then Lock it in."
+                      : captureArea
+                      ? "Captured area set — every tracker save and screenshot is kept inside it (yellow outline on the canvas above)."
+                      : "No captured area set — trackers and screenshots use the whole captured frame, same as before."}
+                  </span>
+                  {!captureAreaEditMode ? (
+                    <button
+                      type="button"
+                      onClick={startEditingCaptureArea}
+                      className="text-xs rounded px-3 py-1.5 border border-yellow-400/40 text-yellow-300 hover:bg-yellow-400/10 whitespace-nowrap"
+                    >
+                      {captureArea ? "Adjust captured area" : "🖼 Set captured area"}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={lockCaptureArea}
+                        disabled={!captureAreaDraft}
+                        className="text-xs rounded px-3 py-1.5 bg-yellow-400 text-ink font-semibold disabled:opacity-40 whitespace-nowrap"
+                      >
+                        Lock captured area
+                      </button>
+                      <button
+                        type="button"
+                        onClick={cancelCaptureAreaEdit}
+                        className="text-xs rounded px-3 py-1.5 border border-white/20 text-white/70 hover:bg-white/10 whitespace-nowrap"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                  {captureArea && !captureAreaEditMode && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm("Clear the captured area? Trackers/screenshots go back to using the whole captured frame.")) clearCaptureArea();
+                      }}
+                      className="text-xs rounded px-3 py-1.5 border border-red-500/40 text-red-300 hover:bg-red-500/10 whitespace-nowrap"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
                 {/* The drag-to-calibrate canvas itself now lives up in the
                     Livestream pane, overlaid directly on the embed iframe
                     (see data-crop-container there) — this is what makes
@@ -5853,14 +6182,10 @@ export default function LiveConsolePage() {
                     manual override for the countdown clock. */}
                 {captureMode === "manual" && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={autoPlaceDefaultTrackers}
-                      disabled={autoPlacingTrackers}
-                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 whitespace-nowrap"
-                      title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
-                    >
-                      {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place default trackers"}
-                    </button>
+                    {/* Saved templates first — checking whether a matching
+                        broadcast layout already exists is the natural first
+                        move before falling back to the generic auto-place
+                        guess below, not an afterthought bolted on beside it. */}
                     {templatesLoaded && trackerTemplates.length > 0 && (
                       <div className="flex items-center gap-1">
                         <select
@@ -5881,8 +6206,32 @@ export default function LiveConsolePage() {
                         >
                           {applyingTemplate ? "Applying…" : "Apply"}
                         </button>
+                        <button
+                          onClick={() => renameTrackerTemplate(selectedTrackerTemplate)}
+                          disabled={!selectedTrackerTemplate || renamingTemplate}
+                          title="Rename this template"
+                          className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => deleteTrackerTemplate(selectedTrackerTemplate)}
+                          disabled={!selectedTrackerTemplate || deletingTemplate}
+                          title="Delete this template — matches already using it keep their trackers, this only removes it from the list"
+                          className="text-xs border border-red-500/40 text-red-300 rounded px-2 py-1.5 hover:bg-red-500/10 disabled:opacity-40 whitespace-nowrap"
+                        >
+                          Delete
+                        </button>
                       </div>
                     )}
+                    <button
+                      onClick={autoPlaceDefaultTrackers}
+                      disabled={autoPlacingTrackers}
+                      className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 whitespace-nowrap"
+                      title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
+                    >
+                      {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place default trackers"}
+                    </button>
                     <div className="flex items-center gap-1">
                       <input
                         value={newTemplateName}

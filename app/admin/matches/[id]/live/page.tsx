@@ -672,6 +672,26 @@ export default function LiveConsolePage() {
     return merged;
   }
 
+  // player_stats.hero_name previously only ever got set as a side effect of
+  // correctPickBanHero (an admin manually reassigning a hero) — a pick
+  // that was correctly drafted from the start and never touched again had
+  // no hero on its player_stats row at all, since nothing else ever wrote
+  // it there. That's the "hero disappears once the game starts" bug: the
+  // Draft board reads hero straight from hero_picks_bans (always correct),
+  // but the Live Scoreboard (both here and on the public page) reads it
+  // from player_stats, which stayed null. Runs once, right as the draft is
+  // saved, so every starter's row has its hero from the start regardless
+  // of whether it was ever manually corrected.
+  async function syncDraftHeroesToStats(pickBansSnapshot: PickBan[]) {
+    for (const pb of pickBansSnapshot) {
+      if (pb.type !== "pick") continue;
+      const playerId = pb.player_id ?? (pb.custom_player_name ? `custom:${pb.id}` : null);
+      if (!playerId) continue;
+      await ensureStatRow(playerId);
+      await updateStat(playerId, "hero_name", pb.hero_name);
+    }
+  }
+
   async function saveDraftAndStartGame() {
     if (!match || !game) return;
     const lockedInPickBans = await lockInPositionalPicks();
@@ -680,6 +700,7 @@ export default function LiveConsolePage() {
       return;
     }
     if (!confirm("Save this draft and start the game? This posts the draft recap to Telegram/Slack and moves the match to Game ongoing.")) return;
+    await syncDraftHeroesToStats(lockedInPickBans);
     await postToTelegram(
       `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
       { entityType: "game", entityId: game.id, notificationType: "draft_result" }
@@ -1188,6 +1209,41 @@ export default function LiveConsolePage() {
   function objectiveCount(teamId: string, type: string) {
     return objectives.filter((o) => o.team_id === teamId && o.type === type).length;
   }
+  // Turtle/Lord spawn-timing gates (plausibleObjectiveTarget below) reason
+  // about the objective globally — "at most 4 turtles total this match",
+  // "the next Lord can't spawn less than 3 minutes after the last one
+  // died" — neither team-scoped, so these read across both teams' rows.
+  function totalObjectiveCount(type: string) {
+    return objectives.filter((o) => o.type === type).length;
+  }
+  function lastObjectiveSeconds(type: string): number | null {
+    const rows = objectives.filter((o) => o.type === type);
+    if (rows.length === 0) return null;
+    return Math.max(...rows.map((o) => (o.minute_mark ?? 0) * 60));
+  }
+  // An admin's manual count correction (the direct-input field, or the
+  // +/- buttons) used to get silently clobbered on the very next OCR tick:
+  // the on-screen count hadn't changed, so plausibleObjectiveTarget just
+  // read the same higher number and pushed the count right back up,
+  // making a manual "fix" feel like it never took. Player KDA doesn't
+  // have this problem because it never auto-decreases (Math.max against
+  // stored values) — but this is the opposite direction (an admin
+  // correcting DOWN, then OCR reading the old, unchanged on-screen number
+  // and going back UP), so the same clamp doesn't apply here. Instead,
+  // give a manual edit a short window where a conflicting OCR read is
+  // held back as a flagged/pending suggestion (same "candidate, don't
+  // auto-commit" pattern used elsewhere) rather than auto-applied —
+  // matching the validation spec's "prefer the last confirmed value over
+  // a fresh but suspicious OCR result."
+  const MANUAL_OBJECTIVE_COOLDOWN_MS = 30_000;
+  const manualObjectiveEditRef = useRef<Record<string, number>>({});
+  function markManualObjectiveEdit(teamId: string, type: string) {
+    manualObjectiveEditRef.current[`${teamId}:${type}`] = Date.now();
+  }
+  function withinManualObjectiveCooldown(teamId: string, type: string): boolean {
+    const at = manualObjectiveEditRef.current[`${teamId}:${type}`];
+    return at != null && Date.now() - at < MANUAL_OBJECTIVE_COOLDOWN_MS;
+  }
   function buildObjectivesMessage(): string {
     const lines = [match?.team_a, match?.team_b].map((team) => {
       if (!team) return "";
@@ -1238,6 +1294,11 @@ export default function LiveConsolePage() {
     loadAll();
   }
   async function decrementObjective(teamId: string, type: string) {
+    // Only ever called manually (right-click undo, or setObjectiveCount's
+    // own direct-input path) — OCR-driven reads only ever increment, so
+    // this is always a real correction worth protecting from getting
+    // immediately undone by the next tick. See markManualObjectiveEdit.
+    markManualObjectiveEdit(teamId, type);
     const mostRecent = objectives
       .filter((o) => o.team_id === teamId && o.type === type)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
@@ -1823,10 +1884,6 @@ export default function LiveConsolePage() {
 
   const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  // The dedicated tab startCapture opens for the actual livestream — kept
-  // so a second "Start capture" click (after Stop) reuses/refocuses it
-  // instead of spawning a new tab every time.
-  const captureTabRef = useRef<Window | null>(null);
   const workerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Corner-drag resize state for region calibration. dragMode covers a
@@ -1918,6 +1975,13 @@ export default function LiveConsolePage() {
   // and how much Tesseract itself trusts the last read.
   const [trackerHealth, setTrackerHealth] = useState<Record<string, { lastGoodAt: number | null; confidence: number | null }>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string; playerId?: string | null; playerName?: string | null } | null>(null);
+  // A kill banner (SAVAGE/MANIAC/etc.) typically stays on screen for
+  // several seconds — long enough to get re-read on the next OCR tick and
+  // pop the same suggestion right back up after the admin already hit
+  // Dismiss on it. Keyed by moment type, valued at the timestamp the
+  // suppression lifts; checked before a new suggestion of that type is
+  // ever raised.
+  const dismissedSuggestionUntilRef = useRef<Record<string, number>>({});
   const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
 
   // OCR-assisted, admin-confirmed: a plausible reading (passes the
@@ -3074,20 +3138,24 @@ export default function LiveConsolePage() {
     const n = normalize(text);
     return heroes.find((h) => n.includes(normalize(h.name))) ?? null;
   }
-  // Broadcast overlays show net worth either as a raw digit count
-  // ("23456") or already abbreviated ("23.4K", exactly one decimal digit)
-  // depending on the tournament — accept both, always resolving to the
-  // same raw-gold number for storage (display-side formatting
-  // re-abbreviates it, see formatGold below). Pre-cleaned to digits plus
-  // only the punctuation the number itself needs (".", "," as a thousands
-  // separator, "k"/"K") — any other OCR noise is stripped before matching
-  // rather than risking it corrupting the parsed value.
+  // MLBB's broadcast overlay shows net worth as a plain digit string with
+  // no on-screen decimal point or "K" — the last digit read is always the
+  // tenths-of-a-thousand place ("55" -> 5.5K -> 5500 gold stored, "341" ->
+  // 34.1K -> 34100 gold stored). A read below that 2-digit minimum is a
+  // dropped digit, not a genuine sub-1K net worth this deep into a draft
+  // that's already past pick/ban — treated as unreadable rather than
+  // risking a wildly wrong value landing (net_worth's OCR whitelist is
+  // digits + "." only, so an explicit decimal is still handled directly
+  // for whichever source — e.g. AI vision mode — supplies one).
   function parseGoldText(text: string): number | null {
-    const cleaned = text.replace(/[^0-9.,kK]/g, "");
-    const abbreviated = cleaned.match(/(\d+\.\d)k/i);
-    if (abbreviated) return Math.round(Number(abbreviated[1]) * 1000);
-    const raw = cleaned.match(/\d[\d,]*/);
-    return raw ? Number(raw[0].replace(/,/g, "")) : null;
+    const cleaned = text.replace(/[^0-9.]/g, "");
+    if (!cleaned) return null;
+    if (cleaned.includes(".")) {
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? Math.round(n * 1000) : null;
+    }
+    if (cleaned.length < 2) return null;
+    return Number(cleaned) * 100;
   }
   function formatGold(n: number): string {
     return `${(n / 1000).toFixed(1)}K`;
@@ -3109,17 +3177,39 @@ export default function LiveConsolePage() {
   // itself would reject. Returns the highest count this tick should
   // actually advance to (clamped, not a hard reject), so a correct-but-
   // partial read still lands instead of the whole tick being discarded.
+  // The on-screen game timer an OCR tick reads can lag the actual game
+  // clock by a few seconds — every spawn-timing gate below allows this
+  // much slack before treating a read as "too early to be real" rather
+  // than rejecting a genuine, just-slightly-early reading.
+  const OCR_TIMING_TOLERANCE_SECONDS = 5;
   function plausibleObjectiveTarget(teamId: string, type: string, rawTarget: number): number {
     const current = objectiveCount(teamId, type);
     if (rawTarget <= current) return rawTarget; // never-decreases is already enforced by the caller's loop bound
     const gameClockSeconds = minute * 60 + secondOfMinute;
     // Turtle: first spawn exactly 2:00, no genuine turtle-take reading is
-    // possible before that.
-    if (type === "turtle" && gameClockSeconds < 120) return current;
+    // possible before that. At most 4 spawn/kill cycles exist across the
+    // whole match (shared by both teams), and once a turtle survives past
+    // ~6:00 it stops respawning as a turtle at all — it's the one that
+    // transitions into an early Lord instead, so no further turtle takes
+    // are legitimate after that point.
+    if (type === "turtle") {
+      if (gameClockSeconds < 120 - OCR_TIMING_TOLERANCE_SECONDS) return current;
+      if (totalObjectiveCount("turtle") >= 4) return current;
+      const lastKillSeconds = lastObjectiveSeconds("turtle");
+      if (lastKillSeconds != null && lastKillSeconds > 360) return current;
+      return rawTarget;
+    }
     // Lord: first spawn 8:00 (a Turtle left alone from ~8:00-9:00
     // transforms into an early Lord, but that's still not reachable before
-    // 8:00 either way).
-    if (type === "lord" && gameClockSeconds < 480) return current;
+    // 8:00 either way). Once killed, the next Lord takes exactly 3
+    // minutes to respawn — a read claiming another kill sooner than that
+    // is reading a stale banner/number, not a real one.
+    if (type === "lord") {
+      if (gameClockSeconds < 480 - OCR_TIMING_TOLERANCE_SECONDS) return current;
+      const lastKillSeconds = lastObjectiveSeconds("lord");
+      if (lastKillSeconds != null && gameClockSeconds < lastKillSeconds + 180 - OCR_TIMING_TOLERANCE_SECONDS) return current;
+      return rawTarget;
+    }
     if (type === "tower") {
       // 9 enemy towers per team, hard cap — never a real read past that.
       const capped = Math.min(rawTarget, 9);
@@ -3147,6 +3237,22 @@ export default function LiveConsolePage() {
     const rawTarget = Number(n[0]);
     const target = plausibleObjectiveTarget(teamId, type, rawTarget);
     const current = objectiveCount(teamId, type);
+    // An admin correction is still within its cooldown window — hold this
+    // read back as a flag instead of auto-applying it, even though the
+    // spawn-timing/cap guard above would otherwise consider it plausible.
+    if (target > current && withinManualObjectiveCooldown(teamId, type)) {
+      flagReading(field, {
+        label,
+        raw: text,
+        confidence,
+        reason: `Read ${rawTarget} (${target} after guards), but this count was just corrected manually — confirm to apply it anyway`,
+        apply: async () => {
+          const c = objectiveCount(teamId, type);
+          for (let i = c; i < target; i++) await incrementObjective(teamId, type);
+        },
+      });
+      return;
+    }
     for (let i = current; i < target; i++) await incrementObjective(teamId, type);
     // The heuristic clamped this read down (spawn timing, tower cap/pace)
     // — surface the full raw reading instead of silently dropping it, in
@@ -3175,6 +3281,7 @@ export default function LiveConsolePage() {
   async function setObjectiveCount(teamId: string, type: string, target: number) {
     const clamped = Math.max(0, Math.round(target));
     let current = objectiveCount(teamId, type);
+    markManualObjectiveEdit(teamId, type);
     while (current < clamped) { await incrementObjective(teamId, type); current++; }
     while (current > clamped) { await decrementObjective(teamId, type); current--; }
   }
@@ -3286,7 +3393,7 @@ export default function LiveConsolePage() {
         switch (tracker.category) {
           case "kill_banner": {
             const found = OCR_KEYWORDS.find((k) => k.pattern.test(trimmed));
-            if (found) {
+            if (found && (dismissedSuggestionUntilRef.current[found.type] ?? 0) <= Date.now()) {
               // MLBB's own kill banner reads "{player} {MOMENT TEXT}" — the
               // text before the matched keyword is the best guess at a
               // player name; matchPlayerId tolerates OCR noise via its
@@ -3603,31 +3710,17 @@ export default function LiveConsolePage() {
 
   async function startCapture() {
     try {
-      // Opens the actual stream in its own dedicated tab before asking for
-      // capture — this is the whole point of the separate-tab redesign:
-      // that tab can go fullscreen (F11, or its own player's fullscreen
-      // button) purely for read accuracy, independent of whatever width
-      // the admin console's own layout gives the old in-page embed, and it
-      // keeps rendering at full rate even while backgrounded (Chrome does
-      // NOT throttle a tab it knows is actively being screen-captured —
-      // that's a different mechanism from the self-tab-capture recursion
-      // blackout this project hit before, which only ever applied to a tab
-      // capturing *itself*). Reused if one from this session is still
-      // open, instead of spawning a fresh tab on every "Start capture"
-      // click.
-      const streamUrl = match?.youtube_url;
-      if (streamUrl) {
-        if (captureTabRef.current && !captureTabRef.current.closed) {
-          captureTabRef.current.focus();
-        } else {
-          captureTabRef.current = window.open(streamUrl, "lv-capture-source");
-        }
-      }
-      // No preferCurrentTab — the picker shows its normal tab list now, and
-      // the admin picks the tab just opened above (usually the most recent,
-      // easiest to spot). displaySurface:"browser" still restricts the
-      // offered choices to tabs, ruling out a full-desktop/window capture
-      // that would drag in the OS taskbar or other apps.
+      // No preferCurrentTab, and this no longer opens/focuses any window on
+      // the admin's behalf — auto-opening a tab turned out to just get in
+      // the way (a redundant tab nobody asked for, and re-focusing it on a
+      // later "Start capture" click could yank focus away from whatever
+      // fullscreen window the admin had actually set up themselves). The
+      // admin opens and fullscreens their own stream source however they
+      // like — this only asks the browser for a tab to capture; nothing
+      // here should ever touch that window once picked. displaySurface:
+      // "browser" still restricts the picker to tabs, ruling out a full-
+      // desktop/window capture that would drag in the OS taskbar or other
+      // apps.
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { displaySurface: "browser" },
       });
@@ -5406,12 +5499,12 @@ export default function LiveConsolePage() {
           )}
         </div>
         <p className="text-[10px] text-white/40">
-          Clicking "Start capture" opens the livestream in its own tab (or refocuses it if already open) — when the
-          share picker appears, choose that tab, not this admin console. Fullscreen it there for the most accurate
-          reads; it'll keep capturing even while you're working in this tab instead. Team kills, team net worth, the
-          game timer, each player&apos;s K/D/A, objectives, and kill moments (double/triple/maniac/savage,
-          attributed to the player named in the kill banner) all live in the tracker overlay drawn on the Match
-          capture canvas above.
+          Open the livestream yourself in its own tab or window first (fullscreen it there for the most accurate
+          reads), then click "Start capture" — when the share picker appears, choose that tab, not this admin
+          console. It keeps capturing even while you're working here instead, and nothing on this side will
+          interrupt or refocus it. Team kills, team net worth, the game timer, each player&apos;s K/D/A, objectives,
+          and kill moments (double/triple/maniac/savage, attributed to the player named in the kill banner) all live
+          in the tracker overlay drawn on the Match capture canvas above.
         </p>
 
         {match.update_source === "local_ocr" && (
@@ -5779,39 +5872,54 @@ export default function LiveConsolePage() {
               </div>
             )}
 
+            {/* Kill-streak detection (Double/Triple Kill, Maniac, Savage) —
+                a true pop-out (fixed, centered, dimmed backdrop) rather
+                than an inline banner, so it's impossible to miss no
+                matter where the admin has scrolled to on a long page.
+                Cancel suppresses this same moment type from re-triggering
+                for a while — the banner it was read from stays on screen
+                for several seconds, long enough to get picked up again on
+                the very next OCR tick and pop right back up otherwise. */}
             {suggestion && (
-              <div className="lv-alert-warning flex flex-wrap items-center gap-3 text-sm px-4 py-3">
-                <span className="text-sm">
-                  Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
-                  <span className="text-white/40">(&quot;{suggestion.raw}&quot;)</span>
-                </span>
-                {/* Player attribution from OCR/AI-vision text-matching is a
-                    best-effort guess — left editable here so a failed match
-                    (or a wrong one) doesn't block logging the moment. */}
-                <select
-                  value={suggestion.playerId ?? ""}
-                  onChange={(e) => {
-                    const id = e.target.value || null;
-                    setSuggestion((prev) => (prev ? { ...prev, playerId: id, playerName: players.find((p) => p.id === id)?.ign ?? null } : prev));
-                  }}
-                  className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs text-white"
-                >
-                  <option value="">No player</option>
-                  {[...(match.team_a ? players.filter((p) => p.team_id === match.team_a!.id) : []), ...(match.team_b ? players.filter((p) => p.team_id === match.team_b!.id) : [])].map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.ign}
-                    </option>
-                  ))}
-                </select>
-                <button onClick={confirmSuggestion} className="lv-btn-primary">
-                  Log this
-                </button>
-                <button
-                  onClick={() => setSuggestion(null)}
-                  className="lv-btn-ghost"
-                >
-                  Dismiss
-                </button>
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" role="dialog" aria-modal="true">
+                <div className="lv-alert-warning flex flex-col gap-3 text-sm px-5 py-4 max-w-sm w-full shadow-xl">
+                  <span className="text-base">
+                    Detected: <strong className="uppercase">{suggestion.type.replace("_", " ")}</strong>{" "}
+                    <span className="text-white/40 block text-xs mt-1">&quot;{suggestion.raw}&quot;</span>
+                  </span>
+                  {/* Player attribution from OCR/AI-vision text-matching is a
+                      best-effort guess — left editable here so a failed match
+                      (or a wrong one) doesn't block logging the moment. */}
+                  <select
+                    value={suggestion.playerId ?? ""}
+                    onChange={(e) => {
+                      const id = e.target.value || null;
+                      setSuggestion((prev) => (prev ? { ...prev, playerId: id, playerName: players.find((p) => p.id === id)?.ign ?? null } : prev));
+                    }}
+                    className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+                  >
+                    <option value="">No player</option>
+                    {[...(match.team_a ? players.filter((p) => p.team_id === match.team_a!.id) : []), ...(match.team_b ? players.filter((p) => p.team_id === match.team_b!.id) : [])].map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.ign}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="flex gap-2 justify-end">
+                    <button
+                      onClick={() => {
+                        dismissedSuggestionUntilRef.current[suggestion.type] = Date.now() + 15_000;
+                        setSuggestion(null);
+                      }}
+                      className="lv-btn-ghost"
+                    >
+                      Cancel
+                    </button>
+                    <button onClick={confirmSuggestion} className="lv-btn-primary">
+                      Log this
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -6100,9 +6208,18 @@ export default function LiveConsolePage() {
                     number input for when the count has actually drifted
                     from what's really on screen (a missed OCR tick, a
                     string of misclicks) — one-at-a-time undo is too slow
-                    for that case. */}
+                    for that case.
+
+                    Layout: two columns. Left stacks Objectives, Log a
+                    moment, and Game screenshots at the same width, in that
+                    order. Right stacks Net worth above Live scoreboard —
+                    the score everyone actually watches sits right under
+                    the gold lead that explains it, instead of the two
+                    being split across separate rows further down the
+                    page. */}
                 {match.update_source === "local_ocr" ? (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                    <div className="space-y-4">
                     <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
                       <div className="flex items-center justify-between">
                         <h3 className="font-semibold text-sm">Objectives</h3>
@@ -6145,7 +6262,9 @@ export default function LiveConsolePage() {
                                       title={`Set ${team.name}'s ${type} count directly`}
                                       onBlur={(e) => {
                                         if (e.target.value === "") return;
-                                        setObjectiveCount(team.id, type, Number(e.target.value));
+                                        const n = Math.max(0, Math.trunc(Number(e.target.value)));
+                                        if (Number.isNaN(n)) return;
+                                        setObjectiveCount(team.id, type, n);
                                         e.target.value = "";
                                       }}
                                       className="w-9 bg-white/10 border border-white/10 rounded px-1 py-1 text-[10px] disabled:opacity-40 placeholder:text-white/30"
@@ -6161,13 +6280,174 @@ export default function LiveConsolePage() {
                       </div>
                     </section>
 
-                    {/* Live scoreboard — moved here from further down so it
-                        sits in the same row as Objectives, right under the
-                        moment list. Team kills is strictly the sum of that
-                        team's players' kills (see teamKillsValid above) —
-                        it must equal the enemy's summed deaths or it isn't
-                        shown at all, never a number that doesn't reconcile
-                        with the KDA rows below it. */}
+                    {/* Log a moment — same column, same width as
+                        Objectives, directly below it. */}
+                    <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-semibold text-sm">Log a moment</h3>
+                        <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
+                      </div>
+                      <div className="flex gap-2 items-end flex-wrap">
+                        <select
+                          value={kmTemplateId}
+                          onChange={(e) => setKmTemplateId(e.target.value)}
+                          className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+                        >
+                          <option value="">Choose a template...</option>
+                          <option value={CUSTOM_TEMPLATE_ID}>✎ Custom...</option>
+                          {availableTemplates.map((t) => (
+                            <option key={t.id} value={t.id}>{t.label_template}</option>
+                          ))}
+                        </select>
+                        {selectedTemplate?.label_template.includes("{team}") && (
+                          <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+                            <option value="">Team</option>
+                            {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
+                            {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
+                          </select>
+                        )}
+                        {selectedTemplate?.label_template.includes("{hero}") && (
+                          <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+                            <option value="">Hero</option>
+                            {heroes.map((h) => (
+                              <option key={h.id} value={h.id}>{h.name}</option>
+                            ))}
+                          </select>
+                        )}
+                        {selectedTemplate?.label_template.includes("{player}") && (
+                          <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
+                            <option value="">Player</option>
+                            {players.map((p) => (
+                              <option key={p.id} value={p.id}>{p.ign}</option>
+                            ))}
+                          </select>
+                        )}
+                        {selectedTemplate?.type === "custom" && (
+                          <input
+                            value={kmCustomText}
+                            onChange={(e) => setKmCustomText(e.target.value)}
+                            placeholder="Type the custom moment..."
+                            className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
+                          />
+                        )}
+                        <button
+                          onClick={logKeyMoment}
+                          disabled={!selectedTemplate || !isEditable || (selectedTemplate.type === "custom" && !kmCustomText.trim())}
+                          className="lv-btn-ghost disabled:opacity-40"
+                        >
+                          Log moment
+                        </button>
+                      </div>
+                      {selectedTemplate && (
+                        <div className="flex items-center gap-4">
+                          <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+                            <input
+                              type="checkbox"
+                              checked={kmAttachScreenshot}
+                              onChange={(e) => setKmAttachScreenshot(e.target.checked)}
+                              disabled={!captureActive}
+                            />
+                            📸 Also grab the current frame into this moment
+                            {!captureActive && " (start capture above first)"}
+                          </label>
+                          {selectedTemplate.type === "custom" && (
+                            <label className="flex items-center gap-1.5 text-[10px] text-white/50">
+                              <input type="checkbox" checked={kmMarkAsKey} onChange={(e) => setKmMarkAsKey(e.target.checked)} />
+                              ⭐ Mark as key moment
+                            </label>
+                          )}
+                        </div>
+                      )}
+                    </section>
+
+                    {/* Game screenshots — same column, same width, directly
+                        below Log a moment. */}
+                    <section className="space-y-3">
+                      <h2 className="font-bold">Game {game.game_number} screenshots</h2>
+                      <p className="text-xs text-white/40">
+                        Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
+                        current in-game timer. Shown publicly at the bottom of this game&apos;s page.
+                      </p>
+                      <div className="flex gap-2 items-center flex-wrap">
+                        <button
+                          onClick={() => captureScreenshotFromPreview()}
+                          disabled={!captureActive || screenshotUploading}
+                          className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
+                          title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
+                        >
+                          📸 Capture current frame
+                        </button>
+                        <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
+                          Upload image...
+                          <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
+                        </label>
+                        <input
+                          value={screenshotNote}
+                          onChange={(e) => setScreenshotNote(e.target.value)}
+                          placeholder="Note (optional)"
+                          className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
+                        />
+                        {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
+                      </div>
+                      <div className="flex flex-wrap gap-3">
+                        {screenshots.map((s) => (
+                          <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
+                            <div className="flex items-center justify-between text-[10px] text-white/40">
+                              <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
+                              <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
+                            </div>
+                            {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
+                          </div>
+                        ))}
+                        {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
+                      </div>
+                    </section>
+                    </div>
+
+                    <div className="space-y-4">
+                    {/* Net worth — top of the right column, directly above
+                        Live scoreboard. */}
+                    <section className="space-y-2">
+                      <h2 className="font-bold">Net worth</h2>
+                      <div className="flex flex-wrap gap-4 items-end">
+                        {[
+                          { team: match.team_a, key: "team_a_gold" as const, other: latestNetWorth?.team_b_gold ?? 0 },
+                          { team: match.team_b, key: "team_b_gold" as const, other: latestNetWorth?.team_a_gold ?? 0 },
+                        ].map(({ team, key, other }, idx) =>
+                          team ? (
+                            <div key={team.id} className="space-y-1">
+                              <p className="text-xs text-white/50">{team.name}</p>
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="number"
+                                  defaultValue={latestNetWorth?.[key] ?? ""}
+                                  disabled={!netWorthEditable}
+                                  placeholder="Gold"
+                                  className="w-28 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+                                  onBlur={(e) => {
+                                    const value = Number(e.target.value);
+                                    if (Number.isNaN(value)) return;
+                                    if (value === (latestNetWorth?.[key] ?? null)) return;
+                                    updateNetWorthManual(idx === 0 ? value : other, idx === 0 ? other : value);
+                                  }}
+                                />
+                                {latestNetWorth?.[key] != null && <span className="text-xs text-white/40 tabular-nums">{formatGold(latestNetWorth[key])}</span>}
+                              </div>
+                            </div>
+                          ) : (
+                            <span key={idx} />
+                          )
+                        )}
+                      </div>
+                    </section>
+
+                    {/* Live scoreboard. Team kills is strictly the sum of
+                        that team's players' kills (see teamKillsValid
+                        above) — it must equal the enemy's summed deaths or
+                        it isn't shown at all, never a number that doesn't
+                        reconcile with the KDA rows below it. */}
                     <section className="space-y-3">
                       <div className="flex items-center justify-between">
                         <h2 className="font-bold">Live scoreboard</h2>
@@ -6249,28 +6529,43 @@ export default function LiveConsolePage() {
                                   <span className="w-24 truncate">{p.ign}</span>
                                 )}
                                 <span className="w-20 truncate text-white/40 uppercase text-[10px] tracking-wide">{p.role ?? "—"}</span>
-                                {heroes.find((h) => h.name === stat?.hero_name)?.icon_url && (
-                                  <HeroIcon url={heroes.find((h) => h.name === stat?.hero_name)!.icon_url} name={stat?.hero_name} size="xs" className="-mr-1" />
-                                )}
-                                {/* Once this player has a locked-in pick (real or
-                                    positionally matched — see effectivePickFor), the
-                                    Draft board above is the single place to correct
-                                    their hero — that edit already propagates here via
-                                    updateStat (see correctPickBanHero/assignHeroToPlayer),
-                                    so this dropdown used to be a second, independent way
-                                    to set the exact same field: pick a wrong hero here and
-                                    it silently disagreed with the Draft board's own record
-                                    until the next full reload. Read-only display instead.
-                                    Falls back to the dropdown only when there's genuinely
-                                    no pick to read from (Normal/Liquipedia matches with no
-                                    local draft tracking, or a substitute added straight to
-                                    the scoreboard) — that's still the only place to set
-                                    it. */}
-                                {effectivePickFor(p.id, idx === 0 ? match.team_a!.id : match.team_b!.id, teamPlayers) ? (
-                                  <span className="w-24 truncate text-xs" title="Set from the Draft board above — correct it there">
-                                    {stat?.hero_name || "—"}
-                                  </span>
-                                ) : (
+                                {(() => {
+                                  const pick = effectivePickFor(p.id, idx === 0 ? match.team_a!.id : match.team_b!.id, teamPlayers);
+                                  // stat?.hero_name is the authoritative field once set
+                                  // (syncDraftHeroesToStats writes it the moment the
+                                  // draft's saved, correctPickBanHero keeps it in sync
+                                  // after any correction) — falling back to the pick's
+                                  // own hero_name here is just a display-side safety net
+                                  // for a row whose sync hasn't landed yet, not a second
+                                  // source of truth.
+                                  const heroName = stat?.hero_name || pick?.hero_name || null;
+                                  const iconUrl = heroName ? heroes.find((h) => h.name === heroName)?.icon_url : null;
+                                  return (
+                                    <>
+                                      {iconUrl && <HeroIcon url={iconUrl} name={heroName} size="xs" className="-mr-1" />}
+                                      {/* Once this player has a locked-in pick (real or
+                                          positionally matched — see effectivePickFor), the
+                                          Draft board above is the single place to correct
+                                          their hero — that edit already propagates here via
+                                          updateStat (see correctPickBanHero/assignHeroToPlayer),
+                                          so this dropdown used to be a second, independent way
+                                          to set the exact same field: pick a wrong hero here and
+                                          it silently disagreed with the Draft board's own record
+                                          until the next full reload. Read-only display instead.
+                                          Falls back to the dropdown only when there's genuinely
+                                          no pick to read from (Normal/Liquipedia matches with no
+                                          local draft tracking, or a substitute added straight to
+                                          the scoreboard) — that's still the only place to set
+                                          it. */}
+                                      {pick ? (
+                                        <span className="w-24 truncate text-xs" title="Set from the Draft board above — correct it there">
+                                          {heroName || "—"}
+                                        </span>
+                                      ) : null}
+                                    </>
+                                  );
+                                })()}
+                                {!effectivePickFor(p.id, idx === 0 ? match.team_a!.id : match.team_b!.id, teamPlayers) && (
                                   <select
                                     value={stat?.hero_name ?? ""}
                                     onChange={(e) => updateStat(p.id, "hero_name", e.target.value)}
@@ -6294,11 +6589,14 @@ export default function LiveConsolePage() {
                                       {i > 0 && <span className="text-white/30">/</span>}
                                       <input
                                         type="number"
+                                        min={0}
                                         defaultValue={stat?.[field] ?? ""}
                                         placeholder="TBD"
                                         onBlur={(e) => {
                                           if (e.target.value === "") return; // leave TBD, don't coerce a cleared field to 0
-                                          updateStat(p.id, field, Number(e.target.value));
+                                          const n = Math.max(0, Math.trunc(Number(e.target.value)));
+                                          if (Number.isNaN(n)) return;
+                                          updateStat(p.id, field, n);
                                         }}
                                         disabled={!scoreboardEditable}
                                         className="w-12 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
@@ -6385,6 +6683,7 @@ export default function LiveConsolePage() {
                         </div>
                       ))}
                     </section>
+                    </div>
                   </div>
                 ) : (
                   <section className="space-y-2">
@@ -6400,177 +6699,7 @@ export default function LiveConsolePage() {
                     </div>
                   </section>
                 )}
-
-                {/* Moment list — the actual add-a-moment control (template
-                    dropdown + Log moment). Hot matches only; the rendered
-                    history stays in the "Moment Timeline" panel further
-                    down, physically separated from these controls. */}
-                {match.update_source === "local_ocr" && (
-                  <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
-                    <div className="flex items-center justify-between">
-                      <h3 className="font-semibold text-sm">Log a moment</h3>
-                      <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
-                    </div>
-                    <div className="flex gap-2 items-end flex-wrap">
-                      <select
-                        value={kmTemplateId}
-                        onChange={(e) => setKmTemplateId(e.target.value)}
-                        className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
-                      >
-                        <option value="">Choose a template...</option>
-                        <option value={CUSTOM_TEMPLATE_ID}>✎ Custom...</option>
-                        {availableTemplates.map((t) => (
-                          <option key={t.id} value={t.id}>{t.label_template}</option>
-                        ))}
-                      </select>
-                      {selectedTemplate?.label_template.includes("{team}") && (
-                        <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-                          <option value="">Team</option>
-                          {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
-                          {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
-                        </select>
-                      )}
-                      {selectedTemplate?.label_template.includes("{hero}") && (
-                        <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-                          <option value="">Hero</option>
-                          {heroes.map((h) => (
-                            <option key={h.id} value={h.id}>{h.name}</option>
-                          ))}
-                        </select>
-                      )}
-                      {selectedTemplate?.label_template.includes("{player}") && (
-                        <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-                          <option value="">Player</option>
-                          {players.map((p) => (
-                            <option key={p.id} value={p.id}>{p.ign}</option>
-                          ))}
-                        </select>
-                      )}
-                      {selectedTemplate?.type === "custom" && (
-                        <input
-                          value={kmCustomText}
-                          onChange={(e) => setKmCustomText(e.target.value)}
-                          placeholder="Type the custom moment..."
-                          className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
-                        />
-                      )}
-                      <button
-                        onClick={logKeyMoment}
-                        disabled={!selectedTemplate || !isEditable || (selectedTemplate.type === "custom" && !kmCustomText.trim())}
-                        className="lv-btn-ghost disabled:opacity-40"
-                      >
-                        Log moment
-                      </button>
-                    </div>
-                    {selectedTemplate && (
-                      <div className="flex items-center gap-4">
-                        <label className="flex items-center gap-1.5 text-[10px] text-white/50">
-                          <input
-                            type="checkbox"
-                            checked={kmAttachScreenshot}
-                            onChange={(e) => setKmAttachScreenshot(e.target.checked)}
-                            disabled={!captureActive}
-                          />
-                          📸 Also grab the current frame into this moment
-                          {!captureActive && " (start capture above first)"}
-                        </label>
-                        {selectedTemplate.type === "custom" && (
-                          <label className="flex items-center gap-1.5 text-[10px] text-white/50">
-                            <input type="checkbox" checked={kmMarkAsKey} onChange={(e) => setKmMarkAsKey(e.target.checked)} />
-                            ⭐ Mark as key moment
-                          </label>
-                        )}
-                      </div>
-                    )}
-                  </section>
-                )}
               </>
-            )}
-
-            {/* Net worth + Game screenshots — moved up from the very
-                bottom of this column so they sit in the same combined
-                panel as Objectives/Live scoreboard/Log a moment, right
-                under the moment list, instead of past the whole draft
-                board and game selector further down. */}
-            {match.update_source === "local_ocr" && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
-                <section className="space-y-2">
-                  <h2 className="font-bold">Net worth</h2>
-                  <div className="flex flex-wrap gap-4 items-end">
-                    {[
-                      { team: match.team_a, key: "team_a_gold" as const, other: latestNetWorth?.team_b_gold ?? 0 },
-                      { team: match.team_b, key: "team_b_gold" as const, other: latestNetWorth?.team_a_gold ?? 0 },
-                    ].map(({ team, key, other }, idx) =>
-                      team ? (
-                        <div key={team.id} className="space-y-1">
-                          <p className="text-xs text-white/50">{team.name}</p>
-                          <div className="flex items-center gap-1.5">
-                            <input
-                              type="number"
-                              defaultValue={latestNetWorth?.[key] ?? ""}
-                              disabled={!netWorthEditable}
-                              placeholder="Gold"
-                              className="w-28 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
-                              onBlur={(e) => {
-                                const value = Number(e.target.value);
-                                if (Number.isNaN(value)) return;
-                                if (value === (latestNetWorth?.[key] ?? null)) return;
-                                updateNetWorthManual(idx === 0 ? value : other, idx === 0 ? other : value);
-                              }}
-                            />
-                            {latestNetWorth?.[key] != null && <span className="text-xs text-white/40 tabular-nums">{formatGold(latestNetWorth[key])}</span>}
-                          </div>
-                        </div>
-                      ) : (
-                        <span key={idx} />
-                      )
-                    )}
-                  </div>
-                </section>
-
-                <section className="space-y-3">
-                  <h2 className="font-bold">Game {game.game_number} screenshots</h2>
-                  <p className="text-xs text-white/40">
-                    Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
-                    current in-game timer. Shown publicly at the bottom of this game&apos;s page.
-                  </p>
-                  <div className="flex gap-2 items-center flex-wrap">
-                    <button
-                      onClick={() => captureScreenshotFromPreview()}
-                      disabled={!captureActive || screenshotUploading}
-                      className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
-                      title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
-                    >
-                      📸 Capture current frame
-                    </button>
-                    <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
-                      Upload image...
-                      <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
-                    </label>
-                    <input
-                      value={screenshotNote}
-                      onChange={(e) => setScreenshotNote(e.target.value)}
-                      placeholder="Note (optional)"
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
-                    />
-                    {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
-                  </div>
-                  <div className="flex flex-wrap gap-3">
-                    {screenshots.map((s) => (
-                      <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
-                        <div className="flex items-center justify-between text-[10px] text-white/40">
-                          <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
-                          <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
-                        </div>
-                        {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
-                      </div>
-                    ))}
-                    {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
-                  </div>
-                </section>
-              </div>
             )}
 
       {/* Draft tool sits first in the center column, directly beside/below

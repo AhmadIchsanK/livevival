@@ -762,8 +762,18 @@ export default function LiveConsolePage() {
 
   // Builds the same "team → picks/bans" recap block used both by the manual
   // "Announce draft" button and the automatic draft-finished notification.
-  function buildDraftRecap(): string {
+  // Takes an optional explicit pickBans list for the same reason
+  // draftFullyResolved does (see its comment) — saveDraftAndStartGame calls
+  // this right after lockInPositionalPicks(), whose player_id writes land
+  // in the database before the setPickBans state update actually commits.
+  // Without the override this always read the stale, pre-lock-in closure —
+  // every pick still null player_id — which is why the picks list posted to
+  // Telegram/Slack showed every player as a bare "(?)" even though the
+  // exact same picks render correctly assigned on the draft board a moment
+  // later once the state update lands.
+  function buildDraftRecap(pickBansOverride?: PickBan[]): string {
     if (!match) return "";
+    const list = pickBansOverride ?? pickBans;
     return [match.team_a, match.team_b]
       .map((team) => {
         if (!team) return "";
@@ -771,12 +781,12 @@ export default function LiveConsolePage() {
         // a match-local custom player (no `players` row to look up).
         const roleFor = (pb: PickBan) => players.find((p) => p.id === pb.player_id)?.role ?? pb.custom_player_role ?? null;
         const nameFor = (pb: PickBan) => players.find((p) => p.id === pb.player_id)?.ign ?? pb.custom_player_name ?? "?";
-        const picks = pickBans
+        const picks = list
           .filter((pb) => pb.team_id === team.id && pb.type === "pick")
           .sort((a, b) => roleIndex(roleFor(a)) - roleIndex(roleFor(b)))
           .map((pb) => `- ${pb.hero_name} (${nameFor(pb)})`)
           .join("\n");
-        const bans = pickBans.filter((pb) => pb.team_id === team.id && pb.type === "ban").map((pb) => pb.hero_name).join(", ");
+        const bans = list.filter((pb) => pb.team_id === team.id && pb.type === "ban").map((pb) => pb.hero_name).join(", ");
         return `<b>${team.name}</b>\nPicks:\n${picks || "—"}\nBans: ${bans || "—"}`;
       })
       .join("\n\n");
@@ -908,7 +918,7 @@ export default function LiveConsolePage() {
     if (!confirm("Save this draft and start the game? This posts the draft recap to Telegram/Slack and moves the match to Game ongoing.")) return;
     await syncDraftHeroesToStats(lockedInPickBans);
     await postToTelegram(
-      `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
+      `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap(lockedInPickBans)}`,
       { entityType: "game", entityId: game.id, notificationType: "draft_result" }
     );
     await setMatchPhase("GAME_STARTED");
@@ -1518,13 +1528,25 @@ export default function LiveConsolePage() {
       pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: momentPayload });
       return;
     }
-    const { data: insertedObjective } = await supabase
+    const { data: insertedObjective, error: objectiveError } = await supabase
       .from("objectives")
       .insert({ game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute })
       .select("id")
       .single();
+    // The objectives insert's error was previously ignored entirely and the
+    // key_moment logged unconditionally right after — so a failed objective
+    // write (RLS, constraint, dropped connection) still produced a "TEAM
+    // takes 🐢 turtle" line in the moment timeline while the Objectives
+    // count stayed put. That's the "objectives don't follow the logic"
+    // symptom: the timeline and the counts disagreeing with no error shown
+    // anywhere. Now the moment is only logged once the count it describes
+    // actually exists, and a failure is surfaced instead of swallowed.
+    if (objectiveError || !insertedObjective) {
+      setError(`Failed to record that ${type} for ${teamName}: ${objectiveError?.message ?? "the objective row wasn't created"}`);
+      return;
+    }
     await supabase.from("key_moments").insert(momentPayload);
-    if (insertedObjective) setLastAction({ table: "objectives", id: insertedObjective.id, label: momentPayload.description, kind: "insert" });
+    setLastAction({ table: "objectives", id: insertedObjective.id, label: momentPayload.description, kind: "insert" });
     loadAll();
   }
   async function decrementObjective(teamId: string, type: string) {
@@ -2899,6 +2921,18 @@ export default function LiveConsolePage() {
         return;
       }
       const regions = (data.regions ?? []) as { field: string; x_pct: number; y_pct: number; w_pct: number; h_pct: number }[];
+      const rawCandidateCount = typeof data.rawCandidateCount === "number" ? data.rawCandidateCount : 0;
+      const aiPlacedRows: {
+        template_name: string;
+        phase: string;
+        category: TrackerCategory;
+        field: string;
+        label: string;
+        x_pct: number;
+        y_pct: number;
+        w_pct: number;
+        h_pct: number;
+      }[] = [];
       let placed = 0;
       let skipped = 0;
       for (const r of regions) {
@@ -2910,12 +2944,46 @@ export default function LiveConsolePage() {
         }
         const box = composeFromCaptureArea({ xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct }, captureArea);
         await addTrackerWithRegion("GAME_STARTED", mapping.category, r.field, mapping.label, box);
+        aiPlacedRows.push({
+          template_name: "",
+          phase: "GAME_STARTED",
+          category: mapping.category,
+          field: r.field,
+          label: mapping.label,
+          x_pct: box.xPct,
+          y_pct: box.yPct,
+          w_pct: box.wPct,
+          h_pct: box.hPct,
+        });
         placed++;
       }
+      // An AI placement previously only ever wrote per-match capture_regions
+      // rows (match_id set, template_name null), so it never showed up in
+      // the saved-templates dropdown — which reads template_name rows only.
+      // That's why a layout the admin had already auto-placed on an earlier
+      // match couldn't be re-applied to the next one and had to be
+      // re-generated from scratch every time. Saving the same boxes under a
+      // dated template name too makes each AI placement reusable, exactly
+      // like a hand-calibrated layout saved via "Save as template".
+      if (placed > 0) {
+        const templateName = `AI layout — ${new Date().toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })} ${new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+        await supabase
+          .from("capture_regions")
+          .upsert(aiPlacedRows.map((row) => ({ ...row, template_name: templateName })), { onConflict: "template_name,phase,field" });
+        await loadTrackerTemplates();
+      }
+      // rawCandidateCount > 0 but regions.length === 0 means the model DID
+      // answer with something — it just failed the server's field-name/
+      // bounds validation (a genuinely different problem: a prompt/parsing
+      // mismatch, not an unreadable frame) — worth telling apart from "saw
+      // nothing at all" so the admin isn't sent chasing a clearer
+      // screenshot for a bug that isn't about frame clarity.
       setAiLayoutStatus(
-        regions.length === 0
-          ? "The model didn't confidently locate any tracker elements in this frame — try again once the scoreboard/HUD is clearly visible, or place trackers manually."
-          : `Placed ${placed} tracker${placed === 1 ? "" : "s"} from the screenshot${skipped > 0 ? `, skipped ${skipped} already tracked` : ""}.`
+        regions.length > 0
+          ? `Placed ${placed} tracker${placed === 1 ? "" : "s"} from the screenshot${skipped > 0 ? `, skipped ${skipped} already tracked` : ""}${placed > 0 ? " — also saved as a reusable template (see the template dropdown)" : ""}.`
+          : rawCandidateCount > 0
+          ? `The model returned ${rawCandidateCount} candidate element${rawCandidateCount === 1 ? "" : "s"}, but none passed validation (wrong field name or an out-of-range box) — this looks like a model-response format issue, not an unclear frame. Try again, or place trackers manually.`
+          : "The model didn't locate any tracker elements in this frame — try again once the scoreboard/HUD is clearly visible, or place trackers manually."
       );
     } catch (err) {
       setAiLayoutStatus((err as Error).message);
@@ -3849,6 +3917,25 @@ export default function LiveConsolePage() {
   // actually removed one objective no matter how many the admin typed.
   // Fixed by computing the whole batch of rows to remove from a single
   // snapshot up front, then deleting them all in one request.
+  // Manual correction path for team_a_kills_override/team_b_kills_override
+  // — there was previously no way to fix a bad value here short of editing
+  // the database directly. A wrong OCR read that slips past the guards in
+  // captureTickBody (team_kills case) otherwise gets stuck forever: the
+  // never-decreases guard blocks any lower correction from OCR, and
+  // Math.max means per-player kills catching up can only push the
+  // displayed number up, never down to the real value. A manual edit here
+  // always wins, same as every other admin override in this page.
+  async function setTeamKillsOverride(teamId: string, value: number) {
+    if (!game || !match) return;
+    const clamped = Math.max(0, Math.round(value));
+    const column = teamId === match.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+    const { error } = await supabase.from("games").update({ [column]: clamped }).eq("id", game.id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    loadAll();
+  }
   async function setObjectiveCount(teamId: string, type: string, target: number) {
     const clamped = Math.max(0, Math.round(target));
     const current = objectiveCount(teamId, type);
@@ -4077,6 +4164,37 @@ export default function LiveConsolePage() {
                 raw: trimmed,
                 confidence: data.confidence,
                 reason: `Read ${kills}, below the current count of ${currentKills} — never-decreases guard held it back`,
+                apply: async () => {
+                  await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
+                },
+              });
+              break;
+            }
+            // Suspicious-increase guard (validation spec §3 rule 5) — the
+            // <=300 check above only catches outright garbage, not a
+            // plausible-looking digit string that's still wrong. A team
+            // kill count is never legitimately far ahead of what's already
+            // individually attributed to that team's players (some lag
+            // between the two independent OCR reads is normal — see the
+            // soft kdaMismatch warning below — but not a leap of a dozen-
+            // plus kills that no player has been credited with at all).
+            // This was the actual cause of a team showing a wildly wrong
+            // kill count with every one of its players still at 0: a single
+            // garbled read got auto-committed here and then Math.max'd
+            // forever after by the never-decreases guard above. A genuine
+            // fast run of real kills still gets through fine next tick, once
+            // this same check re-evaluates against the (by-then) higher
+            // floor — it only holds back the one outlier tick, not the team.
+            const teamPlayerKillSum = stats
+              .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === sideTeamId)
+              .reduce((sum, s) => sum + (s.kills ?? 0), 0);
+            const plausibleFloor = Math.max(currentKills ?? 0, teamPlayerKillSum);
+            if (kills - plausibleFloor > 10) {
+              flagReading(tracker.field, {
+                label: tracker.label,
+                raw: trimmed,
+                confidence: data.confidence,
+                reason: `Read ${kills}, a jump of ${kills - plausibleFloor} over the current count (${plausibleFloor}, incl. per-player kills) — held back as a likely misread, needs confirmation`,
                 apply: async () => {
                   await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
                 },
@@ -7511,11 +7629,42 @@ export default function LiveConsolePage() {
                           game at the same time. teamKillsValid still drives
                           a warning note, just not a second, disagreeing
                           number. */}
-                      <div className="flex items-center gap-4 text-xs">
+                      <div className="flex items-center gap-4 text-xs flex-wrap">
                         <span className="text-white/50">Team kills:</span>
                         <span className="font-bold tabular-nums">
                           {match.team_a?.name} {teamAKillsTotal} – {teamBKillsTotal} {match.team_b?.name}
                         </span>
+                        {/* Manual correction for team_a/b_kills_override —
+                            previously the only way to fix a bad OCR read
+                            (e.g. a garbled digit run that got auto-committed
+                            before this jump-guard existed) was editing the
+                            database directly, since the never-decreases
+                            guard blocks any lower value from OCR itself. */}
+                        {[
+                          { team: match.team_a, value: teamAKillsTotal },
+                          { team: match.team_b, value: teamBKillsTotal },
+                        ].map(({ team, value }, idx) =>
+                          team ? (
+                            <input
+                              key={team.id}
+                              type="number"
+                              min={0}
+                              disabled={!scoreboardEditable}
+                              placeholder={String(value)}
+                              title={`Manually set ${team.name}'s team kill count (overrides the OCR-read value)`}
+                              onBlur={(e) => {
+                                if (e.target.value === "") return;
+                                const n = Number(e.target.value);
+                                if (!Number.isFinite(n) || n < 0) return;
+                                setTeamKillsOverride(team.id, n);
+                                e.target.value = "";
+                              }}
+                              className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
+                            />
+                          ) : (
+                            <span key={idx} />
+                          )
+                        )}
                         {!teamKillsValid && (
                           <span
                             className="text-amber-300"

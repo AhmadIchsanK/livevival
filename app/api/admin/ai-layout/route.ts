@@ -190,7 +190,7 @@ export async function POST(req: NextRequest) {
   // name, an out-of-range percentage, or a box no OCR could ever use are
   // all filtered out before the client sees them.
   const rawRegions = Array.isArray(parsed.regions) ? parsed.regions : [];
-  const regions = rawRegions
+  const numeric = rawRegions
     .map((r) => r as Record<string, unknown>)
     .filter((r): r is Record<string, unknown> => typeof r === "object" && r !== null)
     .map((r) => ({
@@ -200,22 +200,50 @@ export async function POST(req: NextRequest) {
       w_pct: typeof r.w_pct === "number" ? r.w_pct : null,
       h_pct: typeof r.h_pct === "number" ? r.h_pct : null,
       confidence: typeof r.confidence === "number" ? r.confidence : null,
-    }))
-    .filter(
-      (r) =>
-        r.field &&
-        (KNOWN_FIELDS as readonly string[]).includes(r.field) &&
-        r.x_pct != null &&
-        r.y_pct != null &&
-        r.w_pct != null &&
-        r.h_pct != null &&
-        r.w_pct > 0.5 &&
-        r.h_pct > 0.5 &&
-        r.x_pct >= 0 &&
-        r.y_pct >= 0 &&
-        r.x_pct + r.w_pct <= 100.5 &&
-        r.y_pct + r.h_pct <= 100.5
-    );
+    }));
 
-  return NextResponse.json({ regions });
+  // Vision models frequently ignore the "0-100 percentage" instruction in
+  // the prompt and emit a 0-1 fraction instead (a well-known convention
+  // mismatch, not specific to this prompt) — every box then fails the
+  // w_pct/h_pct > 0.5 size floor below even though the model located
+  // everything correctly, and the admin sees "didn't confidently locate
+  // any tracker elements" for a frame with an obviously readable HUD. If
+  // every numeric value across every returned region is <=1 (a real
+  // percentage box this small would be unusable for OCR anyway, so this
+  // can't collide with a genuine 0-100 response), treat it as the 0-1
+  // convention and rescale before validating.
+  const allValues = numeric.flatMap((r) => [r.x_pct, r.y_pct, r.w_pct, r.h_pct]).filter((v): v is number => v != null);
+  const looksFractional = allValues.length > 0 && allValues.every((v) => v <= 1);
+  const rescaled = looksFractional
+    ? numeric.map((r) => ({
+        ...r,
+        x_pct: r.x_pct != null ? r.x_pct * 100 : null,
+        y_pct: r.y_pct != null ? r.y_pct * 100 : null,
+        w_pct: r.w_pct != null ? r.w_pct * 100 : null,
+        h_pct: r.h_pct != null ? r.h_pct * 100 : null,
+      }))
+    : numeric;
+
+  const regions = rescaled.filter(
+    (r) =>
+      r.field &&
+      (KNOWN_FIELDS as readonly string[]).includes(r.field) &&
+      r.x_pct != null &&
+      r.y_pct != null &&
+      r.w_pct != null &&
+      r.h_pct != null &&
+      r.w_pct > 0.5 &&
+      r.h_pct > 0.5 &&
+      r.x_pct >= 0 &&
+      r.y_pct >= 0 &&
+      r.x_pct + r.w_pct <= 100.5 &&
+      r.y_pct + r.h_pct <= 100.5
+  );
+
+  // rawCandidateCount lets the client tell "the model genuinely saw
+  // nothing" apart from "the model answered but every candidate failed
+  // validation" (bad field name, out-of-bounds box) — those need very
+  // different admin responses (retake vs. a real bug report) and the old
+  // response gave no way to distinguish them.
+  return NextResponse.json({ regions, rawCandidateCount: rawRegions.length });
 }

@@ -3189,6 +3189,32 @@ export default function LiveConsolePage() {
     }
   }
 
+  // Every numeric category only ever legitimately contains digits plus one
+  // disambiguating separator (K/D/A's "/", net worth's ".", the timer's
+  // ":") — constraining what Tesseract is even allowed to output for these
+  // categories (tessedit_char_whitelist) cuts off a whole class of misread
+  // at the source, rather than post-hoc regex-stripping stray letters/
+  // symbols out of free-form OCR text after the fact. Only the categories
+  // that genuinely read words (a kill banner's "SAVAGE", a map name, the
+  // word "pause") stay unrestricted; null here means "don't touch the
+  // worker's charset for this tick."
+  function charWhitelistFor(category: string): string | null {
+    switch (category) {
+      case "player_kda":
+        return "0123456789/";
+      case "net_worth":
+        return "0123456789.";
+      case "game_timer":
+      case "countdown":
+        return "0123456789:";
+      case "team_kills":
+      case "objective":
+        return "0123456789";
+      default:
+        return null; // kill_banner, victory_banner, pause_word, map_setting — real words expected
+    }
+  }
+
   async function captureTickBody(video: HTMLVideoElement, worker: NonNullable<typeof workerRef.current>) {
     // Only scan the trackers configured for whatever phase the admin has
     // this match set to right now — this is what makes each phase's
@@ -3225,6 +3251,11 @@ export default function LiveConsolePage() {
       const sideTeamId = side === "left" ? leftTeamId : side === "right" ? rightTeamId : null;
 
       try {
+        // Constrain the worker's output charset to exactly what this
+        // category can legitimately contain before reading it — see
+        // charWhitelistFor. An empty string clears the constraint for
+        // word-reading categories (Tesseract's own "no restriction" value).
+        await worker.setParameters({ tessedit_char_whitelist: charWhitelistFor(tracker.category) ?? "" });
         // `data` also carries Tesseract's own overall page-confidence
         // (0-100) for this recognize() call — already computed by
         // tesseract.js on every tick, just wired into trackerHealth below
@@ -4935,12 +4966,23 @@ export default function LiveConsolePage() {
     if (s.player_id) return effectivePlayers.find((p) => p.id === s.player_id)?.team_id;
     return effectivePlayers.find((p) => p.ign === s.custom_player_name)?.team_id;
   }
-  const teamAKillsTotal =
-    game?.team_a_kills_override ??
-    stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
-  const teamBKillsTotal =
-    game?.team_b_kills_override ??
-    stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  // Math.max, not `??` — the OCR team-kills tracker (team_a_kills_override)
+  // updates independently of the per-player K/D/A trackers, and can settle
+  // on a real-but-stale value (including 0, which `??` would trust forever
+  // since 0 isn't null). Team kills can never be less than what's already
+  // individually attributed to that team's players — enforcing that
+  // relationship directly means a lagging override self-heals the moment
+  // per-player kills catch up or pass it, instead of freezing this sticky
+  // header's count while the Live scoreboard section below (computedTeam*
+  // Kills, a pure sum) keeps climbing.
+  const teamAKillsTotal = Math.max(
+    game?.team_a_kills_override ?? 0,
+    stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0)
+  );
+  const teamBKillsTotal = Math.max(
+    game?.team_b_kills_override ?? 0,
+    stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0)
+  );
   // Live scoreboard's own "Team kills" readout — strictly the sum of that
   // team's players' kills (no override), cross-checked against the enemy's
   // summed deaths: every kill is someone else's death, so the two must
@@ -6102,12 +6144,12 @@ export default function LiveConsolePage() {
                 list. */}
             {!DRAFT_PHASES.includes(match.state) && (
               <>
-                {/* Objectives — simplified to a single tap-to-log counter
-                    per type (no separate decrement button or direct-number
-                    input; a misclick is rare enough that it's not worth the
-                    width) — freeing up room for Live scoreboard, moved in
-                    here alongside it so both sit in the same row, right
-                    under the moment list. */}
+                {/* Objectives — tap-to-log counter per type (click to
+                    increment, right-click to undo one), plus a direct
+                    number input for when the count has actually drifted
+                    from what's really on screen (a missed OCR tick, a
+                    string of misclicks) — one-at-a-time undo is too slow
+                    for that case. */}
                 {match.update_source === "local_ocr" ? (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                     <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
@@ -6129,21 +6171,35 @@ export default function LiveConsolePage() {
                               <p className="text-xs text-white/50">{team.name}</p>
                               <div className="flex flex-wrap gap-1.5">
                                 {OBJECTIVE_TYPES.map((type) => (
-                                  <button
-                                    key={type}
-                                    onClick={() => incrementObjective(team.id, type)}
-                                    onContextMenu={(e) => {
-                                      e.preventDefault();
-                                      decrementObjective(team.id, type);
-                                    }}
-                                    disabled={!objectivesEditable}
-                                    title={`${team.name} takes a ${type} — right-click to undo`}
-                                    className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
-                                  >
-                                    <span>{OBJECTIVE_ICONS[type]}</span>
-                                    <span className="capitalize">{type}</span>
-                                    <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
-                                  </button>
+                                  <span key={type} className="inline-flex items-center gap-1">
+                                    <button
+                                      onClick={() => incrementObjective(team.id, type)}
+                                      onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        decrementObjective(team.id, type);
+                                      }}
+                                      disabled={!objectivesEditable}
+                                      title={`${team.name} takes a ${type} — right-click to undo`}
+                                      className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
+                                    >
+                                      <span>{OBJECTIVE_ICONS[type]}</span>
+                                      <span className="capitalize">{type}</span>
+                                      <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
+                                    </button>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      disabled={!objectivesEditable}
+                                      placeholder={String(objectiveCount(team.id, type))}
+                                      title={`Set ${team.name}'s ${type} count directly`}
+                                      onBlur={(e) => {
+                                        if (e.target.value === "") return;
+                                        setObjectiveCount(team.id, type, Number(e.target.value));
+                                        e.target.value = "";
+                                      }}
+                                      className="w-9 bg-white/10 border border-white/10 rounded px-1 py-1 text-[10px] disabled:opacity-40 placeholder:text-white/30"
+                                    />
+                                  </span>
                                 ))}
                               </div>
                             </div>

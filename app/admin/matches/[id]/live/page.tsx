@@ -191,6 +191,82 @@ function facebookEmbedUrl(url: string | null) {
   return `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(url)}&show_text=false`;
 }
 
+// A native <select> renders its open dropdown as an OS-level popup
+// window in most browsers — on Windows especially, that popup stealing
+// window-manager focus is enough to force a *different*, unrelated
+// window (e.g. the admin's screen-shared livestream, fullscreened on a
+// second monitor) out of exclusive fullscreen back to windowed. This
+// in-page listbox never leaves the DOM/JS world — clicking it opens a
+// normal absolutely-positioned <div>, not a native popup — so it can't
+// have that side effect. Used anywhere on this page an admin is likely
+// to reach for a dropdown while capture/the livestream is running.
+function InlineMenuSelect({
+  value,
+  options,
+  onChange,
+  placeholder,
+  className,
+  title,
+}: {
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  placeholder?: string;
+  className?: string;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDocMouseDown(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocMouseDown);
+    return () => document.removeEventListener("mousedown", onDocMouseDown);
+  }, [open]);
+  const current = options.find((o) => o.value === value);
+  return (
+    <div ref={rootRef} className={`relative inline-block ${className ?? ""}`}>
+      <button
+        type="button"
+        title={title}
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs text-left flex items-center justify-between gap-1.5 whitespace-nowrap hover:bg-white/15"
+      >
+        <span className="truncate">{current?.label ?? placeholder ?? "Select..."}</span>
+        <span className="text-white/40 shrink-0">▾</span>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          className="absolute z-20 mt-1 min-w-full max-h-64 overflow-y-auto bg-[#111116] border border-white/15 rounded shadow-lg py-1"
+        >
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              role="option"
+              aria-selected={opt.value === value}
+              onClick={() => {
+                onChange(opt.value);
+                setOpen(false);
+              }}
+              className={`block w-full text-left px-2.5 py-1.5 text-xs whitespace-nowrap hover:bg-white/10 ${
+                opt.value === value ? "text-signal font-semibold" : "text-white/80"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function LiveConsolePage() {
   const params = useParams();
   const matchId = params.id as string;
@@ -3431,16 +3507,54 @@ export default function LiveConsolePage() {
 
   // Direct correction, either direction — the +/- buttons only ever move
   // one at a time, which is fine for logging live but slow for fixing a
-  // count that's drifted (a missed OCR tick, a double-click). Reuses the
-  // same increment/decrement writes one at a time rather than a bespoke
-  // bulk delete/insert, so nothing about how an objective gets logged
-  // changes — this is just a faster way to reach the same end state.
+  // count that's drifted (a missed OCR tick, a double-click).
+  //
+  // Increasing reuses incrementObjective in a loop — each call is a plain
+  // insert that doesn't depend on reading back what the previous call did,
+  // so looping it with await is safe.
+  //
+  // Decreasing does NOT reuse decrementObjective in a loop (that was the
+  // actual bug behind "force-changing the value does nothing" on the
+  // Objectives tab): decrementObjective computes "the most recent row" by
+  // reading the `objectives` React-state array, but that array only
+  // updates once loadAll()'s async refetch resolves — well after this
+  // function's while-loop has already fired off its next iteration. Every
+  // iteration in the same batch was reading the exact same stale array,
+  // so each one recomputed the identical "most recent" row: the first
+  // delete succeeded, every delete after it matched zero rows (already
+  // gone) and returned no error, so a correction like 4→1 only ever
+  // actually removed one objective no matter how many the admin typed.
+  // Fixed by computing the whole batch of rows to remove from a single
+  // snapshot up front, then deleting them all in one request.
   async function setObjectiveCount(teamId: string, type: string, target: number) {
     const clamped = Math.max(0, Math.round(target));
-    let current = objectiveCount(teamId, type);
+    const current = objectiveCount(teamId, type);
     markManualObjectiveEdit(teamId, type);
-    while (current < clamped) { await incrementObjective(teamId, type); current++; }
-    while (current > clamped) { await decrementObjective(teamId, type); current--; }
+    if (clamped > current) {
+      for (let i = current; i < clamped; i++) await incrementObjective(teamId, type);
+      return;
+    }
+    if (clamped === current) return;
+    const toRemove = objectives
+      .filter((o) => o.team_id === teamId && o.type === type)
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+      .slice(0, current - clamped);
+    if (toRemove.length === 0) return;
+    const ids = toRemove.map((o) => o.id);
+    if (isContributor) {
+      for (const row of toRemove) {
+        pushPendingEdit({ table: "objectives", action: "delete", before: row as unknown as Record<string, unknown>, after: null });
+      }
+      setObjectives((prev) => prev.filter((o) => !ids.includes(o.id)));
+      return;
+    }
+    const { error } = await supabase.from("objectives").delete().in("id", ids);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setObjectives((prev) => prev.filter((o) => !ids.includes(o.id)));
+    loadAll();
   }
 
   async function captureTick() {
@@ -6083,17 +6197,15 @@ export default function LiveConsolePage() {
                     >
                       {trackerEditMode ? "✏️ Tracker edit mode: ON" : "Tracker edit mode: OFF"}
                     </button>
-                    <select
+                    <InlineMenuSelect
                       value={canvasPhaseFilter}
-                      onChange={(e) => setCanvasPhaseFilter(e.target.value)}
-                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs whitespace-nowrap"
+                      onChange={setCanvasPhaseFilter}
                       title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
-                    >
-                      <option value="">All phases</option>
-                      {TRACKER_PHASES.map((p) => (
-                        <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: "", label: "All phases" },
+                        ...TRACKER_PHASES.map((p) => ({ value: p, label: p.replace(/_/g, " ") })),
+                      ]}
+                    />
                   </div>
                 </div>
                 {/* Captured area — an optional hard boundary trackers get
@@ -6188,16 +6300,15 @@ export default function LiveConsolePage() {
                         guess below, not an afterthought bolted on beside it. */}
                     {templatesLoaded && trackerTemplates.length > 0 && (
                       <div className="flex items-center gap-1">
-                        <select
+                        <InlineMenuSelect
                           value={selectedTrackerTemplate}
-                          onChange={(e) => setSelectedTrackerTemplate(e.target.value)}
-                          className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
-                        >
-                          <option value="">Apply a saved template...</option>
-                          {trackerTemplates.map((t) => (
-                            <option key={t.name} value={t.name}>{t.name} ({t.regionCount})</option>
-                          ))}
-                        </select>
+                          onChange={setSelectedTrackerTemplate}
+                          placeholder="Apply a saved template..."
+                          options={[
+                            { value: "", label: "Apply a saved template..." },
+                            ...trackerTemplates.map((t) => ({ value: t.name, label: `${t.name} (${t.regionCount})` })),
+                          ]}
+                        />
                         <button
                           onClick={() => applyTrackerTemplate(selectedTrackerTemplate)}
                           disabled={!selectedTrackerTemplate || applyingTemplate}

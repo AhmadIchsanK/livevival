@@ -1366,15 +1366,12 @@ export default function LiveConsolePage() {
         resolve(null);
         return;
       }
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
+      const canvas = cropVideoToEmbed(video, embedFrame);
+      const ctx = canvas?.getContext("2d");
+      if (!canvas || !ctx) {
         resolve(null);
         return;
       }
-      ctx.drawImage(video, 0, 0);
       drawWatermark(ctx, canvas.width, canvas.height).then(() => {
         canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85);
       });
@@ -1573,12 +1570,9 @@ export default function LiveConsolePage() {
   async function captureScreenshotFromPreview(noteOverride?: string) {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
+    const canvas = cropVideoToEmbed(video, embedFrame);
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
     // Same Livevival watermark as the moment-attach capture path
     // (captureFrameBlob/drawWatermark) — this "Game screenshots" button was
     // the one capture path that skipped it, so a screenshot from here had
@@ -1737,6 +1731,21 @@ export default function LiveConsolePage() {
     return { top, left, below };
   }
   type RegionBox = { xPct: number; yPct: number; wPct: number; hPct: number };
+
+  // Where the "Livestream" embed iframe sits within the captured tab, as a
+  // fraction of the browser viewport (0-100, same convention as
+  // RegionBox) — measured once capture starts (see the stream-attach
+  // effect below) and re-measured on window resize. This is what makes
+  // "isolate capture to just the livestream" possible at all: the tab
+  // self-capture necessarily includes the whole admin page (header,
+  // controls, everything), so every OCR/screenshot read has to know where
+  // within that full frame the actual livestream lives and crop down to
+  // just that rectangle. Null until measured (or if there's no embeddable
+  // stream URL, in which case calibration/reading falls back to the
+  // legacy whole-tab behavior).
+  type EmbedFrame = { xPct: number; yPct: number; wPct: number; hPct: number };
+  const [embedFrame, setEmbedFrame] = useState<EmbedFrame | null>(null);
+  const embedFrameContainerRef = useRef<HTMLDivElement>(null);
 
   const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -2235,12 +2244,14 @@ export default function LiveConsolePage() {
     // readable well below full resolution, so downscale to a fixed max
     // width before encoding — this is the actual fix, independent of model
     // choice.
+    const embedCanvas = cropVideoToEmbed(video, embedFrame);
+    if (!embedCanvas) return;
     const MAX_WIDTH = 960;
-    const scale = Math.min(1, MAX_WIDTH / video.videoWidth);
+    const scale = Math.min(1, MAX_WIDTH / embedCanvas.width);
     const canvas = document.createElement("canvas");
-    canvas.width = Math.round(video.videoWidth * scale);
-    canvas.height = Math.round(video.videoHeight * scale);
-    canvas.getContext("2d")?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.width = Math.round(embedCanvas.width * scale);
+    canvas.height = Math.round(embedCanvas.height * scale);
+    canvas.getContext("2d")?.drawImage(embedCanvas, 0, 0, canvas.width, canvas.height);
     const imageBase64 = canvas.toDataURL("image/jpeg", 0.6);
 
     const { data: sessionData } = await supabase.auth.getSession();
@@ -2596,6 +2607,51 @@ export default function LiveConsolePage() {
     setTimeout(() => setOverlayHintSavedAsDefault(false), 2000);
   }
 
+  // Composes a region drawn relative to the embed (0-100% of the
+  // livestream iframe's own rect — what calibration actually works
+  // against now) with where that embed sits inside the full captured tab
+  // frame, producing the box cropCanvasFor needs (0-100% of the whole
+  // frame, since that's all `video` itself knows about). Falls back to
+  // the box unchanged when embedFrame isn't known — e.g. no embeddable
+  // stream URL — which reproduces the old whole-tab-relative behavior for
+  // those matches instead of cropping to nothing.
+  function toFullFramePct(box: RegionBox, frame: EmbedFrame | null): RegionBox {
+    if (!frame) return box;
+    return {
+      xPct: frame.xPct + (box.xPct / 100) * frame.wPct,
+      yPct: frame.yPct + (box.yPct / 100) * frame.hPct,
+      wPct: (box.wPct / 100) * frame.wPct,
+      hPct: (box.hPct / 100) * frame.hPct,
+    };
+  }
+
+  // Same idea as cropCanvasFor but for the "grab the whole frame" paths
+  // (moment screenshots, share cards, AI full-frame capture) — these want
+  // a plain color crop of just the livestream, not a single grayscale OCR
+  // region, so it's a separate small helper rather than routing through
+  // cropCanvasFor's grayscale filter. Falls back to the full raw frame
+  // (today's behavior) when embedFrame isn't known.
+  function cropVideoToEmbed(video: HTMLVideoElement, frame: EmbedFrame | null): HTMLCanvasElement | null {
+    if (video.videoWidth === 0) return null;
+    if (!frame) {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext("2d")?.drawImage(video, 0, 0);
+      return canvas;
+    }
+    const cx = (frame.xPct / 100) * video.videoWidth;
+    const cy = (frame.yPct / 100) * video.videoHeight;
+    const cw = (frame.wPct / 100) * video.videoWidth;
+    const ch = (frame.hPct / 100) * video.videoHeight;
+    if (cw < 5 || ch < 5) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = cw;
+    canvas.height = ch;
+    canvas.getContext("2d")?.drawImage(video, cx, cy, cw, ch, 0, 0, cw, ch);
+    return canvas;
+  }
+
   function cropCanvasFor(video: HTMLVideoElement, box: RegionBox) {
     const cx = (box.xPct / 100) * video.videoWidth;
     const cy = (box.yPct / 100) * video.videoHeight;
@@ -2919,7 +2975,7 @@ export default function LiveConsolePage() {
     for (const tracker of activeTrackers) {
       const box = regions[tracker.field];
       if (!box) continue;
-      const canvas = cropCanvasFor(video, box);
+      const canvas = cropCanvasFor(video, toFullFramePct(box, embedFrame));
       if (!canvas) continue;
       const { side, slot, objectiveType } = fieldParts(tracker.field);
       const sideTeamId = side === "left" ? leftTeamId : side === "right" ? rightTeamId : null;
@@ -3298,6 +3354,28 @@ export default function LiveConsolePage() {
     setAiStatus(null);
   }
 
+  // Reads the "Livestream" iframe's current on-screen rect as a fraction
+  // of the viewport — the viewport is what tab self-capture actually
+  // delivers as the video frame (matching CSS-pixel proportions
+  // regardless of device pixel ratio), so these fractions are exactly
+  // what's needed to crop the captured frame down to just the embed later
+  // (see toFullFramePct/cropCanvasFor). Returns null if the embed isn't
+  // mounted (no stream URL) or has zero size (not laid out yet).
+  function measureEmbedFrame(): EmbedFrame | null {
+    const el = embedFrameContainerRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    if (!vw || !vh || !rect.width || !rect.height) return null;
+    return {
+      xPct: (rect.left / vw) * 100,
+      yPct: (rect.top / vh) * 100,
+      wPct: (rect.width / vw) * 100,
+      hPct: (rect.height / vh) * 100,
+    };
+  }
+
   // Runs after captureActive flips true and React has actually mounted the
   // <video> element — this is what attaches the shared stream, not
   // startCapture() itself (see the comment there).
@@ -3307,7 +3385,17 @@ export default function LiveConsolePage() {
     video.srcObject = streamRef.current;
     video.play().catch((err) => console.error("Preview play() failed", err));
 
-    if (captureMode !== "ai") return;
+    // The embed's on-page rect only matters once there's an actual frame
+    // to crop from, and re-measuring on resize keeps it correct if the
+    // window (or the split ratio's effect on layout) changes mid-session —
+    // cheap, since it's just a getBoundingClientRect() read.
+    setEmbedFrame(measureEmbedFrame());
+    const handleResize = () => setEmbedFrame(measureEmbedFrame());
+    window.addEventListener("resize", handleResize);
+
+    if (captureMode !== "ai") {
+      return () => window.removeEventListener("resize", handleResize);
+    }
     // setInterval (in startCapture) never fires its callback immediately —
     // only after the first full 60s pacing window — so without this, the
     // console sits on "Waiting for first frame..." for a full minute after
@@ -3317,7 +3405,10 @@ export default function LiveConsolePage() {
     const fireFirstFrame = () => captureFrameAndAnalyze();
     if (video.readyState >= 1) fireFirstFrame(); // HAVE_METADATA already reached
     else video.addEventListener("loadedmetadata", fireFirstFrame, { once: true });
-    return () => video.removeEventListener("loadedmetadata", fireFirstFrame);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      video.removeEventListener("loadedmetadata", fireFirstFrame);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captureActive]);
 
@@ -4026,6 +4117,237 @@ export default function LiveConsolePage() {
   const netWorthEditable = isEditable && (!gameFinished || finishedEditUnlocked);
 
   const embedUrl = youtubeEmbedUrl(match.youtube_url) ?? facebookEmbedUrl(match.youtube_url);
+  // The tracker-calibration overlay itself — identical whether it's drawn
+  // on top of the livestream embed or, lacking an embeddable URL, on top
+  // of the raw shared-tab fallback video (see the two data-crop-container
+  // branches below). Computed once here instead of duplicated in both
+  // branches. Pointer-events only turn on with Tracker edit mode; off,
+  // clicks fall through to whatever's underneath (the player's own
+  // controls, in the embed case), matching the edit-mode toggle's tooltip.
+  const trackerOverlay =
+    match.update_source === "local_ocr" &&
+    captureMode === "manual" &&
+    ocrDetailsOpen &&
+    captureActive &&
+    match.state !== "TECHNICAL_PAUSE" ? (
+      <div
+        className="absolute inset-0"
+        style={{ pointerEvents: trackerEditMode ? "auto" : "none" }}
+        onMouseDown={(e) => {
+          // Two draw-first flows share this canvas: pick-tracker-then-draw
+          // (calibratingField already set, writes draftBox) and
+          // slide-anywhere draw-then-pick (nothing selected yet, writes
+          // pendingBox — a phase/variable picker appears below once it's
+          // drawn). Existing region buttons stop propagation on their own
+          // mousedown, so clicking one to edit it never falls through to
+          // here.
+          if (!trackerEditMode) return;
+          if (calibratingField && !draftBox) startBoxDrag("draw", e, "draftBox");
+          else if (!calibratingField && !pendingBox) startBoxDrag("draw", e, "pendingBox");
+        }}
+      >
+        {trackers
+          .filter((t) => (canvasPhaseFilter ? t.phase === canvasPhaseFilter : true))
+          .filter(({ field }) => field !== calibratingField)
+          .map(({ field, label }) => {
+            const box = regions[field];
+            if (!box) return null;
+            // Tracker edit mode OFF: present but inert — a thin outline
+            // only, no click handler, no drag handles, so it never
+            // intercepts a click meant for whatever's playing underneath.
+            // ON: same clickable box as before (jumps straight into edit
+            // mode for the region clicked), just gated behind the toggle
+            // now instead of always-on gesture guessing.
+            if (!trackerEditMode) {
+              return (
+                <div
+                  key={field}
+                  title={label}
+                  className="absolute border border-white/25 pointer-events-none"
+                  style={{
+                    left: `${box.xPct}%`,
+                    top: `${box.yPct}%`,
+                    width: `${box.wPct}%`,
+                    height: `${box.hPct}%`,
+                  }}
+                />
+              );
+            }
+            return (
+              // Clickable straight from the video instead of only via the
+              // small "Resize" button in the field list below — jumps
+              // directly into edit mode for whichever region was clicked.
+              <button
+                key={field}
+                type="button"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startCalibrating(field);
+                }}
+                title={`Click to edit: ${label}`}
+                className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
+                style={{
+                  left: `${box.xPct}%`,
+                  top: `${box.yPct}%`,
+                  width: `${box.wPct}%`,
+                  height: `${box.hPct}%`,
+                }}
+              />
+            );
+          })}
+        {/* The region currently being calibrated — live preview, draggable
+            body (move) and 4 corner handles (resize). Nothing here
+            persists until "Lock" is clicked. */}
+        {calibratingField && draftBox && (
+          <div
+            className="absolute border-2 border-signal bg-signal/10 cursor-move"
+            style={{
+              left: `${draftBox.xPct}%`,
+              top: `${draftBox.yPct}%`,
+              width: `${draftBox.wPct}%`,
+              height: `${draftBox.hPct}%`,
+            }}
+            onMouseDown={(e) => startBoxDrag("move", e, "draftBox")}
+          >
+            {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+              <div
+                key={corner}
+                onMouseDown={(e) => startBoxDrag(corner, e, "draftBox")}
+                // 20x20px hit target centered exactly on the corner via
+                // translate, regardless of box size — "edge sensitivity"
+                // before this was just the 2px border itself, easy to
+                // miss on a small region. The visible dot inside stays
+                // small.
+                className="absolute w-5 h-5 flex items-center justify-center"
+                style={{
+                  left: corner.includes("w") ? 0 : "100%",
+                  top: corner.includes("n") ? 0 : "100%",
+                  transform: "translate(-50%, -50%)",
+                  cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                }}
+              >
+                <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Floating label + Lock/Cancel, positioned right above or below
+            the box itself (see regionOverlayPos) instead of only in a
+            control strip below the whole canvas — the variable name is
+            shown here inline, not just via the box's hover title, so
+            selecting/placing a tracker is immediately legible without a
+            scroll or a hover. */}
+        {calibratingField && draftBox && (
+          <div
+            className="absolute z-10 flex items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg whitespace-nowrap"
+            style={{ left: `${regionOverlayPos(draftBox).left}%`, top: `${regionOverlayPos(draftBox).top}%` }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <span className="text-[11px] font-semibold text-white">
+              {trackers.find((t) => t.field === calibratingField)?.label ?? calibratingField}
+            </span>
+            <button onClick={lockDraftBox} className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10">
+              🔒 Lock
+            </button>
+            <button onClick={cancelDraftBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
+              Cancel
+            </button>
+          </div>
+        )}
+        {/* Not yet drawn at all — a one-line hint since the empty
+            container gives no other cue to click-drag. */}
+        {calibratingField && !draftBox && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
+          </div>
+        )}
+
+        {/* Slide-anywhere: a brand-new box drawn without a tracker picked
+            yet — the phase/variable picker below assigns it once drawn. */}
+        {!calibratingField && pendingBox && (
+          <div
+            className="absolute border-2 border-signal bg-signal/10 cursor-move"
+            style={{
+              left: `${pendingBox.xPct}%`,
+              top: `${pendingBox.yPct}%`,
+              width: `${pendingBox.wPct}%`,
+              height: `${pendingBox.hPct}%`,
+            }}
+            onMouseDown={(e) => startBoxDrag("move", e, "pendingBox")}
+          >
+            {(["nw", "ne", "sw", "se"] as const).map((corner) => (
+              <div
+                key={corner}
+                onMouseDown={(e) => startBoxDrag(corner, e, "pendingBox")}
+                className="absolute w-5 h-5 flex items-center justify-center"
+                style={{
+                  left: corner.includes("w") ? 0 : "100%",
+                  top: corner.includes("n") ? 0 : "100%",
+                  transform: "translate(-50%, -50%)",
+                  cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
+                }}
+              >
+                <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Floating variable picker + Save/Cancel, positioned right next
+            to the freshly-drawn box (see regionOverlayPos) instead of
+            only in a strip below the whole canvas — same "controls live
+            next to what they act on" fix as the calibratingField panel
+            above. */}
+        {!calibratingField && pendingBox && (
+          <div
+            className="absolute z-10 flex flex-wrap items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg"
+            style={{ left: `${regionOverlayPos(pendingBox).left}%`, top: `${regionOverlayPos(pendingBox).top}%`, maxWidth: "44%" }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <span className="text-[10px] text-white/50 uppercase tracking-wider whitespace-nowrap">New tracker</span>
+            <select
+              value={pendingBoxPhase}
+              onChange={(e) => {
+                setPendingBoxPhase(e.target.value);
+                setPendingBoxField("");
+              }}
+              className="bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
+            >
+              {TRACKER_PHASES.map((p) => (
+                <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
+              ))}
+            </select>
+            <select
+              value={pendingBoxField}
+              onChange={(e) => setPendingBoxField(e.target.value)}
+              className="bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px] min-w-[140px]"
+            >
+              <option value="">
+                {pendingBoxOptions.length === 0 ? "Nothing left to track" : "Select a variable..."}
+              </option>
+              {pendingBoxOptions.map((opt) => (
+                <option key={opt.field} value={opt.field}>{opt.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={savePendingBox}
+              disabled={!pendingBoxField}
+              className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 disabled:opacity-40"
+            >
+              Save
+            </button>
+            <button onClick={cancelPendingBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
+              Cancel
+            </button>
+          </div>
+        )}
+        {!calibratingField && !pendingBox && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag anywhere to place a new tracker</span>
+          </div>
+        )}
+      </div>
+    ) : null;
   const activeTrackers = trackers.filter((t) => t.phase === match.state);
   const allTrackersCalibrated = activeTrackers.length > 0 && activeTrackers.every((t) => regions[t.field]);
   // Auto-collapse: see the preGuardAllTrackersCalibrated effect declared
@@ -4541,28 +4863,78 @@ export default function LiveConsolePage() {
           }}
         >
           {/* Livestream embed — deliberately NOT part of the scrollable
-              area below, and no allowFullScreen. If the admin's local
-              OCR capture is a screen-share of this exact browser tab (see
-              "Match capture — one monitor, one feed" below), scrolling the
+              area below, and no allowFullScreen. This is now also the
+              actual OCR capture source: local capture shares THIS admin
+              tab (see startCapture's preferCurrentTab), and since the
+              stream plays right here in the tab, that self-capture
+              legitimately contains it — no more sharing the wrong tab, no
+              more the capture recursively mirroring the admin page into
+              itself. Calibration drags directly on this iframe's own box
+              (data-crop-container below), so region percentages mean
+              "percent of the livestream," not "percent of the whole
+              admin page" — that's also what makes every OCR/screenshot
+              read crop down to just the stream instead of capturing the
+              header, sidebar, and everything else in the tab (see
+              embedFrame/toFullFramePct/cropVideoToEmbed). Scrolling the
               pane or the stream escaping into fullscreen would shift
               exactly what's on screen relative to every %-based tracker
               region already calibrated against it — silently breaking
-              detection mid-match. This block stays fixed at the top of
-              the pane; only the capture/calibration tools below it
-              scroll. */}
+              detection mid-match — so this block stays fixed at the top
+              of the pane and fullscreen stays off; only the capture
+              tools below it scroll. */}
           <div className="p-3 lg:p-4 pb-0 shrink-0 space-y-2">
             <h3 className="font-semibold text-sm">Livestream</h3>
             {embedUrl ? (
-              <iframe
-                src={embedUrl}
-                className="w-full aspect-video rounded"
-                allow="autoplay; encrypted-media"
-              />
+              <div
+                ref={embedFrameContainerRef}
+                data-crop-container
+                className="relative w-full aspect-video rounded overflow-hidden select-none"
+              >
+                <iframe src={embedUrl} className="w-full h-full" allow="autoplay; encrypted-media" />
+                {/* Tracker calibration overlay — sits on top of the iframe
+                    so drags land on this page instead of vanishing into
+                    the iframe's own document (mouse events never bubble
+                    out of an iframe to the parent). Pointer-events only
+                    turn on with Tracker edit mode; off, clicks fall
+                    through to the player underneath (play/pause/mute),
+                    matching the edit-mode toggle's own tooltip below. */}
+                {trackerOverlay}
+              </div>
             ) : (
-              <div className="w-full aspect-video bg-white/5 rounded flex items-center justify-center text-white/30 text-xs border border-white/10">
-                No livestream URL
+              <div
+                data-crop-container
+                className="relative w-full border border-white/10 rounded overflow-hidden select-none bg-white/5 min-h-[120px]"
+              >
+                {/* No embeddable stream URL (not a recognizable YouTube or
+                    Facebook link) — nothing to isolate the capture to, so
+                    this falls back to calibrating against the raw
+                    shared-tab frame directly, same as before this pane
+                    existed. embedFrameContainerRef is deliberately NOT
+                    attached here — embedFrame stays null in this case,
+                    which is exactly what makes toFullFramePct/
+                    cropVideoToEmbed treat box coordinates as already being
+                    whole-frame percentages, matching the legacy behavior. */}
+                <video ref={previewRef} muted className="w-full block" />
+                {!captureActive && (
+                  <div className="absolute inset-0 flex items-center justify-center text-white/30 text-xs px-4 text-center">
+                    No livestream URL — start capture to calibrate against the raw shared-tab feed instead
+                  </div>
+                )}
+                {trackerOverlay}
               </div>
             )}
+            {/* Raw shared-tab feed — hidden, exists only to feed the OCR
+                canvas sampling above (cropCanvasFor/cropVideoToEmbed read
+                pixels from this element). Not meant to be looked at: it's
+                a mirror of the whole captured tab, which self-capture
+                always blacks out wherever this exact element is on
+                screen (Chrome's own recursion guard) — irrelevant here
+                since every read crops to the livestream iframe's
+                position instead, never this element's. Only rendered in
+                the embed branch — the no-embed fallback above already has
+                its own (visible, un-hidden) previewRef video, and a
+                single ref can't back two mounted elements at once. */}
+            {embedUrl && <video ref={previewRef} muted className="hidden" />}
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3 lg:p-4 space-y-4">
 
@@ -4589,9 +4961,11 @@ export default function LiveConsolePage() {
           )}
         </div>
         <p className="text-[10px] text-white/40">
-          Every field on this game reads from one shared-screen capture of your single monitor — team kills, team net
-          worth, the game timer, each player&apos;s K/D/A, objectives, and kill moments (double/triple/maniac/savage,
-          attributed to the player named in the kill banner) all live in this one panel below.
+          Every field on this game reads from a screen-share of this admin tab — the Livestream player above is both
+          what you watch and what gets captured, so when the share picker appears, choose &quot;This Tab&quot;. Team
+          kills, team net worth, the game timer, each player&apos;s K/D/A, objectives, and kill moments
+          (double/triple/maniac/savage, attributed to the player named in the kill banner) all live in the tracker
+          overlay drawn directly on that livestream.
         </p>
 
         {match.update_source === "local_ocr" && (
@@ -4693,8 +5067,8 @@ export default function LiveConsolePage() {
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <span className="text-[10px] text-white/40">
                     {trackerEditMode
-                      ? "Tracker edit mode is ON — drag directly on the video to place a new tracker, or click an existing outlined region to move/resize it."
-                      : "Tracker edit mode is OFF — tracker boxes are shown but inert; turn it on to place or adjust them."}
+                      ? "Tracker edit mode is ON — drag directly on the Livestream above to place a new tracker, or click an existing outlined region to move/resize it."
+                      : "Tracker edit mode is OFF — the Livestream above plays normally; turn this on to place or adjust tracker boxes on it."}
                   </span>
                   <div className="flex items-center gap-2">
                     {/* Explicit toggle instead of guessing "tap to play" vs.
@@ -4726,245 +5100,13 @@ export default function LiveConsolePage() {
                     </select>
                   </div>
                 </div>
-                <div
-                  data-crop-container
-                  // Used to force itself to ~75vw ("6/8 full screen") once
-                  // tracker edit mode turned on, from back when the admin
-                  // page had no width-adjustable Monitor/action-deck split —
-                  // sizing off the *viewport* instead of this canvas's own
-                  // parent meant it ballooned past whatever width the split
-                  // ratio actually gave the monitor pane, overflowing into
-                  // (or past) the action deck the instant capture/edit mode
-                  // started, with no way to rein it back in via the split
-                  // control ("automatically bigger and cover the whole
-                  // area, can't be adjusted via Monitor/action deck
-                  // split"). Now plain w-full: fills whatever width its
-                  // actual parent (the monitor pane, sized by the split
-                  // slider above) gives it — the drag-to-calibrate math
-                  // reads getBoundingClientRect() live at drag time
-                  // regardless of the container's width, so this needed no
-                  // other code changes.
-                  className="relative w-full border border-white/10 rounded overflow-hidden select-none"
-                  onMouseDown={(e) => {
-                    // Two draw-first flows share this canvas: pick-tracker-
-                    // then-draw (calibratingField already set, writes
-                    // draftBox) and slide-anywhere draw-then-pick (nothing
-                    // selected yet, writes pendingBox — a phase/variable
-                    // picker appears below once it's drawn). Existing region
-                    // buttons stop propagation on their own mousedown, so
-                    // clicking one to edit it never falls through to here.
-                    if (captureMode !== "manual") return;
-                    if (!trackerEditMode) return; // edit mode off — clicks pass through, no drag starts
-                    if (calibratingField && !draftBox) startBoxDrag("draw", e, "draftBox");
-                    else if (!calibratingField && !pendingBox) startBoxDrag("draw", e, "pendingBox");
-                  }}
-                >
-                  <video ref={previewRef} muted className="w-full block" />
-                  {captureMode === "manual" &&
-                    trackers
-                      .filter((t) => (canvasPhaseFilter ? t.phase === canvasPhaseFilter : true))
-                      .filter(({ field }) => field !== calibratingField)
-                      .map(({ field, label }) => {
-                        const box = regions[field];
-                        if (!box) return null;
-                        // Tracker edit mode OFF: present but inert — a thin
-                        // outline only, no click handler, no drag handles, so
-                        // it never intercepts a click meant for whatever's
-                        // playing underneath. ON: same clickable box as
-                        // before (jumps straight into edit mode for the
-                        // region clicked), just gated behind the toggle now
-                        // instead of always-on gesture guessing.
-                        if (!trackerEditMode) {
-                          return (
-                            <div
-                              key={field}
-                              title={label}
-                              className="absolute border border-white/25 pointer-events-none"
-                              style={{
-                                left: `${box.xPct}%`,
-                                top: `${box.yPct}%`,
-                                width: `${box.wPct}%`,
-                                height: `${box.hPct}%`,
-                              }}
-                            />
-                          );
-                        }
-                        return (
-                          // Clickable straight from the video instead of
-                          // only via the small "Resize" button in the field
-                          // list below — jumps directly into edit mode for
-                          // whichever region was clicked.
-                          <button
-                            key={field}
-                            type="button"
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              startCalibrating(field);
-                            }}
-                            title={`Click to edit: ${label}`}
-                            className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
-                            style={{
-                              left: `${box.xPct}%`,
-                              top: `${box.yPct}%`,
-                              width: `${box.wPct}%`,
-                              height: `${box.hPct}%`,
-                            }}
-                          />
-                        );
-                      })}
-                  {/* The region currently being calibrated — live preview,
-                      draggable body (move) and 4 corner handles (resize).
-                      Nothing here persists until "Lock" is clicked. */}
-                  {captureMode === "manual" && calibratingField && draftBox && (
-                    <div
-                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
-                      style={{
-                        left: `${draftBox.xPct}%`,
-                        top: `${draftBox.yPct}%`,
-                        width: `${draftBox.wPct}%`,
-                        height: `${draftBox.hPct}%`,
-                      }}
-                      onMouseDown={(e) => startBoxDrag("move", e, "draftBox")}
-                    >
-                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
-                        <div
-                          key={corner}
-                          onMouseDown={(e) => startBoxDrag(corner, e, "draftBox")}
-                          // 20x20px hit target centered exactly on the
-                          // corner via translate, regardless of box size —
-                          // "edge sensitivity" before this was just the
-                          // 2px border itself, easy to miss on a small
-                          // region. The visible dot inside stays small.
-                          className="absolute w-5 h-5 flex items-center justify-center"
-                          style={{
-                            left: corner.includes("w") ? 0 : "100%",
-                            top: corner.includes("n") ? 0 : "100%",
-                            transform: "translate(-50%, -50%)",
-                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
-                          }}
-                        >
-                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {/* Floating label + Lock/Cancel, positioned right above or
-                      below the box itself (see regionOverlayPos) instead of
-                      only in a control strip below the whole canvas — the
-                      variable name is shown here inline, not just via the
-                      box's hover title, so selecting/placing a tracker is
-                      immediately legible without a scroll or a hover. */}
-                  {captureMode === "manual" && calibratingField && draftBox && (
-                    <div
-                      className="absolute z-10 flex items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg whitespace-nowrap"
-                      style={{ left: `${regionOverlayPos(draftBox).left}%`, top: `${regionOverlayPos(draftBox).top}%` }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
-                      <span className="text-[11px] font-semibold text-white">
-                        {trackers.find((t) => t.field === calibratingField)?.label ?? calibratingField}
-                      </span>
-                      <button onClick={lockDraftBox} className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10">
-                        🔒 Lock
-                      </button>
-                      <button onClick={cancelDraftBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
-                        Cancel
-                      </button>
-                    </div>
-                  )}
-                  {/* Not yet drawn at all — a one-line hint since the empty
-                      container gives no other cue to click-drag. */}
-                  {captureMode === "manual" && calibratingField && !draftBox && (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
-                    </div>
-                  )}
-
-                  {/* Slide-anywhere: a brand-new box drawn without a tracker
-                      picked yet — the phase/variable picker below assigns it
-                      once drawn. */}
-                  {captureMode === "manual" && !calibratingField && pendingBox && (
-                    <div
-                      className="absolute border-2 border-signal bg-signal/10 cursor-move"
-                      style={{
-                        left: `${pendingBox.xPct}%`,
-                        top: `${pendingBox.yPct}%`,
-                        width: `${pendingBox.wPct}%`,
-                        height: `${pendingBox.hPct}%`,
-                      }}
-                      onMouseDown={(e) => startBoxDrag("move", e, "pendingBox")}
-                    >
-                      {(["nw", "ne", "sw", "se"] as const).map((corner) => (
-                        <div
-                          key={corner}
-                          onMouseDown={(e) => startBoxDrag(corner, e, "pendingBox")}
-                          className="absolute w-5 h-5 flex items-center justify-center"
-                          style={{
-                            left: corner.includes("w") ? 0 : "100%",
-                            top: corner.includes("n") ? 0 : "100%",
-                            transform: "translate(-50%, -50%)",
-                            cursor: corner === "nw" || corner === "se" ? "nwse-resize" : "nesw-resize",
-                          }}
-                        >
-                          <span className="w-2.5 h-2.5 bg-signal rounded-full border border-white block" />
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {/* Floating variable picker + Save/Cancel, positioned right
-                      next to the freshly-drawn box (see regionOverlayPos)
-                      instead of only in a strip below the whole canvas —
-                      same "controls live next to what they act on" fix as
-                      the calibratingField panel above. */}
-                  {captureMode === "manual" && !calibratingField && pendingBox && (
-                    <div
-                      className="absolute z-10 flex flex-wrap items-center gap-1.5 bg-black/80 border border-signal/50 rounded px-2 py-1.5 shadow-lg"
-                      style={{ left: `${regionOverlayPos(pendingBox).left}%`, top: `${regionOverlayPos(pendingBox).top}%`, maxWidth: "44%" }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
-                      <span className="text-[10px] text-white/50 uppercase tracking-wider whitespace-nowrap">New tracker</span>
-                      <select
-                        value={pendingBoxPhase}
-                        onChange={(e) => {
-                          setPendingBoxPhase(e.target.value);
-                          setPendingBoxField("");
-                        }}
-                        className="bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px]"
-                      >
-                        {TRACKER_PHASES.map((p) => (
-                          <option key={p} value={p}>{p.replace(/_/g, " ")}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={pendingBoxField}
-                        onChange={(e) => setPendingBoxField(e.target.value)}
-                        className="bg-white/10 border border-white/10 rounded px-1.5 py-1 text-[10px] min-w-[140px]"
-                      >
-                        <option value="">
-                          {pendingBoxOptions.length === 0 ? "Nothing left to track" : "Select a variable..."}
-                        </option>
-                        {pendingBoxOptions.map((opt) => (
-                          <option key={opt.field} value={opt.field}>{opt.label}</option>
-                        ))}
-                      </select>
-                      <button
-                        onClick={savePendingBox}
-                        disabled={!pendingBoxField}
-                        className="text-[10px] border border-signal/50 text-signal rounded px-2 py-1 hover:bg-signal/10 disabled:opacity-40"
-                      >
-                        Save
-                      </button>
-                      <button onClick={cancelPendingBox} className="text-[10px] border border-white/20 text-white/70 rounded px-2 py-1 hover:bg-white/10">
-                        Cancel
-                      </button>
-                    </div>
-                  )}
-                  {captureMode === "manual" && !calibratingField && !pendingBox && (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag anywhere to place a new tracker</span>
-                    </div>
-                  )}
-                </div>
+                {/* The drag-to-calibrate canvas itself now lives up in the
+                    Livestream pane, overlaid directly on the embed iframe
+                    (see data-crop-container there) — this is what makes
+                    region percentages mean "percent of the livestream"
+                    instead of "percent of the whole captured tab". This
+                    section keeps just the edit-mode toggle/phase filter
+                    above and the tracker list/management tools below. */}
 
                 {/* Only shown pre-draw (nothing to float a positioned panel
                     next to yet) — once draftBox exists, the floating

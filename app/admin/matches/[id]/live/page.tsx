@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, Fragment, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
@@ -200,6 +201,47 @@ function facebookEmbedUrl(url: string | null) {
 // normal absolutely-positioned <div>, not a native popup — so it can't
 // have that side effect. Used anywhere on this page an admin is likely
 // to reach for a dropdown while capture/the livestream is running.
+// Both InlineMenuSelect and InlineMenuPopover render their open panel
+// through a React portal straight onto document.body, positioned via
+// fixed pixel coordinates from the trigger's own bounding rect, instead
+// of a normal absolutely-positioned child. This is necessary, not just
+// nicer: both are used inside a toolbar (see the sticky div around line
+// 6554) that's `position: sticky; z-index: 10`, nested under several
+// plain non-positioned divs below the page's own admin header (see
+// adminHeaderRef, `position: sticky; z-index: 20`). Neither sticky
+// element is a descendant of the other, and nothing between them
+// establishes its own stacking context — so per CSS stacking rules, the
+// toolbar's ENTIRE subtree is capped at its own z-10 slot when compared
+// against the header's z-20 context, no matter what z-index a normal
+// (non-portaled) descendant declares locally. A panel with `z-20` nested
+// three levels inside a `z-10` ancestor still loses to a sibling `z-20`
+// context — that "local" z-20 only wins fights within the z-10 slot, it
+// can't escape it. Portaling to <body> sidesteps the whole problem: the
+// panel becomes a sibling of the header in the stacking order instead of
+// a great-grandchild of a lower-z-index ancestor, free to out-rank it
+// with a plain z-index number again.
+function usePopoverPosition(triggerRef: RefObject<HTMLElement | null>, open: boolean) {
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    function update() {
+      const rect = triggerRef.current?.getBoundingClientRect();
+      if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+    }
+    update();
+    // capture:true — the toolbar's own ancestor is a scrollable pane
+    // (overflow-y-auto), whose scroll events don't bubble to window in
+    // the normal phase; capture-phase listening on window still sees them.
+    window.addEventListener("scroll", update, true);
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("resize", update);
+    };
+  }, [open, triggerRef]);
+  return pos;
+}
+
 function InlineMenuSelect({
   value,
   options,
@@ -216,19 +258,25 @@ function InlineMenuSelect({
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const pos = usePopoverPosition(buttonRef, open);
   useEffect(() => {
     if (!open) return;
     function onDocMouseDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
   }, [open]);
   const current = options.find((o) => o.value === value);
   return (
-    <div ref={rootRef} className={`relative inline-block ${className ?? ""}`}>
+    <div className={`inline-block ${className ?? ""}`}>
       <button
+        ref={buttonRef}
         type="button"
         title={title}
         onClick={() => setOpen((v) => !v)}
@@ -239,30 +287,35 @@ function InlineMenuSelect({
         <span className="truncate">{current?.label ?? placeholder ?? "Select..."}</span>
         <span className="text-white/40 shrink-0">▾</span>
       </button>
-      {open && (
-        <div
-          role="listbox"
-          className="absolute z-20 mt-1 min-w-full max-h-64 overflow-y-auto bg-[#111116] border border-white/15 rounded shadow-lg py-1"
-        >
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              type="button"
-              role="option"
-              aria-selected={opt.value === value}
-              onClick={() => {
-                onChange(opt.value);
-                setOpen(false);
-              }}
-              className={`block w-full text-left px-2.5 py-1.5 text-xs whitespace-nowrap hover:bg-white/10 ${
-                opt.value === value ? "text-signal font-semibold" : "text-white/80"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={panelRef}
+            role="listbox"
+            style={{ position: "fixed", top: pos.top, left: pos.left, minWidth: pos.width }}
+            className="z-[100] max-h-64 overflow-y-auto bg-[#111116] border border-white/15 rounded shadow-lg py-1"
+          >
+            {options.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                role="option"
+                aria-selected={opt.value === value}
+                onClick={() => {
+                  onChange(opt.value);
+                  setOpen(false);
+                }}
+                className={`block w-full text-left px-2.5 py-1.5 text-xs whitespace-nowrap hover:bg-white/10 ${
+                  opt.value === value ? "text-signal font-semibold" : "text-white/80"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
@@ -291,19 +344,25 @@ function InlineMenuPopover({
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const isOpen = open || !!forceOpen;
+  const pos = usePopoverPosition(buttonRef, isOpen);
   useEffect(() => {
-    if (!open || forceOpen) return;
+    if (!isOpen || forceOpen) return;
     function onDocMouseDown(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      setOpen(false);
     }
     document.addEventListener("mousedown", onDocMouseDown);
     return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [open, forceOpen]);
-  const isOpen = open || !!forceOpen;
+  }, [isOpen, forceOpen]);
   return (
-    <div ref={rootRef} className="relative inline-block">
+    <div className="inline-block">
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="true"
@@ -313,11 +372,18 @@ function InlineMenuPopover({
         {icon ? `${icon} ` : ""}
         {label} ▾
       </button>
-      {isOpen && (
-        <div className="absolute z-20 mt-1 bg-[#111116] border border-white/15 rounded shadow-lg p-3 min-w-[300px] space-y-2">
-          {children}
-        </div>
-      )}
+      {isOpen &&
+        pos &&
+        createPortal(
+          <div
+            ref={panelRef}
+            style={{ position: "fixed", top: pos.top, left: pos.left, minWidth: Math.max(pos.width, 300) }}
+            className="z-[100] bg-[#111116] border border-white/15 rounded shadow-lg p-3 space-y-2"
+          >
+            {children}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }

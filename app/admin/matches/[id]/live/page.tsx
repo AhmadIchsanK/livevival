@@ -4189,7 +4189,7 @@ export default function LiveConsolePage() {
   }
 
   return (
-    <div className="text-white space-y-8 max-w-7xl" style={{ "--lv-admin-header-h": `${adminHeaderH}px` } as CSSPropertiesWithVars}>
+    <div className="text-white space-y-8" style={{ "--lv-admin-header-h": `${adminHeaderH}px` } as CSSPropertiesWithVars}>
       {/* Sticky — phase changes and the stream link are the two things an
           admin needs reachable no matter how far down the page they've
           scrolled (moment log, scoreboard, calibration UI are all long).

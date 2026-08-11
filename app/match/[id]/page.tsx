@@ -829,7 +829,7 @@ export default function PublicMatchPage() {
   }
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-8 max-w-7xl mx-auto space-y-8">
+    <main className="min-h-screen bg-ink text-paper px-6 py-8 mx-auto space-y-8">
       <header className="space-y-1">
         {/* A shared link, arriving straight on this page (e.g. from a
             Telegram share), previously had no way back to the match list

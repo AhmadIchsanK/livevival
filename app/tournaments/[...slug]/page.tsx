@@ -229,7 +229,7 @@ export default function TournamentPage() {
   const visibleHistory = history.slice(0, historyVisibleCount);
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 mx-auto space-y-8">
       <div className="flex items-center justify-between">
         <a href="/tournaments" className="lv-nav-link">&larr; All tournaments</a>
         <div className="flex items-center gap-2">

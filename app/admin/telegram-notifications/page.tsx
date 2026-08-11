@@ -166,7 +166,7 @@ export default function TelegramNotificationsPage() {
   }
 
   return (
-    <div className="text-white space-y-6 max-w-5xl">
+    <div className="text-white space-y-6">
       <div>
         <h1 className="lv-heading text-lg">Telegram notifications</h1>
         <p className="text-xs text-white/40 mt-1">

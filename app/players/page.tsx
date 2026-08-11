@@ -91,7 +91,7 @@ function PlayersIndexPageInner() {
   }, [players, search, roleFilter, countryFilter, sortKey]);
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 mx-auto space-y-8">
       <header className="space-y-1 flex items-start justify-between">
         <div>
           <a href="/" className="lv-nav-link">&larr; Matches</a>

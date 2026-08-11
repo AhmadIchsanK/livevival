@@ -108,7 +108,7 @@ function MatchesPageInner() {
   }, [byStatus, tab, search, sortKey]);
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 mx-auto space-y-8">
       <header className="flex items-center justify-between">
         <BrandLockup />
         <div className="flex items-center gap-2">

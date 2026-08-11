@@ -256,7 +256,7 @@ export default function PlayersPage() {
   }
 
   return (
-    <div className="text-white space-y-6 max-w-7xl">
+    <div className="text-white space-y-6">
       <h1 className="lv-heading text-lg">Players</h1>
 
       <form onSubmit={handleAdd} className="grid grid-cols-3 gap-3 max-w-xl items-end">

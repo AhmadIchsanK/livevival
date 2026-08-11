@@ -270,7 +270,7 @@ export default function TeamsPage() {
     "w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs outline-none focus:border-signal";
 
   return (
-    <div className="text-white space-y-6 max-w-5xl">
+    <div className="text-white space-y-6">
       <h1 className="lv-heading text-lg">Teams</h1>
 
       <form onSubmit={handleAdd} className="space-y-3">

@@ -694,6 +694,35 @@ export default function PublicMatchPage() {
       .sort((a, b) => roleIndex(a.role) - roleIndex(b.role))
       .map((p) => ({ id: p.id, ign: p.ign, role: p.role, heroIconUrl: null, heroName: null, kills: null, deaths: null, assists: null }));
   }
+  // Auto-picked MVP — only meaningful once a game is actually finished
+  // (mid-game K/D/A is still moving). A first-pass heuristic, not
+  // authoritative tournament judging: kills/assists weighted above deaths,
+  // plus a share-of-team's-total-kills-and-assists term so a support/roam
+  // player who fights constantly without personally securing kills can
+  // still win it (raw kills alone would always favor gold/jungle roles) —
+  // "fair between all players/role" per spec — plus a small bonus for a
+  // Savage/Maniac credited to them via the moment log (key_moments only
+  // carries the player's ign, not player_id, hence the name match).
+  function computeMvp(stats: PlayerStat[]): string | null {
+    if (layoutBucket !== "finished" || stats.length === 0) return null;
+    const teamTotal = (teamId: string | null) =>
+      stats.filter((s) => s.player?.team_id === teamId).reduce((sum, s) => sum + (s.kills ?? 0) + (s.assists ?? 0), 0) || 1;
+    let best: { id: string; score: number } | null = null;
+    for (const s of stats) {
+      const kills = s.kills ?? 0;
+      const deaths = s.deaths ?? 0;
+      const assists = s.assists ?? 0;
+      const contributionShare = (kills + assists) / teamTotal(s.player?.team_id ?? null);
+      const hasHypeKill = keyMoments.some(
+        (km) => (km.type === "savage" || km.type === "maniac") && km.player?.ign && s.player?.ign && km.player.ign === s.player.ign
+      );
+      const score = kills * 2 + assists - deaths * 0.5 + contributionShare * 10 + (hasHypeKill ? 5 : 0);
+      if (!best || score > best.score) best = { id: s.id, score };
+    }
+    return best?.id ?? null;
+  }
+  const mvpStatId = computeMvp(gameStats);
+
   const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
   const teamAPicks = gamePickBans
     .filter((p) => p.team_id === teamAId && p.type === "pick")
@@ -1511,7 +1540,14 @@ export default function PublicMatchPage() {
                 <tbody>
                   {t.list.map((s) => (
                     <tr key={s.id} className="border-t border-white/10">
-                      <td className="py-1.5">{s.ign}</td>
+                      <td className="py-1.5">
+                        {s.ign}
+                        {mvpStatId === s.id && (
+                          <span className="ml-1 text-[9px] font-bold text-amber-400" title="Auto-picked MVP — heuristic, not official judging">
+                            🏆 MVP
+                          </span>
+                        )}
+                      </td>
                       <td className="py-1.5 text-white/40 text-[10px] uppercase tracking-wide">{s.role ?? "—"}</td>
                       <td className="flex items-center gap-1.5 py-1.5">
                         {s.heroIconUrl && <HeroIcon url={s.heroIconUrl} name={s.heroName} size="xs" />}

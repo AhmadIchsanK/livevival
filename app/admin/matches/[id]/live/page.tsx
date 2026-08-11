@@ -644,7 +644,11 @@ export default function LiveConsolePage() {
     let merged = pickBans;
     if (!match?.team_a || !match?.team_b) return merged;
     for (const teamId of [match.team_a.id, match.team_b.id]) {
-      const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
+      // is_active_roster, not raw team_id membership — a team can carry
+      // more than 5 rows (bench/subs), and without this filter a stray
+      // extra player can land in the role-ordered top 5 instead of one of
+      // the admin's actual designated starters (see toggleActiveRoster).
+      const teamPlayers = players.filter((p) => p.team_id === teamId && p.is_active_roster).sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
       const fallbackQueue = merged
         .filter((pb) => pb.type === "pick" && pb.team_id === teamId && !pb.player_id)
         .sort((a, b) => (a.pick_order ?? 0) - (b.pick_order ?? 0));
@@ -656,6 +660,12 @@ export default function LiveConsolePage() {
         idx++;
         await supabase.from("hero_picks_bans").update({ player_id: p.id }).eq("id", pb.id);
         merged = merged.map((row) => (row.id === pb.id ? { ...row, player_id: p.id } : row));
+        // Same write assignHeroToPlayer does for a manually-assigned pick —
+        // without this, a positionally-locked pick never gets a
+        // player_stats row, so Hero shows blank on the scoreboard and the
+        // public match page (which reads player_stats, not
+        // hero_picks_bans) never sees the pick at all.
+        await updateStat(p.id, "hero_name", pb.hero_name);
       }
     }
     setPickBans(merged);
@@ -687,7 +697,11 @@ export default function LiveConsolePage() {
     const list = pickBansOverride ?? pickBans;
     if (!match?.team_a || !match?.team_b) return false;
     for (const teamId of [match.team_a.id, match.team_b.id]) {
-      const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
+      // is_active_roster, not raw team_id membership — a team can carry
+      // more than 5 rows (bench/subs), and without this filter a stray
+      // extra player can land in the role-ordered top 5 instead of one of
+      // the admin's actual designated starters (see toggleActiveRoster).
+      const teamPlayers = players.filter((p) => p.team_id === teamId && p.is_active_roster).sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
       if (teamPlayers.length < 5) return false;
       if (teamPlayers.some((p) => !list.some((pb) => pb.player_id === p.id && pb.type === "pick"))) return false;
     }
@@ -3045,7 +3059,12 @@ export default function LiveConsolePage() {
   function slotPlayer(side: Side, slot: number): Player | null {
     const teamId = side === "left" ? resolveLeftTeamId() : resolveRightTeamId();
     if (!teamId) return null;
-    const teamPlayers = players.filter((p) => p.team_id === teamId).sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
+    // is_active_roster — same reasoning as lockInPositionalPicks/
+    // draftFullyResolved: without this filter an OCR-read K/D/A update for
+    // "slot 3" could resolve to a bench player instead of the actual
+    // starter in that role, silently creating a stat row for a substitute
+    // who was never part of this game.
+    const teamPlayers = players.filter((p) => p.team_id === teamId && p.is_active_roster).sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
     return teamPlayers[slot - 1] ?? null;
   }
   function findHeroInText(text: string) {
@@ -4735,8 +4754,24 @@ export default function LiveConsolePage() {
     // branch as a flagged real roster player.
     const activeRosterIds = new Set(effectivePlayers.filter((p) => p.team_id === teamId && p.is_active_roster).map((p) => p.id));
     const included = effectivePlayers.filter((p) => p.team_id === teamId && (activeRosterIds.has(p.id) || pickedIds.has(p.id) || statIds.has(p.id)));
-    const base = included.length > 0 ? included : effectivePlayers.filter((p) => p.team_id === teamId);
-    return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role));
+    // Fallback before any pick/stat/is_active_roster signal exists yet —
+    // the same role-ordered top 5 lockInPositionalPicks/draftFullyResolved
+    // treat as "the starting five," never the whole team roster. The whole
+    // roster used to be the fallback here, which meant any bench player
+    // (a 6th+ name on the team) showed up on the Live Scoreboard the
+    // instant nothing else had "claimed" the 5 slots yet.
+    const base =
+      included.length > 0
+        ? included
+        : effectivePlayers.filter((p) => p.team_id === teamId);
+    // is_active_roster defaults to true for every existing player (see the
+    // migration), so a team with more than 5 signed players shows every
+    // one of them here until someone benches the extras — capped at 5,
+    // role-order, matching the exact same "starting five" every other
+    // draft-locking function on this page assumes. The roster set before
+    // the draft starts is the final list; this is what actually enforces
+    // that on the Live Scoreboard, not just the "+ Add player" gate.
+    return [...base].sort((a, b) => roleIndex(a.role) - roleIndex(b.role)).slice(0, 5);
   }
   const teamAPlayers = activeFive(match.team_a?.id);
   const teamBPlayers = activeFive(match.team_b?.id);
@@ -4909,21 +4944,15 @@ export default function LiveConsolePage() {
   // Live scoreboard's own "Team kills" readout — strictly the sum of that
   // team's players' kills (no override), cross-checked against the enemy's
   // summed deaths: every kill is someone else's death, so the two must
-  // match exactly. Only true once every player's K/D/A is actually filled
-  // in (a still-TBD row leaves both sides under-counted, which would also
-  // "match" at 0 — teamStatsComplete guards against reporting that as
-  // valid). Never rendered when this doesn't hold — a mismatch means a
-  // KDA entry is wrong or still missing, not a number to show and trust.
+  // match exactly (both start at 0-0 and reconcile trivially before any
+  // kill is logged — TBD rows count as 0, same as the KDA inputs already
+  // treat them). Never rendered when this doesn't hold — a genuine
+  // mismatch means a KDA entry is wrong, not a number to show and trust.
   const teamADeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
   const teamBDeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
-  const teamStatsComplete =
-    teamAPlayers.length > 0 &&
-    teamBPlayers.length > 0 &&
-    teamAPlayers.every((p) => statForPlayer(p)?.kills != null && statForPlayer(p)?.deaths != null) &&
-    teamBPlayers.every((p) => statForPlayer(p)?.kills != null && statForPlayer(p)?.deaths != null);
   const computedTeamAKills = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const computedTeamBKills = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
-  const teamKillsValid = teamStatsComplete && computedTeamAKills === teamBDeathsTotal && computedTeamBKills === teamADeathsTotal;
+  const teamKillsValid = computedTeamAKills === teamBDeathsTotal && computedTeamBKills === teamADeathsTotal;
   async function addScoreboardPlayer(playerId: string) {
     await ensureStatRow(playerId);
     loadAll();
@@ -6451,6 +6480,92 @@ export default function LiveConsolePage() {
               </>
             )}
 
+            {/* Net worth + Game screenshots — moved up from the very
+                bottom of this column so they sit in the same combined
+                panel as Objectives/Live scoreboard/Log a moment, right
+                under the moment list, instead of past the whole draft
+                board and game selector further down. */}
+            {match.update_source === "local_ocr" && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                <section className="space-y-2">
+                  <h2 className="font-bold">Net worth</h2>
+                  <div className="flex flex-wrap gap-4 items-end">
+                    {[
+                      { team: match.team_a, key: "team_a_gold" as const, other: latestNetWorth?.team_b_gold ?? 0 },
+                      { team: match.team_b, key: "team_b_gold" as const, other: latestNetWorth?.team_a_gold ?? 0 },
+                    ].map(({ team, key, other }, idx) =>
+                      team ? (
+                        <div key={team.id} className="space-y-1">
+                          <p className="text-xs text-white/50">{team.name}</p>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              defaultValue={latestNetWorth?.[key] ?? ""}
+                              disabled={!netWorthEditable}
+                              placeholder="Gold"
+                              className="w-28 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
+                              onBlur={(e) => {
+                                const value = Number(e.target.value);
+                                if (Number.isNaN(value)) return;
+                                if (value === (latestNetWorth?.[key] ?? null)) return;
+                                updateNetWorthManual(idx === 0 ? value : other, idx === 0 ? other : value);
+                              }}
+                            />
+                            {latestNetWorth?.[key] != null && <span className="text-xs text-white/40 tabular-nums">{formatGold(latestNetWorth[key])}</span>}
+                          </div>
+                        </div>
+                      ) : (
+                        <span key={idx} />
+                      )
+                    )}
+                  </div>
+                </section>
+
+                <section className="space-y-3">
+                  <h2 className="font-bold">Game {game.game_number} screenshots</h2>
+                  <p className="text-xs text-white/40">
+                    Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
+                    current in-game timer. Shown publicly at the bottom of this game&apos;s page.
+                  </p>
+                  <div className="flex gap-2 items-center flex-wrap">
+                    <button
+                      onClick={() => captureScreenshotFromPreview()}
+                      disabled={!captureActive || screenshotUploading}
+                      className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
+                      title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
+                    >
+                      📸 Capture current frame
+                    </button>
+                    <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
+                      Upload image...
+                      <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
+                    </label>
+                    <input
+                      value={screenshotNote}
+                      onChange={(e) => setScreenshotNote(e.target.value)}
+                      placeholder="Note (optional)"
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
+                    />
+                    {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
+                  </div>
+                  <div className="flex flex-wrap gap-3">
+                    {screenshots.map((s) => (
+                      <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
+                        <div className="flex items-center justify-between text-[10px] text-white/40">
+                          <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
+                          <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
+                        </div>
+                        {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
+                      </div>
+                    ))}
+                    {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
+                  </div>
+                </section>
+              </div>
+            )}
+
       {/* Draft tool sits first in the center column, directly beside/below
           the tracking canvas — the site owner runs this on a single
           monitor, so having the OCR canvas and the drafting UI stacked
@@ -7005,57 +7120,9 @@ export default function LiveConsolePage() {
       )}
 
       {/* Public clock source moved to the top of this column, above the
-          Moment Timeline — see there. */}
-
-      {/* Game screenshots — the only thing still living down here from what
-          used to be a longer local_ocr-only block; Moment list and
-          Objectives moved to the top of this column (see "Declare Game
-          Winner" above), since those are what a live game needs constantly,
-          not screenshots. */}
-      {match.update_source === "local_ocr" && (
-        <section className="space-y-3">
-          <h2 className="font-bold">Game {game.game_number} screenshots</h2>
-          <p className="text-xs text-white/40">
-            Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
-            current in-game timer. Shown publicly at the bottom of this game&apos;s page.
-          </p>
-          <div className="flex gap-2 items-center flex-wrap">
-            <button
-              onClick={() => captureScreenshotFromPreview()}
-              disabled={!captureActive || screenshotUploading}
-              className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 disabled:opacity-40"
-              title={captureActive ? "Grab the current shared-screen frame" : "Start capture above first"}
-            >
-              📸 Capture current frame
-            </button>
-            <label className="text-xs border border-white/10 rounded px-3 py-1.5 hover:bg-white/10 cursor-pointer">
-              Upload image...
-              <input type="file" accept="image/*" onChange={handleScreenshotFileSelect} className="hidden" disabled={screenshotUploading} />
-            </label>
-            <input
-              value={screenshotNote}
-              onChange={(e) => setScreenshotNote(e.target.value)}
-              placeholder="Note (optional)"
-              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
-            />
-            {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
-          </div>
-          <div className="flex flex-wrap gap-3">
-            {screenshots.map((s) => (
-              <div key={s.id} className="w-40 space-y-1 lv-card-flush p-2">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={s.image_url} alt="" className="w-full rounded-md border border-white/10" />
-                <div className="flex items-center justify-between text-[10px] text-white/40">
-                  <span>{s.in_game_time ?? "—"} · {new Date(s.created_at).toLocaleTimeString()}</span>
-                  <button onClick={() => deleteScreenshot(s.id, s.image_url)} className="text-white/30 hover:text-red-400">✕</button>
-                </div>
-                {s.note && <p className="text-[10px] text-white/50">{s.note}</p>}
-              </div>
-            ))}
-            {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
-          </div>
-        </section>
-      )}
+          Moment Timeline — see there. Net worth and Game screenshots moved
+          up to sit right after "Log a moment", in the same combined panel
+          as Objectives/Live scoreboard — see there. */}
       </div>
 
       {match.update_source !== "local_ocr" && (
@@ -7063,55 +7130,6 @@ export default function LiveConsolePage() {
           This is a Normal match — KDA, screenshots, and the moment log aren&apos;t tracked here (Liquipedia-only
           data: picks/bans, score, stream, VOD). Switch to Hot match above to take manual/OCR control.
         </p>
-      )}
-
-      {match.update_source === "local_ocr" && (
-        <>
-
-      {/* A standalone "Team kills" readout used to sit here, showing the
-          exact same teamAKillsTotal/teamBKillsTotal numbers already big
-          and always-visible in the sticky header above (see the h1's
-          local_ocr branch) — a pure duplicate display with no editing
-          function of its own, removed rather than collapsed. */}
-
-      {/* Net worth — OCR-fed each tick, but directly editable too */}
-      <section className="space-y-2">
-        <h2 className="font-bold">Net worth</h2>
-        <div className="flex flex-wrap gap-4 items-end">
-          {[
-            { team: match.team_a, key: "team_a_gold" as const, other: latestNetWorth?.team_b_gold ?? 0 },
-            { team: match.team_b, key: "team_b_gold" as const, other: latestNetWorth?.team_a_gold ?? 0 },
-          ].map(({ team, key, other }, idx) =>
-            team ? (
-              <div key={team.id} className="space-y-1">
-                <p className="text-xs text-white/50">{team.name}</p>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="number"
-                    defaultValue={latestNetWorth?.[key] ?? ""}
-                    disabled={!netWorthEditable}
-                    placeholder="Gold"
-                    className="w-28 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
-                    onBlur={(e) => {
-                      const value = Number(e.target.value);
-                      if (Number.isNaN(value)) return;
-                      if (value === (latestNetWorth?.[key] ?? null)) return;
-                      updateNetWorthManual(idx === 0 ? value : other, idx === 0 ? other : value);
-                    }}
-                  />
-                  {latestNetWorth?.[key] != null && <span className="text-xs text-white/40 tabular-nums">{formatGold(latestNetWorth[key])}</span>}
-                </div>
-              </div>
-            ) : (
-              <span key={idx} />
-            )
-          )}
-        </div>
-      </section>
-
-      {/* Live scoreboard moved up to sit alongside Objectives, right under
-          the moment list — see there. */}
-        </>
       )}
 
           </div>

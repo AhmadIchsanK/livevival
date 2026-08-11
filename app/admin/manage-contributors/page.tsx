@@ -57,7 +57,7 @@ export default function ManageContributorsPage() {
   }
 
   return (
-    <div className="text-white space-y-6">
+    <div className="text-white space-y-6 max-w-5xl">
       <h1 className="text-xl font-semibold">Manage Contributors</h1>
       <p className="text-sm text-white/60">
         Approved contributors. New applications are reviewed under{" "}

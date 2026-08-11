@@ -66,7 +66,7 @@ export default function DataSyncPage() {
   }
 
   return (
-    <div className="text-white space-y-6">
+    <div className="text-white space-y-6 max-w-4xl">
       <div>
         <h1 className="lv-heading text-lg">Data sync</h1>
         <p className="text-xs text-white/40 mt-1">

@@ -75,7 +75,7 @@ export default function ChangeLogPage() {
   }, [page, tableFilter, dateFrom, dateTo]);
 
   return (
-    <div className="text-white space-y-4">
+    <div className="text-white space-y-4 max-w-6xl">
       <h1 className="text-xl font-semibold">Change Log</h1>
 
       <div className="flex gap-2 flex-wrap">

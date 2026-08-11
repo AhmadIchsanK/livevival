@@ -41,7 +41,7 @@ export default function MyRequestsPage() {
   }, []);
 
   return (
-    <div className="text-white space-y-4">
+    <div className="text-white space-y-4 max-w-4xl">
       <h1 className="text-xl font-semibold">My Requests</h1>
       {loading ? (
         <p className="text-white/40 text-sm">Loading...</p>

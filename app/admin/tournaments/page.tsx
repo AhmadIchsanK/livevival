@@ -306,7 +306,7 @@ export default function TournamentsAdminPage() {
   }
 
   return (
-    <div className="text-white space-y-6">
+    <div className="text-white space-y-6 max-w-6xl">
       <div>
         <h1 className="lv-heading text-lg">Tournaments</h1>
         <p className="text-xs text-white/40 mt-1">

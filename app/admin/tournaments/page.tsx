@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo, LOGO_BG_OVERRIDES, type LogoBgOverride } from "@/components/TeamLogo";
+import { loadRecentEdits, timeAgoShort, type RecentEdit } from "@/lib/recentEdits";
 
 type Tournament = {
   id: string;
@@ -41,12 +42,11 @@ export default function TournamentsAdminPage() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [filter, setFilter] = useState("");
   const [tierFilter, setTierFilter] = useState("");
-  // Only ongoing/upcoming tournaments are ever admin-relevant day to day —
-  // completed ones have nothing left to edit. Tabbed the same way as
-  // /admin/matches instead of always stacking every status section, and
-  // "completed" is deliberately not one of the tabs (it's still reachable
-  // via search if an old tournament needs a one-off fix).
-  const [activeTab, setActiveTab] = useState<"ongoing" | "upcoming">("ongoing");
+  // Ongoing/upcoming tournaments are the day-to-day default, tabbed the
+  // same way as /admin/matches instead of always stacking every status
+  // section. Completed is still a tab (a past tournament occasionally
+  // needs a one-off fix — wrong FMVP, broken logo) but isn't the default.
+  const [activeTab, setActiveTab] = useState<Status>("ongoing");
   const [sortKey, setSortKey] = useState<SortKey>("start_desc");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -72,15 +72,27 @@ export default function TournamentsAdminPage() {
   const [editYoutubeChannelUrl, setEditYoutubeChannelUrl] = useState("");
   const [allPlayerIgns, setAllPlayerIgns] = useState<string[]>([]);
   const [youtubeSyncStatus, setYoutubeSyncStatus] = useState<Record<string, string>>({});
+  const [hasMoreTournaments, setHasMoreTournaments] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [recentEdits, setRecentEdits] = useState<Record<string, RecentEdit>>({});
 
-  async function loadTournaments() {
+  const TOURNAMENTS_PAGE_SIZE = 50;
+
+  // Bounded fetch + "Load more" instead of pulling every tournament at
+  // once — same fix already applied to /admin/matches for the same reason.
+  async function loadTournaments(offset = 0) {
+    if (offset > 0) setLoadingMore(true);
     const { data } = await supabase
       .from("tournaments")
       .select(
         "id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, logo_bg_override, fmvp_player_id, fmvp_player:players(ign), default_notification_tier, youtube_channel_url"
       )
-      .order("start_date", { ascending: false, nullsFirst: false });
-    setTournaments((data as unknown as Tournament[]) ?? []);
+      .order("start_date", { ascending: false, nullsFirst: false })
+      .range(offset, offset + TOURNAMENTS_PAGE_SIZE - 1);
+    setLoadingMore(false);
+    const page = (data as unknown as Tournament[]) ?? [];
+    setTournaments((prev) => (offset > 0 ? [...prev, ...page] : page));
+    setHasMoreTournaments(page.length === TOURNAMENTS_PAGE_SIZE);
   }
 
   // Fire-and-forget best-effort sync — a tournament save should never block
@@ -136,6 +148,10 @@ export default function TournamentsAdminPage() {
   useEffect(() => {
     loadTournaments();
   }, []);
+
+  useEffect(() => {
+    loadRecentEdits("tournaments", tournaments.map((t) => t.id)).then(setRecentEdits);
+  }, [tournaments]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -396,6 +412,7 @@ export default function TournamentsAdminPage() {
         {([
           { key: "ongoing", label: "🟢 Ongoing" },
           { key: "upcoming", label: "Upcoming" },
+          { key: "completed", label: "Completed" },
         ] as const).map((tab) => (
           <button
             key={tab.key}
@@ -631,19 +648,37 @@ export default function TournamentsAdminPage() {
                             <option value="hot">🔥 Hot</option>
                           </select>
                         </td>
-                        <td className="py-2 text-right space-x-2">
-                          <button
-                            onClick={() => startEdit(t)}
-                            className="lv-btn-ghost !px-2 !py-1"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => deleteTournament(t.id, t.name)}
-                            className="lv-btn-danger !px-2 !py-1"
-                          >
-                            Delete
-                          </button>
+                        <td className="py-2 text-right">
+                          <div className="space-x-2">
+                            {t.liquipedia_slug && (
+                              <a
+                                href={`/tournaments/${t.liquipedia_slug}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="lv-btn-ghost !px-2 !py-1"
+                                title="Preview how this tournament reads on its public page"
+                              >
+                                View ↗
+                              </a>
+                            )}
+                            <button
+                              onClick={() => startEdit(t)}
+                              className="lv-btn-ghost !px-2 !py-1"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deleteTournament(t.id, t.name)}
+                              className="lv-btn-danger !px-2 !py-1"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                          {recentEdits[t.id] && (
+                            <div className="text-[10px] text-white/30 mt-1">
+                              Edited {timeAgoShort(recentEdits[t.id].changedAt)} by {recentEdits[t.id].actorLabel}
+                            </div>
+                          )}
                         </td>
                       </>
                     )}
@@ -659,6 +694,16 @@ export default function TournamentsAdminPage() {
               </tbody>
             </table>
       </section>
+
+      {hasMoreTournaments && (
+        <button
+          onClick={() => loadTournaments(tournaments.length)}
+          disabled={loadingMore}
+          className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5 disabled:opacity-50"
+        >
+          {loadingMore ? "Loading…" : "Load more tournaments"}
+        </button>
+      )}
     </div>
   );
 }

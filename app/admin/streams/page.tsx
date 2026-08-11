@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { loadRecentEdits, timeAgoShort, type RecentEdit } from "@/lib/recentEdits";
 
 type Option = { id: string; label: string };
 type Stream = {
@@ -87,10 +88,17 @@ function YoutubeThumbnail({ url, className }: { url: string; className: string }
 export default function StreamsPage() {
   const [tournaments, setTournaments] = useState<Option[]>([]);
   const [streams, setStreams] = useState<Stream[]>([]);
+  const [linkedStreamIds, setLinkedStreamIds] = useState<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useState<"all" | "scheduled" | "live" | "ended">("all");
   const [tournamentFilter, setTournamentFilter] = useState("");
+  const [linkedFilter, setLinkedFilter] = useState<"all" | "unlinked">("all");
+  // Ended streams pile up forever otherwise — hidden by default (toggle
+  // below still reaches them) so the list stays about what's actually
+  // relevant this season instead of every stream ever added.
+  const [showEnded, setShowEnded] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("newest");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [recentEdits, setRecentEdits] = useState<Record<string, RecentEdit>>({});
 
   const [url, setUrl] = useState("");
   const [tournamentId, setTournamentId] = useState("");
@@ -106,18 +114,25 @@ export default function StreamsPage() {
   }
 
   async function loadStreams() {
-    const { data, error } = await supabase
-      .from("streams")
-      .select(
-        `id, url, platform, status, overlay_template, current_match_id, tournament_id, created_at,
-         tournament:tournaments(name)`
-      )
-      .order("created_at", { ascending: false });
+    // current_match_id isn't kept live-updated, so "is this stream actually
+    // in use" is only answerable from the matches side: which streams any
+    // match currently points at via matches.stream_id.
+    const [{ data, error }, { data: linkedRows }] = await Promise.all([
+      supabase
+        .from("streams")
+        .select(
+          `id, url, platform, status, overlay_template, current_match_id, tournament_id, created_at,
+           tournament:tournaments(name)`
+        )
+        .order("created_at", { ascending: false }),
+      supabase.from("matches").select("stream_id").not("stream_id", "is", null),
+    ]);
     if (error) {
       setError(error.message);
       return;
     }
     setStreams((data as unknown as Stream[]) ?? []);
+    setLinkedStreamIds(new Set((linkedRows ?? []).map((r) => r.stream_id as string)));
   }
 
   // Pre-fills the overlay hint with the video's real YouTube title so the
@@ -187,6 +202,13 @@ export default function StreamsPage() {
 
   useEffect(() => {
     backfillMissingTitles(streams);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streams.length]);
+
+  useEffect(() => {
+    // Gated on count (not the whole polled array) so this doesn't re-query
+    // activity_log every 10s poll tick for no reason.
+    loadRecentEdits("streams", streams.map((s) => s.id)).then(setRecentEdits);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streams.length]);
 
@@ -287,7 +309,9 @@ export default function StreamsPage() {
 
   const filteredStreams = streams
     .filter((s) => statusFilter === "all" || s.status === statusFilter)
+    .filter((s) => showEnded || statusFilter === "ended" || s.status !== "ended")
     .filter((s) => !tournamentFilter || s.tournament_id === tournamentFilter)
+    .filter((s) => linkedFilter === "all" || !linkedStreamIds.has(s.id))
     .sort((a, b) =>
       sortKey === "newest" ? b.created_at.localeCompare(a.created_at) : a.created_at.localeCompare(b.created_at)
     );
@@ -397,6 +421,19 @@ export default function StreamsPage() {
               ))}
             </select>
             <select
+              value={linkedFilter}
+              onChange={(e) => setLinkedFilter(e.target.value as "all" | "unlinked")}
+              title="A stream is 'linked' when at least one match points at it"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+            >
+              <option value="all">All streams</option>
+              <option value="unlinked">Unlinked only</option>
+            </select>
+            <label className="flex items-center gap-1.5 text-xs text-white/50">
+              <input type="checkbox" checked={showEnded} onChange={(e) => setShowEnded(e.target.checked)} />
+              Show ended
+            </label>
+            <select
               value={sortKey}
               onChange={(e) => setSortKey(e.target.value as SortKey)}
               className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
@@ -488,9 +525,22 @@ export default function StreamsPage() {
                             {s.url}
                           </a>
                         </p>
+                        {recentEdits[s.id] && (
+                          <p className="text-[10px] text-white/30">
+                            Edited {timeAgoShort(recentEdits[s.id].changedAt)} by {recentEdits[s.id].actorLabel}
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
+                      {!linkedStreamIds.has(s.id) && (
+                        <span
+                          className="lv-badge bg-amber-400/15 text-amber-300 border border-amber-400/30"
+                          title="No match currently points at this stream"
+                        >
+                          Unlinked
+                        </span>
+                      )}
                       <span className={s.status === "live" ? "lv-badge-live" : s.status === "ended" ? "lv-badge-finished" : "lv-badge-scheduled"}>
                         {s.status}
                       </span>

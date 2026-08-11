@@ -42,11 +42,13 @@ export async function GET(req: NextRequest) {
     );
 
     // Use aggressive query caching for status-filtered matches. Paginated
-    // for every status now (not just "finished") — an unpaginated Upcoming
-    // list was the slow path this endpoint existed to fix in the first
-    // place, since a growing schedule just kept shipping every row down.
-    // "live" stays unpaginated (there are only ever a handful at once).
-    const paginated = status === "finished" || status === "scheduled";
+    // for every status now — an unpaginated Upcoming list was the slow path
+    // this endpoint existed to fix in the first place, since a growing
+    // schedule just kept shipping every row down. "live" is included too:
+    // it's usually just a handful, but a big multi-stage day can push many
+    // matches live at once, and this endpoint shouldn't have a status that
+    // silently stops scaling.
+    const paginated = true;
     const cacheKey = `admin:matches:${status}:${tier ?? "all"}:${offset}`;
 
     const data = await withQueryCache(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTheme } from "next-themes";
 import {
   ResponsiveContainer,
@@ -127,13 +127,14 @@ export default function AdminHome() {
   const [recentPlayers, setRecentPlayers] = useState<ActivityLogPlayerInsert[]>([]);
   const [failures, setFailures] = useState<ExtractionFailureRow[]>([]);
   const [failureCount7d, setFailureCount7d] = useState<number | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => setMounted(true), []);
 
-  useEffect(() => {
-    let active = true;
-    async function load() {
-      const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+  const load = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString();
 
       const [matchesRes, tournamentsRes, streamsRes, playersLogRes, failuresRes, failuresCountRes] = await Promise.all([
         supabase.from("matches").select("id, status, notification_tier, scheduled_at, youtube_url, tournament_id"),
@@ -157,20 +158,20 @@ export default function AdminHome() {
           .gte("created_at", sevenDaysAgo),
       ]);
 
-      if (!active) return;
       setMatches((matchesRes.data as MatchRow[]) ?? []);
       setTournaments((tournamentsRes.data as TournamentRow[]) ?? []);
       setStreamPlatforms((streamsRes.data as StreamPlatformRow[]) ?? []);
       setRecentPlayers((playersLogRes.data as ActivityLogPlayerInsert[]) ?? []);
       setFailures((failuresRes.data as ExtractionFailureRow[]) ?? []);
       setFailureCount7d(failuresCountRes.count ?? 0);
+      setLastUpdated(new Date());
       setLoading(false);
-    }
-    load();
-    return () => {
-      active = false;
-    };
+      setRefreshing(false);
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const tournamentById = useMemo(() => {
     const map = new Map<string, TournamentRow>();
@@ -207,15 +208,24 @@ export default function AdminHome() {
   }, [tournaments]);
 
   // --- Stream ingestion: matches with vs without a resolved youtube_url ---
+  // All-time on its own buries a healthy recent rate under old backlog
+  // matches that were never going to get a link — a 30-day rate is the
+  // number that actually says "is ingestion working right now."
   const streamIngestion = useMemo(() => {
-    const total = matches.length;
-    const resolved = matches.filter((m) => m.youtube_url).length;
-    const rate = total > 0 ? Math.round((resolved / total) * 100) : 0;
+    const thirtyDaysAgo = Date.now() - 30 * 86400000;
+    const recent = matches.filter((m) => m.scheduled_at && new Date(m.scheduled_at).getTime() >= thirtyDaysAgo);
+
+    function rateFor(list: MatchRow[]) {
+      const total = list.length;
+      const resolved = list.filter((m) => m.youtube_url).length;
+      return { total, resolved, rate: total > 0 ? Math.round((resolved / total) * 100) : 0 };
+    }
+
     const missingFinished = matches
       .filter((m) => m.status === "finished" && !m.youtube_url)
       .sort((a, b) => (b.scheduled_at ?? "").localeCompare(a.scheduled_at ?? ""))
       .slice(0, 5);
-    return { total, resolved, rate, missingFinished };
+    return { last30d: rateFor(recent), allTime: rateFor(matches), missingFinished };
   }, [matches]);
 
   // --- Chart: match volume by month, last 12 months ---
@@ -294,13 +304,27 @@ export default function AdminHome() {
 
   return (
     <div className="text-white space-y-6">
-      <div>
-        <h1 className="lv-heading text-lg">Admin dashboard</h1>
-        <p className="text-sm text-white/50 mt-1">
-          Liquipedia import runs on a schedule (see .github/workflows) and an always-on poller (Railway) keeps
-          live/imminent matches close to real-time. A match can be switched to local-OCR (admin PC) control from its
-          live console at any time.
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="lv-heading text-lg">Admin dashboard</h1>
+          <p className="text-sm text-white/50 mt-1">
+            Liquipedia import runs on a schedule (see .github/workflows) and an always-on poller (Railway) keeps
+            live/imminent matches close to real-time. A match can be switched to local-OCR (admin PC) control from its
+            live console at any time.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {lastUpdated && (
+            <span className="text-xs text-white/30">Updated {timeAgo(lastUpdated.toISOString())}</span>
+          )}
+          <button
+            onClick={() => load(true)}
+            disabled={refreshing}
+            className="lv-btn-ghost !px-3 !py-1.5 text-xs disabled:opacity-50"
+          >
+            {refreshing ? "Refreshing…" : "↻ Refresh"}
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -313,9 +337,9 @@ export default function AdminHome() {
             <StatTile label="Upcoming" value={statusSummary.base.scheduled} sub={tierSubline("scheduled")} />
             <StatTile label="Finished" value={statusSummary.base.finished} sub={tierSubline("finished")} />
             <StatTile
-              label="Stream link coverage"
-              value={`${streamIngestion.rate}%`}
-              sub={`${streamIngestion.resolved} / ${streamIngestion.total} matches`}
+              label="Stream link coverage (30d)"
+              value={`${streamIngestion.last30d.rate}%`}
+              sub={`${streamIngestion.last30d.resolved} / ${streamIngestion.last30d.total} matches · all-time ${streamIngestion.allTime.rate}%`}
             />
           </div>
 

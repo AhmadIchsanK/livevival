@@ -2703,6 +2703,97 @@ export default function LiveConsolePage() {
     }
   }
 
+  // ── AI-suggested tracker layout ──────────────────────────────────────
+  // One screenshot of the current capture → a vision model locates each
+  // standard HUD element → those boxes get placed as real trackers, same
+  // "never touches a field that's already tracked" contract as Auto-place/
+  // Apply-template. Separate from the AI full-frame *capture* pipeline
+  // above (captureFrameAndAnalyze/applyAiDetection, which reads game state
+  // on a recurring interval) — this only ever runs once, on demand, and
+  // only ever proposes tracker positions, never writes any game data
+  // itself.
+  const AI_LAYOUT_FIELD_MAP: Record<string, { category: TrackerCategory; label: string }> = {
+    game_timer: { category: "game_timer", label: "Game timer" },
+    kill_banner: { category: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)" },
+    net_worth_left: { category: "net_worth", label: "Net worth — Left" },
+    net_worth_right: { category: "net_worth", label: "Net worth — Right" },
+    team_kills_left: { category: "team_kills", label: "Team kills — Left" },
+    team_kills_right: { category: "team_kills", label: "Team kills — Right" },
+    objectives_group_left: { category: "objectives_group", label: `Objectives (combined) — Left: ${OBJECTIVE_GROUP_ORDER.left.join(" / ")}` },
+    objectives_group_right: { category: "objectives_group", label: `Objectives (combined) — Right: ${OBJECTIVE_GROUP_ORDER.right.join(" / ")}` },
+    kda_group_left: { category: "kda_group", label: "K/D/A (combined) — Left: all 5, role order" },
+    kda_group_right: { category: "kda_group", label: "K/D/A (combined) — Right: all 5, role order" },
+  };
+  const [aiLayoutSuggesting, setAiLayoutSuggesting] = useState(false);
+  const [aiLayoutStatus, setAiLayoutStatus] = useState<string | null>(null);
+  async function suggestLayoutFromScreenshot() {
+    const video = previewRef.current;
+    if (!video || video.videoWidth === 0) {
+      setAiLayoutStatus("No capture frame available yet — start capture first.");
+      return;
+    }
+    setAiLayoutSuggesting(true);
+    setAiLayoutStatus(null);
+    try {
+      // Cropped to captureArea (if set) so the model only ever sees the
+      // same region trackers are constrained to — composeFromCaptureArea
+      // below converts its response back to full-frame percentages.
+      const embedCanvas = cropVideoToEmbed(video, captureArea);
+      if (!embedCanvas) {
+        setAiLayoutStatus("Capture frame too small to read.");
+        return;
+      }
+      const MAX_WIDTH = 960;
+      const scale = Math.min(1, MAX_WIDTH / embedCanvas.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(embedCanvas.width * scale);
+      canvas.height = Math.round(embedCanvas.height * scale);
+      canvas.getContext("2d")?.drawImage(embedCanvas, 0, 0, canvas.width, canvas.height);
+      const imageBase64 = canvas.toDataURL("image/jpeg", 0.85);
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) {
+        setAiLayoutStatus("Not signed in.");
+        return;
+      }
+
+      const res = await fetch("/api/admin/ai-layout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ imageBase64 }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAiLayoutStatus(data.error ?? "Layout suggestion failed.");
+        return;
+      }
+      const regions = (data.regions ?? []) as { field: string; x_pct: number; y_pct: number; w_pct: number; h_pct: number }[];
+      let placed = 0;
+      let skipped = 0;
+      for (const r of regions) {
+        const mapping = AI_LAYOUT_FIELD_MAP[r.field];
+        if (!mapping) continue;
+        if (trackers.some((t) => t.phase === "GAME_STARTED" && t.field === r.field)) {
+          skipped++;
+          continue;
+        }
+        const box = composeFromCaptureArea({ xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct }, captureArea);
+        await addTrackerWithRegion("GAME_STARTED", mapping.category, r.field, mapping.label, box);
+        placed++;
+      }
+      setAiLayoutStatus(
+        regions.length === 0
+          ? "The model didn't confidently locate any tracker elements in this frame — try again once the scoreboard/HUD is clearly visible, or place trackers manually."
+          : `Placed ${placed} tracker${placed === 1 ? "" : "s"} from the screenshot${skipped > 0 ? `, skipped ${skipped} already tracked` : ""}.`
+      );
+    } catch (err) {
+      setAiLayoutStatus((err as Error).message);
+    } finally {
+      setAiLayoutSuggesting(false);
+    }
+  }
+
   // Set once the tournament-defaults/match-regions fetch below has actually
   // resolved (success or not) — gates autoPlaceDefaultTrackers further down
   // so it never fires against the transient "trackers is still []" state
@@ -2797,6 +2888,25 @@ export default function LiveConsolePage() {
     const xPct = Math.min(Math.max(box.xPct, area.xPct), area.xPct + area.wPct - wPct);
     const yPct = Math.min(Math.max(box.yPct, area.yPct), area.yPct + area.hPct - hPct);
     return { xPct, yPct, wPct, hPct };
+  }
+
+  // Inverse of clampBoxToArea's coordinate space: the AI layout screenshot
+  // (see suggestLayoutFromScreenshot) is cropped to captureArea before
+  // being sent off (cropVideoToEmbed(video, captureArea)), so every
+  // percentage the model returns is relative to THAT sub-frame, not the
+  // full captured video — this composes it back to full-frame percentages
+  // (same math as the old toFullFramePct, just against captureArea
+  // instead of the always-null embedFrame) before it's stored as a real
+  // tracker region. A no-op when no captured area is set, since the
+  // screenshot was the full frame in that case.
+  function composeFromCaptureArea(box: RegionBox, area: RegionBox | null): RegionBox {
+    if (!area) return box;
+    return {
+      xPct: area.xPct + (box.xPct / 100) * area.wPct,
+      yPct: area.yPct + (box.yPct / 100) * area.hPct,
+      wPct: (box.wPct / 100) * area.wPct,
+      hPct: (box.hPct / 100) * area.hPct,
+    };
   }
 
   async function saveRegion(field: string, box: RegionBox) {
@@ -6552,6 +6662,14 @@ export default function LiveConsolePage() {
                     >
                       {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place default trackers"}
                     </button>
+                    <button
+                      onClick={suggestLayoutFromScreenshot}
+                      disabled={aiLayoutSuggesting || !captureActive}
+                      className="text-xs border border-purple-400/40 text-purple-300 rounded px-3 py-1.5 hover:bg-purple-400/10 disabled:opacity-40 whitespace-nowrap"
+                      title="Takes one screenshot of the current capture and asks a vision model to locate the standard HUD elements, then places trackers on whatever it finds — for any field not already tracked. Needs GROQ_API_KEY configured."
+                    >
+                      {aiLayoutSuggesting ? "Analyzing screenshot…" : "📸 AI-suggest layout from screenshot"}
+                    </button>
                     <div className="flex items-center gap-1">
                       <input
                         value={newTemplateName}
@@ -6584,6 +6702,9 @@ export default function LiveConsolePage() {
                           Set countdown
                         </button>
                       </div>
+                    )}
+                    {aiLayoutStatus && (
+                      <span className="text-[10px] text-white/50 w-full">{aiLayoutStatus}</span>
                     )}
                   </div>
                 )}

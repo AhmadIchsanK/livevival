@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { withQueryCache } from "@/lib/queryCache";
 import { recordQueryTime } from "@/lib/metrics";
 
-const MATCHES_PAGE_SIZE = 30;
+const MATCHES_PAGE_SIZE = 20;
 
 type CachedMatch = {
   id: string;
@@ -29,6 +29,11 @@ export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams;
   const status = searchParams.get("status") || "live";
   const offset = parseInt(searchParams.get("offset") || "0", 10);
+  // Normal / Priority / Hot filter — mirrors lib/matchTier.ts's
+  // displayMatchTier() derivation (local_ocr always reads as Hot regardless
+  // of its stored notification_tier) so the filter matches what the tier
+  // dropdown actually shows in the UI.
+  const tier = searchParams.get("tier");
 
   try {
     const supabase = createClient(
@@ -36,13 +41,18 @@ export async function GET(req: NextRequest) {
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     );
 
-    // Use aggressive query caching for status-filtered matches
-    // Finished matches cache for 5 min (less frequently accessed), live/scheduled for 2 min (more dynamic)
-    const cacheStrategy = status === "finished" ? "short" : "short";
-    const cacheKey = `admin:matches:${status}:${offset}`;
+    // Use aggressive query caching for status-filtered matches. Paginated
+    // for every status now — an unpaginated Upcoming list was the slow path
+    // this endpoint existed to fix in the first place, since a growing
+    // schedule just kept shipping every row down. "live" is included too:
+    // it's usually just a handful, but a big multi-stage day can push many
+    // matches live at once, and this endpoint shouldn't have a status that
+    // silently stops scaling.
+    const paginated = true;
+    const cacheKey = `admin:matches:${status}:${tier ?? "all"}:${offset}`;
 
     const data = await withQueryCache(
-      { strategy: cacheStrategy, key: cacheKey },
+      { strategy: "short", key: cacheKey },
       async () => {
         let query = supabase
           .from("matches")
@@ -55,10 +65,19 @@ export async function GET(req: NextRequest) {
           )
           .eq("status", status);
 
+        if (tier === "hot") {
+          query = query.or("update_source.eq.local_ocr,notification_tier.eq.hot");
+        } else if (tier === "normal" || tier === "priority") {
+          query = query.eq("notification_tier", tier).neq("update_source", "local_ocr");
+        }
+
         if (status === "finished") {
-          query = query.order("scheduled_at", { ascending: false }).range(offset, offset + MATCHES_PAGE_SIZE - 1);
+          query = query.order("scheduled_at", { ascending: false });
         } else {
           query = query.order("scheduled_at", { ascending: true });
+        }
+        if (paginated) {
+          query = query.range(offset, offset + MATCHES_PAGE_SIZE - 1);
         }
 
         const { data, error } = await query;
@@ -70,7 +89,7 @@ export async function GET(req: NextRequest) {
     const duration = Date.now() - startTime;
     recordQueryTime("admin_matches_fetch", duration);
 
-    const hasMore = status === "finished" && (data?.length ?? 0) === MATCHES_PAGE_SIZE;
+    const hasMore = paginated && (data?.length ?? 0) === MATCHES_PAGE_SIZE;
 
     return NextResponse.json(
       {

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo, LOGO_BG_OVERRIDES, type LogoBgOverride } from "@/components/TeamLogo";
+import { loadRecentEdits, timeAgoShort, type RecentEdit } from "@/lib/recentEdits";
 
 type Tournament = {
   id: string;
@@ -41,7 +42,11 @@ export default function TournamentsAdminPage() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [filter, setFilter] = useState("");
   const [tierFilter, setTierFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<Status | "">("");
+  // Ongoing/upcoming tournaments are the day-to-day default, tabbed the
+  // same way as /admin/matches instead of always stacking every status
+  // section. Completed is still a tab (a past tournament occasionally
+  // needs a one-off fix — wrong FMVP, broken logo) but isn't the default.
+  const [activeTab, setActiveTab] = useState<Status>("ongoing");
   const [sortKey, setSortKey] = useState<SortKey>("start_desc");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -67,15 +72,27 @@ export default function TournamentsAdminPage() {
   const [editYoutubeChannelUrl, setEditYoutubeChannelUrl] = useState("");
   const [allPlayerIgns, setAllPlayerIgns] = useState<string[]>([]);
   const [youtubeSyncStatus, setYoutubeSyncStatus] = useState<Record<string, string>>({});
+  const [hasMoreTournaments, setHasMoreTournaments] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [recentEdits, setRecentEdits] = useState<Record<string, RecentEdit>>({});
 
-  async function loadTournaments() {
+  const TOURNAMENTS_PAGE_SIZE = 50;
+
+  // Bounded fetch + "Load more" instead of pulling every tournament at
+  // once — same fix already applied to /admin/matches for the same reason.
+  async function loadTournaments(offset = 0) {
+    if (offset > 0) setLoadingMore(true);
     const { data } = await supabase
       .from("tournaments")
       .select(
         "id, name, tier, liquipedia_slug, date_display, start_date, end_date, logo_url, logo_bg_override, fmvp_player_id, fmvp_player:players(ign), default_notification_tier, youtube_channel_url"
       )
-      .order("start_date", { ascending: false, nullsFirst: false });
-    setTournaments((data as unknown as Tournament[]) ?? []);
+      .order("start_date", { ascending: false, nullsFirst: false })
+      .range(offset, offset + TOURNAMENTS_PAGE_SIZE - 1);
+    setLoadingMore(false);
+    const page = (data as unknown as Tournament[]) ?? [];
+    setTournaments((prev) => (offset > 0 ? [...prev, ...page] : page));
+    setHasMoreTournaments(page.length === TOURNAMENTS_PAGE_SIZE);
   }
 
   // Fire-and-forget best-effort sync — a tournament save should never block
@@ -132,11 +149,15 @@ export default function TournamentsAdminPage() {
     loadTournaments();
   }, []);
 
+  useEffect(() => {
+    loadRecentEdits("tournaments", tournaments.map((t) => t.id)).then(setRecentEdits);
+  }, [tournaments]);
+
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const base = tournaments.filter((t) => {
       if (tierFilter && t.tier !== tierFilter) return false;
-      if (statusFilter && categorize(t) !== statusFilter) return false;
+      if (categorize(t) !== activeTab) return false;
       if (!q) return true;
       return t.name.toLowerCase().includes(q) || (t.liquipedia_slug ?? "").toLowerCase().includes(q);
     });
@@ -146,18 +167,7 @@ export default function TournamentsAdminPage() {
       const bDate = b.start_date ?? "";
       return sortKey === "start_asc" ? aDate.localeCompare(bDate) : bDate.localeCompare(aDate);
     });
-  }, [tournaments, filter, tierFilter, statusFilter, sortKey]);
-
-  const sections: { key: Status; title: string }[] = [
-    { key: "ongoing", title: "Ongoing" },
-    { key: "upcoming", title: "Upcoming" },
-    { key: "completed", title: "Completed" },
-  ];
-  const grouped = useMemo(() => {
-    const byStatus: Record<Status, Tournament[]> = { ongoing: [], upcoming: [], completed: [] };
-    for (const t of filtered) byStatus[categorize(t)].push(t);
-    return byStatus;
-  }, [filtered]);
+  }, [tournaments, filter, tierFilter, activeTab, sortKey]);
 
   function toggleSelected(id: string) {
     setSelected((prev) => {
@@ -398,6 +408,27 @@ export default function TournamentsAdminPage() {
 
       {error && <p className="text-sm text-red-400">{error}</p>}
 
+      <div className="flex gap-1">
+        {([
+          { key: "ongoing", label: "🟢 Ongoing" },
+          { key: "upcoming", label: "Upcoming" },
+          { key: "completed", label: "Completed" },
+        ] as const).map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => {
+              setActiveTab(tab.key);
+              setSelected(new Set());
+            }}
+            className={`text-sm px-4 py-2 rounded-t ${
+              activeTab === tab.key ? "bg-white/10 text-white font-semibold" : "text-white/40 hover:text-white/70"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex gap-2 flex-1 flex-wrap">
           <input
@@ -414,16 +445,6 @@ export default function TournamentsAdminPage() {
             <option value="">All tiers</option>
             <option value="S">S-Tier</option>
             <option value="A">A-Tier</option>
-          </select>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as Status | "")}
-            className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
-          >
-            <option value="">All statuses</option>
-            <option value="ongoing">Ongoing</option>
-            <option value="upcoming">Upcoming</option>
-            <option value="completed">Completed</option>
           </select>
           <select
             value={sortKey}
@@ -456,16 +477,7 @@ export default function TournamentsAdminPage() {
         </label>
       )}
 
-      {sections.map(({ key, title }) => {
-        const items = grouped[key];
-        if (statusFilter && statusFilter !== key) return null;
-        if (items.length === 0 && statusFilter !== key) return null;
-        return (
-          <section key={key} className="space-y-2">
-            <h2 className="lv-heading text-sm flex items-center gap-2">
-              {key === "ongoing" && <span className="w-2 h-2 rounded-full bg-emerald-400" />}
-              {title} ({items.length})
-            </h2>
+      <section className="space-y-2">
             <table className="w-full text-sm">
               <thead className="text-white/40 text-left">
                 <tr>
@@ -483,7 +495,7 @@ export default function TournamentsAdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {items.map((t) => (
+                {filtered.map((t) => (
                   <tr key={t.id} className="border-t border-white/10">
                     {editingId === t.id ? (
                       <>
@@ -636,38 +648,62 @@ export default function TournamentsAdminPage() {
                             <option value="hot">🔥 Hot</option>
                           </select>
                         </td>
-                        <td className="py-2 text-right space-x-2">
-                          <button
-                            onClick={() => startEdit(t)}
-                            className="lv-btn-ghost !px-2 !py-1"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => deleteTournament(t.id, t.name)}
-                            className="lv-btn-danger !px-2 !py-1"
-                          >
-                            Delete
-                          </button>
+                        <td className="py-2 text-right">
+                          <div className="space-x-2">
+                            {t.liquipedia_slug && (
+                              <a
+                                href={`/tournaments/${t.liquipedia_slug}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="lv-btn-ghost !px-2 !py-1"
+                                title="Preview how this tournament reads on its public page"
+                              >
+                                View ↗
+                              </a>
+                            )}
+                            <button
+                              onClick={() => startEdit(t)}
+                              className="lv-btn-ghost !px-2 !py-1"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deleteTournament(t.id, t.name)}
+                              className="lv-btn-danger !px-2 !py-1"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                          {recentEdits[t.id] && (
+                            <div className="text-[10px] text-white/30 mt-1">
+                              Edited {timeAgoShort(recentEdits[t.id].changedAt)} by {recentEdits[t.id].actorLabel}
+                            </div>
+                          )}
                         </td>
                       </>
                     )}
                   </tr>
                 ))}
-                {items.length === 0 && (
+                {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="py-4 text-white/30 text-center">
-                      None.
+                    <td colSpan={9} className="py-4 text-white/30 text-center">
+                      No tournaments match.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
-          </section>
-        );
-      })}
+      </section>
 
-      {filtered.length === 0 && <p className="text-white/30 text-sm">No tournaments match.</p>}
+      {hasMoreTournaments && (
+        <button
+          onClick={() => loadTournaments(tournaments.length)}
+          disabled={loadingMore}
+          className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5 disabled:opacity-50"
+        >
+          {loadingMore ? "Loading…" : "Load more tournaments"}
+        </button>
+      )}
     </div>
   );
 }

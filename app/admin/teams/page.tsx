@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamSocialLinks } from "@/components/TeamSocialLinks";
 import { TeamLogo, LOGO_BG_OVERRIDES, type LogoBgOverride } from "@/components/TeamLogo";
+import { loadRecentEdits, timeAgoShort, type RecentEdit } from "@/lib/recentEdits";
 
 type Team = {
   id: string;
@@ -68,6 +69,43 @@ function formToPayload(f: TeamFormState) {
   };
 }
 
+const URL_FIELDS: { key: keyof TeamFormState; label: string }[] = [
+  { key: "websiteUrl", label: "Website" },
+  { key: "twitterUrl", label: "X / Twitter" },
+  { key: "instagramUrl", label: "Instagram" },
+  { key: "facebookUrl", label: "Facebook" },
+  { key: "youtubeUrl", label: "YouTube" },
+  { key: "discordUrl", label: "Discord" },
+];
+
+// Nothing downstream (public team page, share cards) ever checked these
+// were well-formed before saving — a typo'd URL just silently rendered a
+// dead link later with no signal at save time. Returns a list of invalid
+// field labels, empty when everything's fine or blank.
+function invalidUrlFields(f: TeamFormState): string[] {
+  const bad: string[] = [];
+  for (const { key, label } of URL_FIELDS) {
+    const value = (f[key] as string).trim();
+    if (!value) continue;
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") bad.push(label);
+    } catch {
+      bad.push(label);
+    }
+  }
+  return bad;
+}
+
+// Loose near-duplicate check for the add-team form — strips spaces/case/
+// common suffixes so "ONIC" vs "ONIC Esports" (different Liquipedia team-
+// template titles for what's really the same org) surfaces as a warning
+// before a duplicate gets created, instead of only being catchable after
+// the fact via the merge tool.
+function normalizeTeamName(name: string): string {
+  return name.toLowerCase().replace(/\b(esports?|gaming|team|club)\b/g, "").replace(/[^a-z0-9]/g, "").trim();
+}
+
 function teamToForm(t: Team): TeamFormState {
   return {
     name: t.name,
@@ -84,8 +122,13 @@ function teamToForm(t: Team): TeamFormState {
   };
 }
 
+const TEAMS_PAGE_SIZE = 50;
+
 export default function TeamsPage() {
   const [teams, setTeams] = useState<Team[]>([]);
+  const [hasMoreTeams, setHasMoreTeams] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [recentEdits, setRecentEdits] = useState<Record<string, RecentEdit>>({});
   const [form, setForm] = useState<TeamFormState>(EMPTY_FORM);
   const [showAddSocials, setShowAddSocials] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,18 +151,37 @@ export default function TeamsPage() {
     setEditForm((prev) => ({ ...prev, [key]: value }));
   }
 
-  async function loadTeams() {
-    const { data, error } = await supabase.from("teams").select(TEAM_COLUMNS).order("name", { ascending: true });
+  // Every admin list page except matches still fetched its whole table
+  // unbounded on load — fine while teams/tournaments/streams are small, but
+  // the same slowness matches hit as its list grew is just waiting to
+  // happen here too. Paginated the same way: a bounded first page, "Load
+  // more" for the rest. Search/filter below operates on whatever's loaded
+  // so far, same tradeoff the matches page already accepts on its
+  // paginated tabs.
+  async function loadTeams(offset = 0) {
+    if (offset > 0) setLoadingMore(true);
+    const { data, error } = await supabase
+      .from("teams")
+      .select(TEAM_COLUMNS)
+      .order("name", { ascending: true })
+      .range(offset, offset + TEAMS_PAGE_SIZE - 1);
+    setLoadingMore(false);
     if (error) {
       setError(error.message);
       return;
     }
-    setTeams((data as Team[]) ?? []);
+    const page = (data as Team[]) ?? [];
+    setTeams((prev) => (offset > 0 ? [...prev, ...page] : page));
+    setHasMoreTeams(page.length === TEAMS_PAGE_SIZE);
   }
 
   useEffect(() => {
     loadTeams();
   }, []);
+
+  useEffect(() => {
+    loadRecentEdits("teams", teams.map((t) => t.id)).then(setRecentEdits);
+  }, [teams]);
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -134,6 +196,15 @@ export default function TeamsPage() {
     const sorted = [...base].sort((a, b) => a.name.localeCompare(b.name));
     return sortKey === "name_desc" ? sorted.reverse() : sorted;
   }, [teams, filter, sortKey]);
+
+  const possibleDuplicates = useMemo(() => {
+    const q = normalizeTeamName(form.name);
+    if (q.length < 3) return [];
+    return teams.filter((t) => {
+      const n = normalizeTeamName(t.name);
+      return n.length >= 3 && (n.includes(q) || q.includes(n));
+    });
+  }, [form.name, teams]);
 
   function toggleSelected(id: string) {
     setSelected((prev) => {
@@ -152,8 +223,15 @@ export default function TeamsPage() {
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
     setError(null);
+
+    const badUrls = invalidUrlFields(form);
+    if (badUrls.length > 0) {
+      setError(`Not a valid URL: ${badUrls.join(", ")}`);
+      return;
+    }
+
+    setLoading(true);
 
     const { error } = await supabase.from("teams").insert(formToPayload(form));
 
@@ -180,6 +258,11 @@ export default function TeamsPage() {
   }
 
   async function saveEdit(id: string) {
+    const badUrls = invalidUrlFields(editForm);
+    if (badUrls.length > 0) {
+      setError(`Not a valid URL: ${badUrls.join(", ")}`);
+      return;
+    }
     const { error } = await supabase.from("teams").update(formToPayload(editForm)).eq("id", id);
     if (error) {
       setError(error.message);
@@ -284,6 +367,11 @@ export default function TeamsPage() {
               placeholder="e.g. RRQ Hoshi"
               className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal"
             />
+            {possibleDuplicates.length > 0 && (
+              <p className="text-[10px] text-amber-300">
+                Possibly already exists: {possibleDuplicates.map((t) => t.name).join(", ")} — use Merge below instead of creating a duplicate.
+              </p>
+            )}
           </div>
           <div className="w-40 space-y-1">
             <label className="text-xs text-white/50">Location</label>
@@ -567,7 +655,8 @@ export default function TeamsPage() {
                   <td className="py-2">
                     <TeamSocialLinks team={t} />
                   </td>
-                  <td className="py-2 text-right space-x-2">
+                  <td className="py-2 text-right">
+                    <div className="space-x-2">
                     <button
                       onClick={() => startEdit(t)}
                       className="lv-btn-ghost !px-2 !py-1"
@@ -580,6 +669,12 @@ export default function TeamsPage() {
                     >
                       Delete
                     </button>
+                    </div>
+                    {recentEdits[t.id] && (
+                      <div className="text-[10px] text-white/30 mt-1">
+                        Edited {timeAgoShort(recentEdits[t.id].changedAt)} by {recentEdits[t.id].actorLabel}
+                      </div>
+                    )}
                   </td>
                 </>
               )}
@@ -590,6 +685,15 @@ export default function TeamsPage() {
           )}
         </tbody>
       </table>
+      {hasMoreTeams && (
+        <button
+          onClick={() => loadTeams(teams.length)}
+          disabled={loadingMore}
+          className="text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5 disabled:opacity-50"
+        >
+          {loadingMore ? "Loading…" : "Load more teams"}
+        </button>
+      )}
     </div>
   );
 }

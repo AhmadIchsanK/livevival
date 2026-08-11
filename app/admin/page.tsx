@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTheme } from "next-themes";
 import {
   ResponsiveContainer,
@@ -18,6 +18,7 @@ import {
   Legend,
 } from "recharts";
 import { supabase } from "@/lib/supabaseClient";
+import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type MatchRow = {
   id: string;
@@ -27,7 +28,7 @@ type MatchRow = {
   youtube_url: string | null;
   tournament_id: string | null;
 };
-type TournamentRow = { id: string; name: string; tier: "S" | "A"; start_date: string | null; end_date: string | null };
+type TournamentRow = { id: string; name: string; tier: "S" | "A"; start_date: string | null; end_date: string | null; logo_url: string | null };
 type StreamPlatformRow = { platform: "youtube" | "facebook" | "other" };
 type ActivityLogPlayerInsert = { row_id: string; changed_at: string; new_data: Record<string, unknown> | null };
 type ExtractionFailureRow = { id: string; source_url: string | null; error_message: string | null; created_at: string };
@@ -72,12 +73,47 @@ function StatTile({ label, value, sub }: { label: string; value: string | number
   );
 }
 
-function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+function ChartCard({ title, children, heightClass = "h-64" }: { title: string; children: React.ReactNode; heightClass?: string }) {
   return (
     <div className="lv-card p-4">
       <div className="text-xs uppercase tracking-widest text-white/40 mb-3">{title}</div>
-      <div className="h-64">{children}</div>
+      <div className={heightClass}>{children}</div>
     </div>
+  );
+}
+
+// Custom Y-axis tick for the tournament participation chart — draws the
+// tournament's logo plus its full, untruncated name instead of recharts'
+// default plain-text tick (which the tickFormatter used to hard-clip at 16
+// chars). Logos render as a plain SVG <image>, not a canvas read, so the
+// cross-origin proxying that TeamLogo needs for pixel sampling isn't needed
+// here — it just displays.
+function TournamentAxisTick({
+  x,
+  y,
+  payload,
+  axis,
+  fill,
+}: {
+  x?: number;
+  y?: number;
+  payload?: { value: string };
+  axis: { name: string; logo: string | null }[];
+  fill: string;
+}) {
+  if (x == null || y == null || !payload) return null;
+  const entry = axis.find((a) => a.name === payload.value);
+  const logo = entry?.logo ?? null;
+  const label = payload.value;
+  return (
+    <g transform={`translate(${x},${y})`}>
+      {logo && (
+        <image href={logo} x={-200} y={-8} width={16} height={16} preserveAspectRatio="xMidYMid meet" />
+      )}
+      <text x={logo ? -178 : -196} y={0} dy={4} textAnchor="start" fontSize={11} fill={fill}>
+        {label}
+      </text>
+    </g>
   );
 }
 
@@ -91,17 +127,18 @@ export default function AdminHome() {
   const [recentPlayers, setRecentPlayers] = useState<ActivityLogPlayerInsert[]>([]);
   const [failures, setFailures] = useState<ExtractionFailureRow[]>([]);
   const [failureCount7d, setFailureCount7d] = useState<number | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => setMounted(true), []);
 
-  useEffect(() => {
-    let active = true;
-    async function load() {
-      const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+  const load = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    const sevenDaysAgo = new Date(Date.now() - 7 * 86400000).toISOString();
 
       const [matchesRes, tournamentsRes, streamsRes, playersLogRes, failuresRes, failuresCountRes] = await Promise.all([
         supabase.from("matches").select("id, status, notification_tier, scheduled_at, youtube_url, tournament_id"),
-        supabase.from("tournaments").select("id, name, tier, start_date, end_date"),
+        supabase.from("tournaments").select("id, name, tier, start_date, end_date, logo_url"),
         supabase.from("streams").select("platform"),
         supabase
           .from("activity_log")
@@ -121,20 +158,20 @@ export default function AdminHome() {
           .gte("created_at", sevenDaysAgo),
       ]);
 
-      if (!active) return;
       setMatches((matchesRes.data as MatchRow[]) ?? []);
       setTournaments((tournamentsRes.data as TournamentRow[]) ?? []);
       setStreamPlatforms((streamsRes.data as StreamPlatformRow[]) ?? []);
       setRecentPlayers((playersLogRes.data as ActivityLogPlayerInsert[]) ?? []);
       setFailures((failuresRes.data as ExtractionFailureRow[]) ?? []);
       setFailureCount7d(failuresCountRes.count ?? 0);
+      setLastUpdated(new Date());
       setLoading(false);
-    }
-    load();
-    return () => {
-      active = false;
-    };
+      setRefreshing(false);
   }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const tournamentById = useMemo(() => {
     const map = new Map<string, TournamentRow>();
@@ -171,15 +208,24 @@ export default function AdminHome() {
   }, [tournaments]);
 
   // --- Stream ingestion: matches with vs without a resolved youtube_url ---
+  // All-time on its own buries a healthy recent rate under old backlog
+  // matches that were never going to get a link — a 30-day rate is the
+  // number that actually says "is ingestion working right now."
   const streamIngestion = useMemo(() => {
-    const total = matches.length;
-    const resolved = matches.filter((m) => m.youtube_url).length;
-    const rate = total > 0 ? Math.round((resolved / total) * 100) : 0;
+    const thirtyDaysAgo = Date.now() - 30 * 86400000;
+    const recent = matches.filter((m) => m.scheduled_at && new Date(m.scheduled_at).getTime() >= thirtyDaysAgo);
+
+    function rateFor(list: MatchRow[]) {
+      const total = list.length;
+      const resolved = list.filter((m) => m.youtube_url).length;
+      return { total, resolved, rate: total > 0 ? Math.round((resolved / total) * 100) : 0 };
+    }
+
     const missingFinished = matches
       .filter((m) => m.status === "finished" && !m.youtube_url)
       .sort((a, b) => (b.scheduled_at ?? "").localeCompare(a.scheduled_at ?? ""))
       .slice(0, 5);
-    return { total, resolved, rate, missingFinished };
+    return { last30d: rateFor(recent), allTime: rateFor(matches), missingFinished };
   }, [matches]);
 
   // --- Chart: match volume by month, last 12 months ---
@@ -227,7 +273,11 @@ export default function AdminHome() {
       counts.set(m.tournament_id, (counts.get(m.tournament_id) ?? 0) + 1);
     }
     return Array.from(counts.entries())
-      .map(([id, count]) => ({ name: tournamentById.get(id)?.name ?? "Unknown", count }))
+      .map(([id, count]) => ({
+        name: tournamentById.get(id)?.name ?? "Unknown",
+        logo: proxiedImageUrl(tournamentById.get(id)?.logo_url) ?? null,
+        count,
+      }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 10)
       .reverse(); // horizontal bar reads top-to-bottom as highest-first
@@ -254,13 +304,27 @@ export default function AdminHome() {
 
   return (
     <div className="text-white space-y-6">
-      <div>
-        <h1 className="lv-heading text-lg">Admin dashboard</h1>
-        <p className="text-sm text-white/50 mt-1">
-          Liquipedia import runs on a schedule (see .github/workflows) and an always-on poller (Railway) keeps
-          live/imminent matches close to real-time. A match can be switched to local-OCR (admin PC) control from its
-          live console at any time.
-        </p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="lv-heading text-lg">Admin dashboard</h1>
+          <p className="text-sm text-white/50 mt-1">
+            Liquipedia import runs on a schedule (see .github/workflows) and an always-on poller (Railway) keeps
+            live/imminent matches close to real-time. A match can be switched to local-OCR (admin PC) control from its
+            live console at any time.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {lastUpdated && (
+            <span className="text-xs text-white/30">Updated {timeAgo(lastUpdated.toISOString())}</span>
+          )}
+          <button
+            onClick={() => load(true)}
+            disabled={refreshing}
+            className="lv-btn-ghost !px-3 !py-1.5 text-xs disabled:opacity-50"
+          >
+            {refreshing ? "Refreshing…" : "↻ Refresh"}
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -273,9 +337,9 @@ export default function AdminHome() {
             <StatTile label="Upcoming" value={statusSummary.base.scheduled} sub={tierSubline("scheduled")} />
             <StatTile label="Finished" value={statusSummary.base.finished} sub={tierSubline("finished")} />
             <StatTile
-              label="Stream link coverage"
-              value={`${streamIngestion.rate}%`}
-              sub={`${streamIngestion.resolved} / ${streamIngestion.total} matches`}
+              label="Stream link coverage (30d)"
+              value={`${streamIngestion.last30d.rate}%`}
+              sub={`${streamIngestion.last30d.resolved} / ${streamIngestion.last30d.total} matches · all-time ${streamIngestion.allTime.rate}%`}
             />
           </div>
 
@@ -383,25 +447,27 @@ export default function AdminHome() {
               </ResponsiveContainer>
             </ChartCard>
 
-            <ChartCard title="Tournament participation — top 10 by match count">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={topTournaments} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
-                  <CartesianGrid stroke={chartColors.grid} horizontal={false} />
-                  <XAxis type="number" tick={{ fill: chartColors.axis, fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    width={110}
-                    tick={{ fill: chartColors.axis, fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v: string) => (v.length > 16 ? `${v.slice(0, 15)}…` : v)}
-                  />
-                  <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: chartColors.axis }} />
-                  <Bar dataKey="count" name="Matches" fill="#E31E2A" radius={[0, 3, 3, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </ChartCard>
+            <div className="lg:col-span-2">
+              <ChartCard title="Tournament participation — top 10 by match count" heightClass="h-[420px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={topTournaments} layout="vertical" margin={{ top: 4, right: 16, left: 24, bottom: 0 }}>
+                    <CartesianGrid stroke={chartColors.grid} horizontal={false} />
+                    <XAxis type="number" tick={{ fill: chartColors.axis, fontSize: 11 }} axisLine={false} tickLine={false} allowDecimals={false} />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      width={220}
+                      tick={(props) => <TournamentAxisTick {...props} axis={topTournaments} fill={chartColors.axis} />}
+                      axisLine={false}
+                      tickLine={false}
+                      interval={0}
+                    />
+                    <Tooltip contentStyle={tooltipStyle} labelStyle={{ color: chartColors.axis }} />
+                    <Bar dataKey="count" name="Matches" fill="#E31E2A" radius={[0, 3, 3, 0]} barSize={20} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartCard>
+            </div>
 
             <ChartCard title="Matches by tournament tier">
               <ResponsiveContainer width="100%" height="100%">

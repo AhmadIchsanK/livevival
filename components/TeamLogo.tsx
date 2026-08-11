@@ -118,39 +118,24 @@ export function TeamLogo({
 }) {
   const proxied = proxiedImageUrl(url);
   const isDark = useIsDarkLogo(proxied);
-  // Dark mode's rule is "a dark logo gets a solid white backing" (light
-  // logos already read fine on the default translucent-white box, since
-  // the page behind it is dark). Light mode needs the opposite pairing:
-  // the page itself is light now, so a dark logo already reads fine on
-  // the default translucent box, while a light logo is the one that
-  // needs a solid (dark) backing to stay visible. Defaults to the
-  // dark-mode pairing before mount/theme resolution to avoid a layout
-  // jump on first paint.
+  // Backing is white by default, regardless of theme — a solid, predictable
+  // canvas every logo sits on. The only thing that changes it is the logo's
+  // own brightness: a bright/light-colored logo would wash out against white,
+  // so that case (and only that case) gets a solid ink/charcoal backing
+  // instead. This is intentionally theme-independent — a logo's own colors
+  // don't change with the viewer's theme, so neither should its backing.
   const { resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  const isLightTheme = mounted && resolvedTheme === "light";
   const overrideBg = bgOverride ? OVERRIDE_BG_CLASSES[bgOverride] : null;
   // A manual override always gets a solid backing (that's the point of
-  // picking one) and skips the auto light/dark pairing entirely. The auto
-  // path is gated on actually having a logo to sample — without one,
-  // isDark just sits at its default `false`, and light theme's `!isDark`
-  // read that as "definitely wants a solid backing", forcing the "?"
-  // placeholder onto a solid box (and making it near-unreadable once the
-  // solid color above was fixed to be genuinely dark). No logo means
-  // nothing was ever classified dark or light, so it stays on the
-  // ever-present translucent box instead, same as before this override
-  // feature existed.
-  const wantsSolidBacking = overrideBg ? true : !proxied ? false : isLightTheme ? !isDark : isDark;
-  // Literal hex, not the ink/paper/white theme tokens — those flip meaning
-  // between themes (ink is "page background", near-white in light mode),
-  // so using bg-ink here for a light theme's "needs a dark backing" case
-  // resolved to a near-white box on a near-white page: the solid backing
-  // this branch exists to add all but disappeared. The actual colors this
-  // pairing needs (solid white behind a dark logo, solid near-black behind
-  // a light logo) are fixed regardless of theme, so they're spelled out
-  // directly instead of routed through a variable that isn't.
-  const solidBg = overrideBg ?? (isLightTheme ? "bg-[#0A0A0A]" : "bg-[#FFFFFF]");
+  // picking one). The auto path is gated on actually having a logo to
+  // sample — without one, there's nothing to classify bright/dark, so it
+  // stays on the translucent placeholder box instead of forcing the "?"
+  // placeholder onto a solid color.
+  const wantsSolidBacking = overrideBg ? true : !!proxied;
+  const solidBg = overrideBg ?? (isDark ? "bg-[#FFFFFF]" : "bg-[#0A0A0A]");
+  const isLightTheme = mounted && resolvedTheme === "light";
   const translucentBg = isLightTheme ? "bg-black/10" : "bg-white/10";
   return (
     <div className={`relative flex items-center justify-center shrink-0 ${glow ? "" : className}`}>

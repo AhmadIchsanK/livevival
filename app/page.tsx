@@ -15,6 +15,7 @@ type MatchRow = {
   status: string;
   scheduled_at: string | null;
   format: string | null;
+  stage: string | null;
   update_source: "liquipedia" | "local_ocr";
   notification_tier: "normal" | "hot" | "priority";
   series_winner_team_id: string | null;
@@ -34,7 +35,7 @@ const PAGE_SIZE = 30;
 const UPCOMING_DAYS_RANGE = 30;
 const FINISHED_FETCH_CAP = 300; // generous, but bounded — see note below
 
-const MATCH_SELECT = `id, status, scheduled_at, format, update_source, notification_tier, series_winner_team_id,
+const MATCH_SELECT = `id, status, scheduled_at, format, stage, update_source, notification_tier, series_winner_team_id,
   tournament:tournaments(name, tier, liquipedia_slug, logo_url, default_notification_tier),
   team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
   team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`;
@@ -289,6 +290,7 @@ function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: numbe
         )}{" "}
         <TournamentTierIcon tier={m.tournament?.default_notification_tier} />{" "}
         · {m.tournament?.tier}-Tier · {m.format}
+        {m.stage ? ` · ${m.stage}` : ""}
       </p>
     </a>
   );
@@ -485,6 +487,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
                         m.tournament?.name
                       )}{" "}
                       <TournamentTierIcon tier={m.tournament?.default_notification_tier} />{" "}
+                      {m.stage ? `· ${m.stage} ` : ""}
                       · {new Date(m.scheduled_at!).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                     </p>
                     {(m.update_source === "local_ocr" || m.notification_tier !== "normal") && (
@@ -566,6 +569,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   )}{" "}
                   <TournamentTierIcon tier={m.tournament?.default_notification_tier} />{" "}
                   · {m.tournament?.tier}-Tier · {m.format}
+                  {m.stage ? ` · ${m.stage}` : ""}
                   {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
                 </p>
                 <div className="flex items-center gap-1.5">

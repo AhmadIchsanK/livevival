@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
 import { withQueryCache } from "@/lib/queryCache";
+import { loadRecentEdits, timeAgoShort, type RecentEdit } from "@/lib/recentEdits";
 
 type Option = { id: string; label: string };
 
@@ -134,10 +135,12 @@ export default function MatchesPage() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [streams, setStreams] = useState<{ id: string; url: string; overlay_template: string }[]>([]);
   const [activeTab, setActiveTab] = useState<"scheduled" | "live" | "finished">("live");
-  const [hasMoreFinished, setHasMoreFinished] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [searchFilter, setSearchFilter] = useState("");
+  const [tierFilter, setTierFilter] = useState<MatchTier | "">("");
   const [sortBy, setSortBy] = useState<"newest" | "oldest" | "status">("newest");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [recentEdits, setRecentEdits] = useState<Record<string, RecentEdit>>({});
 
   const [tournamentId, setTournamentId] = useState("");
   const [teamAId, setTeamAId] = useState("");
@@ -240,26 +243,26 @@ export default function MatchesPage() {
     setStreams(st ?? []);
   }
 
-  const MATCHES_PAGE_SIZE = 30;
-
-  async function loadMatches(tab: "scheduled" | "live" | "finished", offset = 0) {
+  async function loadMatches(tab: "scheduled" | "live" | "finished", offset = 0, tier: MatchTier | "" = tierFilter) {
     try {
       // Use cached API endpoint for much better performance on large lists
-      const response = await fetch(`/api/admin/matches-by-status?status=${tab}&offset=${offset}`);
+      const params = new URLSearchParams({ status: tab, offset: String(offset) });
+      if (tier) params.set("tier", tier);
+      const response = await fetch(`/api/admin/matches-by-status?${params}`);
       if (!response.ok) {
         const errorData = await response.json();
         setError(errorData.error || "Failed to load matches");
         return;
       }
 
-      const { matches, hasMore } = await response.json();
+      const { matches, hasMore: more } = await response.json();
 
-      if (tab === "finished" && offset > 0) {
+      if (offset > 0) {
         setMatches((prev) => [...prev, ...((matches as unknown as Match[]) ?? [])]);
       } else {
         setMatches((matches as unknown as Match[]) ?? []);
       }
-      setHasMoreFinished(hasMore);
+      setHasMore(more);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load matches");
     }
@@ -270,13 +273,23 @@ export default function MatchesPage() {
   }, []);
 
   useEffect(() => {
-    loadMatches(activeTab);
-  }, [activeTab]);
+    loadMatches(activeTab, 0, tierFilter);
+  }, [activeTab, tierFilter]);
+
+  useEffect(() => {
+    loadRecentEdits("matches", matches.map((m) => m.id)).then(setRecentEdits);
+  }, [matches]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    setLoading(true);
     setError(null);
+
+    if (teamAId && teamAId === teamBId) {
+      setError("Team A and Team B can't be the same team.");
+      return;
+    }
+
+    setLoading(true);
 
     const { error } = await supabase.from("matches").insert({
       tournament_id: tournamentId || null,
@@ -389,6 +402,30 @@ export default function MatchesPage() {
     loadMatches(activeTab);
   }
 
+  // Correcting a batch of miscategorized matches previously meant editing
+  // one row at a time — these two mirror bulkDeleteMatches for the two
+  // fields that most often need a group fix: notification tier (e.g. a
+  // whole stage got created Normal but should be Hot) and tournament
+  // (matches accidentally created against the wrong/duplicate tournament).
+  async function bulkSetTier(tier: MatchTier) {
+    if (selected.size === 0) return;
+    const { error } = await supabase.from("matches").update(matchTierFields(tier)).in("id", Array.from(selected));
+    if (error) setError(error.message);
+    setSelected(new Set());
+    loadMatches(activeTab);
+  }
+
+  async function bulkReassignTournament(tournamentIdToAssign: string) {
+    if (selected.size === 0 || !tournamentIdToAssign) return;
+    const { error } = await supabase
+      .from("matches")
+      .update({ tournament_id: tournamentIdToAssign })
+      .in("id", Array.from(selected));
+    if (error) setError(error.message);
+    setSelected(new Set());
+    loadMatches(activeTab);
+  }
+
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTournamentId, setEditTournamentId] = useState("");
   const [editTeamAId, setEditTeamAId] = useState("");
@@ -437,6 +474,10 @@ export default function MatchesPage() {
   }
 
   async function saveEditMatch(id: string) {
+    if (editTeamAId && editTeamAId === editTeamBId) {
+      setError("Team A and Team B can't be the same team.");
+      return;
+    }
     await updateMatch(id, {
       tournament_id: editTournamentId,
       team_a_id: editTeamAId,
@@ -621,13 +662,54 @@ export default function MatchesPage() {
               <option value="oldest">Oldest first</option>
               <option value="status">Sort by status</option>
             </select>
+            <select
+              value={tierFilter}
+              onChange={(e) => setTierFilter(e.target.value as MatchTier | "")}
+              title="Filter by Normal / Priority / Hot"
+              className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+            >
+              <option value="">All tiers</option>
+              {(Object.keys(MATCH_TIER_LABELS) as MatchTier[]).map((t) => (
+                <option key={t} value={t}>{MATCH_TIER_LABELS[t]}</option>
+              ))}
+            </select>
             {selected.size > 0 && (
-              <button
-                onClick={bulkDeleteMatches}
-                className="lv-btn-danger whitespace-nowrap"
-              >
-                Delete {selected.size} selected
-              </button>
+              <>
+                <select
+                  defaultValue=""
+                  onChange={(e) => {
+                    if (e.target.value) bulkSetTier(e.target.value as MatchTier);
+                    e.target.value = "";
+                  }}
+                  title="Set tier for all selected matches"
+                  className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+                >
+                  <option value="">Set tier...</option>
+                  {(Object.keys(MATCH_TIER_LABELS) as MatchTier[]).map((t) => (
+                    <option key={t} value={t}>{MATCH_TIER_LABELS[t]}</option>
+                  ))}
+                </select>
+                <select
+                  defaultValue=""
+                  onChange={(e) => {
+                    if (e.target.value) bulkReassignTournament(e.target.value);
+                    e.target.value = "";
+                  }}
+                  title="Reassign all selected matches to a tournament"
+                  className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs max-w-[160px]"
+                >
+                  <option value="">Reassign tournament...</option>
+                  {tournaments.map((t) => (
+                    <option key={t.id} value={t.id}>{t.label}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={bulkDeleteMatches}
+                  className="lv-btn-danger whitespace-nowrap"
+                >
+                  Delete {selected.size} selected
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -761,7 +843,12 @@ export default function MatchesPage() {
                   </div>
                 </div>
               )}
-              <p className="text-[10px] text-white/30 uppercase tracking-wide">{m.state?.replace(/_/g, " ")}</p>
+              <p className="text-[10px] text-white/30 uppercase tracking-wide">
+                {m.state?.replace(/_/g, " ")}
+                {recentEdits[m.id] && (
+                  <> · edited {timeAgoShort(recentEdits[m.id].changedAt)} by {recentEdits[m.id].actorLabel}</>
+                )}
+              </p>
 
               <div className="flex gap-2 items-center flex-wrap">
                 <select
@@ -831,8 +918,14 @@ export default function MatchesPage() {
                 </button>
                 <button
                   onClick={() => updateMatch(m.id, { status: "live" })}
-                  disabled={!m.youtube_url}
-                  title={m.youtube_url ? undefined : "Add a stream link first — a match can't go live without one"}
+                  disabled={!m.youtube_url || !m.team_a_id || !m.team_b_id}
+                  title={
+                    !m.team_a_id || !m.team_b_id
+                      ? "Assign both teams first — a match can't go live as TBD vs TBD"
+                      : !m.youtube_url
+                      ? "Add a stream link first — a match can't go live without one"
+                      : undefined
+                  }
                   className="lv-btn border border-win/50 text-win hover:bg-win/10 hover:border-win disabled:opacity-40"
                 >
                   Set live
@@ -910,12 +1003,12 @@ export default function MatchesPage() {
           ))}
           {filteredMatches.length === 0 && <p className="text-white/30 text-sm">No matches match.</p>}
         </div>
-        {activeTab === "finished" && hasMoreFinished && (
+        {hasMore && (
           <button
-            onClick={() => loadMatches("finished", matches.length)}
+            onClick={() => loadMatches(activeTab, matches.length)}
             className="mt-3 text-xs text-white/50 hover:text-white border border-white/10 rounded px-3 py-1.5"
           >
-            Load more finished matches
+            Load more {activeTab === "finished" ? "finished" : activeTab === "scheduled" ? "upcoming" : "ongoing"} matches
           </button>
         )}
       </div>

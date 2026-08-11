@@ -1853,6 +1853,12 @@ export default function LiveConsolePage() {
   // outline. ON: full drag/resize/click-to-edit behavior, unchanged from
   // before this toggle existed.
   const [trackerEditMode, setTrackerEditMode] = useState(false);
+  // Show/hide the tracker management tools (auto-place, add tracker, the
+  // full tracker table) — once a match's regions are all calibrated this
+  // is rarely touched again, so it's collapsed by default and reachable
+  // via a small toggle instead of always taking up space above the
+  // capture readings.
+  const [showTrackerTools, setShowTrackerTools] = useState(false);
   const [pendingBox, setPendingBox] = useState<RegionBox | null>(null);
   const [pendingBoxPhase, setPendingBoxPhase] = useState<string>("");
   const [pendingBoxField, setPendingBoxField] = useState<string>("");
@@ -4444,28 +4450,36 @@ export default function LiveConsolePage() {
             ends right where its content ends, doesn't stretch to match
             the action deck's height. */}
         <div
-          className="flex flex-col overflow-y-auto rounded-lg border border-white/10 w-full max-w-full lg:sticky lg:top-[calc(var(--lv-admin-header-h,0px)+1px)] lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
+          className="flex flex-col rounded-lg border border-white/10 w-full max-w-full lg:sticky lg:top-[calc(var(--lv-admin-header-h,0px)+1px)] lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
           style={{
             width: "100%",
           }}
         >
-          <div className="p-3 lg:p-4 space-y-4">
-            {/* Livestream embed - scrollable if needed, not resizable */}
-            <div className="space-y-2">
-              <h3 className="font-semibold text-sm">Livestream</h3>
-              {embedUrl ? (
-                <iframe
-                  src={embedUrl}
-                  className="w-full aspect-video rounded"
-                  allow="autoplay; encrypted-media"
-                  allowFullScreen
-                />
-              ) : (
-                <div className="w-full aspect-video bg-white/5 rounded flex items-center justify-center text-white/30 text-xs border border-white/10">
-                  No livestream URL
-                </div>
-              )}
-            </div>
+          {/* Livestream embed — deliberately NOT part of the scrollable
+              area below, and no allowFullScreen. If the admin's local
+              OCR capture is a screen-share of this exact browser tab (see
+              "Match capture — one monitor, one feed" below), scrolling the
+              pane or the stream escaping into fullscreen would shift
+              exactly what's on screen relative to every %-based tracker
+              region already calibrated against it — silently breaking
+              detection mid-match. This block stays fixed at the top of
+              the pane; only the capture/calibration tools below it
+              scroll. */}
+          <div className="p-3 lg:p-4 pb-0 shrink-0 space-y-2">
+            <h3 className="font-semibold text-sm">Livestream</h3>
+            {embedUrl ? (
+              <iframe
+                src={embedUrl}
+                className="w-full aspect-video rounded"
+                allow="autoplay; encrypted-media"
+              />
+            ) : (
+              <div className="w-full aspect-video bg-white/5 rounded flex items-center justify-center text-white/30 text-xs border border-white/10">
+                No livestream URL
+              </div>
+            )}
+          </div>
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 lg:p-4 space-y-4">
 
             {/* Local capture (admin PC) — only drives anything when this match is on local_ocr.
                 Moved to directly under the match header (was previously the very last section
@@ -4885,6 +4899,16 @@ export default function LiveConsolePage() {
                 )}
 
                 {captureMode === "manual" && (
+                  <button
+                    onClick={() => setShowTrackerTools((v) => !v)}
+                    className="w-full text-left text-xs rounded px-3 py-2 border border-white/10 hover:bg-white/10 flex items-center justify-between gap-2 text-white/60"
+                  >
+                    <span>Tracker management (auto-place, add/edit trackers)</span>
+                    <span>{showTrackerTools ? "▾ Hide" : "▸ Show"}</span>
+                  </button>
+                )}
+
+                {captureMode === "manual" && showTrackerTools && (
                   <div className="space-y-3">
                     {/* Fires automatically once per match the first time it
                         has zero GAME_STARTED trackers (see the

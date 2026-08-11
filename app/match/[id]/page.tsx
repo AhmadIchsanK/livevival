@@ -70,7 +70,17 @@ const PHASE_LABELS: Record<string, string> = {
 type LayoutBucket = "default" | "draft" | "game" | "finished";
 function layoutBucketFor(state: string, selectedGame: Game | null, liveGameId: string | null): LayoutBucket {
   if (state === "SERIES_FINISHED") return "finished";
-  if (selectedGame && selectedGame.id !== liveGameId && selectedGame.status === "finished") return "default";
+  // Any game that's actually finished shows its own recap/stats — whether
+  // that's mid-series (GAME_FINISHED intermission, viewing the game that
+  // just ended) or an older game revisited later via the accordion once a
+  // later game is live. Previously this only covered the "revisit an
+  // older game" case and returned "default" (pregame hype graphics)
+  // instead — meaning the game that just finished had its Scoreboard/
+  // Objectives/Draft recap yanked the instant it ended, and switching
+  // back to it via the accordion showed the same hype graphics again
+  // instead of its actual result. A finished game's own data should never
+  // be reachable-but-hidden like that.
+  if (selectedGame && selectedGame.status === "finished") return "finished";
   if (state === "DRAFT_STARTED" || state === "DRAFT_COMPLETE") return "draft";
   if (state === "MATCH_NOT_STARTED" || state === "GAME_FINISHED") return "default";
   return "game";
@@ -323,6 +333,19 @@ export default function PublicMatchPage() {
   const [recapPreviewOpen, setRecapPreviewOpen] = useState(false);
   const [screenshotPreview, setScreenshotPreview] = useState<Screenshot | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
+  // Video size mode — Small (default: full-width stream, everything
+  // stacked below it, today's behavior) / Theater (50:50 split, stats
+  // move beside the stream) / Big (70:30, stream dominant). Persisted so
+  // a viewer's choice survives a reload.
+  const [videoSize, setVideoSize] = useState<"small" | "theater" | "big">("small");
+  useEffect(() => {
+    const saved = localStorage.getItem("lv-public-video-size");
+    if (saved === "small" || saved === "theater" || saved === "big") setVideoSize(saved);
+  }, []);
+  function applyVideoSize(size: "small" | "theater" | "big") {
+    setVideoSize(size);
+    localStorage.setItem("lv-public-video-size", size);
+  }
   const [recapRefreshKey, setRecapRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -979,6 +1002,34 @@ export default function PublicMatchPage() {
         )}
       </header>
 
+      {/* Video size — Small keeps the single-column flow below exactly as
+          it's always worked (sticky stream, everything stacked
+          underneath). Theater/Big instead split the page into two columns
+          at lg+ (video left, every stats section to its right, in its own
+          independently-scrolling column) — see the grid wrapper right
+          below this toggle. */}
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[10px] uppercase tracking-wide text-white/40">Video size</span>
+        {(["small", "theater", "big"] as const).map((size) => (
+          <button
+            key={size}
+            onClick={() => applyVideoSize(size)}
+            className={`text-xs px-2.5 py-1 rounded border capitalize transition-colors ${
+              videoSize === size ? "border-signal bg-signal/20 text-signal" : "border-white/10 text-white/50 hover:bg-white/5"
+            }`}
+          >
+            {size}
+          </button>
+        ))}
+      </div>
+
+      <div
+        className={
+          videoSize === "small"
+            ? "space-y-8"
+            : `lg:grid gap-6 items-start ${videoSize === "theater" ? "lg:grid-cols-[1fr_1fr]" : "lg:grid-cols-[7fr_3fr]"}`
+        }
+      >
       {/* Sticky "theater mode" — stays pinned to the top of the viewport
           while everything below (moments, draft recap, stats, etc.)
           scrolls underneath it, instead of scrolling the stream itself
@@ -986,8 +1037,10 @@ export default function PublicMatchPage() {
           own (no grid split needed): it sticks in place once its natural
           scroll position reaches `top`, and stays stuck because nothing
           shorter constrains it — the rest of the page just keeps scrolling
-          past below. bg-ink covers the seam so nothing shows through. */}
-      <div className="sticky top-0 z-10 bg-ink pt-2 pb-3 space-y-2">
+          past below. bg-ink covers the seam so nothing shows through. In
+          Theater/Big mode this is the grid's left column instead of the
+          full page width — still sticky, now within that column. */}
+      <div className={`sticky top-0 z-10 bg-ink pt-2 pb-3 space-y-2 ${videoSize !== "small" ? "lg:self-start" : ""}`}>
         {/* Once at least one game is decided, the switcher reads as a
             recap accordion (▶ collapsed / ▼ expanded row per game) instead
             of a plain pill row — same underlying selectedGameId toggle
@@ -1111,6 +1164,13 @@ export default function PublicMatchPage() {
         )}
       </div>
 
+      {/* Theater/Big mode's right column — every stats section from here
+          down to the end of the page, in its own independently-scrolling
+          box instead of the page's own scroll. Small mode gets the exact
+          same wrapper with different classes (space-y-8, no height/scroll
+          constraint) rather than a second copy of this markup, so there's
+          one JSX tree either way — just restyled per mode. */}
+      <div className={videoSize === "small" ? "space-y-8" : "space-y-8 lg:max-h-screen lg:overflow-y-auto lg:pr-1"}>
       {match.update_source === "local_ocr" && (
         <section>
           <div className="flex items-center gap-3 mb-2 flex-wrap">
@@ -1499,6 +1559,56 @@ export default function PublicMatchPage() {
         <span className="text-white/30 text-xs">No screenshots captured.</span>
       </section>
       )}
+
+      {/* Pick/ban order — during an ongoing Hot match, this used to be
+          skipped entirely (the Live Scoreboard's own hero column already
+          shows who picked what, so a full recap felt redundant) but that
+          meant ban order specifically was never visible anywhere during
+          gameplay, only before or after it. Collapsed and bottom-most
+          instead of removed — reachable, not competing with the live
+          scoreboard above for attention. */}
+      {match.update_source === "local_ocr" && layoutBucket === "game" && (
+        <details className="group">
+          <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden lv-heading mb-3 flex items-center gap-1.5">
+            <span className="text-white/40 text-sm transition-transform group-open:rotate-90">▸</span>
+            Pick &amp; ban order {games.length > 1 && `— Game ${selectedGame?.game_number}`}
+          </summary>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+            {[
+              { name: match.team_a?.name, bans: teamABans, picks: teamAPicks },
+              { name: match.team_b?.name, bans: teamBBans, picks: teamBPicks },
+            ].map((t, i) => (
+              <div key={i} className="lv-card-flush p-4 space-y-3">
+                <p className="text-white/70 font-semibold">{t.name}</p>
+                <div className="rounded-lg border border-white/10 p-3 space-y-2">
+                  <p className="text-[10px] uppercase tracking-wider text-white/40">Picks</p>
+                  <div className="flex flex-wrap gap-3">
+                    {t.picks.map((p) => (
+                      <div key={p.id} className="flex flex-col items-center gap-1 w-14">
+                        <HeroIcon url={p.hero?.icon_url} name={p.hero_name} size="md" />
+                        <span className="text-[10px] text-white/70 text-center leading-tight truncate w-full">{p.hero_name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-white/10 p-3 space-y-2">
+                  <p className="text-[10px] uppercase tracking-wider text-white/40">Bans</p>
+                  <div className="flex flex-wrap gap-3">
+                    {t.bans.map((b) => (
+                      <div key={b.id} className="flex flex-col items-center gap-1 w-12">
+                        <HeroIcon url={b.hero?.icon_url} name={b.hero_name} size="sm" banned />
+                        <span className="text-[9px] text-white/40 text-center leading-tight truncate w-full">{b.hero_name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      </div>
+      </div>
 
       {screenshotPreview && (
         <div

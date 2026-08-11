@@ -1442,9 +1442,10 @@ export default function LiveConsolePage() {
     return objectives.filter((o) => o.team_id === teamId && o.type === type).length;
   }
   // Turtle/Lord spawn-timing gates (plausibleObjectiveTarget below) reason
-  // about the objective globally — "at most 4 turtles total this match",
-  // "the next Lord can't spawn less than 3 minutes after the last one
-  // died" — neither team-scoped, so these read across both teams' rows.
+  // about the objective globally — "at most 4 turtles per game", "the next
+  // Lord can't spawn less than 3 minutes after the last one died" — neither
+  // team-scoped, so these read across both teams' rows. Already per-game
+  // rather than per-series: `objectives` is loaded with .eq("game_id", gid).
   function totalObjectiveCount(type: string) {
     return objectives.filter((o) => o.type === type).length;
   }
@@ -1495,7 +1496,7 @@ export default function LiveConsolePage() {
   const OBJECTIVE_RULE_HINTS: Record<string, string> = {
     tower: "Max 9 per team. OCR won't jump the count by more than 3 in one tick (a bigger jump is treated as a misread, not 4+ towers falling at once).",
     lord: "First spawns ~08:00. Respawns exactly 3:00 after being slain — OCR won't count another kill sooner than that.",
-    turtle: "Max 4 per match (shared, not per side). First spawns ~02:00. None after ~09:00 — a surviving turtle becomes an early Lord instead.",
+    turtle: "Max 4 per game (shared, not per side). First spawns 02:00, then every 2 min after the previous is slain. None spawn after one is killed past 06:00 — it becomes an early Lord instead.",
   };
   async function incrementObjective(teamId: string, type: string) {
     if (!game || !match) return;
@@ -3862,20 +3863,41 @@ export default function LiveConsolePage() {
     // ~6:00 it stops respawning as a turtle at all — it's the one that
     // transitions into an early Lord instead, so no further turtle takes
     // are legitimate after that point.
+    // Turtle, per the confirmed rules: first spawn exactly 02:00, respawns
+    // every 2 minutes after the previous one is slain, no new spawn if the
+    // active one is killed after 06:00, maximum 4 in a single game.
     if (type === "turtle") {
       if (gameClockSeconds < 120 - OCR_TIMING_TOLERANCE_SECONDS) return current;
+      // Max 4 per GAME — `objectives` is loaded scoped to the current
+      // game_id (see loadAll), so this counter resets with each new game
+      // rather than accumulating across the series. Shared across both
+      // teams: there is one turtle on the map, so the cap is on how many
+      // spawn, not on how many either side can take.
       if (totalObjectiveCount("turtle") >= 4) return current;
-      // Absolute upper bound — the spec's "a surviving Turtle transitions
-      // into the early Lord phase around 08:00-09:00" means no turtle
-      // exists to be taken after that window closes, so a turtle read at
-      // (say) 12:00 is impossible regardless of the count or when the last
-      // one died. This was the missing half of the turtle timing rules:
-      // the last-kill check below only blocks a FOLLOW-UP turtle after a
-      // late kill, and never fired at all if no turtle had been recorded
-      // yet, so a mid/late-game misread could still add one.
+      // Absolute upper bound — with a 06:00 kill cutoff and a 2-minute
+      // respawn, the latest a turtle can possibly spawn is ~08:00, and by
+      // 08:00-09:00 it has become the early Lord. So a turtle read at
+      // (say) 12:00 is impossible regardless of count or last-kill time.
+      // This is the case neither check below catches: the respawn/cutoff
+      // rules only constrain a FOLLOW-UP turtle, and never fire at all
+      // when no turtle has been recorded yet.
       if (gameClockSeconds > 540 + OCR_TIMING_TOLERANCE_SECONDS) return current;
       const lastKillSeconds = lastObjectiveSeconds("turtle");
-      if (lastKillSeconds != null && lastKillSeconds > 360) return current;
+      if (lastKillSeconds != null) {
+        // Respawn interval: the next turtle isn't takeable until 2 minutes
+        // after the previous one was slain. This rule was missing entirely
+        // — Lord had its 3-minute equivalent, turtle had nothing, so two
+        // turtle takes could be recorded seconds apart from a repeated
+        // read of the same on-screen count.
+        if (gameClockSeconds < lastKillSeconds + 120 - OCR_TIMING_TOLERANCE_SECONDS) return current;
+        // Cutoff: an active turtle killed after 06:00 is the last one.
+        // Compared with >= rather than > because lastObjectiveSeconds
+        // floors to the stored minute_mark — a turtle killed anywhere in
+        // 06:00-06:59 comes back as exactly 360, so a strict > 360 never
+        // fired for the sixth minute at all, which is precisely the range
+        // this cutoff exists to catch.
+        if (lastKillSeconds >= 360) return current;
+      }
       return rawTarget;
     }
     // Lord: first spawn 8:00 (a Turtle left alone from ~8:00-9:00

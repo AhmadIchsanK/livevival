@@ -210,6 +210,16 @@ export default function LiveConsolePage() {
   const [stats, setStats] = useState<PlayerStat[]>([]);
   const [objectives, setObjectives] = useState<Objective[]>([]);
   const [keyMoments, setKeyMoments] = useState<KeyMoment[]>([]);
+  // Auto-scrolls the Moment Timeline list to its newest (bottom) entry on
+  // every update — same behavior as the public match page's own Moment
+  // Timeline (see momentListRef there), which already did this. The admin
+  // side's list didn't, so a live-logging admin had to keep manually
+  // scrolling down to see the moment they just logged.
+  const adminMomentListRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = adminMomentListRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [keyMoments.length]);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [netWorth, setNetWorth] = useState<NetWorthSnapshot[]>([]);
   const [minute, setMinute] = useState(0);
@@ -1886,6 +1896,11 @@ export default function LiveConsolePage() {
   const streamRef = useRef<MediaStream | null>(null);
   const workerRef = useRef<Awaited<ReturnType<typeof createWorker>> | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // When the current capture session actually started — lets the "every
+  // tracker is stuck unhealthy" diagnostic below give reads a fair chance
+  // (the first tick can't land for up to 5s, OCR itself takes a moment)
+  // before concluding something's actually wrong instead of just cold.
+  const captureStartedAtRef = useRef<number | null>(null);
   // Corner-drag resize state for region calibration. dragMode covers a
   // fresh draw, moving the whole box, or one of the 4 corner handles;
   // dragStartPct/dragStartBox snapshot where the drag began so every
@@ -2431,11 +2446,18 @@ export default function LiveConsolePage() {
       if (detection.key_moment_banner && detection.key_moment_banner !== "NONE") {
         const playerId = matchPlayerId(detection.key_moment_player_name);
         const key = `${detection.key_moment_banner}:${playerId ?? ""}`;
+        const type = detection.key_moment_banner.toLowerCase();
         const now = Date.now();
-        if (lastAutoKeyMoment.current.key !== key || now - lastAutoKeyMoment.current.at > 60000) {
+        // Same shared cooldown the OCR kill-banner path uses (see
+        // dismissedSuggestionUntilRef) — an admin hitting Cancel on this
+        // exact popup should suppress it here too, not just on the
+        // separate OCR-tick path, since both read the same on-screen
+        // banner and both would otherwise pop it right back up.
+        const dismissed = (dismissedSuggestionUntilRef.current[type] ?? 0) > now;
+        if (!dismissed && (lastAutoKeyMoment.current.key !== key || now - lastAutoKeyMoment.current.at > 60000)) {
           lastAutoKeyMoment.current = { key, at: now };
           setSuggestion({
-            type: detection.key_moment_banner.toLowerCase(),
+            type,
             raw: detection.key_moment_player_name ? `${detection.key_moment_player_name} ${detection.key_moment_banner}` : detection.key_moment_banner,
             playerId,
             playerName: playerId ? players.find((p) => p.id === playerId)?.ign ?? null : detection.key_moment_player_name ?? null,
@@ -2956,6 +2978,21 @@ export default function LiveConsolePage() {
   // Client-side ticking (in the public page) fills the gap between these
   // writes, using current_time_updated_at as the anchor.
   const lastPersistedSeconds = useRef<number | null>(null);
+  // This, unreadableTimerSince, and pauseSuggested all hold state for
+  // "the game currently being tracked" — reset whenever that changes
+  // (Game 1 finishes, Game 2 starts). lastPersistedSeconds is the
+  // never-decreases guard's memory of the last game-clock reading: left
+  // unreset, Game 2 starting back near 00:00 would look like a garbled
+  // decrease against Game 1's final ~20:00+ reading and get permanently
+  // rejected forever — "a new game is detected" (the validation spec's
+  // explicit exception to never-decreases) has to mean something, and a
+  // new game.id is exactly that signal.
+  useEffect(() => {
+    lastPersistedSeconds.current = null;
+    unreadableTimerSince.current = null;
+    pauseSuggested.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game?.id]);
   async function updateGameClock(mm: number, ss: number) {
     if (!game) return;
     const totalSeconds = mm * 60 + ss;
@@ -3387,7 +3424,12 @@ export default function LiveConsolePage() {
         // clock) — everything else OCR picked up (stray glyphs, overlay
         // chrome) is noise that would otherwise corrupt the match.
         const numericOnly = trimmed.replace(/[^0-9:]/g, "");
-        const mmss = numericOnly.match(/(\d{1,2}):(\d{2})/);
+        // Seconds must be a valid 00-59 — the regex alone accepts "75" as a
+        // syntactically fine two-digit group, but MM:SS with SS >= 60 isn't
+        // a real timestamp, just a misread digit. Treated as no read at
+        // all (same as not matching the shape), not a value to clamp.
+        const mmssRaw = numericOnly.match(/(\d{1,2}):(\d{2})/);
+        const mmss = mmssRaw && Number(mmssRaw[2]) <= 59 ? mmssRaw : null;
         const secondsOnly = numericOnly.match(/^(\d{1,3})$/);
 
         switch (tracker.category) {
@@ -3710,21 +3752,36 @@ export default function LiveConsolePage() {
 
   async function startCapture() {
     try {
-      // No preferCurrentTab, and this no longer opens/focuses any window on
-      // the admin's behalf — auto-opening a tab turned out to just get in
-      // the way (a redundant tab nobody asked for, and re-focusing it on a
-      // later "Start capture" click could yank focus away from whatever
+      // No preferCurrentTab, and this never opens/focuses any window on the
+      // admin's behalf — auto-opening a tab just got in the way (a
+      // redundant tab nobody asked for, and re-focusing it on a later
+      // "Start capture" click could yank focus away from whatever
       // fullscreen window the admin had actually set up themselves). The
       // admin opens and fullscreens their own stream source however they
-      // like — this only asks the browser for a tab to capture; nothing
-      // here should ever touch that window once picked. displaySurface:
-      // "browser" still restricts the picker to tabs, ruling out a full-
-      // desktop/window capture that would drag in the OS taskbar or other
-      // apps.
+      // like — this only asks the browser for something to capture;
+      // nothing here ever touches that window once picked, and no
+      // admin-side action (a confirm() dialog, a button click, navigating
+      // this page) can disrupt a separate window's fullscreen state —
+      // that's an OS/browser-level property of the *other* window, this
+      // page has no handle to it at all.
+      //
+      // displaySurface: "window" (not "browser") restricts the picker to
+      // whole application windows rather than browser tabs specifically —
+      // this is the one that actually survives Alt+Tab. A captured
+      // *window* keeps delivering frames as long as it exists and isn't
+      // minimized, regardless of whether it's focused or occluded by
+      // something else on screen (that's what OS-level window capture is
+      // for). A captured *tab* only reliably keeps updating while it's
+      // the frontmost tab of a visible window — switch away and several
+      // browsers throttle or freeze its rendering, which is exactly the
+      // "capture stalls on Alt+Tab" symptom this fixes. "window" also
+      // still rules out capturing the whole desktop (which would drag in
+      // the OS taskbar, notifications, or other apps).
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { displaySurface: "browser" },
+        video: { displaySurface: "window" },
       });
       streamRef.current = stream;
+      captureStartedAtRef.current = Date.now();
       // previewRef.current is null here — the <video> only exists in the
       // DOM once captureActive is true, and this runs before that state
       // update is committed. Attaching srcObject was silently a no-op the
@@ -3756,6 +3813,7 @@ export default function LiveConsolePage() {
     if (intervalRef.current) clearInterval(intervalRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
     workerRef.current?.terminate();
+    captureStartedAtRef.current = null;
     setCaptureActive(false);
     setSuggestion(null);
     setAiDetection(null);
@@ -4789,6 +4847,29 @@ export default function LiveConsolePage() {
     ) : null;
   const activeTrackers = trackers.filter((t) => t.phase === match.state);
   const allTrackersCalibrated = activeTrackers.length > 0 && activeTrackers.every((t) => regions[t.field]);
+  // "Every indicator is red right after Game ongoing starts" diagnostic —
+  // every active tracker has gone at least 15s (three ticks) with no
+  // successful read despite capture running and every field calibrated.
+  // The single most common real cause: the regions were calibrated
+  // against a different capture layout than what's on screen right now
+  // (a different window/tab picked this session, different resolution,
+  // or the picked source shows something other than the broadcast, e.g.
+  // a black loading screen during the Game ongoing transition) — every
+  // crop lands on blank space at once, which reads exactly like this.
+  // Surfaced as a banner with a concrete next step rather than a
+  // perpetual silent red, since there's nothing else on this page that
+  // explains a stuck-red tracker.
+  const NO_READ_STALE_MS = 15_000;
+  const allTrackersUnhealthy =
+    captureActive &&
+    captureMode === "manual" &&
+    allTrackersCalibrated &&
+    captureStartedAtRef.current != null &&
+    Date.now() - captureStartedAtRef.current > NO_READ_STALE_MS &&
+    activeTrackers.every((t) => {
+      const h = trackerHealth[t.field];
+      return !h?.lastGoodAt || Date.now() - h.lastGoodAt > NO_READ_STALE_MS;
+    });
   // Auto-collapse: see the preGuardAllTrackersCalibrated effect declared
   // above the loading guard near the top of this component (has to live
   // there, not here, to satisfy the Rules of Hooks).
@@ -5499,12 +5580,13 @@ export default function LiveConsolePage() {
           )}
         </div>
         <p className="text-[10px] text-white/40">
-          Open the livestream yourself in its own tab or window first (fullscreen it there for the most accurate
-          reads), then click "Start capture" — when the share picker appears, choose that tab, not this admin
-          console. It keeps capturing even while you're working here instead, and nothing on this side will
-          interrupt or refocus it. Team kills, team net worth, the game timer, each player&apos;s K/D/A, objectives,
-          and kill moments (double/triple/maniac/savage, attributed to the player named in the kill banner) all live
-          in the tracker overlay drawn on the Match capture canvas above.
+          Open the livestream yourself in its own window first (fullscreen it there for the most accurate reads),
+          then click "Start capture" — when the share picker appears, choose that window, not a tab and not this
+          admin console. Window capture keeps delivering frames no matter what you Alt+Tab to or work on here
+          instead — nothing on this side ever touches or refocuses it. Team kills, team net worth, the game
+          timer, each player&apos;s K/D/A, objectives, and kill moments (double/triple/maniac/savage, attributed to
+          the player named in the kill banner) all live in the tracker overlay drawn on the Match capture canvas
+          above.
         </p>
 
         {match.update_source === "local_ocr" && (
@@ -5581,6 +5663,29 @@ export default function LiveConsolePage() {
             </span>
             <span className="shrink-0 text-white/40">{ocrDetailsOpen ? "▾ Hide details" : "▸ Show details"}</span>
           </button>
+        )}
+
+        {/* Distinct from the calibration warning above: every field IS
+            calibrated, capture IS running, but nothing has actually read
+            successfully in 15+ seconds. That combination almost always
+            means the calibrated regions don't line up with what's
+            currently on screen — most commonly because the captured
+            window/tab this session is showing something different than
+            whatever the regions were originally drawn against (a
+            different resolution, a different broadcast layout, or the
+            picked source isn't actually the livestream). Recalibrating
+            below (drag each region onto where the number actually sits
+            right now) is the fix. */}
+        {allTrackersUnhealthy && (
+          <div className="lv-alert-warning text-xs px-3 py-2 space-y-1">
+            <p className="font-semibold">No OCR reads for any field in 15+ seconds, despite every region being calibrated.</p>
+            <p className="text-white/70">
+              The calibrated regions almost certainly don&apos;t line up with what&apos;s on screen in the source you just
+              picked — a different resolution/layout than whatever they were drawn against, or the captured window
+              isn&apos;t showing the broadcast right now. Open &quot;Show details&quot; above and drag each region back onto
+              where its number actually sits, or run Auto-place if this is a fresh calibration.
+            </p>
+          </div>
         )}
 
         {match.update_source === "local_ocr" && match.team_a && match.team_b && (
@@ -6101,7 +6206,7 @@ export default function LiveConsolePage() {
                   </button>
                 )}
               </div>
-              <div className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
+              <div ref={adminMomentListRef} className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
                 {/* Ascending by minute_mark (query order) — newest moment at
                     the bottom, matching the public match page instead of a
                     reversed admin-only order. */}

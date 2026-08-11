@@ -1499,6 +1499,26 @@ export default function PublicMatchPage() {
         </div>
       </section>
 
+      {/* Net worth — its own section, directly above the Scoreboard it
+          explains (same column), not just a small badge buried in each
+          team's card corner. */}
+      {latestNetWorth != null && (
+        <section>
+          <h2 className="lv-heading mb-2">Net worth {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { name: match.team_a?.name, gold: latestNetWorth?.team_a_gold },
+              { name: match.team_b?.name, gold: latestNetWorth?.team_b_gold },
+            ].map((t, i) => (
+              <div key={i} className="lv-card-flush p-3 flex items-center justify-between">
+                <span className="text-white/70 font-semibold text-sm">{t.name}</span>
+                <span className="font-mono tabular-nums text-sm text-white/80">{t.gold != null ? formatGold(t.gold) : "—"}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section>
         <div className="flex items-center justify-between mb-2">
           <h2 className="lv-heading">
@@ -1539,22 +1559,12 @@ export default function PublicMatchPage() {
         )}
         <div className="grid grid-cols-2 gap-4">
           {[
-            { name: match.team_a?.name, list: scoreRowsFor(teamAStats, teamAActiveRoster), gold: latestNetWorth?.team_a_gold },
-            { name: match.team_b?.name, list: scoreRowsFor(teamBStats, teamBActiveRoster), gold: latestNetWorth?.team_b_gold },
+            { name: match.team_a?.name, list: scoreRowsFor(teamAStats, teamAActiveRoster) },
+            { name: match.team_b?.name, list: scoreRowsFor(teamBStats, teamBActiveRoster) },
           ].map((t, i) => (
-            <div key={i} className="lv-card-flush p-4 relative">
-              {/* Net worth — last-captured OCR reading, not a
-                  recomputed/derived value (see formatGold above). Pinned to
-                  this card's top-right corner rather than the old
-                  over-time chart. */}
-              {t.gold != null && (
-                <span
-                  className="absolute top-2 right-2 text-[10px] font-mono tabular-nums text-white/60 bg-white/10 border border-white/10 rounded px-1.5 py-0.5"
-                  title="Last-captured net worth"
-                >
-                  {formatGold(t.gold)}
-                </span>
-              )}
+            <div key={i} className="lv-card-flush p-4">
+              {/* Net worth now has its own section directly above (same
+                  column) instead of a badge pinned to this card's corner. */}
               <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
               <table className="w-full text-xs">
                 <thead className="text-white/40 text-left uppercase tracking-wide">

@@ -71,14 +71,25 @@ async function applyDetectionServerSide(
     net_worth?: { team_a_gold: number | null; team_b_gold: number | null };
   }
 ): Promise<{ playerStatsApplied: number; netWorthApplied: boolean; skippedReason?: string }> {
-  const { data: match } = await supabase
-    .from("matches")
-    .select("state, team_a:teams!matches_team_a_id_fkey(id, name), team_b:teams!matches_team_b_id_fkey(id, name)")
-    .eq("id", matchId)
-    .single();
+  const [{ data: match }, { data: gameRow }] = await Promise.all([
+    supabase
+      .from("matches")
+      .select("state, team_a:teams!matches_team_a_id_fkey(id, name), team_b:teams!matches_team_b_id_fkey(id, name)")
+      .eq("id", matchId)
+      .single(),
+    supabase.from("games").select("status, current_time_seconds").eq("id", gameId).single(),
+  ]);
   if (!match) return { playerStatsApplied: 0, netWorthApplied: false, skippedReason: "Match not found" };
   if (match.state !== "GAME_STARTED") {
     return { playerStatsApplied: 0, netWorthApplied: false, skippedReason: `Match phase is ${match.state}, not GAME_STARTED — nothing applied` };
+  }
+  // Validation-spec golden rule: once a game is finished, reject any
+  // further gameplay stat writes — mirrors the client pipeline's
+  // game.status === "finished" guard (captureTickBody/captureFrameAndAnalyze
+  // in the admin console) so this relay path can't straggle a write in
+  // after Declare Winner if match.state hasn't been walked forward yet.
+  if (gameRow?.status === "finished") {
+    return { playerStatsApplied: 0, netWorthApplied: false, skippedReason: "This game is already finished — nothing applied" };
   }
   const teamA = match.team_a as unknown as { id: string; name: string } | null;
   const teamB = match.team_b as unknown as { id: string; name: string } | null;
@@ -132,8 +143,7 @@ async function applyDetectionServerSide(
       const floored = known != null && read < known ? known : read;
       return known != null && floored - known > MAX_NET_WORTH_GAIN_PER_TICK ? known + MAX_NET_WORTH_GAIN_PER_TICK : floored;
     };
-    const { data: game } = await supabase.from("games").select("current_time_seconds").eq("id", gameId).single();
-    const minuteMark = Math.floor((game?.current_time_seconds ?? 0) / 60);
+    const minuteMark = Math.floor((gameRow?.current_time_seconds ?? 0) / 60);
     await supabase.from("net_worth_snapshots").insert({
       game_id: gameId,
       match_id: matchId,

@@ -2597,6 +2597,10 @@ export default function LiveConsolePage() {
   async function captureFrameAndAnalyze() {
     const video = previewRef.current;
     if (!video || video.videoWidth === 0) return;
+    // Same hard stop as the manual-OCR pipeline (captureTickBody) — once
+    // this game is finished, no further gameplay stats get written or even
+    // sent for analysis.
+    if (game?.status === "finished") return;
 
     // Vision models tokenize images by pixel area, not file size — sending
     // the full 1920x1080 (or higher) capture straight through burned ~6.2k
@@ -3604,6 +3608,16 @@ export default function LiveConsolePage() {
   }
 
   async function captureTickBody(video: HTMLVideoElement, worker: NonNullable<typeof workerRef.current>) {
+    // Hard stop once this game is done — validation-spec golden rule: "after
+    // GAME_FINISHED, reject any additional kills/deaths/assists/net worth/
+    // objective/turret updates." Phase-scoping (activeTrackers below) gets
+    // most of the way there already since GAME_STARTED trackers stop being
+    // "active" the moment the admin moves the match off that phase, but
+    // that's a step the admin has to actually take — this covers the gap
+    // where game.status is already "finished" (Declare Winner clicked) but
+    // match.state/trackers haven't been walked forward yet, so a straggling
+    // OCR tick can't write a post-game stat.
+    if (game?.status === "finished") return;
     // Only scan the trackers configured for whatever phase the admin has
     // this match set to right now — this is what makes each phase's
     // tracker genuinely distinct instead of always reading the same fields
@@ -3946,17 +3960,33 @@ export default function LiveConsolePage() {
     // banner, not a silent drop.
     let kdaMismatch: string | null = null;
     if (game) {
-      for (const [label, teamId, override] of [
-        ["Team A", match?.team_a?.id, game.team_a_kills_override] as const,
-        ["Team B", match?.team_b?.id, game.team_b_kills_override] as const,
+      for (const [label, teamId, opponentTeamId, override] of [
+        ["Team A", match?.team_a?.id, match?.team_b?.id, game.team_a_kills_override] as const,
+        ["Team B", match?.team_b?.id, match?.team_a?.id, game.team_b_kills_override] as const,
       ]) {
         if (!teamId || override == null) continue;
-        const playerSum = stats
+        const playerKillSum = stats
           .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === teamId)
           .reduce((sum, s) => sum + (s.kills ?? 0), 0);
-        if (Math.abs(playerSum - override) >= 3) {
-          kdaMismatch = `${label}: team kills (${override}) doesn't match the sum of per-player kills (${playerSum}) — one of the two OCR reads may be stale or wrong.`;
+        if (Math.abs(playerKillSum - override) >= 3) {
+          kdaMismatch = `${label}: team kills (${override}) doesn't match the sum of per-player kills (${playerKillSum}) — one of the two OCR reads may be stale or wrong.`;
           break;
+        }
+        // "Team A kills must equal Team B deaths" (and vice versa) — every
+        // kill has exactly one victim, so a team's kill total and the
+        // opposing team's total deaths should track each other. Same
+        // tolerance/soft-signal-only treatment as the within-team check
+        // above, for the same reason: these numbers come from
+        // independently-timed OCR reads, so brief lag between them is
+        // normal and not worth a hard reject.
+        if (opponentTeamId) {
+          const opponentDeathSum = stats
+            .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === opponentTeamId)
+            .reduce((sum, s) => sum + (s.deaths ?? 0), 0);
+          if (Math.abs(opponentDeathSum - override) >= 3) {
+            kdaMismatch = `${label}: team kills (${override}) doesn't match the opposing team's total deaths (${opponentDeathSum}) — one kill should always mean one death somewhere.`;
+            break;
+          }
         }
       }
     }

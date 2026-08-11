@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef, type CSSProperties } from "react";
+import { useEffect, useState, useCallback, useRef, Fragment, type CSSProperties } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { createWorker } from "tesseract.js";
@@ -1842,6 +1842,52 @@ export default function LiveConsolePage() {
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string; playerId?: string | null; playerName?: string | null } | null>(null);
   const [consistencyWarning, setConsistencyWarning] = useState<string | null>(null);
 
+  // OCR-assisted, admin-confirmed: a plausible reading (passes the
+  // never-decreases/spike-cap guards already in captureTickBody) still
+  // auto-applies exactly like before — that's the whole point of
+  // automating the common case. This queue is for the readings a guard
+  // would otherwise have silently clamped or thrown away: instead of
+  // trusting them blind (the old fully-autonomous behavior) or losing
+  // them entirely, they surface here with the raw OCR text, Tesseract's
+  // own confidence, and one explicit action to actually apply the value —
+  // the admin decides, not the guard. Keyed by tracker field so a repeat
+  // flag on the same field just refreshes in place instead of stacking.
+  type FlaggedReading = {
+    field: string;
+    label: string;
+    raw: string;
+    confidence: number | null;
+    reason: string;
+    flaggedAt: number;
+    apply: () => void | Promise<void>;
+  };
+  const [flaggedReadings, setFlaggedReadings] = useState<Record<string, FlaggedReading>>({});
+  function flagReading(field: string, entry: Omit<FlaggedReading, "field" | "flaggedAt">) {
+    setFlaggedReadings((prev) => ({ ...prev, [field]: { field, flaggedAt: Date.now(), ...entry } }));
+  }
+  function dismissFlaggedReading(field: string) {
+    setFlaggedReadings((prev) => {
+      const next = { ...prev };
+      delete next[field];
+      return next;
+    });
+  }
+  async function applyFlaggedReading(field: string) {
+    const entry = flaggedReadings[field];
+    if (!entry) return;
+    await entry.apply();
+    dismissFlaggedReading(field);
+  }
+  // Green/yellow/red on Tesseract's own page-confidence for the most
+  // recent read of a field — same bands used for both the flagged-reading
+  // queue and the small dot on each calibrated tracker box.
+  function confidenceColor(confidence: number | null): string {
+    if (confidence == null) return "bg-white/20";
+    if (confidence >= 80) return "bg-emerald-500";
+    if (confidence >= 50) return "bg-yellow-500";
+    return "bg-red-500";
+  }
+
   // ── Slide-anywhere tracker placement (inline canvas) ──────────────────
   // A second way to add a tracker on the SAME big canvas as the "pick a
   // tracker, then draw its box" flow below — this one draws first
@@ -2922,13 +2968,36 @@ export default function LiveConsolePage() {
     return rawTarget;
   }
 
-  async function applySingleObjectiveReading(teamId: string, type: string, text: string) {
+  async function applySingleObjectiveReading(
+    teamId: string,
+    type: string,
+    text: string,
+    field: string,
+    label: string,
+    confidence: number | null
+  ) {
     const n = text.match(/\d+/);
     if (!n) return;
     const rawTarget = Number(n[0]);
     const target = plausibleObjectiveTarget(teamId, type, rawTarget);
     const current = objectiveCount(teamId, type);
     for (let i = current; i < target; i++) await incrementObjective(teamId, type);
+    // The heuristic clamped this read down (spawn timing, tower cap/pace)
+    // — surface the full raw reading instead of silently dropping it, in
+    // case it's actually right (a genuinely fast multi-tower push, a
+    // timing edge case).
+    if (target < rawTarget) {
+      flagReading(field, {
+        label,
+        raw: text,
+        confidence,
+        reason: `Read ${rawTarget}, only applied up to ${target} (spawn timing/cap guard) — confirm to apply the full reading`,
+        apply: async () => {
+          const c = objectiveCount(teamId, type);
+          for (let i = c; i < rawTarget; i++) await incrementObjective(teamId, type);
+        },
+      });
+    }
   }
 
   // Direct correction, either direction — the +/- buttons only ever move
@@ -2970,7 +3039,19 @@ export default function LiveConsolePage() {
     // they can be cross-checked or combined into one write.
     let networthLeft: number | null = null;
     let networthRight: number | null = null;
-    const kdaParsed: { playerId: string; heroName: string | null; kills: number; deaths: number; assists: number }[] = [];
+    let networthLeftField: { field: string; label: string; confidence: number | null } | null = null;
+    let networthRightField: { field: string; label: string; confidence: number | null } | null = null;
+    const kdaParsed: {
+      playerId: string;
+      heroName: string | null;
+      field: string;
+      label: string;
+      raw: string;
+      confidence: number | null;
+      kills: number;
+      deaths: number;
+      assists: number;
+    }[] = [];
 
     for (const tracker of activeTrackers) {
       const box = regions[tracker.field];
@@ -3076,7 +3157,22 @@ export default function LiveConsolePage() {
             // manual scoreboard edit is the way to actually correct a
             // wrong count downward.
             const currentKills = column === "team_a_kills_override" ? game.team_a_kills_override : game.team_b_kills_override;
-            if (currentKills != null && kills < currentKills) break;
+            if (currentKills != null && kills < currentKills) {
+              // Almost always a misread (a stray digit from overlay chrome),
+              // but flagged rather than silently dropped in case the count
+              // genuinely needs a downward correction — same reasoning as
+              // every other never-decreases guard here.
+              flagReading(tracker.field, {
+                label: tracker.label,
+                raw: trimmed,
+                confidence: data.confidence,
+                reason: `Read ${kills}, below the current count of ${currentKills} — never-decreases guard held it back`,
+                apply: async () => {
+                  await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
+                },
+              });
+              break;
+            }
             await supabase.from("games").update({ [column]: kills }).eq("id", game.id);
             break;
           }
@@ -3090,14 +3186,22 @@ export default function LiveConsolePage() {
             break;
           }
           case "objective": {
-            if (sideTeamId && objectiveType) await applySingleObjectiveReading(sideTeamId, objectiveType, trimmed);
+            if (sideTeamId && objectiveType) {
+              await applySingleObjectiveReading(sideTeamId, objectiveType, trimmed, tracker.field, tracker.label, data.confidence);
+            }
             break;
           }
           case "net_worth": {
             const gold = parseGoldText(trimmed);
             if (gold == null) break;
-            if (side === "left") networthLeft = gold;
-            if (side === "right") networthRight = gold;
+            if (side === "left") {
+              networthLeft = gold;
+              networthLeftField = { field: tracker.field, label: tracker.label, confidence: data.confidence };
+            }
+            if (side === "right") {
+              networthRight = gold;
+              networthRightField = { field: tracker.field, label: tracker.label, confidence: data.confidence };
+            }
             break;
           }
           case "player_kda": {
@@ -3106,7 +3210,15 @@ export default function LiveConsolePage() {
             const kda = parseKda(trimmed);
             if (playerRow && kda) {
               const hero = findHeroInText(trimmed);
-              kdaParsed.push({ playerId: playerRow.id, heroName: hero?.name ?? null, ...kda });
+              kdaParsed.push({
+                playerId: playerRow.id,
+                heroName: hero?.name ?? null,
+                field: tracker.field,
+                label: tracker.label,
+                raw: trimmed,
+                confidence: data.confidence,
+                ...kda,
+              });
             }
             break;
           }
@@ -3154,6 +3266,36 @@ export default function LiveConsolePage() {
         known != null && read - known > MAX_NET_WORTH_GAIN_PER_TICK ? known + MAX_NET_WORTH_GAIN_PER_TICK : read;
       const safeTeamAGold = capGain(knownAGold, knownAGold != null && teamAGold < knownAGold ? knownAGold : teamAGold);
       const safeTeamBGold = capGain(knownBGold, knownBGold != null && teamBGold < knownBGold ? knownBGold : teamBGold);
+      // Whichever side got held back by the never-decreases or spike-cap
+      // guard is flagged with the raw (unclamped) reading — a real burst
+      // (team wipe + objective) can legitimately exceed the per-tick
+      // ceiling, so this is the admin's way to confirm it instead of the
+      // guard silently capping it every tick until the game clock catches
+      // the gold total up on its own.
+      const teamAField = leftTeamId === match.team_a?.id ? networthLeftField : networthRightField;
+      const teamBField = leftTeamId === match.team_a?.id ? networthRightField : networthLeftField;
+      if (safeTeamAGold !== teamAGold && teamAField) {
+        flagReading(teamAField.field, {
+          label: teamAField.label,
+          raw: String(teamAGold),
+          confidence: teamAField.confidence,
+          reason: `Read ${teamAGold}, only applied up to ${safeTeamAGold} (never-decreases/spike-cap guard) — confirm to apply the full reading`,
+          apply: async () => {
+            await supabase.from("net_worth_snapshots").insert({ game_id: game!.id, match_id: matchId, minute_mark: minute, team_a_gold: teamAGold, team_b_gold: safeTeamBGold });
+          },
+        });
+      }
+      if (safeTeamBGold !== teamBGold && teamBField) {
+        flagReading(teamBField.field, {
+          label: teamBField.label,
+          raw: String(teamBGold),
+          confidence: teamBField.confidence,
+          reason: `Read ${teamBGold}, only applied up to ${safeTeamBGold} (never-decreases/spike-cap guard) — confirm to apply the full reading`,
+          apply: async () => {
+            await supabase.from("net_worth_snapshots").insert({ game_id: game!.id, match_id: matchId, minute_mark: minute, team_a_gold: safeTeamAGold, team_b_gold: teamBGold });
+          },
+        });
+      }
       await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: safeTeamAGold, team_b_gold: safeTeamBGold });
     }
 
@@ -3179,6 +3321,26 @@ export default function LiveConsolePage() {
         const kills = existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills;
         const deaths = existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths;
         const assists = existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists;
+        // A read below what's already stored, on any of the three stats,
+        // is held back by the clamp above — flag it instead of silently
+        // discarding, in case it's a genuine correction the admin wants
+        // to force through rather than a misread.
+        if ((existing?.kills != null && row.kills < existing.kills) ||
+            (existing?.deaths != null && row.deaths < existing.deaths) ||
+            (existing?.assists != null && row.assists < existing.assists)) {
+          flagReading(row.field, {
+            label: row.label,
+            raw: row.raw,
+            confidence: row.confidence,
+            reason: `Read ${row.kills}/${row.deaths}/${row.assists}, below the stored ${existing?.kills ?? 0}/${existing?.deaths ?? 0}/${existing?.assists ?? 0} — never-decreases guard held it back`,
+            apply: async () => {
+              await supabase.from("player_stats").upsert(
+                { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills: row.kills, deaths: row.deaths, assists: row.assists },
+                { onConflict: "game_id,player_id" }
+              );
+            },
+          });
+        }
         await supabase.from("player_stats").upsert(
           { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills, deaths, assists },
           { onConflict: "game_id,player_id" }
@@ -4158,12 +4320,49 @@ export default function LiveConsolePage() {
             // ON: same clickable box as before (jumps straight into edit
             // mode for the region clicked), just gated behind the toggle
             // now instead of always-on gesture guessing.
+            // Small dot, same corner regardless of edit mode — Tesseract's
+            // own confidence for this field's most recent read, so a
+            // glance at the video shows which regions are reading cleanly
+            // (green), shakily (yellow), or not at all (red/gray) without
+            // opening the tracker table.
+            const dot = (
+              <span
+                title={`OCR confidence: ${trackerHealth[field]?.confidence != null ? `${Math.round(trackerHealth[field]!.confidence!)}%` : "no read yet"}`}
+                className={`absolute w-2 h-2 rounded-full border border-black/40 pointer-events-none ${confidenceColor(trackerHealth[field]?.confidence ?? null)}`}
+                style={{ left: `${box.xPct}%`, top: `${box.yPct}%`, transform: "translate(-50%, -50%)" }}
+              />
+            );
             if (!trackerEditMode) {
               return (
-                <div
-                  key={field}
-                  title={label}
-                  className="absolute border border-white/25 pointer-events-none"
+                <Fragment key={field}>
+                  <div
+                    title={label}
+                    className="absolute border border-white/25 pointer-events-none"
+                    style={{
+                      left: `${box.xPct}%`,
+                      top: `${box.yPct}%`,
+                      width: `${box.wPct}%`,
+                      height: `${box.hPct}%`,
+                    }}
+                  />
+                  {dot}
+                </Fragment>
+              );
+            }
+            return (
+              <Fragment key={field}>
+                {/* Clickable straight from the video instead of only via the
+                    small "Resize" button in the field list below — jumps
+                    directly into edit mode for whichever region was clicked. */}
+                <button
+                  type="button"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startCalibrating(field);
+                  }}
+                  title={`Click to edit: ${label}`}
+                  className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
                   style={{
                     left: `${box.xPct}%`,
                     top: `${box.yPct}%`,
@@ -4171,29 +4370,8 @@ export default function LiveConsolePage() {
                     height: `${box.hPct}%`,
                   }}
                 />
-              );
-            }
-            return (
-              // Clickable straight from the video instead of only via the
-              // small "Resize" button in the field list below — jumps
-              // directly into edit mode for whichever region was clicked.
-              <button
-                key={field}
-                type="button"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  startCalibrating(field);
-                }}
-                title={`Click to edit: ${label}`}
-                className="absolute border-2 border-white/40 hover:border-signal hover:bg-signal/10 cursor-pointer"
-                style={{
-                  left: `${box.xPct}%`,
-                  top: `${box.yPct}%`,
-                  width: `${box.wPct}%`,
-                  height: `${box.hPct}%`,
-                }}
-              />
+                {dot}
+              </Fragment>
             );
           })}
         {/* The region currently being calibrated — live preview, draggable
@@ -4972,6 +5150,51 @@ export default function LiveConsolePage() {
           <p className="text-xs text-white/50 bg-white/5 border border-white/10 rounded px-3 py-2">
             {PHASE_TRACKER_HINTS[match.state] ?? NO_TRACKER_PHASE_HINT}
           </p>
+        )}
+
+        {/* OCR-assisted, admin-confirmed: a plausible reading still
+            auto-applies exactly as before (that's the automation), but
+            anything a guard held back — never-decreases, spike caps,
+            spawn-timing/tower-cap plausibility — lands here instead of
+            being silently discarded. Always visible (not behind "Show
+            details") since it needs a decision, not just a glance. */}
+        {Object.values(flaggedReadings).length > 0 && (
+          <div className="space-y-1.5 border border-yellow-500/30 bg-yellow-500/5 rounded px-3 py-2">
+            <p className="text-xs font-semibold text-yellow-300">
+              {Object.values(flaggedReadings).length} reading{Object.values(flaggedReadings).length === 1 ? "" : "s"} need{Object.values(flaggedReadings).length === 1 ? "s" : ""} your confirmation
+            </p>
+            {Object.values(flaggedReadings)
+              .sort((a, b) => b.flaggedAt - a.flaggedAt)
+              .map((entry) => (
+                <div key={entry.field} className="flex items-start gap-2 text-xs bg-black/20 rounded px-2 py-1.5">
+                  <span
+                    title={`OCR confidence: ${entry.confidence != null ? `${Math.round(entry.confidence)}%` : "unknown"}`}
+                    className={`mt-1 shrink-0 w-2 h-2 rounded-full ${confidenceColor(entry.confidence)}`}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-white/80">{entry.label}</div>
+                    <div className="text-white/40">
+                      Raw read: <span className="text-white/60">&quot;{entry.raw}&quot;</span>
+                    </div>
+                    <div className="text-white/40">{entry.reason}</div>
+                  </div>
+                  <div className="flex gap-1 shrink-0">
+                    <button
+                      onClick={() => applyFlaggedReading(entry.field)}
+                      className="text-[10px] border border-emerald-500/50 text-emerald-400 rounded px-2 py-1 hover:bg-emerald-500/10 whitespace-nowrap"
+                    >
+                      ✓ Apply
+                    </button>
+                    <button
+                      onClick={() => dismissFlaggedReading(entry.field)}
+                      className="text-[10px] border border-white/20 text-white/60 rounded px-2 py-1 hover:bg-white/10 whitespace-nowrap"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ))}
+          </div>
         )}
 
         {/* Nothing else here makes it obvious when a phase has zero

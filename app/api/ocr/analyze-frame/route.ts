@@ -106,27 +106,86 @@ async function applyDetectionServerSide(
   const statsPool = (existingStats ?? []) as { player_id: string | null; hero_name: string | null; kills: number | null; deaths: number | null; assists: number | null; gold: number | null }[];
   const latestNetWorth = (latestNetWorthRows ?? [])[0] as { team_a_gold: number; team_b_gold: number } | undefined;
 
+  // Validation spec §3 rules 5/7 and §4, mirroring the client OCR pipeline
+  // (captureTickBody in app/admin/matches/[id]/live/page.tsx). This path
+  // previously applied ONLY the monotonic never-decreases clamp — no
+  // per-tick spike ceiling and no cross-player relationship check — which
+  // matters more here than on the client, because this route commits
+  // autonomously with no flagged-reading UI for an admin to catch a bad
+  // value in. A vision model misreading one digit (2 kills as 22) wrote it
+  // straight through, and the never-decreases clamp then made it permanent.
+  // Unconfirmable readings are clamped to the last plausible value per §2
+  // ("if OCR is missing, uncertain, or invalid → keep the last confirmed
+  // value") rather than flagged, since there is nobody to ask here.
+  const MAX_KILL_GAIN_PER_TICK = 10;
+  const MAX_DEATH_GAIN_PER_TICK = 10;
+  const MAX_ASSIST_GAIN_PER_TICK = 15;
+  const clampStat = (read: number | null, stored: number | null | undefined, maxGain: number): number | null => {
+    if (read == null) return stored ?? null;
+    const floor = stored ?? 0;
+    if (stored != null && read < stored) return stored; // never-decreases
+    return read - floor > maxGain ? floor + maxGain : read;
+  };
+
+  // Resolved for every row first, so the deaths-vs-enemy-kills check below
+  // validates the whole frame against itself rather than against a
+  // half-updated snapshot (§4: "validate all affected players together").
+  const candidates = (detection.player_stats ?? [])
+    .map((row) => {
+      const teamId = matchTeamId(teams, row.team_name);
+      const playerId = matchPlayerId(playerPool, row.player_name, teamId);
+      if (!playerId) return null;
+      const existing = statsPool.find((s) => s.player_id === playerId);
+      return {
+        row,
+        playerId,
+        teamId: teamId ?? playerPool.find((p) => p.id === playerId)?.team_id ?? null,
+        existing,
+        kills: clampStat(row.kills, existing?.kills, MAX_KILL_GAIN_PER_TICK),
+        deaths: clampStat(row.deaths, existing?.deaths, MAX_DEATH_GAIN_PER_TICK),
+        assists: clampStat(row.assists, existing?.assists, MAX_ASSIST_GAIN_PER_TICK),
+        gold: row.gold != null ? (existing?.gold != null ? Math.max(row.gold, existing.gold) : row.gold) : existing?.gold ?? null,
+      };
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null);
+
+  // §4 "Player deaths cannot exceed enemy team kills" — an impossible
+  // relationship, so the offending deaths value is rejected back to the
+  // last value that was possible (§3 rule 7). Kills/assists on the same
+  // read are independent and stay.
+  const teamKillTotal = (teamId: string | null) => {
+    if (!teamId) return 0;
+    return playerPool
+      .filter((p) => p.team_id === teamId)
+      .reduce((sum, p) => {
+        const c = candidates.find((c) => c.playerId === p.id);
+        if (c) return sum + (c.kills ?? 0);
+        return sum + (statsPool.find((s) => s.player_id === p.id)?.kills ?? 0);
+      }, 0);
+  };
+  for (const c of candidates) {
+    if (c.deaths == null || !c.teamId) continue;
+    const enemyTeamId = teams.find((t) => t.id !== c.teamId)?.id ?? null;
+    if (!enemyTeamId) continue;
+    const enemyKills = teamKillTotal(enemyTeamId);
+    if (c.deaths > enemyKills) {
+      c.deaths = Math.min(c.deaths, Math.max(c.existing?.deaths ?? 0, enemyKills));
+    }
+  }
+
   let playerStatsApplied = 0;
-  for (const row of detection.player_stats ?? []) {
-    const teamId = matchTeamId(teams, row.team_name);
-    const playerId = matchPlayerId(playerPool, row.player_name, teamId);
-    if (!playerId) continue;
-    const existing = statsPool.find((s) => s.player_id === playerId);
-    const kills = row.kills != null ? (existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills) : existing?.kills ?? null;
-    const deaths = row.deaths != null ? (existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths) : existing?.deaths ?? null;
-    const assists = row.assists != null ? (existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists) : existing?.assists ?? null;
-    const gold = row.gold != null ? (existing?.gold != null ? Math.max(row.gold, existing.gold) : row.gold) : existing?.gold ?? null;
+  for (const c of candidates) {
     await supabase.from("player_stats").upsert(
       {
         game_id: gameId,
         match_id: matchId,
-        player_id: playerId,
-        hero_name: row.hero_name ?? null,
-        hero_id: matchHeroId(heroPool, row.hero_name),
-        kills,
-        deaths,
-        assists,
-        gold,
+        player_id: c.playerId,
+        hero_name: c.row.hero_name ?? null,
+        hero_id: matchHeroId(heroPool, c.row.hero_name),
+        kills: c.kills,
+        deaths: c.deaths,
+        assists: c.assists,
+        gold: c.gold,
       },
       { onConflict: "game_id,player_id" }
     );

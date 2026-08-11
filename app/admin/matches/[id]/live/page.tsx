@@ -1292,6 +1292,22 @@ export default function LiveConsolePage() {
   // recently inserted row of that type/team, so the displayed number is
   // always just objectives.filter(...).length.
   const OBJECTIVE_TYPES = ["tower", "lord", "turtle"] as const;
+  // Left-to-right (or top-to-bottom — whatever order the icon cluster
+  // reads in) icon order for the "objectives_group" combined tracker, per
+  // side. MLBB broadcasts consistently show a team's tower/lord/turtle
+  // icons as one fixed-order cluster, but which order — and most
+  // tournaments mirror the right team's panel around the center of the
+  // HUD, so its reading order is usually the reverse of the left team's —
+  // isn't the same across every broadcast overlay. This is a starting
+  // guess (tower→lord→turtle scanning left-to-right for the left panel,
+  // reversed for the mirrored right one), not a hardcoded certainty; it's
+  // exactly as adjustable as any other tracker box; if a broadcast doesn't
+  // match this order, calibrate the box tighter or fall back to the 3
+  // individual per-type trackers instead.
+  const OBJECTIVE_GROUP_ORDER: Record<Side, (typeof OBJECTIVE_TYPES)[number][]> = {
+    left: ["tower", "lord", "turtle"],
+    right: ["turtle", "lord", "tower"],
+  };
   function objectiveCount(teamId: string, type: string) {
     return objectives.filter((o) => o.team_id === teamId && o.type === type).length;
   }
@@ -1854,6 +1870,17 @@ export default function LiveConsolePage() {
     | "game_timer"
     | "team_kills"
     | "objective"
+    // Single-region alternatives to 3 "objective"/5 "player_kda" trackers
+    // per side — one box spanning the whole tower/lord/turtle icon cluster
+    // (or the whole 5-row KDA column) instead of one box per number, read
+    // and split apart in one OCR pass (see parseObjectivesGroupCounts/
+    // parseKdaGroupLines below). Faster to calibrate (one drag instead of
+    // three or five) at the cost of needing every number in the region to
+    // read cleanly on the same tick — the individual per-type/per-player
+    // trackers stay available for broadcasts where that trade isn't worth
+    // it (a laggy connection, a cramped HUD).
+    | "objectives_group"
+    | "kda_group"
     | "net_worth"
     | "player_kda"
     | "kill_banner"
@@ -1914,6 +1941,16 @@ export default function LiveConsolePage() {
             });
           }
         }
+        // One box around the whole tower/lord/turtle icon cluster instead
+        // of three — see OBJECTIVE_GROUP_ORDER for how the 3 numbers it
+        // reads get split back out to a type each.
+        for (const side of SIDES) {
+          items.push({
+            category: "objectives_group",
+            field: `objectives_group_${side.key}`,
+            label: `Objectives (combined) — ${side.label}: ${OBJECTIVE_GROUP_ORDER[side.key].join(" / ")}`,
+          });
+        }
         for (const side of SIDES) {
           for (let n = 1; n <= 5; n++) {
             items.push({
@@ -1922,6 +1959,18 @@ export default function LiveConsolePage() {
               label: `K/D/A — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
             });
           }
+        }
+        // One box around the whole 5-row KDA column instead of five — see
+        // parseKdaGroupLines. Requires all 5 rows to read as clean x/x/x
+        // triples on the same tick, in role order top-to-bottom, or the
+        // whole read is skipped that tick (never a partial/misaligned
+        // assignment — see the case "kda_group" handler).
+        for (const side of SIDES) {
+          items.push({
+            category: "kda_group",
+            field: `kda_group_${side.key}`,
+            label: `K/D/A (combined) — ${side.label}: all 5, role order`,
+          });
         }
         return items;
       }
@@ -3414,6 +3463,32 @@ export default function LiveConsolePage() {
     if (!slash) return null;
     return { kills: Number(slash[1]), deaths: Number(slash[2]), assists: Number(slash[3]) };
   }
+  // The "kda_group" combined tracker's whole point: one region spanning
+  // all 5 KDA rows, one OCR pass, split back into 5 readings by line. Only
+  // a real "N/N/N" line counts — anything else on the same line (a spell
+  // cooldown digit, a partial/garbled row) simply doesn't match the shape
+  // and is dropped rather than guessed at, exactly the "ignore it if it
+  // doesn't follow x/x/x" behavior asked for. Order in, order out: relies
+  // entirely on Tesseract preserving top-to-bottom line order, which is
+  // what a role-ordered column of rows naturally OCRs as.
+  function parseKdaGroupLines(text: string): { kills: number; deaths: number; assists: number }[] {
+    return text
+      .split(/\n+/)
+      .map((line) => parseKda(line))
+      .filter((k): k is { kills: number; deaths: number; assists: number } => k !== null);
+  }
+  // The "objectives_group" combined tracker's equivalent: one region
+  // spanning the tower/lord/turtle icon cluster, digit-only OCR (icons
+  // themselves are images, never text, so they can't appear in the
+  // output — only the 3 numbers next to them can). Every digit run found,
+  // in reading order. Deliberately does NOT try to cope with a partial
+  // read (2 numbers instead of 3, a run split by OCR into two) — the
+  // caller requires exactly 3 or skips the tick entirely, since a
+  // miscounted split would silently misassign which number is which
+  // objective type.
+  function parseObjectivesGroupCounts(text: string): number[] {
+    return (text.match(/\d+/g) ?? []).map(Number);
+  }
   // Domain-rule gate for OCR-automatic objective reads only — manual
   // clicks (incrementObjective called directly) always bypass this, same
   // as every other manual-override path in this file: an admin correcting
@@ -3593,6 +3668,7 @@ export default function LiveConsolePage() {
   function charWhitelistFor(category: string): string | null {
     switch (category) {
       case "player_kda":
+      case "kda_group":
         return "0123456789/";
       case "net_worth":
         return "0123456789.";
@@ -3601,6 +3677,7 @@ export default function LiveConsolePage() {
         return "0123456789:";
       case "team_kills":
       case "objective":
+      case "objectives_group":
         return "0123456789";
       default:
         return null; // kill_banner, victory_banner, pause_word, map_setting — real words expected
@@ -3792,6 +3869,27 @@ export default function LiveConsolePage() {
             }
             break;
           }
+          case "objectives_group": {
+            if (!sideTeamId || !side) break;
+            const counts = parseObjectivesGroupCounts(trimmed);
+            // Anything other than exactly 3 clean digit runs isn't a
+            // trustworthy split — same treatment as a blank/unreadable
+            // tracker everywhere else in this pipeline: skip the tick
+            // rather than guess which number is which objective.
+            if (counts.length !== 3) break;
+            const order = OBJECTIVE_GROUP_ORDER[side];
+            for (let i = 0; i < 3; i++) {
+              await applySingleObjectiveReading(
+                sideTeamId,
+                order[i],
+                String(counts[i]),
+                `${tracker.field}_${order[i]}`,
+                `${tracker.label} — ${order[i]}`,
+                data.confidence
+              );
+            }
+            break;
+          }
           case "net_worth": {
             const gold = parseGoldText(trimmed);
             if (gold == null) break;
@@ -3819,6 +3917,39 @@ export default function LiveConsolePage() {
                 raw: trimmed,
                 confidence: data.confidence,
                 ...kda,
+              });
+            }
+            break;
+          }
+          case "kda_group": {
+            if (!side) break;
+            const lines = parseKdaGroupLines(trimmed);
+            // Same all-or-nothing logic as objectives_group: fewer than 5
+            // clean x/x/x rows means at least one player's row didn't read
+            // this tick, and there's no reliable way to tell WHICH slot
+            // was the one that failed (a cooldown timer breaking up the
+            // block, a row cut off at the edge of the box) — so the whole
+            // reading is skipped rather than risk assigning row 3's stats
+            // to role slot 4. More than 5 (something outside the 5 rows
+            // leaked into the box) is dropped for the same reason.
+            if (lines.length !== 5) break;
+            for (let i = 0; i < 5; i++) {
+              const playerRow = slotPlayer(side, i + 1);
+              if (!playerRow) continue;
+              kdaParsed.push({
+                playerId: playerRow.id,
+                // No per-row hero OCR for the combined box — findHeroInText
+                // matches against the whole blob, which would misattribute
+                // a hero name to every row rather than just the one it
+                // actually belongs to. Hero stays whatever it already was;
+                // the individual player_kda trackers are the way to get
+                // per-tick hero detection if that matters for a broadcast.
+                heroName: null,
+                field: `${tracker.field}_${i + 1}`,
+                label: `${tracker.label} — ${KDA_SLOT_LABELS[i]}`,
+                raw: trimmed,
+                confidence: data.confidence,
+                ...lines[i],
               });
             }
             break;
@@ -3922,6 +4053,14 @@ export default function LiveConsolePage() {
         const kills = existing?.kills != null ? Math.max(row.kills, existing.kills) : row.kills;
         const deaths = existing?.deaths != null ? Math.max(row.deaths, existing.deaths) : row.deaths;
         const assists = existing?.assists != null ? Math.max(row.assists, existing.assists) : row.assists;
+        // The kda_group combined tracker never reads a hero name per row
+        // (see its case above) — row.heroName is always null there. Fall
+        // back to whatever's already stored instead of writing null over
+        // it, so switching a side to the combined tracker can't wipe hero
+        // data that a draft-pick sync or an individual player_kda tracker
+        // already set.
+        const heroName = row.heroName ?? existing?.hero_name ?? null;
+        const heroId = matchHeroId(heroName);
         // A read below what's already stored, on any of the three stats,
         // is held back by the clamp above — flag it instead of silently
         // discarding, in case it's a genuine correction the admin wants
@@ -3936,14 +4075,14 @@ export default function LiveConsolePage() {
             reason: `Read ${row.kills}/${row.deaths}/${row.assists}, below the stored ${existing?.kills ?? 0}/${existing?.deaths ?? 0}/${existing?.assists ?? 0} — never-decreases guard held it back`,
             apply: async () => {
               await supabase.from("player_stats").upsert(
-                { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills: row.kills, deaths: row.deaths, assists: row.assists },
+                { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: heroName, hero_id: heroId, kills: row.kills, deaths: row.deaths, assists: row.assists },
                 { onConflict: "game_id,player_id" }
               );
             },
           });
         }
         await supabase.from("player_stats").upsert(
-          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: row.heroName, hero_id: matchHeroId(row.heroName), kills, deaths, assists },
+          { game_id: game.id, match_id: matchId, player_id: row.playerId, hero_name: heroName, hero_id: heroId, kills, deaths, assists },
           { onConflict: "game_id,player_id" }
         );
       }

@@ -2063,6 +2063,13 @@ export default function LiveConsolePage() {
   // already finished setting a match up shouldn't have to scroll past this
   // every reload just to reach Livestream/Declare Winner/Moment log above.
   const [ocrDetailsOpen, setOcrDetailsOpen] = useState(true);
+  // Reference livestream thumbnail (see the "Match capture" pane below) —
+  // starts collapsed since the capture canvas above it is the thing an
+  // admin actually calibrates/reads against; this is just a quick "does
+  // the broadcast still match what I calibrated" glance, one click away,
+  // pinned next to the canvas instead of buried at the bottom of a
+  // separately-scrolling section like it used to be.
+  const [referenceStreamOpen, setReferenceStreamOpen] = useState(false);
   const ocrAutoCollapsedRef = useRef(false);
   const [calibratingField, setCalibratingField] = useState<string | null>(null);
   // Live-editable draft of the region currently being calibrated — shown
@@ -5942,6 +5949,29 @@ export default function LiveConsolePage() {
               {trackerOverlay}
               {captureAreaOverlay}
             </div>
+            {/* Reference livestream — pinned here (inside the sticky,
+                non-scrolling header above the action deck) instead of at
+                the bottom of the scrollable section below, which used to
+                mean scrolling down to check calibration/OCR readings
+                scrolled the one thing worth comparing them against clean
+                out of view. Collapsed by default to keep the pane compact
+                — the capture canvas above is what actually gets read. */}
+            {embedUrl && (
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setReferenceStreamOpen((v) => !v)}
+                  className="text-[10px] text-white/40 hover:text-white/60 flex items-center gap-1"
+                >
+                  {referenceStreamOpen ? "▾" : "▸"} Livestream (reference only)
+                </button>
+                {referenceStreamOpen && (
+                  <div className="relative w-full max-w-[220px] aspect-video rounded overflow-hidden select-none border border-white/10">
+                    <iframe src={embedUrl} className="w-full h-full" allow="autoplay; encrypted-media" allowFullScreen />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto p-3 lg:p-4 space-y-4">
 
@@ -6174,6 +6204,15 @@ export default function LiveConsolePage() {
             )}
             {captureActive && match.state !== "TECHNICAL_PAUSE" && (
               <div className="space-y-3">
+                {/* Sticky toolbar — the edit-mode toggle, phase filter, and
+                    captured-area controls are what an admin reaches for
+                    over and over while calibrating, so they stay pinned to
+                    the top of this scrolling section instead of scrolling
+                    out of reach the moment the flagged-readings list or
+                    tracker table below grows past one screen. Auto-place/
+                    template/countdown stay below, unpinned — those are
+                    occasional actions, not a running toolbar. */}
+                <div className="sticky top-0 z-10 -mx-3 lg:-mx-4 px-3 lg:px-4 py-2 space-y-2 bg-ink/95 backdrop-blur border-b border-white/10">
                 <div className="flex flex-wrap items-center gap-3 justify-between">
                   <span className="text-[10px] text-white/40">
                     {trackerEditMode
@@ -6262,6 +6301,7 @@ export default function LiveConsolePage() {
                       Clear
                     </button>
                   )}
+                </div>
                 </div>
                 {/* The drag-to-calibrate canvas itself now lives up in the
                     Livestream pane, overlaid directly on the embed iframe
@@ -6501,19 +6541,6 @@ export default function LiveConsolePage() {
       </section>
             )}
 
-            {/* Livestream — demoted to the bottom of this pane, reference
-                only. It's no longer the capture source (see Match capture
-                above, now sourced from a separate dedicated tab), so
-                there's nothing left tying its position or size to
-                calibration accuracy — fullscreen is fine here too. */}
-            {embedUrl && (
-              <section className="space-y-2">
-                <h3 className="font-semibold text-sm text-white/60">Livestream (reference only)</h3>
-                <div className="relative w-full aspect-video rounded overflow-hidden select-none border border-white/10">
-                  <iframe src={embedUrl} className="w-full h-full" allow="autoplay; encrypted-media" allowFullScreen />
-                </div>
-              </section>
-            )}
           </div>
         </div>
 

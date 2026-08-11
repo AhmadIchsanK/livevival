@@ -195,7 +195,7 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-ink text-paper px-6 py-10 mx-auto space-y-10">
+    <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-7xl mx-auto space-y-10">
       <header className="flex items-center justify-between">
         <BrandLockup />
         <div className="flex items-center gap-2">

@@ -2329,6 +2329,32 @@ export default function LiveConsolePage() {
   // table below show, at a glance, whether a field is actively updating
   // and how much Tesseract itself trusts the last read.
   const [trackerHealth, setTrackerHealth] = useState<Record<string, { lastGoodAt: number | null; confidence: number | null }>>({});
+  // Transient "Copied ✓" feedback for the Game ID copy button in the header —
+  // the Game ID (games.id UUID) is what the admin hands off for the SHADOW
+  // VALIDATION audit after each live game.
+  const [gameIdCopied, setGameIdCopied] = useState(false);
+  async function copyGameId(id: string) {
+    try {
+      await navigator.clipboard.writeText(id);
+    } catch {
+      // Clipboard API unavailable (insecure context / denied) — fall back to a
+      // hidden textarea + execCommand so the copy still works.
+      const ta = document.createElement("textarea");
+      ta.value = id;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* best-effort only */
+      }
+      document.body.removeChild(ta);
+    }
+    setGameIdCopied(true);
+    setTimeout(() => setGameIdCopied(false), 1500);
+  }
   // Admin-only per-sub-region objective diagnostics. The combined objectives
   // tracker is internally six numeric OCR crops (LEFT: Turtle/Lord/Tower,
   // RIGHT: Tower/Lord/Turtle); each tick records what that crop actually read
@@ -6714,6 +6740,21 @@ export default function LiveConsolePage() {
             )}{" "}
             · {match.format} · Game {game.game_number}
           </p>
+          {/* Game ID (games.id UUID) — the value the admin hands off for the
+              SHADOW VALIDATION audit after each live game. Shown in full,
+              monospace, with a one-click Copy button. */}
+          <div className="inline-flex items-center gap-1.5 bg-white/5 border border-white/10 rounded px-2 py-1">
+            <span className="text-[10px] uppercase tracking-wide text-white/40">Game ID</span>
+            <code className="text-[11px] text-white/80 font-mono select-all break-all">{game.id}</code>
+            <button
+              type="button"
+              onClick={() => copyGameId(game.id)}
+              title="Copy Game ID to clipboard"
+              className="text-[10px] border border-white/20 text-white/70 rounded px-1.5 py-0.5 hover:bg-white/10 whitespace-nowrap"
+            >
+              {gameIdCopied ? "Copied ✓" : "Copy"}
+            </button>
+          </div>
           <input
             defaultValue={match.youtube_url ?? ""}
             onBlur={async (e) => {

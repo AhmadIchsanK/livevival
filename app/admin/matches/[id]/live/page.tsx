@@ -3060,9 +3060,12 @@ export default function LiveConsolePage() {
       // like a hand-calibrated layout saved via "Save as template".
       if (placed > 0) {
         const templateName = `AI layout — ${new Date().toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })} ${new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
-        await supabase
-          .from("capture_regions")
-          .upsert(aiPlacedRows.map((row) => ({ ...row, template_name: templateName })), { onConflict: "template_name,phase,field" });
+        // Delete-then-insert (not upsert): the template unique index is partial
+        // (WHERE template_name IS NOT NULL), which supabase-js's onConflict can't
+        // express, so an upsert here silently errored and the AI layout never
+        // actually appeared in the templates dropdown. See saveTrackersAsTemplate.
+        await supabase.from("capture_regions").delete().eq("template_name", templateName);
+        await supabase.from("capture_regions").insert(aiPlacedRows.map((row) => ({ ...row, template_name: templateName })));
         await loadTrackerTemplates();
       }
       // rawCandidateCount > 0 but regions.length === 0 means the model DID
@@ -3071,12 +3074,16 @@ export default function LiveConsolePage() {
       // mismatch, not an unreadable frame) — worth telling apart from "saw
       // nothing at all" so the admin isn't sent chasing a clearer
       // screenshot for a bug that isn't about frame clarity.
+      // On a zero-result, surface a short sample of what the model actually
+      // returned (modelSample) so a persistently-failing frame can be diagnosed
+      // rather than just showing "no elements".
+      const modelSample = typeof data.modelSample === "string" ? data.modelSample : "";
       setAiLayoutStatus(
         regions.length > 0
           ? `Placed ${placed} tracker${placed === 1 ? "" : "s"} from the screenshot${skipped > 0 ? `, skipped ${skipped} already tracked` : ""}${placed > 0 ? " — also saved as a reusable template (see the template dropdown)" : ""}.`
           : rawCandidateCount > 0
-          ? `The model returned ${rawCandidateCount} candidate element${rawCandidateCount === 1 ? "" : "s"}, but none passed validation (wrong field name or an out-of-range box) — this looks like a model-response format issue, not an unclear frame. Try again, or place trackers manually.`
-          : "The model didn't locate any tracker elements in this frame — try again once the scoreboard/HUD is clearly visible, or place trackers manually."
+          ? `The model returned ${rawCandidateCount} candidate element${rawCandidateCount === 1 ? "" : "s"}, but none passed validation (wrong field name or an out-of-range box). Try again, or place trackers manually.${modelSample ? ` — model said: ${modelSample.slice(0, 200)}` : ""}`
+          : `The model didn't locate any tracker elements in this frame — try again once the scoreboard/HUD is clearly visible, or place trackers manually.${modelSample ? ` — model said: ${modelSample.slice(0, 200)}` : ""}`
       );
     } catch (err) {
       setAiLayoutStatus((err as Error).message);
@@ -3321,6 +3328,7 @@ export default function LiveConsolePage() {
   const [applyingTemplate, setApplyingTemplate] = useState(false);
   const [renamingTemplate, setRenamingTemplate] = useState(false);
   const [deletingTemplate, setDeletingTemplate] = useState(false);
+  const [templateNotice, setTemplateNotice] = useState<string | null>(null);
 
   const loadTrackerTemplates = useCallback(async () => {
     const { data } = await supabase.from("capture_regions").select("template_name").not("template_name", "is", null);
@@ -3345,6 +3353,8 @@ export default function LiveConsolePage() {
     const trimmed = name.trim();
     if (!trimmed) return;
     setSavingTemplateAs(true);
+    setError(null);
+    setTemplateNotice(null);
     try {
       const rows = trackers
         .filter((t) => regions[t.field])
@@ -3362,9 +3372,31 @@ export default function LiveConsolePage() {
             h_pct: box.hPct,
           };
         });
-      if (rows.length === 0) return;
-      await supabase.from("capture_regions").upsert(rows, { onConflict: "template_name,phase,field" });
+      if (rows.length === 0) {
+        setError("No calibrated tracker boxes to save yet — draw at least one tracker region (or run Auto-place), then Save.");
+        return;
+      }
+      // Replace-then-insert instead of upsert. A plain .upsert({onConflict})
+      // silently FAILED here (that's why the templates dropdown was always
+      // empty): the template unique index is partial — WHERE template_name IS
+      // NOT NULL — and supabase-js's onConflict string can't express the
+      // predicate, so Postgres rejects it with "no unique or exclusion
+      // constraint matching the ON CONFLICT specification". Deleting the old
+      // rows for this name first, then inserting, avoids ON CONFLICT entirely
+      // and correctly handles re-saving under an existing name.
+      const del = await supabase.from("capture_regions").delete().eq("template_name", trimmed);
+      if (del.error) {
+        setError(`Couldn't save template: ${del.error.message}`);
+        return;
+      }
+      const ins = await supabase.from("capture_regions").insert(rows);
+      if (ins.error) {
+        setError(`Couldn't save template: ${ins.error.message}`);
+        return;
+      }
       setNewTemplateName("");
+      setSelectedTrackerTemplate(trimmed);
+      setTemplateNotice(`Saved "${trimmed}" (${rows.length} regions). Select it above and press Auto-place on any match to load it.`);
       await loadTrackerTemplates();
     } finally {
       setSavingTemplateAs(false);
@@ -7211,6 +7243,11 @@ export default function LiveConsolePage() {
                           input+save-button that used to be their own whole
                           toolbar row. */}
                       <InlineMenuPopover label="Templates" icon="🗂">
+                        {templatesLoaded && trackerTemplates.length === 0 && (
+                          <p className="text-[11px] text-white/40 pb-2 border-b border-white/10">
+                            No saved templates yet. Calibrate your tracker boxes, type a name below, and Save — it&apos;ll appear here to load on any future match via Auto-place.
+                          </p>
+                        )}
                         {templatesLoaded && trackerTemplates.length > 0 && (
                           <div className="space-y-1.5 pb-2 border-b border-white/10">
                             <InlineMenuSelect
@@ -7267,14 +7304,23 @@ export default function LiveConsolePage() {
                             {savingTemplateAs ? "Saving…" : "Save"}
                           </button>
                         </div>
+                        {templateNotice && <p className="text-[11px] text-emerald-400 pt-1.5">{templateNotice}</p>}
                       </InlineMenuPopover>
                       <button
-                        onClick={autoPlaceDefaultTrackers}
-                        disabled={autoPlacingTrackers}
+                        onClick={() => (selectedTrackerTemplate ? applyTrackerTemplate(selectedTrackerTemplate) : autoPlaceDefaultTrackers())}
+                        disabled={autoPlacingTrackers || applyingTemplate}
                         className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 whitespace-nowrap"
-                        title="Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are"
+                        title={
+                          selectedTrackerTemplate
+                            ? `Loads the saved template "${selectedTrackerTemplate}" — fills in any field it has that isn't tracked yet, never touching ones that already are`
+                            : "Fills in the standard MLBB broadcast layout (net worth, timer, objectives, K/D/A, kill banner) for any GAME_STARTED field that isn't tracked yet — never touches ones that already are. Pick a saved template above to load that instead."
+                        }
                       >
-                        {autoPlacingTrackers ? "Placing…" : "⊞ Auto-place"}
+                        {autoPlacingTrackers || applyingTemplate
+                          ? "Placing…"
+                          : selectedTrackerTemplate
+                          ? `⊞ Auto-place "${selectedTrackerTemplate}"`
+                          : "⊞ Auto-place"}
                       </button>
                       <button
                         onClick={suggestLayoutFromScreenshot}

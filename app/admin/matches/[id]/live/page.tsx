@@ -15,6 +15,7 @@ import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } 
 import { clientShadowModeEnabled } from "@/lib/featureFlags";
 import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, type ShadowTickReads } from "@/lib/reconstruction/shadowCapture";
 import type { LegacyState } from "@/lib/reconstruction/snapshot";
+import { buildIngestPayload } from "@/lib/reconstruction/persistence";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
 // widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
@@ -4729,6 +4730,33 @@ export default function LiveConsolePage() {
         };
         shadowSessionRef.current = runShadowTick(session, shadowReads, legacy);
         setShadowDivergences(shadowSessionRef.current.divergences);
+
+        // Opt-in shadow persistence (spec Phase 1). Fire-and-forget: never
+        // awaited, fully wrapped, so a slow or failed persist can never delay
+        // or break the capture tick. Double-gated — the admin must set
+        // localStorage 'livevival:shadow:persist'=1 AND the server must have
+        // RECONSTRUCTION_PERSISTENCE on (the route no-ops with 204 otherwise).
+        try {
+          const persistOn = typeof window !== "undefined" && window.localStorage.getItem("livevival:shadow:persist") === "1";
+          if (persistOn && shadowSessionRef.current.newEvents.length > 0) {
+            const payload = buildIngestPayload({
+              state: shadowSessionRef.current.engine.state,
+              newEvents: shadowSessionRef.current.newEvents,
+              matchId: match.id,
+            });
+            supabase.auth.getSession().then(({ data }) => {
+              const token = data.session?.access_token;
+              if (!token) return;
+              void fetch("/api/admin/reconstruction/ingest", {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify(payload),
+              }).catch(() => {});
+            }).catch(() => {});
+          }
+        } catch {
+          // persistence is best-effort shadow telemetry; ignore all errors.
+        }
       } catch (err) {
         // Shadow must never break capture.
         console.warn("[shadow] flush error (ignored):", err);

@@ -40,6 +40,9 @@ export type ShadowSession = {
   gameId: string;
   engine: Engine;
   divergences: Divergence[];
+  // Events appended on the most recent tick — the client uses these to build an
+  // idempotent persistence payload (only confirmed ones are persisted).
+  newEvents: import("./types.ts").GameEvent[];
   lastComparedAt: number | null;
 };
 
@@ -54,6 +57,7 @@ export function ensureSession(
     gameId,
     engine: createEngine({ gameId: asGameId(gameId), teamAId: asTeamId(teamAId), teamBId: asTeamId(teamBId) }),
     divergences: [],
+    newEvents: [],
     lastComparedAt: null,
   };
 }
@@ -97,7 +101,7 @@ export function runShadowTick(
   legacy: LegacyState
 ): ShadowSession {
   try {
-    ingest(session.engine, toTick(reads));
+    session.newEvents = ingest(session.engine, toTick(reads));
     const raw = shadowCompare(legacy, session.engine.state);
     session.divergences = raw.map((d) => ({
       field: d.field,

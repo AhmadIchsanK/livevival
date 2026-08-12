@@ -149,6 +149,7 @@ export default function MatchesPage() {
   const [scheduledAt, setScheduledAt] = useState("");
   const [stage, setStage] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // ── Stream title detection ───────────────────────────────────────────
@@ -283,6 +284,7 @@ export default function MatchesPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setNotice(null);
 
     if (teamAId && teamAId === teamBId) {
       setError("Team A and Team B can't be the same team.");
@@ -291,19 +293,32 @@ export default function MatchesPage() {
 
     setLoading(true);
 
-    const { error } = await supabase.from("matches").insert({
-      tournament_id: tournamentId || null,
-      team_a_id: teamAId || null,
-      team_b_id: teamBId || null,
-      format,
-      stage: stage.trim() || null,
-      scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
-      status: "scheduled",
-    });
+    const { error } = await supabase
+      .from("matches")
+      .insert({
+        tournament_id: tournamentId || null,
+        team_a_id: teamAId || null,
+        team_b_id: teamBId || null,
+        format,
+        stage: stage.trim() || null,
+        scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
+        status: "scheduled",
+      })
+      .select("id")
+      .single();
 
     setLoading(false);
     if (error) {
-      setError(error.message);
+      // Surface the real reason explicitly. A blank/opaque failure here is
+      // almost always an RLS/permission problem (not signed in as an admin) or
+      // the project being temporarily read-only after exceeding a Supabase free
+      // -plan limit — call those out rather than leaving the form silent.
+      const msg = error.message?.trim();
+      setError(
+        msg
+          ? `Couldn't create the match: ${msg}`
+          : "Couldn't create the match — the request was rejected with no message. This usually means you're not signed in as an admin, or the database is temporarily read-only (free-plan limit exceeded)."
+      );
       return;
     }
     setTournamentId("");
@@ -311,7 +326,13 @@ export default function MatchesPage() {
     setTeamBId("");
     setScheduledAt("");
     setStage("");
-    loadMatches(activeTab);
+    // A new match is always "scheduled", so switch to the Upcoming tab and show
+    // an explicit success notice — otherwise, creating a match while viewing
+    // the Ongoing/Finished tab looked like nothing happened (the new row landed
+    // in a tab the admin wasn't looking at, with no confirmation).
+    setNotice("Match created — showing it in Upcoming below.");
+    setActiveTab("scheduled");
+    loadMatches("scheduled");
   }
 
   // Optimistic: patches local state immediately (and drops the row from
@@ -613,6 +634,7 @@ export default function MatchesPage() {
           </button>
         </form>
         {error && <p className="text-sm text-red-400 mt-2">{error}</p>}
+        {notice && <p className="text-sm text-emerald-400 mt-2">{notice}</p>}
       </div>
 
       <div>

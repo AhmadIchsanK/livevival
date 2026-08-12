@@ -16,6 +16,7 @@ import { clientShadowModeEnabled } from "@/lib/featureFlags";
 import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, type ShadowTickReads } from "@/lib/reconstruction/shadowCapture";
 import type { LegacyState } from "@/lib/reconstruction/snapshot";
 import { buildIngestPayload } from "@/lib/reconstruction/persistence";
+import { bannerMatch, detectMatchState } from "@/lib/reconstruction/ocrBanners";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
 // widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
@@ -30,35 +31,9 @@ type CSSPropertiesWithVars = CSSProperties & Record<`--${string}`, string>;
 // buttons (unaffected, not driven by this array), just no longer
 // auto-suggested from OCR. The popup-confirm UX that reads off this array
 // is unchanged — only what can trigger it got narrower.
-// Kill-banner keywords. MLBB's SAVAGE/MANIAC/DOUBLE KILL/TRIPLE KILL banners
-// are heavily stylized (gradients, outlines, spacing, trailing effects), so
-// Tesseract frequently returns fragmented text — "TRIPLE" without a clean
-// "KILL", "S A V A G E", "SAVAGE!!", "MANIACC". Matching is therefore done
-// against a letters-only, uppercased normalization of the OCR text (see
-// bannerMatch) with tolerant substrings, not strict word-boundary regexes,
-// which is why the popup previously never fired on real banners. Order
-// matters: the single-word streaks (SAVAGE/MANIAC) and the more specific
-// TRIPLE are checked before DOUBLE so a "TRIPLE" read never falls through to
-// nothing. Only the four types that already exist as moment labels are used.
-const OCR_KEYWORDS: { needles: string[]; type: string }[] = [
-  { needles: ["SAVAGE"], type: "savage" },
-  { needles: ["MANIAC"], type: "maniac" },
-  { needles: ["TRIPLEKILL", "TRIPLE"], type: "triple_kill" },
-  { needles: ["DOUBLEKILL", "DOUBLE"], type: "double_kill" },
-];
-
-// Letters-only uppercase form of an OCR read, for tolerant banner matching.
-function normalizeBannerText(text: string): string {
-  return text.toUpperCase().replace(/[^A-Z]/g, "");
-}
-function bannerMatch(text: string): { type: string } | null {
-  const norm = normalizeBannerText(text);
-  if (!norm) return null;
-  for (const k of OCR_KEYWORDS) {
-    if (k.needles.some((n) => norm.includes(n))) return { type: k.type };
-  }
-  return null;
-}
+// Kill-banner + match-state OCR interpreters live in a dependency-free module
+// (lib/reconstruction/ocrBanners) so they can be unit-tested without pulling in
+// this whole client page. See bannerMatch / detectMatchState there.
 
 // A contributor reaches this exact page (not a separate clone) once
 // approved, but only ever for a finished match, and never writes directly
@@ -2085,6 +2060,7 @@ export default function LiveConsolePage() {
     | "player_kda"
     | "kill_banner"
     | "victory_banner"
+    | "match_event"
     | "pause_word";
   type Side = "left" | "right";
   type Tracker = { id: string; phase: string; category: TrackerCategory; field: string; label: string };
@@ -2124,6 +2100,11 @@ export default function LiveConsolePage() {
           // (regex match + player-name extraction) already existed; it just
           // had no way to actually be added as a tracker until now.
           { category: "kill_banner", field: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)" },
+          // Center-screen match-state tracker: detects a REPLAY/PAUSE overlay
+          // (suspends the other trackers so replay footage can't corrupt the
+          // numbers) and the end-game VICTORY/DEFEAT banner when the base
+          // crystal falls (pops out the declare-winner prompt).
+          { category: "match_event", field: "match_event", label: "Match state (replay / pause / crystal → winner)" },
         ];
         // Team kills is NOT a tracker anymore — it was always the messiest OCR
         // read and produced counts that didn't reconcile with the players.
@@ -2278,6 +2259,17 @@ export default function LiveConsolePage() {
   // each other forever and the tracker looked stalled/dead once
   // GAME_STARTED's much longer field list was reached.
   const tickInFlight = useRef(false);
+  // Capture suspension (the center "match_event" tracker). When a REPLAY or
+  // PAUSE overlay is on screen, the live HUD numbers are not the current game
+  // state — MLBB is showing replay footage or a frozen frame — so applying OCR
+  // reads from telemetry trackers during that window corrupts stats/objectives.
+  // While suspended, only the match_event tracker keeps scanning (to detect
+  // when the overlay clears); every telemetry tracker is skipped. Held for a
+  // short grace period after the overlay was last seen so a one-frame blank
+  // read doesn't immediately un-suspend mid-replay.
+  const captureSuspendRef = useRef<{ reason: "replay" | "pause"; until: number } | null>(null);
+  const [captureSuspendReason, setCaptureSuspendReason] = useState<"replay" | "pause" | null>(null);
+  const CAPTURE_SUSPEND_GRACE_MS = 8000;
 
   const [captureActive, setCaptureActive] = useState(false);
   // Whether the "Local capture (this PC)" tracker calibration UI (edit
@@ -2496,6 +2488,18 @@ export default function LiveConsolePage() {
   // match still works before the admin explicitly sets it.
   function resolveLeftTeamId(): string | null {
     return match?.ocr_left_team_id ?? match?.team_a?.id ?? null;
+  }
+  // Team with the most summed player kills right now — the pre-selected guess
+  // for the declare-winner popout when the crystal is detected as destroyed but
+  // the banner text doesn't say which side won.
+  function leadingTeamIdByKills(): string | null {
+    if (!match?.team_a || !match?.team_b) return null;
+    const sum = (teamId: string) =>
+      stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === teamId).reduce((a, s) => a + (s.kills ?? 0), 0);
+    const a = sum(match.team_a.id);
+    const b = sum(match.team_b.id);
+    if (a === b) return null;
+    return a > b ? match.team_a.id : match.team_b.id;
   }
   function resolveRightTeamId(): string | null {
     const left = resolveLeftTeamId();
@@ -3276,6 +3280,9 @@ export default function LiveConsolePage() {
       });
     }
     items.push({ category: "kill_banner", field: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)", box: { xPct: 32, yPct: 42, wPct: 36, hPct: 10 } });
+    // Center of the screen — where REPLAY/PAUSE overlays and the end-game
+    // VICTORY/DEFEAT banner appear.
+    items.push({ category: "match_event", field: "match_event", label: "Match state (replay / pause / crystal → winner)", box: { xPct: 30, yPct: 30, wPct: 40, hPct: 22 } });
     return items;
   }
   const [autoPlacingTrackers, setAutoPlacingTrackers] = useState(false);
@@ -4135,7 +4142,15 @@ export default function LiveConsolePage() {
     // guarantees a stale team_kills box can't feed a bad count into the
     // scoreboard or the reconstruction shadow.
     const RETIRED_TRACKER_CATEGORIES = new Set(["team_kills", "objective", "player_kda"]);
-    const activeTrackers = trackers.filter((t) => t.phase === match?.state && !RETIRED_TRACKER_CATEGORIES.has(t.category));
+    // match_event is processed FIRST each tick so a REPLAY/PAUSE overlay
+    // detected this frame suspends the telemetry trackers that follow it in the
+    // same pass (see suspendedNow() and the guards in the telemetry cases).
+    const activeTrackers = trackers
+      .filter((t) => t.phase === match?.state && !RETIRED_TRACKER_CATEGORIES.has(t.category))
+      .sort((a, b) => (a.category === "match_event" ? -1 : 0) - (b.category === "match_event" ? -1 : 0));
+    // True while a replay/pause overlay is (recently) on screen — telemetry
+    // reads are skipped so they can't apply replay-footage / frozen numbers.
+    const suspendedNow = () => captureSuspendRef.current != null && captureSuspendRef.current.until > Date.now();
     const leftTeamId = resolveLeftTeamId();
     const rightTeamId = resolveRightTeamId();
     // Collected across the loop and applied once at the end, since both
@@ -4221,6 +4236,32 @@ export default function LiveConsolePage() {
               const playerId = namePart ? matchPlayerId(namePart) : null;
               const playerName = playerId ? players.find((p) => p.id === playerId)?.ign ?? null : null;
               setSuggestion({ type: found.type, raw: trimmed, playerId, playerName });
+            }
+            break;
+          }
+          case "match_event": {
+            // Center-screen state: REPLAY/PAUSE overlay → suspend telemetry;
+            // VICTORY/DEFEAT (crystal destroyed) → pop out the declare-winner
+            // prompt. Processed before the telemetry trackers this tick.
+            const st = detectMatchState(trimmed);
+            if (st === "replay" || st === "pause") {
+              captureSuspendRef.current = { reason: st, until: Date.now() + CAPTURE_SUSPEND_GRACE_MS };
+              setCaptureSuspendReason(st);
+            } else {
+              // No overlay this frame — let any active suspension lapse once its
+              // grace window expires.
+              if (captureSuspendRef.current && captureSuspendRef.current.until <= Date.now()) {
+                captureSuspendRef.current = null;
+                setCaptureSuspendReason(null);
+              }
+              if (st === "crystal" && !suggestedWinner && !gameFinished) {
+                // Base crystal down → game over. Guess the winner from the
+                // banner text (VICTORY is shown on the winning side); fall back
+                // to the current kills leader so the popout always has a
+                // pre-selected team the admin can confirm or change.
+                const guessed = guessWinnerFromText(trimmed);
+                setSuggestedWinner(guessed ?? leadingTeamIdByKills());
+              }
             }
             break;
           }
@@ -4345,6 +4386,7 @@ export default function LiveConsolePage() {
             break;
           }
           case "objectives_group": {
+            if (suspendedNow()) break; // replay/pause on screen — HUD is stale
             if (!sideTeamId || !side) break;
             const counts = parseObjectivesGroupCounts(trimmed);
             // Anything other than exactly 3 clean digit runs isn't a
@@ -4370,6 +4412,7 @@ export default function LiveConsolePage() {
             break;
           }
           case "net_worth": {
+            if (suspendedNow()) break; // replay/pause on screen — HUD is stale
             const gold = parseGoldText(trimmed);
             if (gold == null) break;
             if (side === "left") {
@@ -4383,6 +4426,7 @@ export default function LiveConsolePage() {
             break;
           }
           case "player_kda": {
+            if (suspendedNow()) break; // replay/pause on screen — HUD is stale
             if (!side || !slot) break;
             const playerRow = slotPlayer(side, slot);
             const kda = parseKda(trimmed);
@@ -4401,6 +4445,7 @@ export default function LiveConsolePage() {
             break;
           }
           case "kda_group": {
+            if (suspendedNow()) break; // replay/pause on screen — HUD is stale
             if (!side) break;
             const lines = parseKdaGroupLines(trimmed);
             // Same all-or-nothing logic as objectives_group: fewer than 5
@@ -7536,15 +7581,30 @@ export default function LiveConsolePage() {
                 compact (~5 rows visible) — scrolling reveals the rest,
                 nothing is discarded. */}
             <section className="space-y-2">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2">
+              {/* While the game is ongoing the timeline header (with the live
+                  clock) is pinned to the top of the scroll so it — and the
+                  running clock — stays visible however far down the operator
+                  scrolls the action deck. */}
+              <div
+                className={`flex items-center justify-between gap-2 flex-wrap ${
+                  match.state === "GAME_STARTED" || match.state === "TECHNICAL_PAUSE"
+                    ? "sticky top-0 z-20 bg-ink/95 backdrop-blur py-1.5 -mx-1 px-1 rounded"
+                    : ""
+                }`}
+              >
+                <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="font-bold">Moment Timeline</h2>
                   {/* Same live in-game clock the public match page shows
                       beside its own Moment Timeline heading — easy to spot
                       here too, not just in the header row above. */}
                   {(match.state === "GAME_STARTED" || match.state === "TECHNICAL_PAUSE") && (
                     <span className="text-base font-bold text-signal tabular-nums" title="Live in-game clock">
-                      ⏱ {mmssTimestamp()}
+                      ⏱ {mmssTimestamp()} <span className="text-white/50 font-normal text-xs">Game ongoing</span>
+                    </span>
+                  )}
+                  {captureSuspendReason && (
+                    <span className="text-xs font-semibold text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-2 py-0.5" title="Telemetry trackers are paused because a replay/pause overlay is on screen — they'll resume automatically when it clears">
+                      ⏸ Capture suspended ({captureSuspendReason})
                     </span>
                   )}
                 </div>

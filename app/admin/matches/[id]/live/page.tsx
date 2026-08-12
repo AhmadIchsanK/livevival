@@ -17,6 +17,8 @@ import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, typ
 import type { LegacyState } from "@/lib/reconstruction/snapshot";
 import { buildIngestPayload } from "@/lib/reconstruction/persistence";
 import { bannerMatch, detectMatchState } from "@/lib/reconstruction/ocrBanners";
+import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
+import { LineChart, Line, XAxis, YAxis, Tooltip as RchTooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
 // widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
@@ -6442,6 +6444,41 @@ export default function LiveConsolePage() {
   const computedTeamAKills = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const computedTeamBKills = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const teamKillsValid = computedTeamAKills === teamBDeathsTotal && computedTeamBKills === teamADeathsTotal;
+
+  // ── Analytics (shared with the public page via lib/matchAnalytics) ────────
+  // Net-worth-difference series over the game timer, win probability, and the
+  // role-weighted MVP/SVP — the same computations the public match page shows,
+  // so the operator sees them live in the console too.
+  const nwSeries = netWorthDiffSeries(netWorth);
+  const winProbA = latestNetWorth
+    ? winProbabilityTeamA({
+        teamAGold: latestNetWorth.team_a_gold,
+        teamBGold: latestNetWorth.team_b_gold,
+        teamAKills: teamAKillsTotal,
+        teamBKills: teamBKillsTotal,
+      })
+    : null;
+  const adminMvpSvp =
+    gameFinished && stats.length > 0
+      ? computeMvpSvp(
+          stats.map((s) => {
+            const owner = effectivePlayers.find((p) => (s.player_id ? p.id === s.player_id : p.ign === s.custom_player_name));
+            return {
+              id: s.id,
+              teamId: owner?.team_id ?? null,
+              role: owner?.role ?? null,
+              kills: s.kills ?? 0,
+              deaths: s.deaths ?? 0,
+              assists: s.assists ?? 0,
+            };
+          })
+        )
+      : { mvpId: null, svpId: null, scores: [] };
+  const adminMvpStat = stats.find((s) => s.id === adminMvpSvp.mvpId) ?? null;
+  const adminSvpStat = stats.find((s) => s.id === adminMvpSvp.svpId) ?? null;
+  const ownerOfStat = (s: PlayerStat) =>
+    effectivePlayers.find((p) => (s.player_id ? p.id === s.player_id : p.ign === s.custom_player_name)) ?? null;
+
   async function addScoreboardPlayer(playerId: string) {
     await ensureStatRow(playerId);
     loadAll();
@@ -8004,6 +8041,57 @@ export default function LiveConsolePage() {
                           )
                         )}
                       </div>
+                      {/* Win probability (logistic on gold + kill lead) and the
+                          gold-lead-over-time chart — the same analytics the
+                          public match page shows, surfaced live for the
+                          operator. See lib/matchAnalytics. */}
+                      {winProbA != null && match.team_a && match.team_b && (
+                        <div className="space-y-1 pt-1">
+                          <div className="flex items-center justify-between text-[11px] text-white/50">
+                            <span>{match.team_a.name} {Math.round(winProbA * 100)}%</span>
+                            <span className="text-white/30">win probability (est.)</span>
+                            <span>{Math.round((1 - winProbA) * 100)}% {match.team_b.name}</span>
+                          </div>
+                          <div className="h-2 rounded-full overflow-hidden bg-white/10 flex">
+                            <div className="bg-signal" style={{ width: `${winProbA * 100}%` }} />
+                            <div className="bg-amber-500/60" style={{ width: `${(1 - winProbA) * 100}%` }} />
+                          </div>
+                        </div>
+                      )}
+                      {nwSeries.length >= 2 && (
+                        <div className="pt-1">
+                          <p className="text-[10px] text-white/40 mb-1">
+                            Gold lead over time — above: {match.team_a?.name}, below: {match.team_b?.name}
+                          </p>
+                          <div style={{ width: "100%", height: 140 }}>
+                            <ResponsiveContainer>
+                              <LineChart data={nwSeries} margin={{ top: 4, right: 6, bottom: 4, left: 6 }}>
+                                <XAxis dataKey="minute" tick={{ fontSize: 9, fill: "rgba(255,255,255,0.4)" }} tickFormatter={(m) => `${m}m`} />
+                                <YAxis tick={{ fontSize: 9, fill: "rgba(255,255,255,0.4)" }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} width={30} />
+                                <RchTooltip
+                                  contentStyle={{ background: "rgba(10,10,14,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }}
+                                  labelFormatter={(m) => `${m}:00`}
+                                  formatter={(v: number) => [`${v >= 0 ? "+" : ""}${(v / 1000).toFixed(1)}K ${v >= 0 ? match.team_a?.name : match.team_b?.name}`, "Gold lead"]}
+                                />
+                                <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
+                                <Line type="monotone" dataKey="diff" stroke="var(--signal, #5B8DEF)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                      )}
+                      {gameFinished && adminMvpStat && (
+                        <div className="pt-1 text-xs space-y-0.5">
+                          <p className="text-white/70">
+                            🏆 <span title="Role-weighted MVP (fair across roles)">MVP:</span> {ownerOfStat(adminMvpStat)?.ign ?? "?"} — {adminMvpStat.kills ?? 0}/{adminMvpStat.deaths ?? 0}/{adminMvpStat.assists ?? 0}
+                          </p>
+                          {adminSvpStat && adminSvpStat.id !== adminMvpStat.id && (
+                            <p className="text-white/50">
+                              🥈 <span title="Standout on the other team">SVP:</span> {ownerOfStat(adminSvpStat)?.ign ?? "?"} — {adminSvpStat.kills ?? 0}/{adminSvpStat.deaths ?? 0}/{adminSvpStat.assists ?? 0}
+                            </p>
+                          )}
+                        </div>
+                      )}
                     </section>
 
                     {/* Live scoreboard. Team kills is strictly the sum of

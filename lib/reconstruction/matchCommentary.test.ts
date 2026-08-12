@@ -6,13 +6,15 @@ import assert from "node:assert/strict";
 import {
   pickCommentary,
   commentaryCandidates,
+  renderTemplate,
   COMMENTARY_CONDITIONS,
   type CommentaryCondition,
   type CommentarySnapshot,
   type CommentaryContext,
 } from "../matchCommentary.ts";
 
-const rng = () => 0;
+const rngFn = () => 0;
+const rng = { rng: rngFn };
 const ALL = new Set<CommentaryCondition>(COMMENTARY_CONDITIONS.map((c) => c.key));
 const A = { id: "A", name: "ONIC" };
 const B = { id: "B", name: "FLCN" };
@@ -109,4 +111,40 @@ test("pickCommentary returns a pacing line when nothing else is happening", () =
 test("nothing enabled → no commentary", () => {
   const line = pickCommentary(ctx(snap({ netWorth: { A: 34000, B: 20000 } }), null, new Set()), rng);
   assert.equal(line, null);
+});
+
+test("renderTemplate interpolates placeholders; null when a placeholder is missing", () => {
+  assert.equal(renderTemplate("{lead} up {diff}", { lead: "ONIC", diff: "14.0k" }), "ONIC up 14.0k");
+  assert.equal(renderTemplate("{lead} up {diff}", { lead: "ONIC" }), null, "missing {diff} → skip");
+  assert.equal(renderTemplate("no placeholders here", {}), "no placeholders here");
+});
+
+test("custom DB template fires for its condition and is tagged as custom", () => {
+  const now = snap({ netWorth: { A: 34000, B: 20000 } });
+  const c = commentaryCandidates(ctx(now), {
+    rng: rngFn,
+    templates: [{ condition: "net_worth", template: "{lead} making it look easy, {diff} clear.", enabled: true }],
+  });
+  const custom = c.find((l) => l.source === "custom");
+  assert.ok(custom, "custom template produced a line");
+  assert.equal(custom!.text, "ONIC making it look easy, 14.0k clear.");
+});
+
+test("a disabled custom template does not fire", () => {
+  const now = snap({ netWorth: { A: 34000, B: 20000 } });
+  const c = commentaryCandidates(ctx(now), {
+    rng: rngFn,
+    templates: [{ condition: "net_worth", template: "should not appear {diff}", enabled: false }],
+  });
+  assert.ok(!c.some((l) => l.source === "custom"));
+});
+
+test("custom template using a placeholder the trigger lacks is skipped", () => {
+  // The dominating-lead trigger supplies {lead}/{trail}/{diff} but NOT {closed}.
+  const now = snap({ netWorth: { A: 34000, B: 20000 } });
+  const c = commentaryCandidates(ctx(now), {
+    rng: rngFn,
+    templates: [{ condition: "net_worth", template: "comeback {closed}", enabled: true }],
+  });
+  assert.ok(!c.some((l) => l.text.includes("comeback")), "template needing {closed} never renders on a lead trigger");
 });

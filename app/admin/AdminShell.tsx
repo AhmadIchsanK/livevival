@@ -358,6 +358,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
       title: "Automation",
       items: [
         { href: "/admin/moment-templates", label: "Moment Templates", icon: "sparkles" },
+        { href: "/admin/commentary", label: "Auto-commentary", icon: "sparkles" },
         { href: "/admin/telegram-notifications", label: "Telegram Notifications", icon: "bell" },
         { href: "/admin/data-sync", label: "Data Sync", icon: "sync" },
       ],

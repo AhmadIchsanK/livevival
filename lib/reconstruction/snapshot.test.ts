@@ -19,7 +19,9 @@ function ev(type: GameEvent["type"], payload: any, t = 0, sig = JSON.stringify(p
 function sampleState(): ConfirmedState {
   return reduceEvents(G, [
     ev("GAME_STARTED", {}),
-    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b1") }, 60),
+    // Counters come from STAT_UPDATE (scoreboard OCR); a1 gets a kill, b1 a death.
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 1, deaths: 0, assists: 0 }, 60, "sa1"),
+    ev("STAT_UPDATE", { teamId: B, playerId: asPlayerId("b1"), kills: 0, deaths: 1, assists: 0 }, 60, "sb1"),
     ev("NET_WORTH_UPDATE", { teamId: A, gold: 5500 }, 60),
     ev("TIMER_UPDATE", { seconds: 120 }, 120),
   ]);

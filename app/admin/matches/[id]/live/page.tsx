@@ -27,6 +27,7 @@ import {
   type ObjectiveObservation,
 } from "@/lib/reconstruction/objectivesObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
+import { pickCommentary, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot } from "@/lib/matchCommentary";
 import { LineChart, Line, XAxis, YAxis, Tooltip as RchTooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
@@ -1529,7 +1530,7 @@ export default function LiveConsolePage() {
     lord: "First spawns ~08:00. Respawns exactly 3:00 after being slain — OCR won't count another kill sooner than that.",
     turtle: "Max 4 per game (shared, not per side). First spawns 02:00, then every 2 min after the previous is slain. None spawn after one is killed past 06:00 — it becomes an early Lord instead.",
   };
-  async function incrementObjective(teamId: string, type: string) {
+  async function incrementObjective(teamId: string, type: string, opts?: { announce?: boolean }) {
     if (!game || !match) return;
     // A one-click objective button is otherwise silent on the public Moment
     // list — it only ever showed up in the Objectives tab's running count.
@@ -1537,6 +1538,12 @@ export default function LiveConsolePage() {
     // "custom" (already used for other manual admin-logged entries, e.g.
     // net worth corrections) is, and the Moment list already renders
     // `description` regardless of type.
+    // `announce` defaults true for manual admin actions (a click is a
+    // deliberate, trusted objective). OCR-driven increments pass announce:false
+    // so the unreliable objective OCR can't spam the Moment list with "TEAM
+    // takes 🐢 turtle" lines for objectives that may not have happened — the
+    // running count still updates, it just isn't auto-narrated.
+    const announce = opts?.announce ?? true;
     const teamName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
     const momentPayload = {
       game_id: game.id,
@@ -1557,7 +1564,7 @@ export default function LiveConsolePage() {
         after: { game_id: game.id, match_id: matchId, team_id: teamId, type, minute_mark: minute },
       });
       setObjectives((prev) => [...prev, newRow]);
-      pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: momentPayload });
+      if (announce) pushPendingEdit({ table: "key_moments", action: "insert", before: null, after: momentPayload });
       return;
     }
     const { data: insertedObjective, error: objectiveError } = await supabase
@@ -1577,7 +1584,7 @@ export default function LiveConsolePage() {
       setError(`Failed to record that ${type} for ${teamName}: ${objectiveError?.message ?? "the objective row wasn't created"}`);
       return;
     }
-    await supabase.from("key_moments").insert(momentPayload);
+    if (announce) await supabase.from("key_moments").insert(momentPayload);
     setLastAction({ table: "objectives", id: insertedObjective.id, label: momentPayload.description, kind: "insert" });
     loadAll();
   }
@@ -2262,6 +2269,74 @@ export default function LiveConsolePage() {
   // Reconstruction (shadow) confirmed game status — surfaced in the match-state
   // diagnostics so an admin can see when GAME_FINISHED actually lands.
   const [reconGameStatus, setReconGameStatus] = useState<string | null>(null);
+
+  // ── Auto-commentary (caster-style Moment list narration) ──────────────
+  // A randomized ~1-2 minute cadence turns the live game state into a natural
+  // one-liner (see lib/matchCommentary). Admin-configurable: master toggle +
+  // which condition categories may fire. Config persists per browser.
+  const [commentaryEnabled, setCommentaryEnabled] = useState(false);
+  const [commentaryConditions, setCommentaryConditions] = useState<Set<CommentaryCondition>>(
+    () => new Set(COMMENTARY_CONDITIONS.map((c) => c.key))
+  );
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("livevival:commentary");
+      if (raw) {
+        const cfg = JSON.parse(raw) as { enabled?: boolean; conditions?: CommentaryCondition[] };
+        if (typeof cfg.enabled === "boolean") setCommentaryEnabled(cfg.enabled);
+        if (Array.isArray(cfg.conditions)) setCommentaryConditions(new Set(cfg.conditions));
+      }
+    } catch {
+      /* localStorage unavailable — defaults stand */
+    }
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "livevival:commentary",
+        JSON.stringify({ enabled: commentaryEnabled, conditions: [...commentaryConditions] })
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [commentaryEnabled, commentaryConditions]);
+  // Live inputs are stashed in refs each render (updated below, after the
+  // loading guard) so the single interval effect can read the latest values
+  // without re-subscribing every render.
+  const commentarySnapshotRef = useRef<CommentarySnapshot | null>(null);
+  const commentaryPrevRef = useRef<CommentarySnapshot | null>(null);
+  const commentaryEnabledRef = useRef(false);
+  const commentaryConditionsRef = useRef(commentaryConditions);
+  const commentaryCanRunRef = useRef(false);
+  const commentaryInsertRef = useRef<(text: string, timerSeconds: number) => Promise<void>>(async () => {});
+  commentaryEnabledRef.current = commentaryEnabled;
+  commentaryConditionsRef.current = commentaryConditions;
+  useEffect(() => {
+    let cancelled = false;
+    let handle: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        const snap = commentarySnapshotRef.current;
+        if (commentaryEnabledRef.current && commentaryCanRunRef.current && snap) {
+          const line = pickCommentary({ now: snap, prev: commentaryPrevRef.current, enabled: commentaryConditionsRef.current });
+          if (line) await commentaryInsertRef.current(line.text, snap.timerSeconds);
+          commentaryPrevRef.current = snap;
+        }
+      } catch {
+        /* never let commentary break the page */
+      }
+      if (!cancelled) schedule();
+    };
+    const schedule = () => {
+      // 60–120s, randomized so lines don't land on a metronome.
+      handle = setTimeout(tick, 60_000 + Math.floor(Math.random() * 60_000));
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, []);
   // Map-setting detection only ever needs to fire once per game — without
   // this guard every OCR tick that still sees the map-select overlay on
   // screen would keep re-writing games.map, which is wasted work at best
@@ -4156,12 +4231,12 @@ export default function LiveConsolePage() {
         reason: `Read ${rawTarget} (${target} after guards), but this count was just corrected manually — confirm to apply it anyway`,
         apply: async () => {
           const c = objectiveCount(teamId, type);
-          for (let i = c; i < target; i++) await incrementObjective(teamId, type);
+          for (let i = c; i < target; i++) await incrementObjective(teamId, type, { announce: false });
         },
       });
       return;
     }
-    for (let i = current; i < target; i++) await incrementObjective(teamId, type);
+    for (let i = current; i < target; i++) await incrementObjective(teamId, type, { announce: false });
     // The heuristic clamped this read down (spawn timing, tower cap/pace)
     // — surface the full raw reading instead of silently dropping it, in
     // case it's actually right (a genuinely fast multi-tower push, a
@@ -4174,7 +4249,7 @@ export default function LiveConsolePage() {
         reason: `Read ${rawTarget}, only applied up to ${target} (spawn timing/cap guard) — confirm to apply the full reading`,
         apply: async () => {
           const c = objectiveCount(teamId, type);
-          for (let i = c; i < rawTarget; i++) await incrementObjective(teamId, type);
+          for (let i = c; i < rawTarget; i++) await incrementObjective(teamId, type, { announce: false });
         },
       });
     }
@@ -6671,6 +6746,48 @@ export default function LiveConsolePage() {
         teamBKills: teamBKillsTotal,
       })
     : null;
+  // ── Feed the auto-commentary engine the current game state ────────────
+  // Built from the same reconciled values the scoreboard shows (team kills =
+  // summed player kills; net worth from the latest capture; win prob from
+  // lib/matchAnalytics), stashed in a ref the interval effect above reads.
+  if (match.team_a?.id && match.team_b?.id) {
+    const aId = match.team_a.id;
+    const bId = match.team_b.id;
+    commentarySnapshotRef.current = {
+      timerSeconds: minute * 60 + secondOfMinute,
+      teamA: { id: aId, name: match.team_a?.name ?? "Team A" },
+      teamB: { id: bId, name: match.team_b?.name ?? "Team B" },
+      netWorth: {
+        [aId]: latestNetWorth?.team_a_gold ?? 0,
+        [bId]: latestNetWorth?.team_b_gold ?? 0,
+      },
+      teamKills: { [aId]: computedTeamAKills, [bId]: computedTeamBKills },
+      objectives: {
+        [aId]: { turtle: objectiveCount(aId, "turtle"), lord: objectiveCount(aId, "lord"), tower: objectiveCount(aId, "tower") },
+        [bId]: { turtle: objectiveCount(bId, "turtle"), lord: objectiveCount(bId, "lord"), tower: objectiveCount(bId, "tower") },
+      },
+      players: effectivePlayers.map((p) => {
+        const st = stats.find((s) => (s.player_id ? s.player_id === p.id : s.custom_player_name === p.ign));
+        return { id: p.id, name: p.ign, teamId: p.team_id ?? "", kills: st?.kills ?? 0, deaths: st?.deaths ?? 0, assists: st?.assists ?? 0, heroName: st?.hero_name ?? null };
+      }),
+      winProbA: winProbA ?? 0.5,
+    };
+  }
+  commentaryCanRunRef.current = captureActive && match.state === "GAME_STARTED";
+  commentaryInsertRef.current = async (text: string, timerSeconds: number) => {
+    if (!game || !match) return;
+    await supabase.from("key_moments").insert({
+      game_id: game.id,
+      match_id: matchId,
+      type: "custom",
+      description: text,
+      minute_mark: Math.floor(timerSeconds / 60),
+      second_mark: timerSeconds % 60,
+      source: "auto_commentary",
+    });
+    loadAll();
+  };
+
   const adminMvpSvp =
     gameFinished && stats.length > 0
       ? computeMvpSvp(
@@ -7273,6 +7390,59 @@ export default function LiveConsolePage() {
                 {" · "}Confirmed status: <span className="text-white/70">{reconGameStatus ?? "—"}</span>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* Auto-commentary — caster-style Moment list narration. Master toggle
+            plus per-condition switches so the operator controls what the feed
+            reacts to (net worth, kills, objectives, player KDA, win prob, hero
+            flavor, pacing). Fires a natural one-liner on a randomized 1-2 min
+            cadence while the game is ongoing and capture is running. */}
+        {match.update_source === "local_ocr" && (
+          <div className="space-y-2 border border-white/10 bg-white/5 rounded px-3 py-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <p className="text-xs font-semibold text-white/70">Auto-commentary (Moment list)</p>
+              <button
+                onClick={() => setCommentaryEnabled((v) => !v)}
+                className={`text-[11px] rounded px-3 py-1 border ${
+                  commentaryEnabled ? "bg-signal text-ink border-signal font-semibold" : "border-white/20 text-white/70 hover:bg-white/10"
+                }`}
+              >
+                {commentaryEnabled ? "On" : "Off"}
+              </button>
+            </div>
+            <p className="text-[10px] text-white/40">
+              Posts a natural caster line every 1–2 minutes while the game is ongoing, based on the conditions below. Lines
+              improve over time beyond these starter templates.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {COMMENTARY_CONDITIONS.map((c) => {
+                const on = commentaryConditions.has(c.key);
+                return (
+                  <button
+                    key={c.key}
+                    onClick={() =>
+                      setCommentaryConditions((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(c.key)) next.delete(c.key);
+                        else next.add(c.key);
+                        return next;
+                      })
+                    }
+                    className={`text-[10px] rounded px-2 py-1 border ${
+                      on ? "border-signal/60 text-signal bg-signal/10" : "border-white/15 text-white/40 hover:bg-white/10"
+                    }`}
+                    title={on ? "Enabled — click to mute this condition" : "Muted — click to enable"}
+                  >
+                    {on ? "✓ " : ""}
+                    {c.label}
+                  </button>
+                );
+              })}
+            </div>
+            {commentaryEnabled && !(captureActive && match.state === "GAME_STARTED") && (
+              <p className="text-[10px] text-amber-300/80">Waiting for capture + Game ongoing before it starts posting.</p>
+            )}
           </div>
         )}
 

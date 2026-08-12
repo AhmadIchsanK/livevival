@@ -48,36 +48,6 @@ test("live-regression: team-kills tracker ahead of players does NOT fabricate ki
   assert.equal(e.diagnostics.get("team_kills:A")!.status, "candidate");
 });
 
-// BUG (live G1, 997bb2e6): team A confirmed 12 kills but team B accumulated 18
-// confirmed deaths — raw OCR deaths were applied independently of kills. Deaths
-// now derive only from complete KILL events, so team B deaths can never exceed
-// team A kills. The 6 excess OCR deaths are held pending, never confirmed.
-test("live-regression: OCR deaths (18) cannot exceed enemy kills (12) — G1 conservation", () => {
-  const e = createEngine({ gameId: asGameId("g1-cons"), teamAId: A, teamBId: B });
-  ingest(e, {
-    gameTimeSeconds: 600, timer: 600,
-    playerKda: [
-      // Team A: 12 kills total.
-      { playerId: asPlayerId("a1"), teamId: A, kda: { kills: 2, deaths: 0, assists: 0 } },
-      { playerId: asPlayerId("a2"), teamId: A, kda: { kills: 4, deaths: 0, assists: 0 } },
-      { playerId: asPlayerId("a3"), teamId: A, kda: { kills: 0, deaths: 0, assists: 0 } },
-      { playerId: asPlayerId("a4"), teamId: A, kda: { kills: 2, deaths: 0, assists: 0 } },
-      { playerId: asPlayerId("a5"), teamId: A, kda: { kills: 4, deaths: 0, assists: 0 } },
-      // Team B: OCR reads 18 deaths total — impossible against 12 enemy kills.
-      { playerId: asPlayerId("b1"), teamId: B, kda: { kills: 0, deaths: 1, assists: 0 } },
-      { playerId: asPlayerId("b2"), teamId: B, kda: { kills: 0, deaths: 3, assists: 0 } },
-      { playerId: asPlayerId("b3"), teamId: B, kda: { kills: 0, deaths: 5, assists: 0 } },
-      { playerId: asPlayerId("b4"), teamId: B, kda: { kills: 0, deaths: 5, assists: 0 } },
-      { playerId: asPlayerId("b5"), teamId: B, kda: { kills: 0, deaths: 4, assists: 0 } },
-    ],
-  });
-  const teamAKills = e.state.teamKills["A"];
-  const teamBDeaths = Object.values(e.state.players).filter((p) => p.teamId === "B").reduce((s, p) => s + p.deaths, 0);
-  assert.equal(teamAKills, 12);
-  assert.equal(teamBDeaths, 12, "confirmed deaths pinned to enemy kills, never the 18 OCR read");
-  assert.ok(reconcile(e.state).coherent, "A kills == B deaths");
-});
-
 test("live-regression: reconcile flags fabricated (over-sum) team kills", () => {
   // Build a state where team kills exceed player attribution and assert
   // reconcile now catches it (previously it only caught under-sum).

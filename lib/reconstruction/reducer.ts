@@ -15,7 +15,6 @@ import type {
   GameId,
   PlayerState,
   StatPayload,
-  KillPayload,
   NetWorthPayload,
   TimerPayload,
   TurretPayload,
@@ -115,33 +114,29 @@ export function applyEvent(state: ConfirmedState, event: GameEvent): ConfirmedSt
       break;
     }
     case "STAT_UPDATE": {
-      // Kills and deaths are NOT sourced here — they derive exclusively from
-      // confirmed, participant-attributed KILL events (spec §4: "team kills
-      // derive from player-attributed kill events"; §C: raw OCR deaths are
-      // observations only). Applying absolute OCR deaths here with Math.max was
-      // the exact cause of the live G1 inconsistency (team B deaths 18 > team A
-      // kills 12): deaths climbed independently of any kill. STAT_UPDATE now
-      // only carries assists (bounded) and the hero name. The reading's kills/
-      // deaths are still used upstream (engine) to detect deltas for pairing.
+      // Authoritative counter source. Player kills/deaths/assists auto-update
+      // from the on-screen scoreboard OCR (monotonic max), and team kills
+      // follow the summed player kills (recomputeTeamKills) — so team kills
+      // always equal accumulated player kills, exactly as the scoreboard shows.
+      // Assists stay bounded by team kills (a support can't have more assists
+      // than the team has kills). KILL events are moment markers only, so
+      // counters never double-count.
       const p = event.payload as StatPayload;
       const player = ensurePlayer(s, p.playerId, p.teamId);
+      player.kills = Math.max(player.kills, p.kills);
+      player.deaths = Math.max(player.deaths, p.deaths);
       player.assists = Math.max(player.assists, p.assists);
       if (p.heroName) player.heroName = p.heroName;
+      recomputeTeamKills(s);
       clampAssistsToTeamKills(s);
       break;
     }
     case "KILL": {
-      // The single source of confirmed kills AND deaths. A confirmed KILL is a
-      // complete kill (killer + victim both attributed by the pairing engine),
-      // so incrementing here keeps team A kills == team B deaths by
-      // construction. Assists are NOT incremented here (they come from
-      // STAT_UPDATE, bounded by team kills) to avoid double-counting; the
-      // payload's assistPlayerIds are retained as evidence only.
-      const p = event.payload as KillPayload;
-      if (p.killerPlayerId) ensurePlayer(s, p.killerPlayerId, p.killerTeamId).kills += 1;
-      if (p.victimPlayerId) ensurePlayer(s, p.victimPlayerId, p.victimTeamId).deaths += 1;
-      recomputeTeamKills(s);
-      clampAssistsToTeamKills(s);
+      // Timeline / moment marker only (killer → victim, for the moment feed and
+      // commentary). Player kills/deaths are NOT changed here — they come from
+      // STAT_UPDATE so the counters always track the scoreboard and team kills
+      // equal the summed player kills. The event id is still appended to the
+      // timeline below (see end of applyEvent).
       break;
     }
     case "NET_WORTH_UPDATE": {

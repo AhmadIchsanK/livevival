@@ -124,4 +124,34 @@ agent can safely build without inventing a live result is done.
 - DB: `drop table game_state_corrections, confirmed_game_state, game_events, game_observations cascade;`
   (all additive; no existing table touched).
 
-## Readiness: **SHADOW READY** (validated against real historical data; not yet SHADOW VALIDATED on a live match; public reads OFF).
+## First live shadow run — 2026-08-12 (game bca5ba0c, ONIC vs Falcons)
+
+387 events persisted, 1 snapshot, `RECONSTRUCTION_PERSISTENCE` on, public reads OFF.
+
+**Passed on live data:** idempotency (0 duplicate event_ids; seq 1–387 distinct),
+timer strictly monotonic (0 rollbacks), net worth strictly monotonic per team
+(0 decreases — the exact corruption class the engine targets), objectives legal
+(turtle 2, lord 1), single game (no cross-game contamination), persistence
+stable, capture unaffected.
+
+**One real reconstruction bug found + fixed:** the team-kills aggregate tracker
+minted one orphan `KILL` per unattributed increment — with null killer AND null
+victim — inflating Team A confirmed team kills to **27** while its five players
+summed to **19** (8 fabricated kills; `kills_null_killer=8`). Violated spec §21
+and "player kills sum to team kills". Fix: the team-kills tracker is now a
+CROSS-CHECK ONLY (surfaces a candidate divergence); confirmed team kills derive
+purely from player-attributed events, so `teamKills == player-sum` always.
+`reconcile()` tightened to flag over-sum too. Regression tests in
+`liveRegression.test.ts`. NOTE: game bca5ba0c's persisted snapshot still shows
+the pre-fix 27 (kept as evidence; shadow-only, not served).
+
+**Known OCR limitation (not a reconstruction bug):** deaths were under-read by
+OCR (Team B 6 deaths recorded vs ~19 kills against them), so the "Team A kills =
+Team B deaths" identity cannot hold on this stream. The engine correctly does
+NOT fabricate deaths; `reconcile()` surfaces it as a conflict
+(MISSING_OBSERVATION). Full kills=deaths reconciliation needs better death OCR.
+
+## Readiness: **SHADOW READY** — the first live run surfaced a real reconstruction
+bug (now fixed + regression-tested), so the live evidence did NOT yet satisfy
+every Phase-9 criterion. Reaching SHADOW VALIDATED requires ONE MORE live game on
+the fixed build showing coherent team-kill reconciliation. Public reads remain OFF.

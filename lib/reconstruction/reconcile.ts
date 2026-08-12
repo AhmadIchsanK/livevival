@@ -36,8 +36,17 @@ export function reconcile(s: ConfirmedState): ReconciliationReport {
   // player kills sum to team kills (the confirmed team-kill counter).
   for (const t of Object.keys(s.teamKills)) {
     const summed = teamKills[t] ?? 0;
-    if (s.teamKills[t] < summed) {
-      conflicts.push(`team ${t} counter ${s.teamKills[t]} < summed player kills ${summed}`);
+    // Strict equality in BOTH directions: the counter under the sum means
+    // player kills were lost; the counter OVER the sum means kills were
+    // fabricated without player attribution (the live-run orphan-kill bug).
+    // Only checked when the team has player rows to reconcile against — a
+    // team-kills reading with no per-player data yet is not a conflict.
+    if (Object.values(s.players).some((p) => p.teamId === t)) {
+      if (s.teamKills[t] < summed) {
+        conflicts.push(`team ${t} counter ${s.teamKills[t]} < summed player kills ${summed}`);
+      } else if (s.teamKills[t] > summed) {
+        conflicts.push(`team ${t} counter ${s.teamKills[t]} > summed player kills ${summed} (unattributed kills)`);
+      }
     }
   }
 

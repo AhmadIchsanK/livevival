@@ -191,22 +191,35 @@ export function ingest(engine: Engine, tick: ObservationTick): GameEvent[] {
     }
   }
 
-  // ── Team kills aggregate tracker (spec §4) — reconciled against players.
+  // ── Team kills aggregate tracker (spec §4) — CROSS-CHECK ONLY.
+  // It does NOT mint kills. The live shadow run (game bca5ba0c) proved why:
+  // emitting one orphan KILL per unattributed team-kill increment fabricated
+  // 8 kills with null killer AND null victim, inflating Team A's confirmed
+  // team kills to 27 while its five players summed to 19 — a permanent
+  // "player kills sum to team kills" violation from zero participant evidence,
+  // exactly what spec §21 forbids ("do not fabricate killer/assist identity
+  // when evidence is insufficient"). Confirmed team kills now derive purely
+  // from player-attributed KILL/STAT events (reducer.recomputeTeamKills), so
+  // teamKills always equals the summed player kills. A team-kills reading that
+  // runs ahead of player attribution is surfaced as a candidate divergence for
+  // the admin — never committed as truth.
   if (tick.teamKills) {
     for (const teamId of Object.keys(tick.teamKills)) {
       const reading = tick.teamKills[teamId] ?? null;
       const confirmed = engine.state.teamKills[teamId] ?? null;
       const summed = Object.values(engine.state.players).filter((p) => p.teamId === teamId).reduce((s, p) => s + p.kills, 0);
       const r = validateTeamKills(reading, confirmed, summed);
-      setDiag(engine, { field: `team_kills:${teamId}`, status: r.status, reason: r.reason, candidateValue: reading, confidence, lastObservedAt: createdAt });
-      // team-kills-only increases with no player attribution → orphan kill
-      // events with unknown identity (keeps totals honest, spec §21).
-      if (r.status === "confirmed" && r.value != null && r.value > (confirmed ?? 0)) {
-        const extra = r.value - Math.max(confirmed ?? 0, summed);
-        for (let i = 0; i < extra; i++) {
-          emit(engine, createEvent({ gameId: engine.gameId, type: "KILL", gameTimeSeconds: gameTime, payload: { killerTeamId: teamId as TeamId, victimTeamId: (teamId === engine.teamAId ? engine.teamBId : engine.teamAId) }, source, confidence, createdAt, signature: `teamkill:${teamId}:${(confirmed ?? 0) + i}` }));
-        }
-      }
+      // Ahead of attribution → candidate (needs per-player evidence to confirm),
+      // otherwise agrees with the reconciled total.
+      const aheadOfPlayers = reading != null && reading > summed;
+      setDiag(engine, {
+        field: `team_kills:${teamId}`,
+        status: aheadOfPlayers ? "candidate" : r.status,
+        reason: aheadOfPlayers ? `reads ${reading} but only ${summed} kills attributed to players — awaiting per-player evidence` : r.reason,
+        candidateValue: reading,
+        confidence,
+        lastObservedAt: createdAt,
+      });
     }
   }
 

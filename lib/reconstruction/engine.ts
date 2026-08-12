@@ -164,9 +164,13 @@ export function ingest(engine: Engine, tick: ObservationTick): GameEvent[] {
       tick.playerKda.map((r) => ({ playerId: r.playerId, teamId: r.teamId, reading: r.kda })),
       { confirmed: confirmedMap, teamOf: engine.playerTeam, teamAId: engine.teamAId, teamBId: engine.teamBId }
     );
-    // Compute per-player deltas from confirmed → new confirmed values.
+    // Compute per-player deltas from confirmed → new candidate values. These
+    // are the kill/death/assist increments this window that the pairing engine
+    // turns into atomic KILL events. Because confirmed kills/deaths now move
+    // ONLY through complete (paired) KILL events, an unpaired delta persists —
+    // next tick the raw reading is still ahead of confirmed, so the same delta
+    // re-appears and pairs once its counterpart is observed.
     const deltas: PlayerDelta[] = [];
-    const teamKillDelta: Record<string, number> = {};
     for (const [pid, v] of batch.confirmedValues) {
       const prev = confirmedMap.get(pid) ?? { kills: 0, deaths: 0, assists: 0 };
       const teamId = engine.playerTeam.get(pid) as TeamId;
@@ -174,17 +178,32 @@ export function ingest(engine: Engine, tick: ObservationTick): GameEvent[] {
       const dD = v.deaths - prev.deaths;
       const dA = v.assists - prev.assists;
       if (dK || dD || dA) deltas.push({ playerId: pid as PlayerId, teamId, dKills: dK, dDeaths: dD, dAssists: dA });
-      if (dK > 0) teamKillDelta[teamId] = (teamKillDelta[teamId] ?? 0) + dK;
       const d = batch.decisions.find((x) => x.playerId === pid)!;
       setDiag(engine, { field: `player_kda:${pid}`, status: d.result.status, reason: d.result.reason, candidateValue: v, confidence, lastObservedAt: createdAt });
     }
-    // Emit atomic KILL events (spec §21) — reconciles team + player totals.
-    if (Object.keys(teamKillDelta).length > 0) {
-      const kills = reconstructKills({ gameId: engine.gameId, gameTimeSeconds: gameTime, teamAId: engine.teamAId, teamBId: engine.teamBId, teamKillDelta, playerDeltas: deltas, source, confidence });
-      for (const k of kills) emit(engine, k);
+    // Pair kill deltas with enemy death deltas into atomic KILL events (spec
+    // §21). Only complete kills (killer AND victim) are emitted; unpaired kills
+    // or deaths are held pending and surfaced as diagnostics, never confirmed
+    // with a null participant and never fabricated.
+    const recon = reconstructKills({
+      gameId: engine.gameId,
+      gameTimeSeconds: gameTime,
+      teamAId: engine.teamAId,
+      teamBId: engine.teamBId,
+      playerDeltas: deltas,
+      source,
+      confidence,
+    });
+    for (const k of recon.events) emit(engine, k);
+    for (const [teamId, n] of Object.entries(recon.pending.killsAwaitingVictim)) {
+      setDiag(engine, { field: `kill_pending:${teamId}`, status: "candidate", reason: `${n} kill(s) observed with no victim delta yet — held pending until a death is observed`, candidateValue: n, confidence, lastObservedAt: createdAt });
     }
-    // Any death-only / assist-only deltas not captured by kills (e.g. deaths
-    // to neutral objectives) are applied via a STAT_UPDATE reconciliation.
+    for (const [teamId, n] of Object.entries(recon.pending.deathsAwaitingKiller)) {
+      setDiag(engine, { field: `death_pending:${teamId}`, status: "candidate", reason: `${n} death(s) observed with no enemy kill yet — held pending until a kill is confirmed`, candidateValue: n, confidence, lastObservedAt: createdAt });
+    }
+    // STAT_UPDATE carries ONLY assists (+ hero) into confirmed state; its
+    // kills/deaths fields are evidence for the delta above and are ignored by
+    // the reducer, so raw OCR deaths can never inflate confirmed deaths.
     for (const [pid, v] of batch.confirmedValues) {
       const teamId = engine.playerTeam.get(pid) as TeamId;
       emit(engine, createEvent({ gameId: engine.gameId, type: "STAT_UPDATE", gameTimeSeconds: gameTime, payload: { teamId, playerId: pid as PlayerId, kills: v.kills, deaths: v.deaths, assists: v.assists }, source, confidence, createdAt, signature: `stat:${pid}:${v.kills}/${v.deaths}/${v.assists}` }));

@@ -45,7 +45,11 @@ test("ACCEPT: no cross-game contamination (separate engines, separate state)", (
 
 test("ACCEPT: no post-GAME_FINISHED mutations", () => {
   const e = eng();
-  ingest(e, { gameTimeSeconds: 60, timer: 60, playerKda: [{ playerId: a1, teamId: A, kda: { kills: 1, deaths: 0, assists: 0 } }] });
+  // a1's kill pairs with b1's death → confirmed kill (kills now require a victim).
+  ingest(e, { gameTimeSeconds: 60, timer: 60, playerKda: [
+    { playerId: a1, teamId: A, kda: { kills: 1, deaths: 0, assists: 0 } },
+    { playerId: b1, teamId: B, kda: { kills: 0, deaths: 1, assists: 0 } },
+  ] });
   ingest(e, { gameTimeSeconds: 900, timer: 900, baseDestroyed: B });
   ingest(e, { gameTimeSeconds: 950, timer: 950, playerKda: [{ playerId: a1, teamId: A, kda: { kills: 9, deaths: 0, assists: 0 } }], netWorth: { A: 99999 } });
   assert.equal(e.state.status, "finished");

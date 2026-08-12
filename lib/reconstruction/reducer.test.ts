@@ -18,10 +18,11 @@ test("reducer: GAME_STARTED → in_progress", () => {
   assert.equal(s.status, "in_progress");
 });
 
-test("reducer: KILL updates killer/victim/team totals", () => {
+test("reducer: STAT_UPDATE sets counters; team kills = summed player kills", () => {
   const s = reduceEvents(G, [
     ev("GAME_STARTED", {}),
-    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b1") }, 60),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 1, deaths: 0, assists: 0 }, 60, "s1"),
+    ev("STAT_UPDATE", { teamId: B, playerId: asPlayerId("b1"), kills: 0, deaths: 1, assists: 0 }, 60, "s2"),
   ]);
   assert.equal(s.players["a1"].kills, 1);
   assert.equal(s.players["b1"].deaths, 1);
@@ -43,15 +44,16 @@ test("reducer: replay reproduces identical state", () => {
 test("reducer: GAME_FINISHED locks out normal telemetry", () => {
   const s = reduceEvents(G, [
     ev("GAME_STARTED", {}),
-    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b1") }, 60),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 1, deaths: 0, assists: 0 }, 60, "s1"),
+    ev("NET_WORTH_UPDATE", { teamId: A, gold: 5000 }, 60),
     ev("BASE_DESTROYED", { teamId: B }, 900),
     // post-game frames must not change anything:
-    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b1") }, 950, "post"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 9, deaths: 0, assists: 0 }, 950, "post"),
     ev("NET_WORTH_UPDATE", { teamId: A, gold: 99999 }, 950, "post-nw"),
   ]);
   assert.equal(s.status, "finished");
-  assert.equal(s.players["a1"].kills, 1, "post-game kill ignored");
-  assert.equal(s.netWorth["A"], 5000 === s.netWorth["A"] ? s.netWorth["A"] : s.netWorth["A"]);
+  assert.equal(s.players["a1"].kills, 1, "post-game stat ignored");
+  assert.equal(s.netWorth["A"], 5000);
   assert.notEqual(s.netWorth["A"], 99999);
 });
 
@@ -72,57 +74,38 @@ test("reducer: candidate/rejected events never affect confirmed state", () => {
   assert.equal(s.teamKills["A"] ?? 0, 0);
 });
 
-// Kills and deaths are sourced ONLY from confirmed KILL events now; a
-// STAT_UPDATE's kills/deaths are evidence for delta detection upstream and are
-// ignored by the reducer (this is what stops raw OCR deaths inflating state).
-test("reducer: STAT_UPDATE does not set kills or deaths (evidence only)", () => {
+// Player counters auto-update from the scoreboard OCR via STAT_UPDATE
+// (monotonic max), and team kills follow the summed player kills.
+test("reducer: STAT_UPDATE auto-updates kills/deaths/assists (monotonic max)", () => {
   const s = reduceEvents(G, [
     ev("GAME_STARTED", {}),
     ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 5, deaths: 1, assists: 0 }, 60, "s1"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 3, deaths: 0, assists: 0 }, 65, "s2"),
   ]);
-  assert.equal(s.players["a1"].kills, 0, "kills not sourced from STAT_UPDATE");
-  assert.equal(s.players["a1"].deaths, 0, "deaths not sourced from STAT_UPDATE");
+  assert.equal(s.players["a1"].kills, 5, "never decreases");
+  assert.equal(s.players["a1"].deaths, 1);
 });
 
-test("reducer: KILL sets killer kill + victim death; assists come from STAT_UPDATE", () => {
+test("reducer: KILL is a moment marker only — counters come from STAT_UPDATE", () => {
   const s = reduceEvents(G, [
     ev("GAME_STARTED", {}),
-    ev(
-      "KILL",
-      {
-        killerTeamId: A,
-        victimTeamId: B,
-        killerPlayerId: asPlayerId("a1"),
-        victimPlayerId: asPlayerId("b1"),
-        assistPlayerIds: [asPlayerId("a2")],
-      },
-      60,
-      "k1"
-    ),
+    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b1") }, 60, "k1"),
   ]);
-  assert.equal(s.players["a1"].kills, 1);
-  assert.equal(s.players["b1"].deaths, 1);
-  assert.equal(s.teamKills["A"], 1);
-  assert.equal(s.players["a2"]?.assists ?? 0, 0, "KILL never credits assists (avoids double-count)");
+  assert.equal(s.players["a1"]?.kills ?? 0, 0, "a KILL alone does not move counters");
+  assert.equal(s.teamKills["A"] ?? 0, 0);
+  assert.equal(s.timeline.length, 2, "GAME_STARTED + KILL both on the timeline (moment feed)");
 });
 
 // Regression for real live game 997bb2e6: a player's assists OCR'd as 80 while
 // the team had 12 kills. Assists can never exceed the team's total kills.
 test("reducer: assists cannot exceed team kills (live 80-assist bug)", () => {
-  const kills: GameEvent[] = [];
-  for (let i = 0; i < 12; i++) {
-    kills.push(
-      ev(
-        "KILL",
-        { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a" + (i % 5)), victimPlayerId: asPlayerId("b" + (i % 5)) },
-        60,
-        "k" + i
-      )
-    );
-  }
   const s = reduceEvents(G, [
     ev("GAME_STARTED", {}),
-    ...kills,
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 2, deaths: 0, assists: 0 }, 60, "s1"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a2"), kills: 4, deaths: 0, assists: 0 }, 60, "s2"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a3"), kills: 0, deaths: 0, assists: 0 }, 60, "s3"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a4"), kills: 2, deaths: 0, assists: 0 }, 60, "s4"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a5"), kills: 4, deaths: 0, assists: 0 }, 60, "s5"),
     // a3's assists mis-read as 80 — clamp to the 12 team kills.
     ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a3"), kills: 0, deaths: 0, assists: 80 }, 514, "s6"),
   ]);
@@ -133,11 +116,8 @@ test("reducer: assists cannot exceed team kills (live 80-assist bug)", () => {
 test("reducer: a legitimate assist within team kills is untouched", () => {
   const s = reduceEvents(G, [
     ev("GAME_STARTED", {}),
-    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b1") }, 60, "k1"),
-    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b2") }, 61, "k2"),
-    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b3") }, 62, "k3"),
-    ev("KILL", { killerTeamId: A, victimTeamId: B, killerPlayerId: asPlayerId("a1"), victimPlayerId: asPlayerId("b1") }, 63, "k4"),
-    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a2"), kills: 0, deaths: 0, assists: 2 }, 64, "s1"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 4, deaths: 0, assists: 0 }, 60, "s1"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a2"), kills: 0, deaths: 0, assists: 2 }, 61, "s2"),
   ]);
   assert.equal(s.teamKills["A"], 4);
   assert.equal(s.players["a2"].assists, 2, "2 assists ≤ 4 team kills stays");

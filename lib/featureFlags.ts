@@ -29,10 +29,14 @@ export const flags = {
     return boolEnv("RECONSTRUCTION_SHADOW_MODE");
   },
   // Serve the public confirmed-state API from the reconstruction snapshot
-  // instead of deriving it from legacy tables. Only flip after shadow-mode
-  // acceptance. When off, the API still works (legacy-derived contract).
+  // instead of deriving it from legacy tables. Enabled by owner decision after
+  // live shadow review (net worth / timer / team-kills-from-player-kills judged
+  // more accurate than legacy). The public API falls back to legacy per game
+  // whenever a reconstruction snapshot is absent, so this is safe to leave on.
+  // ROLLBACK: set RECONSTRUCTION_PUBLIC_READS=0 (or false/off) to revert to the
+  // legacy-derived contract with a single env var, no redeploy of code.
   get reconstructionPublicReads() {
-    return boolEnv("RECONSTRUCTION_PUBLIC_READS");
+    return boolEnv("RECONSTRUCTION_PUBLIC_READS", true);
   },
   // Expose the admin State Health diagnostics route.
   get adminStateHealth() {

@@ -29,7 +29,7 @@ test("kill engine: pairs a kill delta with an enemy death delta (killer+victim)"
   assert.deepEqual(pending.deathsAwaitingKiller, {});
 });
 
-test("kill engine: team totals reconcile after reduce (A kills == B deaths)", () => {
+test("kill engine: pairs each team's kills with the enemy's deaths (moment events)", () => {
   const { events } = reconstructKills({
     gameId: G,
     gameTimeSeconds: 120,
@@ -42,14 +42,21 @@ test("kill engine: team totals reconcile after reduce (A kills == B deaths)", ()
     source: "ocr",
     confidence: 0.9,
   });
+  // 2 kills by A (victims on B) + 1 kill by B (victim on A) = 3 moment events,
+  // each with a real killer and a real victim.
+  assert.equal(events.length, 3);
+  const byKillerTeam = (t: string) => events.filter((e) => (e.payload as any).killerTeamId === t);
+  assert.equal(byKillerTeam("A").length, 2);
+  assert.equal(byKillerTeam("B").length, 1);
+  for (const e of events) {
+    const p = e.payload as any;
+    assert.ok(p.killerPlayerId, "every emitted kill has a killer");
+    assert.ok(p.victimPlayerId, "every emitted kill has a victim");
+  }
+  // KILL events are moment markers — the reducer does not move counters from
+  // them (counters come from STAT_UPDATE), so a KILL-only reduce is empty.
   const s = reduceEvents(G, events);
-  assert.equal(s.teamKills["A"], 2);
-  assert.equal(s.teamKills["B"], 1);
-  assert.equal(s.players["a1"].kills, 2);
-  assert.equal(s.players["b1"].deaths, 2);
-  // Conservation: A kills == B deaths, B kills == A deaths.
-  assert.equal(s.players["a1"].deaths, 1);
-  assert.equal(s.players["b1"].kills, 1);
+  assert.equal(s.players["a1"]?.kills ?? 0, 0);
 });
 
 test("kill engine: a kill with NO victim delta is held pending, never emitted null", () => {

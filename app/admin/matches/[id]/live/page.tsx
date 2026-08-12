@@ -2336,7 +2336,16 @@ export default function LiveConsolePage() {
   // why — so an admin calibrating the six boxes can see each number resolve
   // independently instead of guessing why one objective didn't move. Purely a
   // read-side overlay (like trackerHealth) — the write path is unchanged.
-  type ObjectiveDiagnostic = ObjectiveObservation & { confidence: number | null; at: number };
+  type ObjectiveDiagnostic = ObjectiveObservation & {
+    confidence: number | null;
+    at: number;
+    // The last confirmed count at read time and the actual crop the read came
+    // from — so the panel can distinguish OCR failure (blank raw) from
+    // normalization failure (raw present, normalized null) from validation
+    // rejection (normalized present, accepted false) at a glance.
+    confirmed: number | null;
+    crop: string | null;
+  };
   const [objectiveDiagnostics, setObjectiveDiagnostics] = useState<Record<string, ObjectiveDiagnostic>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string; playerId?: string | null; playerName?: string | null } | null>(null);
   // A kill banner (SAVAGE/MANIAC/etc.) typically stays on screen for
@@ -4532,9 +4541,18 @@ export default function LiveConsolePage() {
             // being the thing that writes. The write below still goes through
             // the unchanged applySingleObjectiveReading guards.
             const obs = objectiveObservation({ side: parsed.side, type: parsed.type, raw: trimmed, confirmed });
+            // Snapshot the actual crop this read came from, so the admin panel
+            // can show exactly what the OCR saw (Phase 1: "actual crop"). A
+            // tiny per-tick PNG for six small regions — diagnostic only.
+            let crop: string | null = null;
+            try {
+              crop = canvas.toDataURL("image/png");
+            } catch {
+              crop = null;
+            }
             setObjectiveDiagnostics((prev) => ({
               ...prev,
-              [tracker.field]: { ...obs, confidence: data.confidence, at: Date.now() },
+              [tracker.field]: { ...obs, confidence: data.confidence, at: Date.now(), confirmed, crop },
             }));
             if (obs.normalized != null) {
               shadowReads.objectives[parsed.type][sideTeamId] = obs.normalized; // shadow (raw)
@@ -7189,29 +7207,50 @@ export default function LiveConsolePage() {
                       const field = objectiveNumField(side, type);
                       const d = objectiveDiagnostics[field];
                       const hasBox = !!regions[field];
+                      // Which pipeline stage the last read landed in, so an
+                      // OCR failure is never confused with a normalization
+                      // failure or a validation rejection (Phase 1).
+                      const stage: { label: string; cls: string } = !d
+                        ? { label: "no read yet", cls: "text-white/30" }
+                        : !d.raw.trim()
+                        ? { label: "OCR: blank crop", cls: "text-red-400" }
+                        : d.normalized == null
+                        ? { label: "Normalize: rejected", cls: "text-orange-400" }
+                        : !d.accepted
+                        ? { label: "Validation: held", cls: "text-yellow-300" }
+                        : { label: "Accepted", cls: "text-emerald-400" };
                       return (
                         <div key={field} className="flex items-start gap-2 text-[11px] bg-black/20 rounded px-2 py-1">
-                          <span
-                            title={
-                              d?.confidence != null ? `OCR confidence: ${Math.round(d.confidence)}%` : "no read yet"
-                            }
-                            className={`mt-1 shrink-0 w-2 h-2 rounded-full ${
-                              !d ? "bg-white/20" : d.accepted ? "bg-emerald-500" : "bg-yellow-500"
-                            }`}
-                          />
+                          {/* Actual crop the read came from — Phase 1 "actual
+                              crop". Fixed height, dark bg so a blank crop is
+                              visibly blank. */}
+                          {d?.crop ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={d.crop}
+                              alt={`${side} ${type} crop`}
+                              className="mt-0.5 shrink-0 h-6 w-12 object-contain bg-black/40 rounded border border-white/10"
+                            />
+                          ) : (
+                            <span className="mt-0.5 shrink-0 h-6 w-12 rounded border border-white/10 bg-black/40" />
+                          )}
                           <div className="flex-1 min-w-0">
-                            <div className="font-medium text-white/80 capitalize">
-                              {type}
-                              {!hasBox && <span className="ml-1 text-white/30">(not calibrated)</span>}
+                            <div className="font-medium text-white/80 capitalize flex items-center gap-1.5">
+                              <span>{type}</span>
+                              {!hasBox && <span className="text-white/30">(not calibrated)</span>}
+                              <span
+                                className={`ml-auto ${stage.cls}`}
+                                title={d?.confidence != null ? `OCR confidence: ${Math.round(d.confidence)}%` : undefined}
+                              >
+                                {stage.label}
+                              </span>
                             </div>
                             {d ? (
                               <>
                                 <div className="text-white/40">
                                   Raw: <span className="text-white/70">&quot;{d.raw}&quot;</span> · Norm:{" "}
-                                  <span className="text-white/70">{d.normalized ?? "—"}</span> ·{" "}
-                                  <span className={d.accepted ? "text-emerald-400" : "text-yellow-300"}>
-                                    {d.accepted ? "accepted" : "held"}
-                                  </span>
+                                  <span className="text-white/70">{d.normalized ?? "—"}</span> · Confirmed:{" "}
+                                  <span className="text-white/70">{d.confirmed ?? "—"}</span>
                                 </div>
                                 <div className="text-white/40">{d.reason}</div>
                               </>
@@ -7867,13 +7906,7 @@ export default function LiveConsolePage() {
                   clock) is pinned to the top of the scroll so it — and the
                   running clock — stays visible however far down the operator
                   scrolls the action deck. */}
-              <div
-                className={`flex items-center justify-between gap-2 flex-wrap ${
-                  match.state === "GAME_STARTED" || match.state === "TECHNICAL_PAUSE"
-                    ? "sticky top-0 z-20 bg-ink/95 backdrop-blur py-1.5 -mx-1 px-1 rounded"
-                    : ""
-                }`}
-              >
+              <div className="flex items-center justify-between gap-2 flex-wrap sticky top-0 z-20 bg-ink/95 backdrop-blur py-1.5 -mx-1 px-1 rounded">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="font-bold">Moment Timeline</h2>
                   {/* Same live in-game clock the public match page shows
@@ -7900,7 +7933,7 @@ export default function LiveConsolePage() {
                   </button>
                 )}
               </div>
-              <div ref={adminMomentListRef} className="flex flex-col gap-1.5 text-xs max-h-[260px] overflow-y-auto pr-1">
+              <div ref={adminMomentListRef} className="flex flex-col gap-1.5 text-xs max-h-[200px] overflow-y-auto pr-1">
                 {/* Ascending by minute_mark (query order) — newest moment at
                     the bottom, matching the public match page instead of a
                     reversed admin-only order. */}

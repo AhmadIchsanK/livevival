@@ -74,6 +74,25 @@ function recomputeTeamKills(s: ConfirmedState): void {
   }
 }
 
+// Conservation ceiling on assists (spec §4: "one kill = 1 killer + 0..4
+// assists"). A player is credited with at most one assist per team kill, so a
+// player's assists can never exceed their own team's total kills. Without this,
+// a persistent OCR misread — a player's assists read as 80 when the team has 12
+// kills — climbs the per-tick cap and freezes into confirmed state forever
+// (Math.max never lets it back down). Enforced in the reducer, the single place
+// counters change, so replay of the raw event log always yields bounded state.
+// Deliberately NOT applied to deaths here: a death's ceiling is the *enemy*
+// team's kills, which routinely lags in OCR (a player dies a tick before the
+// enemy's kill is read), so a hard deaths clamp would suppress legitimate
+// deaths — that relationship needs kill-event derivation, tracked separately.
+function clampAssistsToTeamKills(s: ConfirmedState): void {
+  for (const pid of Object.keys(s.players)) {
+    const p = s.players[pid];
+    const teamKills = s.teamKills[p.teamId] ?? 0;
+    if (p.assists > teamKills) p.assists = teamKills;
+  }
+}
+
 // Apply a single confirmed event to the state (mutates and returns it). Events
 // must be applied in chronological order (use orderedEvents).
 export function applyEvent(state: ConfirmedState, event: GameEvent): ConfirmedState {
@@ -103,16 +122,24 @@ export function applyEvent(state: ConfirmedState, event: GameEvent): ConfirmedSt
       player.assists = Math.max(player.assists, p.assists);
       if (p.heroName) player.heroName = p.heroName;
       recomputeTeamKills(s);
+      clampAssistsToTeamKills(s);
       break;
     }
     case "KILL": {
       const p = event.payload as KillPayload;
       if (p.killerPlayerId) ensurePlayer(s, p.killerPlayerId, p.killerTeamId).kills += 1;
       if (p.victimPlayerId) ensurePlayer(s, p.victimPlayerId, p.victimTeamId).deaths += 1;
-      for (const aid of p.assistPlayerIds ?? []) ensurePlayer(s, aid, p.killerTeamId).assists += 1;
+      // A kill credits an assist only to teammates who are NOT the killer — you
+      // cannot assist your own kill (guards a killEngine payload that includes
+      // the killer in its own assist list).
+      for (const aid of p.assistPlayerIds ?? []) {
+        if (aid === p.killerPlayerId) continue;
+        ensurePlayer(s, aid, p.killerTeamId).assists += 1;
+      }
       // team kills tracked even when the killer player is unknown.
       s.teamKills[p.killerTeamId] = (s.teamKills[p.killerTeamId] ?? 0) + 1;
       recomputeTeamKills(s);
+      clampAssistsToTeamKills(s);
       break;
     }
     case "NET_WORTH_UPDATE": {

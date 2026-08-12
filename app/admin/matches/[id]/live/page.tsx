@@ -17,6 +17,15 @@ import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, typ
 import type { LegacyState } from "@/lib/reconstruction/snapshot";
 import { buildIngestPayload } from "@/lib/reconstruction/persistence";
 import { bannerMatch, detectMatchState } from "@/lib/reconstruction/ocrBanners";
+import {
+  OBJECTIVE_SIDE_ORDER,
+  objectiveNumField,
+  objectiveObservation,
+  parseObjectiveNumField,
+  type ObjType,
+  type ObjSide,
+  type ObjectiveObservation,
+} from "@/lib/reconstruction/objectivesObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
 import { LineChart, Line, XAxis, YAxis, Tooltip as RchTooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
@@ -2057,6 +2066,11 @@ export default function LiveConsolePage() {
     // trackers stay available for broadcasts where that trade isn't worth
     // it (a laggy connection, a cramped HUD).
     | "objectives_group"
+    // One numeric sub-region of the combined objectives tracker — a tight crop
+    // around ONE objective's count (just the digits, no icon). Six of these
+    // (3 per side) are managed together under the single "Objectives (combined)"
+    // tracker in the UI; each is OCR'd digits-only and normalized independently.
+    | "objective_num"
     | "kda_group"
     | "net_worth"
     | "player_kda"
@@ -2315,6 +2329,15 @@ export default function LiveConsolePage() {
   // table below show, at a glance, whether a field is actively updating
   // and how much Tesseract itself trusts the last read.
   const [trackerHealth, setTrackerHealth] = useState<Record<string, { lastGoodAt: number | null; confidence: number | null }>>({});
+  // Admin-only per-sub-region objective diagnostics. The combined objectives
+  // tracker is internally six numeric OCR crops (LEFT: Turtle/Lord/Tower,
+  // RIGHT: Tower/Lord/Turtle); each tick records what that crop actually read
+  // (raw), what it normalized to (digits-only), whether it was accepted, and
+  // why — so an admin calibrating the six boxes can see each number resolve
+  // independently instead of guessing why one objective didn't move. Purely a
+  // read-side overlay (like trackerHealth) — the write path is unchanged.
+  type ObjectiveDiagnostic = ObjectiveObservation & { confidence: number | null; at: number };
+  const [objectiveDiagnostics, setObjectiveDiagnostics] = useState<Record<string, ObjectiveDiagnostic>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string; playerId?: string | null; playerName?: string | null } | null>(null);
   // A kill banner (SAVAGE/MANIAC/etc.) typically stays on screen for
   // several seconds — long enough to get re-read on the next OCR tick and
@@ -3038,7 +3061,7 @@ export default function LiveConsolePage() {
           continue;
         }
         const box = composeFromCaptureArea({ xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct }, captureArea);
-        await addTrackerWithRegion("GAME_STARTED", mapping.category, r.field, mapping.label, box);
+        await addTrackerOrExpand("GAME_STARTED", mapping.category, r.field, mapping.label, box);
         aiPlacedRows.push({
           template_name: "",
           phase: "GAME_STARTED",
@@ -3246,6 +3269,68 @@ export default function LiveConsolePage() {
     setRegions((prev) => ({ ...prev, [field]: clamped }));
   }
 
+  // ── Combined objectives → six numeric sub-region crops ───────────────
+  // The admin only ever adds/positions ONE "Objectives (combined)" thing per
+  // side — but it is NOT OCR'd as one strip. Internally it expands into three
+  // tight numeric sub-region trackers (objective_num_{side}_{type}), one per
+  // objective, each cropped to ONLY its number and read digits-only,
+  // independently. LEFT reads Turtle/Lord/Tower, RIGHT reads Tower/Lord/Turtle
+  // (broadcast order — an explicit semantic mapping, never inferred from the
+  // icon). Adding the combined box splits it into three side-by-side thirds as
+  // a starting layout; each sub-box is then draggable/resizable on its own.
+  const OBJECTIVE_COMBINED_FIELDS: Record<Side, string> = {
+    left: "objectives_group_left",
+    right: "objectives_group_right",
+  };
+  function objectiveCombinedSide(field: string): Side | null {
+    if (field === OBJECTIVE_COMBINED_FIELDS.left) return "left";
+    if (field === OBJECTIVE_COMBINED_FIELDS.right) return "right";
+    return null;
+  }
+  function objectiveSubLabel(side: Side, type: ObjType): string {
+    const sideLabel = side === "left" ? "Left" : "Right";
+    const typeLabel = type.charAt(0).toUpperCase() + type.slice(1);
+    return `Objectives (combined) — ${sideLabel} · ${typeLabel}`;
+  }
+  function expandObjectiveCombinedBox(
+    side: Side,
+    box: RegionBox
+  ): { category: TrackerCategory; field: string; label: string; box: RegionBox }[] {
+    const order = OBJECTIVE_SIDE_ORDER[side as ObjSide];
+    const third = box.wPct / 3;
+    return order.map((type, i) => ({
+      category: "objective_num" as TrackerCategory,
+      field: objectiveNumField(side as ObjSide, type),
+      label: objectiveSubLabel(side, type),
+      box: { xPct: box.xPct + third * i, yPct: box.yPct, wPct: third, hPct: box.hPct },
+    }));
+  }
+  // Whether all three numeric sub-regions for a combined side already exist —
+  // used to hide the combined add-option once it's been placed (its own
+  // synthetic field never becomes a tracker; the three sub-fields do).
+  function objectiveCombinedPlaced(phase: string, side: Side): boolean {
+    return OBJECTIVE_SIDE_ORDER[side as ObjSide].every((type) =>
+      trackers.some((t) => t.phase === phase && t.field === objectiveNumField(side as ObjSide, type))
+    );
+  }
+  // Single add chokepoint that transparently expands a combined-objectives
+  // field into its three numeric sub-region trackers, and passes everything
+  // else straight through. Every add path (manual draw, AI layout, template
+  // apply, auto-place) routes through here so "one combined box the admin
+  // draws" always becomes "three independent numeric crops" without the admin
+  // ever creating six trackers by hand.
+  async function addTrackerOrExpand(phase: string, category: TrackerCategory, field: string, label: string, box: RegionBox) {
+    const side = objectiveCombinedSide(field);
+    if (side) {
+      for (const sub of expandObjectiveCombinedBox(side, box)) {
+        if (trackers.some((t) => t.phase === phase && t.field === sub.field)) continue;
+        await addTrackerWithRegion(phase, sub.category, sub.field, sub.label, sub.box);
+      }
+      return;
+    }
+    await addTrackerWithRegion(phase, category, field, label, box);
+  }
+
   // ── Auto-placed default trackers (standard MLBB broadcast layout) ────
   // Sensible percentage-based starting positions for every GAME_STARTED
   // tracker, based on how MLBB tournament broadcasts consistently lay out
@@ -3264,18 +3349,20 @@ export default function LiveConsolePage() {
     items.push({ category: "net_worth", field: "net_worth_left", label: "Net worth — Left", box: { xPct: 1, yPct: 1, wPct: 11, hPct: 4.5 } });
     items.push({ category: "net_worth", field: "net_worth_right", label: "Net worth — Right", box: { xPct: 88, yPct: 1, wPct: 11, hPct: 4.5 } });
     items.push({ category: "game_timer", field: "game_timer", label: "Game timer", box: { xPct: 45, yPct: 1, wPct: 10, hPct: 4.5 } });
-    // Combined objectives box per side — one region around the whole
-    // tower/lord/turtle icon cluster just below the team name (left cluster
-    // center-left, right cluster center-right). No team-kills box (derived
-    // from players) and no per-type boxes (the combined box supersedes them).
+    // Objectives: SIX small numeric sub-region boxes — three per side — not
+    // one combined strip box. Each crops ONLY one objective's number (beside
+    // its icon) and is OCR'd digits-only, independently. LEFT reads
+    // Turtle/Lord/Tower, RIGHT reads Tower/Lord/Turtle (broadcast order). The
+    // whole cluster sits just below the team name (left cluster center-left,
+    // right cluster center-right); expandObjectiveCombinedBox splits that
+    // cluster width into three side-by-side thirds as a starting layout —
+    // exactly what an admin gets by drawing one combined box — so auto-place
+    // and a manual "Objectives (combined)" add land on the same six fields.
     for (const side of SIDES) {
       const x = side.key === "left" ? 24 : 60;
-      items.push({
-        category: "objectives_group",
-        field: `objectives_group_${side.key}`,
-        label: objectivesGroupLabelFor(`objectives_group_${side.key}`)!,
-        box: { xPct: x, yPct: 6, wPct: 16, hPct: 4 },
-      });
+      for (const sub of expandObjectiveCombinedBox(side.key, { xPct: x, yPct: 6, wPct: 16, hPct: 4 })) {
+        items.push(sub);
+      }
     }
     // Combined K/D/A box per side — one region spanning all five player rows
     // down each edge (role order, top to bottom).
@@ -3306,7 +3393,7 @@ export default function LiveConsolePage() {
       const existingGameStarted = new Set(trackers.filter((t) => t.phase === "GAME_STARTED").map((t) => t.field));
       const missing = defaultTrackerLayout().filter((item) => !existingGameStarted.has(item.field));
       for (const item of missing) {
-        await addTrackerWithRegion("GAME_STARTED", item.category, item.field, item.label, item.box);
+        await addTrackerOrExpand("GAME_STARTED", item.category, item.field, item.label, item.box);
       }
     } finally {
       setAutoPlacingTrackers(false);
@@ -3420,7 +3507,7 @@ export default function LiveConsolePage() {
       for (const row of data ?? []) {
         const r = row as { phase: string; category: TrackerCategory; field: string; label: string; x_pct: number; y_pct: number; w_pct: number; h_pct: number };
         if (trackers.some((t) => t.phase === r.phase && t.field === r.field)) continue;
-        await addTrackerWithRegion(r.phase, r.category, r.field, r.label, { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct });
+        await addTrackerOrExpand(r.phase, r.category, r.field, r.label, { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct });
       }
     } finally {
       setApplyingTemplate(false);
@@ -3496,16 +3583,21 @@ export default function LiveConsolePage() {
   // parameterized by the slide-anywhere picker's own phase pick instead of
   // the inline Add-tracker row's phase state — the two panels are
   // independent UI, same underlying catalog.
-  const pendingBoxOptions = catalogForPhase(pendingBoxPhase).filter(
-    (opt) => !trackers.some((t) => t.phase === pendingBoxPhase && t.field === opt.field)
-  );
+  const pendingBoxOptions = catalogForPhase(pendingBoxPhase).filter((opt) => {
+    // A combined-objectives option is "added" once its three numeric
+    // sub-regions exist (its own synthetic field never becomes a tracker), so
+    // hide it then instead of the plain same-field check the rest use.
+    const combinedSide = objectiveCombinedSide(opt.field);
+    if (combinedSide) return !objectiveCombinedPlaced(pendingBoxPhase, combinedSide);
+    return !trackers.some((t) => t.phase === pendingBoxPhase && t.field === opt.field);
+  });
   async function savePendingBox() {
     if (!pendingBox) return;
     const opt = pendingBoxOptions.find((o) => o.field === pendingBoxField);
     if (!opt) return;
     const existing = trackers.find((t) => t.phase === pendingBoxPhase && t.field === opt.field);
     if (existing) await saveRegion(opt.field, pendingBox);
-    else await addTrackerWithRegion(pendingBoxPhase, opt.category, opt.field, opt.label, pendingBox);
+    else await addTrackerOrExpand(pendingBoxPhase, opt.category, opt.field, opt.label, pendingBox);
     setPendingBox(null);
     setPendingBoxPhase("");
     setPendingBoxField("");
@@ -4147,6 +4239,7 @@ export default function LiveConsolePage() {
       case "team_kills":
       case "objective":
       case "objectives_group":
+      case "objective_num":
         return "0123456789";
       default:
         return null; // kill_banner, victory_banner, pause_word, map_setting — real words expected
@@ -4171,11 +4264,14 @@ export default function LiveConsolePage() {
     //
     // Retired categories are hard-excluded even if an older calibration still
     // has them: team_kills (always the messiest read — team kills are derived
-    // from the players' combined K/D/A instead), and the per-team objective /
-    // per-player K/D/A trackers (superseded by the combined boxes). This
-    // guarantees a stale team_kills box can't feed a bad count into the
-    // scoreboard or the reconstruction shadow.
-    const RETIRED_TRACKER_CATEGORIES = new Set(["team_kills", "objective", "player_kda"]);
+    // from the players' combined K/D/A instead), the per-team objective /
+    // per-player K/D/A trackers (superseded by the combined boxes), and
+    // objectives_group (the old whole-strip objectives read — replaced by six
+    // independent numeric sub-region crops, category "objective_num"; a stale
+    // strip box must NOT keep OCRing the combined "0 / 0 / 0" blob). This
+    // guarantees a stale box can't feed a bad count into the scoreboard or the
+    // reconstruction shadow.
+    const RETIRED_TRACKER_CATEGORIES = new Set(["team_kills", "objective", "player_kda", "objectives_group"]);
     // match_event is processed FIRST each tick so a REPLAY/PAUSE overlay
     // detected this frame suspends the telemetry trackers that follow it in the
     // same pass (see suspendedNow() and the guards in the telemetry cases).
@@ -4416,6 +4512,44 @@ export default function LiveConsolePage() {
                 shadowReads.objectives[objectiveType][sideTeamId] = Number(om[0]); // shadow (raw)
               }
               await applySingleObjectiveReading(sideTeamId, objectiveType, trimmed, tracker.field, tracker.label, data.confidence);
+            }
+            break;
+          }
+          case "objective_num": {
+            if (suspendedNow()) break; // replay/pause on screen — HUD is stale
+            // One numeric sub-region of the combined objectives tracker. Its
+            // crop contains ONLY the number beside a single icon, so this is a
+            // digits-only read normalized entirely on its own — never one OCR
+            // pass over the whole strip, never split from a shared blob. The
+            // side+type come straight from the field key (objective_num_{side}_
+            // {type}) — an explicit semantic mapping, not inferred from the
+            // icon image.
+            const parsed = parseObjectiveNumField(tracker.field);
+            if (!parsed || !sideTeamId) break;
+            const confirmed = objectiveCount(sideTeamId, parsed.type);
+            // Diagnostic row (raw / normalized / accepted / reason) for the
+            // admin panel — reflects the monotonic/candidate decision without
+            // being the thing that writes. The write below still goes through
+            // the unchanged applySingleObjectiveReading guards.
+            const obs = objectiveObservation({ side: parsed.side, type: parsed.type, raw: trimmed, confirmed });
+            setObjectiveDiagnostics((prev) => ({
+              ...prev,
+              [tracker.field]: { ...obs, confidence: data.confidence, at: Date.now() },
+            }));
+            if (obs.normalized != null) {
+              shadowReads.objectives[parsed.type][sideTeamId] = obs.normalized; // shadow (raw)
+              // applySingleObjectiveReading never decreases and keeps every
+              // spawn-timing/cap/manual-cooldown guard — a below-confirmed or
+              // suspicious read simply no-ops here, exactly as the diagnostic
+              // above already flagged. Validation logic is untouched.
+              await applySingleObjectiveReading(
+                sideTeamId,
+                parsed.type,
+                String(obs.normalized),
+                tracker.field,
+                tracker.label,
+                data.confidence
+              );
             }
             break;
           }
@@ -7028,6 +7162,71 @@ export default function LiveConsolePage() {
               ))}
           </div>
         )}
+
+        {/* Objectives OCR diagnostics — admin-only. The combined objectives
+            tracker is internally six numeric sub-region crops; this shows each
+            one's independent read so calibration doesn't have to guess why a
+            single objective isn't moving. Raw = exactly what the crop OCR'd;
+            Norm = the digits-only normalized value; Accepted/reason = the
+            monotonic/candidate decision (never weakened to force a value
+            through — a below-confirmed or unreadable crop keeps the last
+            confirmed count). Only rendered once at least one sub-region has a
+            reading this session. */}
+        {match.update_source === "local_ocr" &&
+          captureMode === "manual" &&
+          Object.keys(objectiveDiagnostics).length > 0 && (
+            <div className="space-y-2 border border-white/10 bg-white/5 rounded px-3 py-2">
+              <p className="text-xs font-semibold text-white/70">
+                Objectives OCR — six numeric sub-regions (admin diagnostics)
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {(["left", "right"] as ObjSide[]).map((side) => (
+                  <div key={side} className="space-y-1">
+                    <p className="text-[10px] uppercase tracking-wide text-white/40">
+                      {side === "left" ? "Left" : "Right"} — {OBJECTIVE_SIDE_ORDER[side].join(" / ")}
+                    </p>
+                    {OBJECTIVE_SIDE_ORDER[side].map((type) => {
+                      const field = objectiveNumField(side, type);
+                      const d = objectiveDiagnostics[field];
+                      const hasBox = !!regions[field];
+                      return (
+                        <div key={field} className="flex items-start gap-2 text-[11px] bg-black/20 rounded px-2 py-1">
+                          <span
+                            title={
+                              d?.confidence != null ? `OCR confidence: ${Math.round(d.confidence)}%` : "no read yet"
+                            }
+                            className={`mt-1 shrink-0 w-2 h-2 rounded-full ${
+                              !d ? "bg-white/20" : d.accepted ? "bg-emerald-500" : "bg-yellow-500"
+                            }`}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-white/80 capitalize">
+                              {type}
+                              {!hasBox && <span className="ml-1 text-white/30">(not calibrated)</span>}
+                            </div>
+                            {d ? (
+                              <>
+                                <div className="text-white/40">
+                                  Raw: <span className="text-white/70">&quot;{d.raw}&quot;</span> · Norm:{" "}
+                                  <span className="text-white/70">{d.normalized ?? "—"}</span> ·{" "}
+                                  <span className={d.accepted ? "text-emerald-400" : "text-yellow-300"}>
+                                    {d.accepted ? "accepted" : "held"}
+                                  </span>
+                                </div>
+                                <div className="text-white/40">{d.reason}</div>
+                              </>
+                            ) : (
+                              <div className="text-white/30">no read yet</div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
         {/* Nothing else here makes it obvious when a phase has zero
             regions calibrated — OCR just silently reads nothing forever

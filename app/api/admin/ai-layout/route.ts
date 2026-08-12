@@ -189,18 +189,51 @@ export async function POST(req: NextRequest) {
   // entry gets dropped here rather than trusted through: an unknown field
   // name, an out-of-range percentage, or a box no OCR could ever use are
   // all filtered out before the client sees them.
-  const rawRegions = Array.isArray(parsed.regions) ? parsed.regions : [];
+  // The model may return the box under a few different conventions. Accept
+  // them all rather than dropping every region on a key-name mismatch (a
+  // common cause of "didn't locate any elements" even when the model answered):
+  //   - x_pct/y_pct/w_pct/h_pct (asked-for)
+  //   - x/y/w/h  or  x/y/width/height
+  //   - bbox / box / boundingBox as [x, y, w, h]
+  // Numbers may also arrive as numeric strings ("42.5").
+  const num = (v: unknown): number | null => {
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+    return null;
+  };
+  const pickBox = (r: Record<string, unknown>): { x: number | null; y: number | null; w: number | null; h: number | null } => {
+    const arr = (r.bbox ?? r.box ?? r.boundingBox ?? r.bounding_box) as unknown;
+    if (Array.isArray(arr) && arr.length >= 4) {
+      return { x: num(arr[0]), y: num(arr[1]), w: num(arr[2]), h: num(arr[3]) };
+    }
+    return {
+      x: num(r.x_pct ?? r.x ?? r.left),
+      y: num(r.y_pct ?? r.y ?? r.top),
+      w: num(r.w_pct ?? r.w ?? r.width),
+      h: num(r.h_pct ?? r.h ?? r.height),
+    };
+  };
+  // Field name: case/space/dash-insensitive so "Net Worth Left", "net-worth-left"
+  // and "net_worth_left" all resolve to the same known field.
+  const canon = (s: string) => s.toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z_]/g, "");
+  const knownByCanon = new Map((KNOWN_FIELDS as readonly string[]).map((f) => [canon(f), f]));
+  const normField = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    return knownByCanon.get(canon(v)) ?? null;
+  };
+
+  const rawRegions = Array.isArray(parsed.regions)
+    ? parsed.regions
+    : Array.isArray(parsed as unknown as unknown[])
+    ? (parsed as unknown as unknown[]) // model returned a bare array instead of {regions:[...]}
+    : [];
   const numeric = rawRegions
     .map((r) => r as Record<string, unknown>)
     .filter((r): r is Record<string, unknown> => typeof r === "object" && r !== null)
-    .map((r) => ({
-      field: typeof r.field === "string" ? r.field : null,
-      x_pct: typeof r.x_pct === "number" ? r.x_pct : null,
-      y_pct: typeof r.y_pct === "number" ? r.y_pct : null,
-      w_pct: typeof r.w_pct === "number" ? r.w_pct : null,
-      h_pct: typeof r.h_pct === "number" ? r.h_pct : null,
-      confidence: typeof r.confidence === "number" ? r.confidence : null,
-    }));
+    .map((r) => {
+      const b = pickBox(r);
+      return { field: normField(r.field ?? r.name ?? r.label ?? r.element), x_pct: b.x, y_pct: b.y, w_pct: b.w, h_pct: b.h, confidence: num(r.confidence) };
+    });
 
   // Vision models frequently ignore the "0-100 percentage" instruction in
   // the prompt and emit a 0-1 fraction instead (a well-known convention
@@ -226,8 +259,7 @@ export async function POST(req: NextRequest) {
 
   const regions = rescaled.filter(
     (r) =>
-      r.field &&
-      (KNOWN_FIELDS as readonly string[]).includes(r.field) &&
+      r.field && // already canonicalized to a known field (or null) by normField
       r.x_pct != null &&
       r.y_pct != null &&
       r.w_pct != null &&
@@ -240,10 +272,22 @@ export async function POST(req: NextRequest) {
       r.y_pct + r.h_pct <= 100.5
   );
 
-  // rawCandidateCount lets the client tell "the model genuinely saw
-  // nothing" apart from "the model answered but every candidate failed
-  // validation" (bad field name, out-of-bounds box) — those need very
-  // different admin responses (retake vs. a real bug report) and the old
-  // response gave no way to distinguish them.
-  return NextResponse.json({ regions, rawCandidateCount: rawRegions.length });
+  // rawCandidateCount lets the client tell "the model genuinely saw nothing"
+  // apart from "the model answered but every candidate failed validation". On a
+  // zero-region result also return a short sample of what the model actually
+  // said (modelSample) plus how far each candidate got (rejectedSummary), so a
+  // failing frame can be diagnosed instead of just showing "no elements".
+  const responsePayload: Record<string, unknown> = { regions, rawCandidateCount: rawRegions.length };
+  if (regions.length === 0) {
+    responsePayload.modelSample = withoutThinking.slice(0, 600);
+    responsePayload.rejectedSummary = rescaled.slice(0, 10).map((r) => ({
+      field: r.field,
+      hasBox: r.x_pct != null && r.y_pct != null && r.w_pct != null && r.h_pct != null,
+      x_pct: r.x_pct,
+      y_pct: r.y_pct,
+      w_pct: r.w_pct,
+      h_pct: r.h_pct,
+    }));
+  }
+  return NextResponse.json(responsePayload);
 }

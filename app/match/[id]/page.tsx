@@ -1302,7 +1302,11 @@ export default function PublicMatchPage() {
       <div className={videoSize === "small" ? "space-y-8" : "space-y-8 lg:max-h-screen lg:overflow-y-auto lg:pr-1"}>
       {match.update_source === "local_ocr" && (
         <section>
-          <div className="flex items-center gap-3 mb-2 flex-wrap">
+          {/* Header pinned to the top of the moment feed — the title and the
+              live clock stay visible while the list below scrolls, so the
+              in-game time is "always on top" no matter how far down the feed
+              a viewer has scrolled. */}
+          <div className="sticky top-0 z-10 bg-ink/95 backdrop-blur flex items-center gap-3 mb-2 flex-wrap py-1">
             {/* One term everywhere — was "Timeline" once the series ended,
                 "Moment list" otherwise; the admin console calls this same
                 panel "Moment Timeline" regardless of phase, so this now
@@ -1327,14 +1331,14 @@ export default function PublicMatchPage() {
               the bottom (query is sorted created_at asc) — with the box
               auto-scrolled to the newest entry on every update (see the
               momentListRef effect below), so a viewer never has to
-              manually scroll down to see what just happened. Draft layout
-              keeps this deliberately small ("Moment list small" per spec)
-              since the Draft board above is the star there; Finished gets
-              more room as a proper Timeline replay. */}
+              manually scroll down to see what just happened. Capped to about
+              four moments tall before it scrolls (per request) so the feed
+              never dominates the page; Finished gets a little more room as a
+              proper Timeline replay. */}
           <div
             ref={momentListRef}
             className={`space-y-2 overflow-y-auto pr-1 ${
-              layoutBucket === "draft" ? "max-h-[220px]" : layoutBucket === "finished" ? "max-h-[640px]" : "max-h-[420px]"
+              layoutBucket === "finished" ? "max-h-[260px]" : "max-h-[200px]"
             }`}
           >
             {gameMoments.map((km) => {

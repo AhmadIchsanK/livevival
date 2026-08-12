@@ -27,7 +27,7 @@ import {
   type ObjectiveObservation,
 } from "@/lib/reconstruction/objectivesObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
-import { pickCommentary, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot } from "@/lib/matchCommentary";
+import { pickCommentary, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
 import { LineChart, Line, XAxis, YAxis, Tooltip as RchTooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
@@ -2309,6 +2309,18 @@ export default function LiveConsolePage() {
   const commentaryConditionsRef = useRef(commentaryConditions);
   const commentaryCanRunRef = useRef(false);
   const commentaryInsertRef = useRef<(text: string, timerSeconds: number) => Promise<void>>(async () => {});
+  // Admin-authored lines from the DB (editable at /admin/commentary), merged
+  // with the built-in phrasings by the engine. Loaded once; the interval reads
+  // the ref so it always uses the latest without re-subscribing.
+  const [commentaryTemplates, setCommentaryTemplates] = useState<CommentaryTemplate[]>([]);
+  const commentaryTemplatesRef = useRef<CommentaryTemplate[]>([]);
+  commentaryTemplatesRef.current = commentaryTemplates;
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from("commentary_templates").select("condition, template, enabled");
+      if (data) setCommentaryTemplates(data as CommentaryTemplate[]);
+    })();
+  }, []);
   commentaryEnabledRef.current = commentaryEnabled;
   commentaryConditionsRef.current = commentaryConditions;
   useEffect(() => {
@@ -2318,7 +2330,10 @@ export default function LiveConsolePage() {
       try {
         const snap = commentarySnapshotRef.current;
         if (commentaryEnabledRef.current && commentaryCanRunRef.current && snap) {
-          const line = pickCommentary({ now: snap, prev: commentaryPrevRef.current, enabled: commentaryConditionsRef.current });
+          const line = pickCommentary(
+            { now: snap, prev: commentaryPrevRef.current, enabled: commentaryConditionsRef.current },
+            { templates: commentaryTemplatesRef.current }
+          );
           if (line) await commentaryInsertRef.current(line.text, snap.timerSeconds);
           commentaryPrevRef.current = snap;
         }
@@ -7412,8 +7427,12 @@ export default function LiveConsolePage() {
               </button>
             </div>
             <p className="text-[10px] text-white/40">
-              Posts a natural caster line every 1–2 minutes while the game is ongoing, based on the conditions below. Lines
-              improve over time beyond these starter templates.
+              Posts a natural caster line every 1–2 minutes while the game is ongoing, based on the conditions below.
+              Built-in lines plus {commentaryTemplates.length} custom line{commentaryTemplates.length === 1 ? "" : "s"} —{" "}
+              <a href="/admin/commentary" target="_blank" rel="noopener noreferrer" className="text-signal underline">
+                add or edit lines
+              </a>
+              .
             </p>
             <div className="flex flex-wrap gap-1.5">
               {COMMENTARY_CONDITIONS.map((c) => {

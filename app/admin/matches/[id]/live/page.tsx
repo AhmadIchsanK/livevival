@@ -1468,6 +1468,21 @@ export default function LiveConsolePage() {
     left: ["turtle", "lord", "tower"],
     right: ["tower", "lord", "turtle"],
   };
+  // The combined-objectives tracker LABEL is regenerated live from
+  // OBJECTIVE_GROUP_ORDER (capitalized) rather than trusting whatever string was
+  // persisted to capture_regions when the box was first calibrated — an older
+  // calibration still carries the previous order in its stored label (e.g.
+  // "Tower / Lord / Turtle"), so without this the tracker list would keep
+  // showing the stale order even though the parse already uses the current one.
+  // Applied at the load chokepoint (loadTrackers) so every display site agrees.
+  function objectivesGroupLabelFor(field: string): string | null {
+    const side: Side | null =
+      field === "objectives_group_left" ? "left" : field === "objectives_group_right" ? "right" : null;
+    if (!side) return null;
+    const sideLabel = side === "left" ? "Left" : "Right";
+    const order = OBJECTIVE_GROUP_ORDER[side].map((t) => t.charAt(0).toUpperCase() + t.slice(1)).join(" / ");
+    return `Objectives (combined) — ${sideLabel}: ${order}`;
+  }
   function objectiveCount(teamId: string, type: string) {
     return objectives.filter((o) => o.team_id === teamId && o.type === type).length;
   }
@@ -2124,7 +2139,7 @@ export default function LiveConsolePage() {
           items.push({
             category: "objectives_group",
             field: `objectives_group_${side.key}`,
-            label: `Objectives (combined) — ${side.label}: ${OBJECTIVE_GROUP_ORDER[side.key].join(" / ")}`,
+            label: objectivesGroupLabelFor(`objectives_group_${side.key}`)!,
           });
         }
         // K/D/A: ONLY the combined 5-row box per side — see
@@ -2945,8 +2960,8 @@ export default function LiveConsolePage() {
     net_worth_right: { category: "net_worth", label: "Net worth — Right" },
     // team_kills intentionally omitted — no longer a tracker (derived from
     // players' combined K/D/A instead).
-    objectives_group_left: { category: "objectives_group", label: `Objectives (combined) — Left: ${OBJECTIVE_GROUP_ORDER.left.join(" / ")}` },
-    objectives_group_right: { category: "objectives_group", label: `Objectives (combined) — Right: ${OBJECTIVE_GROUP_ORDER.right.join(" / ")}` },
+    objectives_group_left: { category: "objectives_group", label: objectivesGroupLabelFor("objectives_group_left")! },
+    objectives_group_right: { category: "objectives_group", label: objectivesGroupLabelFor("objectives_group_right")! },
     kda_group_left: { category: "kda_group", label: "K/D/A (combined) — Left: all 5, role order" },
     kda_group_right: { category: "kda_group", label: "K/D/A (combined) — Right: all 5, role order" },
   };
@@ -3093,7 +3108,7 @@ export default function LiveConsolePage() {
       for (const r of [...(tournamentDefaults ?? []), ...(matchRegions ?? [])]) {
         if (r.category === "overlay_hint" || r.category === "capture_area") continue;
         const idx = nextTrackers.findIndex((t) => t.field === r.field);
-        const tracker: Tracker = { id: r.id, phase: r.phase, category: r.category as TrackerCategory, field: r.field, label: r.label ?? r.field };
+        const tracker: Tracker = { id: r.id, phase: r.phase, category: r.category as TrackerCategory, field: r.field, label: objectivesGroupLabelFor(r.field) ?? r.label ?? r.field };
         if (idx === -1) nextTrackers.push(tracker);
         else nextTrackers[idx] = tracker; // match-specific row overrides the tournament default with the same field
         nextRegions[r.field] = r.x_pct != null ? { xPct: r.x_pct, yPct: r.y_pct, wPct: r.w_pct, hPct: r.h_pct } : null;
@@ -3245,7 +3260,7 @@ export default function LiveConsolePage() {
       items.push({
         category: "objectives_group",
         field: `objectives_group_${side.key}`,
-        label: `Objectives (combined) — ${side.label}: ${OBJECTIVE_GROUP_ORDER[side.key].join(" / ")}`,
+        label: objectivesGroupLabelFor(`objectives_group_${side.key}`)!,
         box: { xPct: x, yPct: 6, wPct: 16, hPct: 4 },
       });
     }

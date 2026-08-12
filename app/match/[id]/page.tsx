@@ -12,6 +12,8 @@ import { BrandLockup } from "@/components/Brand";
 import { FollowButton } from "@/components/FollowButton";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 import { formatMatchDate } from "@/lib/formatMatchDate";
+import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
 type Match = {
   id: string;
@@ -678,6 +680,36 @@ export default function PublicMatchPage() {
   const gameObjectives = objectives.filter((o) => o.game_id === selectedGameId);
   const gameNetWorth = netWorth.filter((n) => n.game_id === selectedGameId);
   const gameScreenshots = screenshots.filter((s) => s.game_id === selectedGameId);
+  // Moment Timeline is scoped to the game being viewed — Game 1's page shows
+  // only Game 1's moments, Game 2's only Game 2's, and so on (rather than one
+  // combined list across every game in the series).
+  const gameMoments = keyMoments.filter((km) => km.game_id === selectedGameId);
+
+  // Role-weighted MVP / SVP, auto-computed once the game is finished (mid-game
+  // K/D/A is still moving). Fair across roles — see lib/matchAnalytics: a
+  // roamer wins on assists/participation, a gold laner on kills, etc. MVP is the
+  // top performer overall; SVP is the standout on the opposing side.
+  const mvpSvp =
+    layoutBucket === "finished" && gameStats.length > 0
+      ? computeMvpSvp(
+          gameStats.map((s) => ({
+            id: s.id,
+            teamId: s.player?.team_id ?? null,
+            role: s.player?.role ?? null,
+            kills: s.kills ?? 0,
+            deaths: s.deaths ?? 0,
+            assists: s.assists ?? 0,
+            hypeKill: keyMoments.some(
+              (km) =>
+                (km.type === "savage" || km.type === "maniac") &&
+                km.player?.ign &&
+                s.player?.ign &&
+                km.player.ign === s.player.ign
+            ),
+          }))
+        )
+      : { mvpId: null, svpId: null, scores: [] };
+  const svpStat = gameStats.find((s) => s.id === mvpSvp.svpId) ?? null;
 
   // Substitutes/unselected players never show on the Live Scoreboard —
   // only whoever the roster editor has flagged as the active five.
@@ -748,25 +780,8 @@ export default function PublicMatchPage() {
   // "fair between all players/role" per spec — plus a small bonus for a
   // Savage/Maniac credited to them via the moment log (key_moments only
   // carries the player's ign, not player_id, hence the name match).
-  function computeMvp(stats: PlayerStat[]): string | null {
-    if (layoutBucket !== "finished" || stats.length === 0) return null;
-    const teamTotal = (teamId: string | null) =>
-      stats.filter((s) => s.player?.team_id === teamId).reduce((sum, s) => sum + (s.kills ?? 0) + (s.assists ?? 0), 0) || 1;
-    let best: { id: string; score: number } | null = null;
-    for (const s of stats) {
-      const kills = s.kills ?? 0;
-      const deaths = s.deaths ?? 0;
-      const assists = s.assists ?? 0;
-      const contributionShare = (kills + assists) / teamTotal(s.player?.team_id ?? null);
-      const hasHypeKill = keyMoments.some(
-        (km) => (km.type === "savage" || km.type === "maniac") && km.player?.ign && s.player?.ign && km.player.ign === s.player.ign
-      );
-      const score = kills * 2 + assists - deaths * 0.5 + contributionShare * 10 + (hasHypeKill ? 5 : 0);
-      if (!best || score > best.score) best = { id: s.id, score };
-    }
-    return best?.id ?? null;
-  }
-  const mvpStatId = computeMvp(gameStats);
+  // Role-weighted MVP (see mvpSvp above) drives the badges/labels below.
+  const mvpStatId = mvpSvp.mvpId;
 
   const teamABans = gamePickBans.filter((p) => p.team_id === teamAId && p.type === "ban");
   const teamAPicks = gamePickBans
@@ -800,17 +815,21 @@ export default function PublicMatchPage() {
   // matches (Liquipedia-sourced, no OCR) never get net worth data, so this
   // stays hidden for them rather than rendering an empty/fake bar.
   const showMomentum = match.state === "GAME_STARTED" && latestNetWorth != null;
+  // Win probability from a transparent logistic model on gold + kill lead (see
+  // lib/matchAnalytics.winProbabilityTeamA) — still clearly labeled as an
+  // estimate, but a proper probability curve rather than a linear lean.
   let momentumTeamAPct = 50;
   if (showMomentum && latestNetWorth) {
-    const goldTotal = latestNetWorth.team_a_gold + latestNetWorth.team_b_gold;
-    const goldLean = goldTotal > 0 ? (latestNetWorth.team_a_gold - latestNetWorth.team_b_gold) / goldTotal : 0;
-    const killTotal = teamAKills + teamBKills;
-    const killLean = killTotal > 0 ? (teamAKills - teamBKills) / killTotal : 0;
-    const lean = Math.max(-1, Math.min(1, goldLean * 0.65 + killLean * 0.35));
-    // Clamped to 8-92% so the trailing side's sliver never fully vanishes —
-    // this is a rough lean, not a precise probability split.
-    momentumTeamAPct = Math.max(8, Math.min(92, 50 + lean * 50));
+    momentumTeamAPct = winProbabilityTeamA({
+      teamAGold: latestNetWorth.team_a_gold,
+      teamBGold: latestNetWorth.team_b_gold,
+      teamAKills,
+      teamBKills,
+    }) * 100;
   }
+  // Net-worth-difference series (Team A − Team B gold over the game timer) for
+  // the chart — one point per minute (see netWorthDiffSeries).
+  const nwSeries = netWorthDiffSeries(gameNetWorth);
   // Explicit numeric "Win %" figure on top of the same bar/calc above —
   // whichever side the lean currently favors, expressed as "62% — Team A"
   // rather than making people read bar-width by eye. Still the same rough
@@ -819,12 +838,7 @@ export default function PublicMatchPage() {
   const momentumLeaderPct = Math.round(momentumLeaderIsA ? momentumTeamAPct : 100 - momentumTeamAPct);
   const momentumLeaderName = momentumLeaderIsA ? match.team_a?.name : match.team_b?.name;
 
-  const mvp =
-    match.status === "finished" && gameStats.length > 0
-      ? [...gameStats].sort(
-          (a, b) => (b.kills ?? 0) + (b.assists ?? 0) - (b.deaths ?? 0) - ((a.kills ?? 0) + (a.assists ?? 0) - (a.deaths ?? 0))
-        )[0]
-      : null;
+  const mvp = gameStats.find((s) => s.id === mvpSvp.mvpId) ?? null;
 
   const gamesWonByA = games.filter((g) => g.winner_team_id === teamAId).length;
   const gamesWonByB = games.filter((g) => g.winner_team_id === teamBId).length;
@@ -1102,7 +1116,14 @@ export default function PublicMatchPage() {
 
         {mvp && (
           <p className="text-sm text-white/70">
-            Game {selectedGame?.game_number} MVP: {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills ?? "TBD"}/{mvp.deaths ?? "TBD"}/{mvp.assists ?? "TBD"}
+            <span title="Role-weighted MVP — fair across roles (kills, assists, deaths and team-fight participation)">🏆 Game {selectedGame?.game_number} MVP:</span>{" "}
+            {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills ?? "TBD"}/{mvp.deaths ?? "TBD"}/{mvp.assists ?? "TBD"}
+          </p>
+        )}
+        {svpStat && svpStat.id !== mvp?.id && (
+          <p className="text-sm text-white/50">
+            <span title="Standout on the other team (silver MVP), same role-weighted scoring">🥈 SVP:</span>{" "}
+            {svpStat.player?.ign} ({svpStat.hero_name}) — {svpStat.kills ?? "TBD"}/{svpStat.deaths ?? "TBD"}/{svpStat.assists ?? "TBD"}
           </p>
         )}
       </header>
@@ -1316,17 +1337,9 @@ export default function PublicMatchPage() {
               layoutBucket === "draft" ? "max-h-[220px]" : layoutBucket === "finished" ? "max-h-[640px]" : "max-h-[420px]"
             }`}
           >
-            {keyMoments.map((km, i) => {
-              // Sorted oldest-first, so a separator belongs above the
-              // first moment of each game — wherever the game_id changes
-              // from the previous (chronologically earlier) entry above it.
-              const showSeparator = games.length > 1 && (i === 0 || keyMoments[i - 1].game_id !== km.game_id);
-              const gameNumber = gameNumberById.get(km.game_id);
+            {gameMoments.map((km) => {
               return (
                 <div key={km.id}>
-                  {showSeparator && gameNumber && (
-                    <p className="text-[10px] text-white/30 uppercase tracking-wide pt-1 pb-1 first:pt-0">— Game {gameNumber} —</p>
-                  )}
                   {km.is_key_moment ? (
                     <div className="lv-card-flush p-3 flex gap-3 items-start border border-signal/40 bg-signal/10">
                       {km.screenshot_url && (
@@ -1357,7 +1370,7 @@ export default function PublicMatchPage() {
                 </div>
               );
             })}
-            {keyMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
+            {gameMoments.length === 0 && <span className="text-white/30 text-xs">No moments logged yet.</span>}
           </div>
         </section>
       )}
@@ -1541,6 +1554,32 @@ export default function PublicMatchPage() {
               </div>
             ))}
           </div>
+          {/* Net worth difference over the game timer — a positive value means
+              Team A is ahead in gold, negative means Team B. The zero line is
+              the even point. Only shown once there are at least a couple of
+              readings to plot. */}
+          {nwSeries.length >= 2 && (
+            <div className="lv-card-flush p-3 mt-3">
+              <p className="text-[11px] text-white/40 mb-2">
+                Gold lead over time — above the line: <span className="text-signal font-semibold">{match.team_a?.name}</span>, below: <span className="text-signal font-semibold">{match.team_b?.name}</span>
+              </p>
+              <div style={{ width: "100%", height: 180 }}>
+                <ResponsiveContainer>
+                  <LineChart data={nwSeries} margin={{ top: 5, right: 8, bottom: 5, left: 8 }}>
+                    <XAxis dataKey="minute" tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} tickFormatter={(m) => `${m}m`} />
+                    <YAxis tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} width={34} />
+                    <Tooltip
+                      contentStyle={{ background: "rgba(10,10,14,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 12 }}
+                      labelFormatter={(m) => `${m}:00`}
+                      formatter={(v: number) => [`${v >= 0 ? "+" : ""}${(v / 1000).toFixed(1)}K ${v >= 0 ? match.team_a?.name : match.team_b?.name}`, "Gold lead"]}
+                    />
+                    <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
+                    <Line type="monotone" dataKey="diff" stroke="var(--signal, #5B8DEF)" strokeWidth={2} dot={false} isAnimationActive={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
         </section>
       )}
 

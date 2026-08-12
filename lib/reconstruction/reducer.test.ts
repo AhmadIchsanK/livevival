@@ -81,3 +81,55 @@ test("reducer: STAT_UPDATE is monotonic (max)", () => {
   assert.equal(s.players["a1"].kills, 5);
   assert.equal(s.players["a1"].deaths, 1);
 });
+
+// Regression for the real live game (997bb2e6): a player's assists OCR'd as 80
+// while the team had 12 kills. Math.max froze the garbage into confirmed state.
+// Assists can never exceed the team's total kills (one assist per team kill).
+test("reducer: assists cannot exceed team kills (live 80-assist bug)", () => {
+  const s = reduceEvents(G, [
+    ev("GAME_STARTED", {}),
+    // Team A has five players totalling 12 kills.
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 2, deaths: 0, assists: 0 }, 60, "s1"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a2"), kills: 4, deaths: 0, assists: 0 }, 60, "s2"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a3"), kills: 0, deaths: 0, assists: 0 }, 60, "s3"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a4"), kills: 2, deaths: 0, assists: 0 }, 60, "s4"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a5"), kills: 4, deaths: 0, assists: 0 }, 60, "s5"),
+    // Now a4's assists mis-read as 80. Clamp to team kills (12), not 80.
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a4"), kills: 2, deaths: 0, assists: 80 }, 514, "s6"),
+  ]);
+  assert.equal(s.teamKills["A"], 12);
+  assert.equal(s.players["a4"].assists, 12, "80 assists clamped to the 12 team kills");
+});
+
+test("reducer: a legitimate assist within team kills is untouched", () => {
+  const s = reduceEvents(G, [
+    ev("GAME_STARTED", {}),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a1"), kills: 3, deaths: 0, assists: 0 }, 60, "s1"),
+    ev("STAT_UPDATE", { teamId: A, playerId: asPlayerId("a2"), kills: 1, deaths: 0, assists: 2 }, 60, "s2"),
+  ]);
+  assert.equal(s.teamKills["A"], 4);
+  assert.equal(s.players["a2"].assists, 2, "2 assists ≤ 4 team kills stays");
+});
+
+// The killer of a kill is never also an assister on it (guards a killEngine
+// payload that listed the killer in assistPlayerIds — seen in the live data).
+test("reducer: killer is not credited an assist on their own kill", () => {
+  const s = reduceEvents(G, [
+    ev("GAME_STARTED", {}),
+    ev(
+      "KILL",
+      {
+        killerTeamId: A,
+        victimTeamId: B,
+        killerPlayerId: asPlayerId("a1"),
+        victimPlayerId: asPlayerId("b1"),
+        assistPlayerIds: [asPlayerId("a1"), asPlayerId("a2")],
+      },
+      60,
+      "k1"
+    ),
+  ]);
+  assert.equal(s.players["a1"].kills, 1);
+  assert.equal(s.players["a1"].assists, 0, "killer a1 gets no self-assist");
+  assert.equal(s.players["a2"].assists, 1, "teammate a2 still gets the assist");
+});

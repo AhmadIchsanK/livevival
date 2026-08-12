@@ -85,25 +85,37 @@ Mapped in `captureTickBody` (`app/admin/matches/[id]/live/page.tsx`) via a
    `game_observations` (that table is new), only final legacy state, so the
    engine cannot retro-reconstruct old games. Reconstruction applies to games
    captured from now on with shadow persistence enabled.
-3. **Shadow persistence not yet writing to DB.** The live adapter runs the
-   engine in-browser and shows divergences, but does not yet UPSERT
-   `game_observations` / `game_events` / `confirmed_game_state`. That write path
-   is the next step (tables now exist).
+3. **Shadow persistence IMPLEMENTED + schema-verified, not yet exercised live.**
+   `lib/reconstruction/persistence.ts` (row builders + idempotency),
+   `app/api/admin/reconstruction/ingest/route.ts` (admin + service-role,
+   idempotent upserts, gated by `RECONSTRUCTION_PERSISTENCE`), and a
+   fire-and-forget client call (opt-in `localStorage['livevival:shadow:persist']`
+   AND server flag). Idempotency verified against the live schema in a
+   BEGIN/ROLLBACK transaction (dup event → no-op; snapshot upsert → version
+   advances). No live capture has exercised it yet.
 4. **Not yet run against a live match by a human.** The engine is validated
    against real historical data via replay; a live shadow run with the admin
-   panel is the SHADOW VALIDATED gate.
+   panel + persistence is the SHADOW VALIDATED gate — and it REQUIRES a human
+   operator screen-sharing a live MLBB broadcast into the Hot Match console.
+   This cannot be performed by the agent (no browser, no live stream).
 
-## Exact next steps (in order)
+## Exact next steps (in order) — REQUIRE A HUMAN + LIVE STREAM
 
-1. Enable shadow in a real session: set `localStorage['livevival:shadow']='1'`
-   in the admin browser during a live Hot Match; watch the divergence panel.
-2. Add DB persistence to `runShadowTick` (upsert observations/events/snapshot)
-   behind `RECONSTRUCTION_PERSISTENCE`; tables already exist.
-3. Collect divergences across a full real match; turn each into a replay
-   regression test; classify LEGACY_WRONG vs RECONSTRUCTION_WRONG.
-4. When acceptance criteria hold on live data, enable
-   `RECONSTRUCTION_PUBLIC_READS` and repoint the public match page to
+1. Set `RECONSTRUCTION_PERSISTENCE=1` in the deployment env (server flag).
+2. In the admin browser during a REAL live Hot Match, set
+   `localStorage['livevival:shadow']='1'` and
+   `localStorage['livevival:shadow:persist']='1'`, then run capture through a
+   full game. Watch the divergence panel; confirmed_game_state / game_events
+   fill in as the game progresses.
+3. Collect divergences across the full match; classify each (LEGACY_WRONG /
+   RECONSTRUCTION_WRONG / OCR_* / TIMING / MAPPING / EXPECTED); turn any
+   RECONSTRUCTION_WRONG into a replay regression test + fix.
+4. When the Phase-9 acceptance criteria hold on live data, enable
+   `RECONSTRUCTION_PUBLIC_READS=1` and repoint the public match page to
    `/api/public/match-state/:id`. Flag off = instant rollback.
+
+The agent cannot do step 2 (no browser / no live MLBB stream). Everything the
+agent can safely build without inventing a live result is done.
 
 ## Rollback
 

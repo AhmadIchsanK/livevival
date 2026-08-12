@@ -30,12 +30,35 @@ type CSSPropertiesWithVars = CSSProperties & Record<`--${string}`, string>;
 // buttons (unaffected, not driven by this array), just no longer
 // auto-suggested from OCR. The popup-confirm UX that reads off this array
 // is unchanged — only what can trigger it got narrower.
-const OCR_KEYWORDS: { pattern: RegExp; type: string }[] = [
-  { pattern: /SAVAGE/i, type: "savage" },
-  { pattern: /MANIAC/i, type: "maniac" },
-  { pattern: /TRIPLE\s*KILL/i, type: "triple_kill" },
-  { pattern: /DOUBLE\s*KILL/i, type: "double_kill" },
+// Kill-banner keywords. MLBB's SAVAGE/MANIAC/DOUBLE KILL/TRIPLE KILL banners
+// are heavily stylized (gradients, outlines, spacing, trailing effects), so
+// Tesseract frequently returns fragmented text — "TRIPLE" without a clean
+// "KILL", "S A V A G E", "SAVAGE!!", "MANIACC". Matching is therefore done
+// against a letters-only, uppercased normalization of the OCR text (see
+// bannerMatch) with tolerant substrings, not strict word-boundary regexes,
+// which is why the popup previously never fired on real banners. Order
+// matters: the single-word streaks (SAVAGE/MANIAC) and the more specific
+// TRIPLE are checked before DOUBLE so a "TRIPLE" read never falls through to
+// nothing. Only the four types that already exist as moment labels are used.
+const OCR_KEYWORDS: { needles: string[]; type: string }[] = [
+  { needles: ["SAVAGE"], type: "savage" },
+  { needles: ["MANIAC"], type: "maniac" },
+  { needles: ["TRIPLEKILL", "TRIPLE"], type: "triple_kill" },
+  { needles: ["DOUBLEKILL", "DOUBLE"], type: "double_kill" },
 ];
+
+// Letters-only uppercase form of an OCR read, for tolerant banner matching.
+function normalizeBannerText(text: string): string {
+  return text.toUpperCase().replace(/[^A-Z]/g, "");
+}
+function bannerMatch(text: string): { type: string } | null {
+  const norm = normalizeBannerText(text);
+  if (!norm) return null;
+  for (const k of OCR_KEYWORDS) {
+    if (k.needles.some((n) => norm.includes(n))) return { type: k.type };
+  }
+  return null;
+}
 
 // A contributor reaches this exact page (not a separate clone) once
 // approved, but only ever for a finished match, and never writes directly
@@ -1438,9 +1461,12 @@ export default function LiveConsolePage() {
   // exactly as adjustable as any other tracker box; if a broadcast doesn't
   // match this order, calibrate the box tighter or fall back to the 3
   // individual per-type trackers instead.
+  // Broadcast overlay reading order for the combined objectives box, per side.
+  // Left side reads Turtle / Lord / Tower; right side mirrors it Tower / Lord /
+  // Turtle (the icons sit symmetrically around the center clock).
   const OBJECTIVE_GROUP_ORDER: Record<Side, (typeof OBJECTIVE_TYPES)[number][]> = {
-    left: ["tower", "lord", "turtle"],
-    right: ["turtle", "lord", "tower"],
+    left: ["turtle", "lord", "tower"],
+    right: ["tower", "lord", "turtle"],
   };
   function objectiveCount(teamId: string, type: string) {
     return objectives.filter((o) => o.team_id === teamId && o.type === type).length;
@@ -2084,25 +2110,16 @@ export default function LiveConsolePage() {
           // had no way to actually be added as a tracker until now.
           { category: "kill_banner", field: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)" },
         ];
-        for (const side of SIDES) items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}` });
+        // Team kills is NOT a tracker anymore — it was always the messiest OCR
+        // read and produced counts that didn't reconcile with the players.
+        // Team kills are now derived purely by accumulating the players'
+        // combined K/D/A (see teamAKillsTotal/teamBKillsTotal), which is the
+        // authoritative source. Same choice the reconstruction engine makes.
         for (const side of SIDES) items.push({ category: "net_worth", field: `net_worth_${side.key}`, label: `Net worth — ${side.label}` });
-        // Tower/lord/turtle counts, one field per objective type per side —
-        // fieldParts' objectiveType suffix match (`_tower`/`_lord`/`_turtle`)
-        // is what routes each field's OCR read to applySingleObjectiveReading
-        // for the right team+type, same as team_kills/net_worth route on the
-        // `_left`/`_right` side substring.
-        for (const side of SIDES) {
-          for (const type of OBJECTIVE_TYPES) {
-            items.push({
-              category: "objective",
-              field: `objective_${side.key}_${type}`,
-              label: `Objective — ${side.label} ${type[0].toUpperCase()}${type.slice(1)}`,
-            });
-          }
-        }
-        // One box around the whole tower/lord/turtle icon cluster instead
-        // of three — see OBJECTIVE_GROUP_ORDER for how the 3 numbers it
-        // reads get split back out to a type each.
+        // Objectives: ONLY the combined box per side (one region around the
+        // whole tower/lord/turtle icon cluster). The per-type/per-team
+        // objective trackers were removed — the combined box supersedes them,
+        // and OBJECTIVE_GROUP_ORDER splits its 3 numbers back out to a type.
         for (const side of SIDES) {
           items.push({
             category: "objectives_group",
@@ -2110,16 +2127,7 @@ export default function LiveConsolePage() {
             label: `Objectives (combined) — ${side.label}: ${OBJECTIVE_GROUP_ORDER[side.key].join(" / ")}`,
           });
         }
-        for (const side of SIDES) {
-          for (let n = 1; n <= 5; n++) {
-            items.push({
-              category: "player_kda",
-              field: `player_kda_${side.key}_${n}`,
-              label: `K/D/A — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
-            });
-          }
-        }
-        // One box around the whole 5-row KDA column instead of five — see
+        // K/D/A: ONLY the combined 5-row box per side — see
         // parseKdaGroupLines. Requires all 5 rows to read as clean x/x/x
         // triples on the same tick, in role order top-to-bottom, or the
         // whole read is skipped that tick (never a partial/misaligned
@@ -2545,6 +2553,14 @@ export default function LiveConsolePage() {
     await supabase.from("hero_picks_bans").delete().eq("game_id", game.id);
     setDraftSim({ blueTeamId, redTeamId, stepIndex: 0, committed: [] });
     setSimHeroSearch("");
+    // Blue side is always the LEFT side of the broadcast overlay, so once the
+    // draft decides who is on Blue, the OCR left/right mapping follows
+    // automatically — no separate manual "which team is on the left" step.
+    // The selector at the top of Match Capture stays available to override if a
+    // given broadcast ever mirrors the sides.
+    if (resolveLeftTeamId() !== blueTeamId) {
+      await supabase.from("matches").update({ ocr_left_team_id: blueTeamId }).eq("id", match.id);
+    }
     loadAll();
   }
   // Soft — only abandons the in-memory turn tracker. Whatever's already
@@ -2927,8 +2943,8 @@ export default function LiveConsolePage() {
     kill_banner: { category: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)" },
     net_worth_left: { category: "net_worth", label: "Net worth — Left" },
     net_worth_right: { category: "net_worth", label: "Net worth — Right" },
-    team_kills_left: { category: "team_kills", label: "Team kills — Left" },
-    team_kills_right: { category: "team_kills", label: "Team kills — Right" },
+    // team_kills intentionally omitted — no longer a tracker (derived from
+    // players' combined K/D/A instead).
     objectives_group_left: { category: "objectives_group", label: `Objectives (combined) — Left: ${OBJECTIVE_GROUP_ORDER.left.join(" / ")}` },
     objectives_group_right: { category: "objectives_group", label: `Objectives (combined) — Right: ${OBJECTIVE_GROUP_ORDER.right.join(" / ")}` },
     kda_group_left: { category: "kda_group", label: "K/D/A (combined) — Left: all 5, role order" },
@@ -3220,44 +3236,29 @@ export default function LiveConsolePage() {
     items.push({ category: "net_worth", field: "net_worth_left", label: "Net worth — Left", box: { xPct: 1, yPct: 1, wPct: 11, hPct: 4.5 } });
     items.push({ category: "net_worth", field: "net_worth_right", label: "Net worth — Right", box: { xPct: 88, yPct: 1, wPct: 11, hPct: 4.5 } });
     items.push({ category: "game_timer", field: "game_timer", label: "Game timer", box: { xPct: 45, yPct: 1, wPct: 10, hPct: 4.5 } });
-    // Team kills + tower/lord/turtle counts sit as a small horizontal
-    // cluster just below the team name, left cluster hugging center-left
-    // and right cluster hugging center-right of the top-center HUD.
-    const objectiveCluster: { type: string; dx: number }[] = [
-      { type: "kills", dx: 0 },
-      { type: "tower", dx: 5.5 },
-      { type: "lord", dx: 11 },
-      { type: "turtle", dx: 16.5 },
-    ];
+    // Combined objectives box per side — one region around the whole
+    // tower/lord/turtle icon cluster just below the team name (left cluster
+    // center-left, right cluster center-right). No team-kills box (derived
+    // from players) and no per-type boxes (the combined box supersedes them).
     for (const side of SIDES) {
-      const baseX = side.key === "left" ? 24 : 56;
-      for (const { type, dx } of objectiveCluster) {
-        const x = side.key === "left" ? baseX + dx : baseX + (16.5 - dx);
-        if (type === "kills") {
-          items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}`, box: { xPct: x, yPct: 6, wPct: 4.5, hPct: 3.5 } });
-        } else {
-          items.push({
-            category: "objective",
-            field: `objective_${side.key}_${type}`,
-            label: `Objective — ${side.label} ${type[0].toUpperCase()}${type.slice(1)}`,
-            box: { xPct: x, yPct: 6, wPct: 4.5, hPct: 3.5 },
-          });
-        }
-      }
+      const x = side.key === "left" ? 24 : 60;
+      items.push({
+        category: "objectives_group",
+        field: `objectives_group_${side.key}`,
+        label: `Objectives (combined) — ${side.label}: ${OBJECTIVE_GROUP_ORDER[side.key].join(" / ")}`,
+        box: { xPct: x, yPct: 6, wPct: 16, hPct: 4 },
+      });
     }
-    // Ten KDA regions, five down each edge — evenly spaced top-to-bottom
-    // under where each player's portrait renders on a standard overlay.
+    // Combined K/D/A box per side — one region spanning all five player rows
+    // down each edge (role order, top to bottom).
     for (const side of SIDES) {
       const x = side.key === "left" ? 1 : 84;
-      for (let n = 1; n <= 5; n++) {
-        const y = 14 + (n - 1) * 12;
-        items.push({
-          category: "player_kda",
-          field: `player_kda_${side.key}_${n}`,
-          label: `K/D/A — ${side.label} #${n} (${KDA_SLOT_LABELS[n - 1]})`,
-          box: { xPct: x, yPct: y, wPct: 15, hPct: 6 },
-        });
-      }
+      items.push({
+        category: "kda_group",
+        field: `kda_group_${side.key}`,
+        label: `K/D/A (combined) — ${side.label}: all 5, role order`,
+        box: { xPct: x, yPct: 14, wPct: 15, hPct: 60 },
+      });
     }
     items.push({ category: "kill_banner", field: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)", box: { xPct: 32, yPct: 42, wPct: 36, hPct: 10 } });
     return items;
@@ -4111,7 +4112,15 @@ export default function LiveConsolePage() {
     // this match set to right now — this is what makes each phase's
     // tracker genuinely distinct instead of always reading the same fields
     // regardless of what's actually on screen.
-    const activeTrackers = trackers.filter((t) => t.phase === match?.state);
+    //
+    // Retired categories are hard-excluded even if an older calibration still
+    // has them: team_kills (always the messiest read — team kills are derived
+    // from the players' combined K/D/A instead), and the per-team objective /
+    // per-player K/D/A trackers (superseded by the combined boxes). This
+    // guarantees a stale team_kills box can't feed a bad count into the
+    // scoreboard or the reconstruction shadow.
+    const RETIRED_TRACKER_CATEGORIES = new Set(["team_kills", "objective", "player_kda"]);
+    const activeTrackers = trackers.filter((t) => t.phase === match?.state && !RETIRED_TRACKER_CATEGORIES.has(t.category));
     const leftTeamId = resolveLeftTeamId();
     const rightTeamId = resolveRightTeamId();
     // Collected across the loop and applied once at the end, since both
@@ -4183,15 +4192,17 @@ export default function LiveConsolePage() {
 
         switch (tracker.category) {
           case "kill_banner": {
-            const found = OCR_KEYWORDS.find((k) => k.pattern.test(trimmed));
+            // Tolerant, normalized match (see bannerMatch) — the strict
+            // word-boundary regexes this replaced never fired on real stylized
+            // banners.
+            const found = bannerMatch(trimmed);
             if (found && (dismissedSuggestionUntilRef.current[found.type] ?? 0) <= Date.now()) {
               // MLBB's own kill banner reads "{player} {MOMENT TEXT}" — the
-              // text before the matched keyword is the best guess at a
-              // player name; matchPlayerId tolerates OCR noise via its
-              // substring fallback, and simply comes back null (still
-              // loggable, just unattributed) if nothing resolves.
-              const match = trimmed.match(found.pattern);
-              const namePart = match ? trimmed.slice(0, match.index).trim() : "";
+              // first alphabetic run is the best guess at a player name;
+              // matchPlayerId tolerates OCR noise via its substring fallback,
+              // and simply comes back null (still loggable, just unattributed)
+              // if nothing resolves.
+              const namePart = (trimmed.match(/[A-Za-z]{3,}/)?.[0] ?? "").trim();
               const playerId = namePart ? matchPlayerId(namePart) : null;
               const playerName = playerId ? players.find((p) => p.id === playerId)?.ign ?? null : null;
               setSuggestion({ type: found.type, raw: trimmed, playerId, playerName });
@@ -6594,8 +6605,18 @@ export default function LiveConsolePage() {
             scrolls independently beside it. Its own rounded border now —
             ends right where its content ends, doesn't stretch to match
             the action deck's height. */}
+        {/* The monitor pane grows to fit its content (video + the full tracker
+            menu below it) rather than being clamped to the viewport height.
+            The previous `lg:sticky` + `lg:max-h-[100vh]` clamp caused the menu
+            under "Match capture" to collapse to nothing at a wide (e.g. 60:40)
+            split — the taller video consumed the whole capped height, leaving
+            the flex-1 menu ~0px. Capping the video instead would misalign the
+            OCR tracker overlay (positioned as a % of the video box), so the
+            pane simply flows and the page scrolls, which keeps the menu visible
+            at every split ratio. The stream still stays put via window capture
+            regardless of scroll. */}
         <div
-          className="flex flex-col rounded-lg border border-white/10 w-full max-w-full lg:sticky lg:top-[calc(var(--lv-admin-header-h,0px)+1px)] lg:max-h-[calc(100vh-var(--lv-admin-header-h,0px)-1px)]"
+          className="flex flex-col rounded-lg border border-white/10 w-full max-w-full"
           style={{
             width: "100%",
           }}
@@ -6625,6 +6646,31 @@ export default function LiveConsolePage() {
                       </button>
                     ) : null
                   )}
+                </div>
+              </section>
+            )}
+            {/* Broadcast side mapping — lives here at the very top of Match
+                Capture next to Declare Game Winner (the two controls an admin
+                sets per game). Auto-follows the draft: Blue side = Left side of
+                the overlay, so starting a draft simulation sets this
+                automatically (see startDraftSimulation). Still overridable here
+                for a broadcast that mirrors the sides. */}
+            {match.update_source === "local_ocr" && match.team_a && match.team_b && (
+              <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
+                <h3 className="font-semibold text-sm">Broadcast left side</h3>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <label className="text-xs text-white/50">Which team is on the left of the broadcast overlay?</label>
+                  <select
+                    value={resolveLeftTeamId() ?? ""}
+                    onChange={(e) => setOcrLeftTeam(e.target.value)}
+                    className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+                  >
+                    <option value={match.team_a.id}>{match.team_a.name}</option>
+                    <option value={match.team_b.id}>{match.team_b.name}</option>
+                  </select>
+                  <span className="text-[10px] text-white/30">
+                    Auto-set from the draft (Blue = Left). Override here only if a broadcast mirrors the sides — the &quot;left&quot;/&quot;right&quot; regions resolve to whichever team this says, no recalibration needed.
+                  </span>
                 </div>
               </section>
             )}
@@ -6902,22 +6948,9 @@ export default function LiveConsolePage() {
           </div>
         )}
 
-        {match.update_source === "local_ocr" && match.team_a && match.team_b && (
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-white/50">Which team is on the left of the broadcast overlay?</label>
-            <select
-              value={resolveLeftTeamId() ?? ""}
-              onChange={(e) => setOcrLeftTeam(e.target.value)}
-              className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
-            >
-              <option value={match.team_a.id}>{match.team_a.name}</option>
-              <option value={match.team_b.id}>{match.team_b.name}</option>
-            </select>
-            <span className="text-[10px] text-white/30">
-              Set this once per game if sides swap — the "left"/"right" regions below resolve to whichever team this says, no recalibration needed.
-            </span>
-          </div>
-        )}
+        {/* (The "which team is on the left" selector now lives at the top of
+            Match Capture next to Declare Game Winner, and auto-follows the
+            draft — see there.) */}
 
         {match.update_source !== "local_ocr" ? (
           <p className="text-xs text-white/40">

@@ -151,7 +151,51 @@ Team B deaths" identity cannot hold on this stream. The engine correctly does
 NOT fabricate deaths; `reconcile()` surfaces it as a conflict
 (MISSING_OBSERVATION). Full kills=deaths reconciliation needs better death OCR.
 
-## Readiness: **SHADOW READY** — the first live run surfaced a real reconstruction
-bug (now fixed + regression-tested), so the live evidence did NOT yet satisfy
-every Phase-9 criterion. Reaching SHADOW VALIDATED requires ONE MORE live game on
-the fixed build showing coherent team-kill reconciliation. Public reads remain OFF.
+## Second live run — 2026-08-12 (game 350724b4) — audited, STILL FAILS
+
+240 events. Audit of the persisted data: `null_killer_kills = 28`, `teamKills`
+A=11 vs player-sum 3, B=20 vs player-sum 0. The null-killer KILL events have
+payload `{killerTeamId, victimTeamId}` with NO killerPlayerId/victimPlayerId
+keys — the exact signature of the OLD (pre-PR#152) team_kills orphan path;
+the fixed `reconstructKills` always writes those keys. Timeline confirms it:
+fix merged ~02:35, game captured 02:39–02:49 (before Vercel could
+build/deploy/propagate to the browser). **So the second run used the PRE-FIX
+client build; it does NOT validate the fix.** Also ended `in_progress` (no base
+destruction), so GAME_FINISHED lock was again not exercised live. PASSED on this
+data: 0 duplicate events, 0 timer rollbacks, 0 net-worth decreases, legal
+objectives, game isolation, persistence integrity.
+
+Decision: **public reads NOT enabled.** No new engine bug (the fix is correct;
+this run just didn't use it).
+
+## Tracker/UI changes this session (admin Hot Match console)
+
+- "Which team is on the left?" moved to the top of Match Capture next to Declare
+  Game Winner; **auto-set from the draft** (Blue = Left) in `startDraftSimulation`.
+- Removed the **team-kills** tracker (catalog + auto-place + field map) AND
+  hard-excluded it (plus per-team `objective` and per-player `player_kda`
+  trackers) from the capture loop via `RETIRED_TRACKER_CATEGORIES` — even a stale
+  calibration can no longer feed a bad team-kill count. Team kills are derived
+  from the players' combined K/D/A (matches the engine).
+- Combined objectives reading order fixed: left = Turtle/Lord/Tower, right =
+  Tower/Lord/Turtle (`OBJECTIVE_GROUP_ORDER`) — the previous reversed order was
+  why objective counts "never followed the number logic" (numbers landed on the
+  wrong type).
+- Kill-banner detection rewritten to match a letters-only normalization
+  (`bannerMatch`) with tolerant substrings (SAVAGE/MANIAC/TRIPLE/DOUBLE) — the
+  strict word-boundary regexes never fired on real stylized banners.
+- Match-capture pane no longer clamped to viewport height (`lg:sticky/max-h`
+  removed) so the tracker menu stays visible at a 60:40 split.
+- Net worth: no change needed (already correct).
+
+## Readiness: **SHADOW READY** — two live runs attempted; neither validated the
+fixed build (run 1 was pre-fix and surfaced the bug; run 2 was ALSO pre-fix due
+to deploy timing). Reaching SHADOW VALIDATED requires ONE live game confirmed to
+be running the deployed fixed build (verify `null_killer_kills = 0` in that
+game's events), ideally through base destruction. Public reads remain OFF.
+
+### How to confirm the browser has the fixed build before the next run
+In the admin console, run a capture tick and check the persisted `game_events`
+for the new game: `select count(*) from game_events where game_id=<new> and
+type='KILL' and not (payload ? 'killerPlayerId')` must be **0**. If >0, the
+browser is still serving a cached pre-fix bundle — hard-reload before validating.

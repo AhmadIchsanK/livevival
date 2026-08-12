@@ -29,10 +29,17 @@ export type ShadowTickReads = {
     lord: Record<string, number>;
     tower: Record<string, number>;
   };
+  // End-game signal from the center match-state tracker (detectMatchState →
+  // "crystal"). baseDestroyed carries the team whose base fell (the loser), or
+  // null when the loser isn't yet known but the game is clearly over. Set only
+  // on a confident crystal/VICTORY/DEFEAT read — a false finish is worse than a
+  // missed one (spec §E/§F).
+  baseDestroyed?: string | null;
+  gameFinished?: boolean;
 };
 
 export function emptyShadowReads(): ShadowTickReads {
-  return { timerSeconds: null, teamKills: {}, netWorth: {}, playerKda: [], objectives: { turtle: {}, lord: {}, tower: {} } };
+  return { timerSeconds: null, teamKills: {}, netWorth: {}, playerKda: [], objectives: { turtle: {}, lord: {}, tower: {} }, baseDestroyed: undefined, gameFinished: false };
 }
 
 // A mutable holder the component keeps in a ref across ticks.
@@ -74,6 +81,12 @@ function toTick(reads: ShadowTickReads): ObservationTick {
       kda: { kills: p.kills, deaths: p.deaths, assists: p.assists },
     })),
     objectives: reads.objectives,
+    // A confident crystal read finishes the game in reconstruction too. When the
+    // loser is known we pass it as baseDestroyed (BASE_DESTROYED → finished);
+    // otherwise gameFinished still locks the state. Either way the reducer's
+    // post-finish lock (spec §19/§F) freezes all subsequent telemetry.
+    baseDestroyed: reads.baseDestroyed != null ? (asTeamId(reads.baseDestroyed) as TeamId) : null,
+    gameFinished: reads.gameFinished ?? false,
     source: "ocr",
   };
 }

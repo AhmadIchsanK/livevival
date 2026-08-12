@@ -115,29 +115,31 @@ export function applyEvent(state: ConfirmedState, event: GameEvent): ConfirmedSt
       break;
     }
     case "STAT_UPDATE": {
+      // Kills and deaths are NOT sourced here — they derive exclusively from
+      // confirmed, participant-attributed KILL events (spec §4: "team kills
+      // derive from player-attributed kill events"; §C: raw OCR deaths are
+      // observations only). Applying absolute OCR deaths here with Math.max was
+      // the exact cause of the live G1 inconsistency (team B deaths 18 > team A
+      // kills 12): deaths climbed independently of any kill. STAT_UPDATE now
+      // only carries assists (bounded) and the hero name. The reading's kills/
+      // deaths are still used upstream (engine) to detect deltas for pairing.
       const p = event.payload as StatPayload;
       const player = ensurePlayer(s, p.playerId, p.teamId);
-      player.kills = Math.max(player.kills, p.kills);
-      player.deaths = Math.max(player.deaths, p.deaths);
       player.assists = Math.max(player.assists, p.assists);
       if (p.heroName) player.heroName = p.heroName;
-      recomputeTeamKills(s);
       clampAssistsToTeamKills(s);
       break;
     }
     case "KILL": {
+      // The single source of confirmed kills AND deaths. A confirmed KILL is a
+      // complete kill (killer + victim both attributed by the pairing engine),
+      // so incrementing here keeps team A kills == team B deaths by
+      // construction. Assists are NOT incremented here (they come from
+      // STAT_UPDATE, bounded by team kills) to avoid double-counting; the
+      // payload's assistPlayerIds are retained as evidence only.
       const p = event.payload as KillPayload;
       if (p.killerPlayerId) ensurePlayer(s, p.killerPlayerId, p.killerTeamId).kills += 1;
       if (p.victimPlayerId) ensurePlayer(s, p.victimPlayerId, p.victimTeamId).deaths += 1;
-      // A kill credits an assist only to teammates who are NOT the killer — you
-      // cannot assist your own kill (guards a killEngine payload that includes
-      // the killer in its own assist list).
-      for (const aid of p.assistPlayerIds ?? []) {
-        if (aid === p.killerPlayerId) continue;
-        ensurePlayer(s, aid, p.killerTeamId).assists += 1;
-      }
-      // team kills tracked even when the killer player is unknown.
-      s.teamKills[p.killerTeamId] = (s.teamKills[p.killerTeamId] ?? 0) + 1;
       recomputeTeamKills(s);
       clampAssistsToTeamKills(s);
       break;

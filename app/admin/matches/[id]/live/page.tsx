@@ -16,7 +16,7 @@ import { clientShadowModeEnabled } from "@/lib/featureFlags";
 import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, type ShadowTickReads } from "@/lib/reconstruction/shadowCapture";
 import type { LegacyState } from "@/lib/reconstruction/snapshot";
 import { buildIngestPayload } from "@/lib/reconstruction/persistence";
-import { bannerMatch, detectMatchState } from "@/lib/reconstruction/ocrBanners";
+import { bannerMatch, detectMatchState, detectMatchStateDetailed } from "@/lib/reconstruction/ocrBanners";
 import {
   OBJECTIVE_SIDE_ORDER,
   objectiveNumField,
@@ -2259,6 +2259,9 @@ export default function LiveConsolePage() {
   // Never controls public/legacy state; wrapped so it can't break capture.
   const shadowSessionRef = useRef<ShadowSession | null>(null);
   const [shadowDivergences, setShadowDivergences] = useState<ShadowSession["divergences"]>([]);
+  // Reconstruction (shadow) confirmed game status — surfaced in the match-state
+  // diagnostics so an admin can see when GAME_FINISHED actually lands.
+  const [reconGameStatus, setReconGameStatus] = useState<string | null>(null);
   // Map-setting detection only ever needs to fire once per game — without
   // this guard every OCR tick that still sees the map-select overlay on
   // screen would keep re-writing games.map, which is wasted work at best
@@ -2362,6 +2365,15 @@ export default function LiveConsolePage() {
   // why — so an admin calibrating the six boxes can see each number resolve
   // independently instead of guessing why one objective didn't move. Purely a
   // read-side overlay (like trackerHealth) — the write path is unchanged.
+  // Center match-state tracker diagnostics (crystal / replay / pause) — the
+  // full chain RAW → NORMALIZED → MATCHED KEYWORD → DETECTED STATE → EVENT →
+  // CONFIRMED, so an admin can see exactly why GAME_FINISHED did or didn't fire.
+  type MatchStateDiag = { raw: string; normalized: string; keyword: string | null; state: string | null; event: string; confidence: number | null; at: number };
+  const [matchStateDiag, setMatchStateDiag] = useState<MatchStateDiag | null>(null);
+  // Consecutive crystal/VICTORY frames — the reconstruction game-finish signal
+  // requires two in a row so a single-frame OCR false positive can't end the
+  // game (a false GAME_FINISHED is worse than a missed one).
+  const crystalFramesRef = useRef(0);
   type ObjectiveDiagnostic = ObjectiveObservation & {
     confidence: number | null;
     at: number;
@@ -4407,27 +4419,49 @@ export default function LiveConsolePage() {
           case "match_event": {
             // Center-screen state: REPLAY/PAUSE overlay → suspend telemetry;
             // VICTORY/DEFEAT (crystal destroyed) → pop out the declare-winner
-            // prompt. Processed before the telemetry trackers this tick.
-            const st = detectMatchState(trimmed);
+            // prompt AND finish the game in reconstruction. Processed before the
+            // telemetry trackers this tick.
+            const detail = detectMatchStateDetailed(trimmed);
+            const st = detail.state;
+            let matchEvent = "none";
             if (st === "replay" || st === "pause") {
+              crystalFramesRef.current = 0;
               captureSuspendRef.current = { reason: st, until: Date.now() + CAPTURE_SUSPEND_GRACE_MS };
               setCaptureSuspendReason(st);
-            } else {
-              // No overlay this frame — let any active suspension lapse once its
-              // grace window expires.
+              matchEvent = `CAPTURE SUSPENDED — ${st.toUpperCase()}`;
+            } else if (st === "crystal") {
+              // No replay/pause; a genuine end-game banner. Require two
+              // consecutive crystal frames before finishing (single-frame OCR
+              // false positive guard — a false finish is worse than a late one).
+              crystalFramesRef.current += 1;
               if (captureSuspendRef.current && captureSuspendRef.current.until <= Date.now()) {
                 captureSuspendRef.current = null;
                 setCaptureSuspendReason(null);
               }
-              if (st === "crystal" && !suggestedWinner && !gameFinished) {
-                // Base crystal down → game over. Guess the winner from the
-                // banner text (VICTORY is shown on the winning side); fall back
-                // to the current kills leader so the popout always has a
-                // pre-selected team the admin can confirm or change.
+              if (!suggestedWinner && !gameFinished) {
                 const guessed = guessWinnerFromText(trimmed);
                 setSuggestedWinner(guessed ?? leadingTeamIdByKills());
               }
+              if (crystalFramesRef.current >= 2) {
+                // Feed the reconstruction engine: the loser's base fell → game
+                // over. gameFinished alone locks the state even if the loser is
+                // unknown; baseDestroyed carries the loser when we can name them.
+                const winner = guessWinnerFromText(trimmed) ?? leadingTeamIdByKills();
+                const loser = winner ? (winner === match?.team_a?.id ? match?.team_b?.id ?? null : match?.team_a?.id ?? null) : null;
+                shadowReads.baseDestroyed = loser ?? undefined;
+                shadowReads.gameFinished = true;
+                matchEvent = "BASE_DESTROYED → GAME_FINISHED";
+              } else {
+                matchEvent = "crystal (1/2 frames — awaiting confirm)";
+              }
+            } else {
+              crystalFramesRef.current = 0;
+              if (captureSuspendRef.current && captureSuspendRef.current.until <= Date.now()) {
+                captureSuspendRef.current = null;
+                setCaptureSuspendReason(null);
+              }
             }
+            setMatchStateDiag({ raw: trimmed, normalized: detail.normalized, keyword: detail.keyword, state: st, event: matchEvent, confidence: data.confidence, at: Date.now() });
             break;
           }
           case "game_timer": {
@@ -5013,6 +5047,7 @@ export default function LiveConsolePage() {
         };
         shadowSessionRef.current = runShadowTick(session, shadowReads, legacy);
         setShadowDivergences(shadowSessionRef.current.divergences);
+        setReconGameStatus(shadowSessionRef.current.engine.state.status);
 
         // Opt-in shadow persistence (spec Phase 1). Fire-and-forget: never
         // awaited, fully wrapped, so a slow or failed persist can never delay
@@ -7219,6 +7254,25 @@ export default function LiveConsolePage() {
                   </div>
                 </div>
               ))}
+          </div>
+        )}
+
+        {/* Match-state (crystal / replay / pause) diagnostics — admin-only.
+            The full chain the center tracker walked this tick, so an admin can
+            see exactly why GAME_FINISHED did or didn't fire. */}
+        {match.update_source === "local_ocr" && captureMode === "manual" && matchStateDiag && (
+          <div className="space-y-1 border border-white/10 bg-white/5 rounded px-3 py-2 text-[11px]">
+            <p className="text-xs font-semibold text-white/70">Match state — center tracker (crystal / replay / pause)</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-0.5 text-white/50">
+              <div>Raw: <span className="text-white/70">&quot;{matchStateDiag.raw || "—"}&quot;</span></div>
+              <div>Normalized: <span className="text-white/70">{matchStateDiag.normalized || "—"}</span></div>
+              <div>Matched keyword: <span className="text-white/70">{matchStateDiag.keyword ?? "—"}</span></div>
+              <div>Detected state: <span className="text-white/70">{matchStateDiag.state ?? "none"}</span></div>
+              <div className="sm:col-span-2">
+                Event: <span className={matchStateDiag.event.includes("GAME_FINISHED") ? "text-emerald-400" : matchStateDiag.event.includes("SUSPENDED") ? "text-amber-300" : "text-white/70"}>{matchStateDiag.event}</span>
+                {" · "}Confirmed status: <span className="text-white/70">{reconGameStatus ?? "—"}</span>
+              </div>
+            </div>
           </div>
         )}
 

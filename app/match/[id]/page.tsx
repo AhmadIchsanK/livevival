@@ -447,7 +447,7 @@ export default function PublicMatchPage() {
         .select("id, game_id, type, description, minute_mark, second_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
         .eq("match_id", matchId)
         .order("created_at", { ascending: true }),
-      supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("minute_mark"),
+      supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("created_at"),
       supabase.from("game_screenshots").select("id, game_id, image_url, in_game_time, note, created_at").eq("match_id", matchId).order("created_at"),
       rosterTeamIds.length > 0
         ? supabase.from("players").select("id, ign, role, team_id, photo_url, is_active_roster").in("team_id", rosterTeamIds)

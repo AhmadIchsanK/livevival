@@ -672,7 +672,7 @@ export default function LiveConsolePage() {
         supabase.from("objectives").select("id, team_id, type, minute_mark, created_at").eq("game_id", gid).order("minute_mark"),
         supabase.from("key_moments").select("id, type, player_id, team_id, description, minute_mark, is_key_moment, screenshot_url").eq("game_id", gid).order("minute_mark"),
         supabase.from("game_screenshots").select("id, image_url, in_game_time, note, created_at").eq("game_id", gid).order("created_at"),
-        supabase.from("net_worth_snapshots").select("minute_mark, team_a_gold, team_b_gold").eq("game_id", gid).order("minute_mark"),
+        supabase.from("net_worth_snapshots").select("minute_mark, team_a_gold, team_b_gold, created_at").eq("game_id", gid).order("created_at"),
       ]);
       setPickBans((pb as PickBan[]) ?? []);
       setStats((ps as PlayerStat[]) ?? []);

@@ -1543,7 +1543,11 @@ export default function LiveConsolePage() {
     // so the unreliable objective OCR can't spam the Moment list with "TEAM
     // takes 🐢 turtle" lines for objectives that may not have happened — the
     // running count still updates, it just isn't auto-narrated.
-    const announce = opts?.announce ?? true;
+    // Objectives never auto-announce to the Moment list — neither OCR reads nor
+    // manual admin +/- edits. The running count still updates; objectives just
+    // aren't narrated (objective OCR is unreliable, and admins asked that even
+    // manual objective changes stay out of the feed).
+    const announce = opts?.announce ?? false;
     const teamName = teamId === match.team_a?.id ? match.team_a?.name : match.team_b?.name;
     const momentPayload = {
       game_id: game.id,
@@ -4993,6 +4997,20 @@ export default function LiveConsolePage() {
         }
       }
 
+      // §4 "one assist per team kill" — a player's assists can NEVER exceed their
+      // own team's total kills (a 20-assist line on an 11-kill team is
+      // impossible). OCR over-reads assists constantly and that skews MVP/SVP, so
+      // hard-cap to the team's kills. This is a legitimate downward correction
+      // (a real value is already ≤ team kills, so this never truncates a valid
+      // one); the raw read is still surfaced as a flag for an admin override.
+      for (const c of candidates) {
+        const ownKills = teamKillTotal(c.teamId);
+        if (c.assists > ownKills) {
+          c.heldBack.push(`assists ${c.assists} exceed the team's ${ownKills} total kills (impossible — max one assist per team kill)`);
+          c.assists = ownKills;
+        }
+      }
+
       for (const c of candidates) {
         const { row, existing, heldBack } = c;
         const { kills, deaths, assists } = c;
@@ -6788,7 +6806,11 @@ export default function LiveConsolePage() {
       winProbA: winProbA ?? 0.5,
     };
   }
-  commentaryCanRunRef.current = captureActive && match.state === "GAME_STARTED";
+  // Post whenever the game is ongoing — the snapshot is built from persisted
+  // state (net worth / kills / objectives), so commentary should keep flowing
+  // even if this tab isn't the one actively capturing (it no longer waits on
+  // captureActive, which was why it sat on "waiting" and never posted).
+  commentaryCanRunRef.current = match.state === "GAME_STARTED";
   commentaryInsertRef.current = async (text: string, timerSeconds: number) => {
     if (!game || !match) return;
     await supabase.from("key_moments").insert({
@@ -6803,6 +6825,13 @@ export default function LiveConsolePage() {
     loadAll();
   };
 
+  // A player can be credited at most one assist per team kill, so assists can
+  // never exceed their own team's total kills (spec §4). OCR routinely inflates
+  // assists (a "20 assists" on an 11-kill team is impossible) and that skews
+  // MVP/SVP, so clamp each player's assists to their team's kills before
+  // scoring — keeps the pick honest without touching the raw stored value.
+  const teamKillsForOwner = (teamId: string | null | undefined): number =>
+    teamId === match.team_a?.id ? computedTeamAKills : teamId === match.team_b?.id ? computedTeamBKills : 0;
   const adminMvpSvp =
     gameFinished && stats.length > 0
       ? computeMvpSvp(
@@ -6814,7 +6843,7 @@ export default function LiveConsolePage() {
               role: owner?.role ?? null,
               kills: s.kills ?? 0,
               deaths: s.deaths ?? 0,
-              assists: s.assists ?? 0,
+              assists: Math.min(s.assists ?? 0, teamKillsForOwner(owner?.team_id)),
             };
           })
         )
@@ -7459,8 +7488,8 @@ export default function LiveConsolePage() {
                 );
               })}
             </div>
-            {commentaryEnabled && !(captureActive && match.state === "GAME_STARTED") && (
-              <p className="text-[10px] text-amber-300/80">Waiting for capture + Game ongoing before it starts posting.</p>
+            {commentaryEnabled && match.state !== "GAME_STARTED" && (
+              <p className="text-[10px] text-amber-300/80">Starts posting once the phase is &quot;Game ongoing&quot; (after draft).</p>
             )}
           </div>
         )}

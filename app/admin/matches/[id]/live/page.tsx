@@ -17,6 +17,7 @@ import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, typ
 import type { LegacyState } from "@/lib/reconstruction/snapshot";
 import { buildIngestPayload } from "@/lib/reconstruction/persistence";
 import { bannerMatch, detectMatchState, detectMatchStateDetailed } from "@/lib/reconstruction/ocrBanners";
+import { validateNetWorth } from "@/lib/reconstruction/validators/netWorth";
 import {
   OBJECTIVE_SIDE_ORDER,
   objectiveNumField,
@@ -4845,50 +4846,46 @@ export default function LiveConsolePage() {
       // correctly-read side still lands even if the other side glitched.
       const knownAGold = latestNetWorth?.team_a_gold ?? null;
       const knownBGold = latestNetWorth?.team_b_gold ?? null;
-      // Net worth "can't be spiked directly, should gradually increase" —
-      // on top of the never-decreases clamp above, also cap how far a
-      // single 5s tick can raise a side: a genuine burst (a full team wipe
-      // plus an objective) plausibly adds a few thousand gold at once, but
-      // a jump far beyond that in one tick is far more likely a stray
-      // digit inflating the OCR read (e.g. "1.2K" misread as "120K") than
-      // real gold. Clamped to the ceiling rather than rejected outright,
-      // same "take the plausible part" approach as everywhere else here.
-      const MAX_NET_WORTH_GAIN_PER_TICK = 8000;
-      const capGain = (known: number | null, read: number) =>
-        known != null && read - known > MAX_NET_WORTH_GAIN_PER_TICK ? known + MAX_NET_WORTH_GAIN_PER_TICK : read;
-      const safeTeamAGold = capGain(knownAGold, knownAGold != null && teamAGold < knownAGold ? knownAGold : teamAGold);
-      const safeTeamBGold = capGain(knownBGold, knownBGold != null && teamBGold < knownBGold ? knownBGold : teamBGold);
-      // Whichever side got held back by the never-decreases or spike-cap
-      // guard is flagged with the raw (unclamped) reading — a real burst
-      // (team wipe + objective) can legitimately exceed the per-tick
-      // ceiling, so this is the admin's way to confirm it instead of the
-      // guard silently capping it every tick until the game clock catches
-      // the gold total up on its own.
+      // Net worth now follows the SAME validator the reconstruction engine
+      // uses (validateNetWorth): a plausible read is confirmed; a decrease or an
+      // implausible one-tick spike ("1.2K" misread as "120K") is HELD — the
+      // previous confirmed value stands and the raw read is surfaced for the
+      // admin to confirm. Crucially a bad spike is never committed (not even a
+      // capped version), so it can't stick as the shown net worth — the exact
+      // reason the legacy cap-and-commit read as "inaccurate / stuck".
+      const aRes = validateNetWorth(teamAGold, knownAGold);
+      const bRes = validateNetWorth(teamBGold, knownBGold);
+      const commitA = aRes.status === "confirmed" && aRes.value != null ? aRes.value : knownAGold ?? teamAGold;
+      const commitB = bRes.status === "confirmed" && bRes.value != null ? bRes.value : knownBGold ?? teamBGold;
       const teamAField = leftTeamId === match.team_a?.id ? networthLeftField : networthRightField;
       const teamBField = leftTeamId === match.team_a?.id ? networthRightField : networthLeftField;
-      if (safeTeamAGold !== teamAGold && teamAField) {
+      if (aRes.status !== "confirmed" && teamAField) {
         flagReading(teamAField.field, {
           label: teamAField.label,
           raw: String(teamAGold),
           confidence: teamAField.confidence,
-          reason: `Read ${teamAGold}, only applied up to ${safeTeamAGold} (never-decreases/spike-cap guard) — confirm to apply the full reading`,
+          reason: `Held (${aRes.reason}) — confirm to apply the full reading ${teamAGold}`,
           apply: async () => {
-            await supabase.from("net_worth_snapshots").insert({ game_id: game!.id, match_id: matchId, minute_mark: minute, team_a_gold: teamAGold, team_b_gold: safeTeamBGold });
+            await supabase.from("net_worth_snapshots").insert({ game_id: game!.id, match_id: matchId, minute_mark: minute, team_a_gold: teamAGold, team_b_gold: commitB });
           },
         });
       }
-      if (safeTeamBGold !== teamBGold && teamBField) {
+      if (bRes.status !== "confirmed" && teamBField) {
         flagReading(teamBField.field, {
           label: teamBField.label,
           raw: String(teamBGold),
           confidence: teamBField.confidence,
-          reason: `Read ${teamBGold}, only applied up to ${safeTeamBGold} (never-decreases/spike-cap guard) — confirm to apply the full reading`,
+          reason: `Held (${bRes.reason}) — confirm to apply the full reading ${teamBGold}`,
           apply: async () => {
-            await supabase.from("net_worth_snapshots").insert({ game_id: game!.id, match_id: matchId, minute_mark: minute, team_a_gold: safeTeamAGold, team_b_gold: teamBGold });
+            await supabase.from("net_worth_snapshots").insert({ game_id: game!.id, match_id: matchId, minute_mark: minute, team_a_gold: commitA, team_b_gold: teamBGold });
           },
         });
       }
-      await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: safeTeamAGold, team_b_gold: safeTeamBGold });
+      // Only write when a side actually advanced — no more one-row-per-tick
+      // spam of identical values (which also muddied "latest net worth").
+      if (commitA !== knownAGold || commitB !== knownBGold) {
+        await supabase.from("net_worth_snapshots").insert({ game_id: game.id, match_id: matchId, minute_mark: minute, team_a_gold: commitA, team_b_gold: commitB });
+      }
     }
 
     // K/D/A: same auto-upsert precedent already used by the AI-vision path

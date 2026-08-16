@@ -91,7 +91,7 @@ export async function getMatchState(matchId: string): Promise<MatchStatePayload 
   const [{ data: stats }, { data: objectives }, { data: netWorth }] = await Promise.all([
     supabase.from("player_stats").select("game_id, player_id, hero_name, kills, deaths, assists, player:players!player_stats_player_id_fkey(ign, team_id)").in("game_id", gameIds),
     supabase.from("objectives").select("game_id, team_id, type").in("game_id", gameIds),
-    supabase.from("net_worth_snapshots").select("game_id, team_a_gold, team_b_gold, minute_mark").in("game_id", gameIds).order("minute_mark", { ascending: false }),
+    supabase.from("net_worth_snapshots").select("game_id, team_a_gold, team_b_gold, minute_mark").in("game_id", gameIds).order("created_at", { ascending: false }),
   ]);
 
   const statRows = (stats as any[]) ?? [];

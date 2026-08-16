@@ -7379,42 +7379,66 @@ export default function LiveConsolePage() {
             spawn-timing/tower-cap plausibility — lands here instead of
             being silently discarded. Always visible (not behind "Show
             details") since it needs a decision, not just a glance. */}
+        {/* Rendered as a fixed pop-out (bottom-right, always on top) instead of
+            an inline panel, so a suspicious reading that needs a decision is
+            never scrolled past — every held-back read is confirmed here before
+            it can change the data, standardized across every tracker. */}
         {Object.values(flaggedReadings).length > 0 && (
-          <div className="space-y-1.5 border border-yellow-500/30 bg-yellow-500/5 rounded px-3 py-2">
-            <p className="text-xs font-semibold text-yellow-300">
-              {Object.values(flaggedReadings).length} reading{Object.values(flaggedReadings).length === 1 ? "" : "s"} need{Object.values(flaggedReadings).length === 1 ? "s" : ""} your confirmation
-            </p>
-            {Object.values(flaggedReadings)
-              .sort((a, b) => b.flaggedAt - a.flaggedAt)
-              .map((entry) => (
-                <div key={entry.field} className="flex items-start gap-2 text-xs bg-black/20 rounded px-2 py-1.5">
-                  <span
-                    title={`OCR confidence: ${entry.confidence != null ? `${Math.round(entry.confidence)}%` : "unknown"}`}
-                    className={`mt-1 shrink-0 w-2 h-2 rounded-full ${confidenceColor(entry.confidence)}`}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-white/80">{entry.label}</div>
-                    <div className="text-white/40">
-                      Raw read: <span className="text-white/60">&quot;{entry.raw}&quot;</span>
+          <div className="fixed z-50 bottom-3 right-3 w-[22rem] max-w-[calc(100vw-1.5rem)] rounded-lg border border-yellow-500/40 bg-ink/95 backdrop-blur shadow-2xl">
+            <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-yellow-500/20">
+              <p className="text-xs font-semibold text-yellow-300">
+                ⚠ {Object.values(flaggedReadings).length} reading{Object.values(flaggedReadings).length === 1 ? "" : "s"} need{Object.values(flaggedReadings).length === 1 ? "s" : ""} confirmation
+              </p>
+              <div className="flex gap-1 shrink-0">
+                <button
+                  onClick={async () => {
+                    for (const e of Object.values(flaggedReadings)) await applyFlaggedReading(e.field);
+                  }}
+                  className="text-[10px] border border-emerald-500/50 text-emerald-400 rounded px-2 py-1 hover:bg-emerald-500/10 whitespace-nowrap"
+                >
+                  ✓ Apply all
+                </button>
+                <button
+                  onClick={() => setFlaggedReadings({})}
+                  className="text-[10px] border border-white/20 text-white/60 rounded px-2 py-1 hover:bg-white/10 whitespace-nowrap"
+                >
+                  Dismiss all
+                </button>
+              </div>
+            </div>
+            <div className="max-h-[45vh] overflow-y-auto p-2 space-y-1.5">
+              {Object.values(flaggedReadings)
+                .sort((a, b) => b.flaggedAt - a.flaggedAt)
+                .map((entry) => (
+                  <div key={entry.field} className="flex items-start gap-2 text-xs bg-black/30 rounded px-2 py-1.5">
+                    <span
+                      title={`OCR confidence: ${entry.confidence != null ? `${Math.round(entry.confidence)}%` : "unknown"}`}
+                      className={`mt-1 shrink-0 w-2 h-2 rounded-full ${confidenceColor(entry.confidence)}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium text-white/80">{entry.label}</div>
+                      <div className="text-white/40">
+                        Raw read: <span className="text-white/60">&quot;{entry.raw}&quot;</span>
+                      </div>
+                      <div className="text-white/40">{entry.reason}</div>
                     </div>
-                    <div className="text-white/40">{entry.reason}</div>
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <button
+                        onClick={() => applyFlaggedReading(entry.field)}
+                        className="text-[10px] border border-emerald-500/50 text-emerald-400 rounded px-2 py-1 hover:bg-emerald-500/10 whitespace-nowrap"
+                      >
+                        ✓ Apply
+                      </button>
+                      <button
+                        onClick={() => dismissFlaggedReading(entry.field)}
+                        className="text-[10px] border border-white/20 text-white/60 rounded px-2 py-1 hover:bg-white/10 whitespace-nowrap"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex gap-1 shrink-0">
-                    <button
-                      onClick={() => applyFlaggedReading(entry.field)}
-                      className="text-[10px] border border-emerald-500/50 text-emerald-400 rounded px-2 py-1 hover:bg-emerald-500/10 whitespace-nowrap"
-                    >
-                      ✓ Apply
-                    </button>
-                    <button
-                      onClick={() => dismissFlaggedReading(entry.field)}
-                      className="text-[10px] border border-white/20 text-white/60 rounded px-2 py-1 hover:bg-white/10 whitespace-nowrap"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                </div>
-              ))}
+                ))}
+            </div>
           </div>
         )}
 

@@ -39,7 +39,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { fetchRenderedPage, apiQuery, sleep } from "./_liquipedia.mjs";
+import { fetchRenderedPage, apiQuery, sleep, sortByLifecyclePriority } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -307,15 +307,21 @@ async function main() {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const relevant =
+  const filtered =
     override.length > 0
       ? (tournaments ?? []).filter((t) => override.includes(t.liquipedia_slug))
       : (tournaments ?? []).filter((t) => t.liquipedia_slug && isWithinPastYear(t.start_date, t.end_date));
 
+  // Ongoing first, then imminent-upcoming, then most-recently-completed — so a
+  // run that gets cancelled at its timeout has still updated the tournaments
+  // whose results/streams are actually changing now, instead of burning the
+  // budget on years-old history that never reaches the current season.
+  const relevant = sortByLifecyclePriority(filtered);
+
   console.log(
     override.length > 0
       ? `TOURNAMENT_SLUGS override: processing ${relevant.length} of ${override.length} explicitly requested tournament(s)`
-      : `Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (past year, or upcoming/ongoing)`
+      : `Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (ongoing first, then upcoming, then recent)`
   );
 
   for (const t of relevant) {

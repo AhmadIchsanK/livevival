@@ -4118,8 +4118,14 @@ export default function LiveConsolePage() {
   // non-numeric-character tolerance that risked misreads; "/" is the only
   // punctuation this shape is allowed. Cleaned to digits + "/" first.
   function parseKda(text: string): { kills: number; deaths: number; assists: number } | null {
-    const cleaned = text.replace(/[^0-9/]/g, "");
-    const slash = cleaned.match(/(\d+)\/(\d+)\/(\d+)/);
+    // Match K/D/A on the ORIGINAL text (spaces around the slashes allowed), NOT
+    // on a version with all non-digit/slash characters stripped out. The old
+    // strip-first approach glued anything on the same row onto the numbers — a
+    // player row like "0/0/0  2956" (K/D/A followed by that player's net worth)
+    // became "0/0/02956", so the net worth bled straight into ASSISTS. Each KDA
+    // value is 1-2 digits; the trailing (?![\d/]) rejects a longer run (a net
+    // worth) fused onto the third number instead of misreading it as assists.
+    const slash = text.match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{1,2})(?![\d/])/);
     if (!slash) return null;
     return { kills: Number(slash[1]), deaths: Number(slash[2]), assists: Number(slash[3]) };
   }

@@ -53,13 +53,44 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Optional per-tournament targeting: a comma-separated list of liquipedia_slug
+  // values re-syncs just those, bypassing the past-year window and table order —
+  // the exact override used to repair a single tournament fast (e.g. when a
+  // finished match hasn't picked up its result yet) instead of waiting for a
+  // full pass to reach it. Blank/absent = normal full pass.
+  const rawSlugs: unknown = body?.tournamentSlugs;
+  const tournamentSlugs =
+    typeof rawSlugs === "string"
+      ? rawSlugs.split(",").map((s) => s.trim()).filter(Boolean).join(",")
+      : "";
+
+  // Audit-log helper — best-effort; a logging failure must never block the sync.
+  const logTrigger = async (status: "dispatched" | "error", detail?: string) => {
+    try {
+      await supabase.from("sync_log").insert({
+        triggered_by: userData.user?.email ?? userData.user?.id ?? null,
+        workflow,
+        tournament_slugs: tournamentSlugs || null,
+        status,
+        detail: detail ?? null,
+      });
+    } catch {
+      /* audit log is non-critical */
+    }
+  };
+
   const token = process.env.GITHUB_ACTIONS_TOKEN;
   if (!token) {
+    await logTrigger("error", "GITHUB_ACTIONS_TOKEN not configured");
     return NextResponse.json(
       { error: "Not configured — set GITHUB_ACTIONS_TOKEN (a GitHub PAT with Actions: write on this repo)." },
       { status: 503 }
     );
   }
+
+  // Both workflows expose a `tournament_slugs` workflow_dispatch input; only
+  // send it when targeting, so a full pass keeps the input at its blank default.
+  const inputs = tournamentSlugs ? { tournament_slugs: tournamentSlugs } : undefined;
 
   const res = await fetch(
     `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/workflows/${workflowFile}/dispatches`,
@@ -70,14 +101,16 @@ export async function POST(req: NextRequest) {
         Accept: "application/vnd.github+json",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ref: "main" }),
+      body: JSON.stringify(inputs ? { ref: "main", inputs } : { ref: "main" }),
     }
   );
 
   if (!res.ok) {
     const errText = await res.text();
+    await logTrigger("error", `GitHub API ${res.status}: ${errText}`.slice(0, 500));
     return NextResponse.json({ error: `GitHub API error (${res.status}): ${errText}` }, { status: 502 });
   }
 
-  return NextResponse.json({ ok: true });
+  await logTrigger("dispatched");
+  return NextResponse.json({ ok: true, targeted: tournamentSlugs || null });
 }

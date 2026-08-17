@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bannerMatch, detectMatchState, detectMatchStateDetailed, normalizeBannerText } from "./ocrBanners.ts";
+import { bannerMatch, detectMatchState, detectMatchStateDetailed, normalizeBannerText, phaseToMatchState } from "./ocrBanners.ts";
 
 test("kill banner: tolerant match on stylized/fragmented OCR text", () => {
   assert.equal(bannerMatch("SAVAGE!!")?.type, "savage");
@@ -63,4 +63,19 @@ test("match state: digit-for-letter OCR confusions still resolve", () => {
 test("match state: a plain scoreboard number is still not an event", () => {
   assert.equal(detectMatchState("16:45"), null);
   assert.equal(detectMatchState("52100"), null);
+});
+
+test("phaseToMatchState: AI phase labels map to the same MatchState", () => {
+  assert.equal(phaseToMatchState("VICTORY_DEFEAT_SCREEN"), "crystal");
+  assert.equal(phaseToMatchState("POST_GAME_STATS"), "crystal");
+  assert.equal(phaseToMatchState("REPLAY"), "replay");
+  assert.equal(phaseToMatchState("PAUSE"), "pause");
+  assert.equal(phaseToMatchState("TECHNICAL_PAUSE"), "pause");
+  // Normal / ambiguous phases must NOT change state (never finish on a guess).
+  assert.equal(phaseToMatchState("IN_GAME"), null);
+  assert.equal(phaseToMatchState("DRAFT_PICK_BAN"), null);
+  assert.equal(phaseToMatchState("LOADING"), null);
+  assert.equal(phaseToMatchState("UNKNOWN"), null);
+  assert.equal(phaseToMatchState(null), null);
+  assert.equal(phaseToMatchState(""), null);
 });

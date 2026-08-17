@@ -34,9 +34,33 @@ test("match state detailed: exposes the matched keyword for diagnostics", () => 
   assert.equal(detectMatchStateDetailed("Base Destroyed").keyword, "BASEDESTROYED");
   assert.equal(detectMatchStateDetailed("· REPLAY ·").state, "replay");
   assert.equal(detectMatchStateDetailed("Technical Pause").state, "pause");
-  assert.deepEqual(detectMatchStateDetailed("07:03"), { state: null, keyword: null, normalized: "" });
+  // "07:03" now normalizes to "OO" (0→O digit-confusion mapping), still no state.
+  assert.equal(detectMatchStateDetailed("07:03").state, null);
+  assert.equal(detectMatchStateDetailed("07:03").keyword, null);
 });
 
 test("normalizeBannerText strips to uppercase letters", () => {
   assert.equal(normalizeBannerText("S.a-v/a g3e!"), "SAVAGE");
+});
+
+test("match state: tolerant to partial/garbled stylized OCR", () => {
+  // A missing edge letter on a heavy glyph.
+  assert.equal(detectMatchState("ICTORY"), "crystal");
+  assert.equal(detectMatchState("VICTOR"), "crystal");
+  assert.equal(detectMatchState("EFEAT"), "crystal");
+  assert.equal(detectMatchState("REPLA"), "replay");
+  assert.equal(detectMatchState("EPLAY"), "replay");
+  assert.equal(detectMatchState("PAUS"), "pause");
+});
+
+test("match state: digit-for-letter OCR confusions still resolve", () => {
+  assert.equal(detectMatchState("V1CT0RY"), "crystal"); // 1->I, 0->O
+  assert.equal(detectMatchState("DEFE4T"), null, "4 is not mapped — genuine noise still misses");
+  assert.equal(detectMatchState("R3PLAY"), null, "3 is not mapped");
+  assert.equal(detectMatchStateDetailed("V1CT0RY").normalized, "VICTORY");
+});
+
+test("match state: a plain scoreboard number is still not an event", () => {
+  assert.equal(detectMatchState("16:45"), null);
+  assert.equal(detectMatchState("52100"), null);
 });

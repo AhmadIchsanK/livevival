@@ -31,15 +31,38 @@ export type MatchState = "crystal" | "replay" | "pause";
 // callout on overlays that render it. These NEVER appear mid-game, so matching
 // any of them is a reliable end-of-game signal (a false GAME_FINISHED is worse
 // than a missed one — see spec §E — so the set is deliberately end-game-only).
-const CRYSTAL_KEYWORDS = ["VICTORY", "DEFEAT", "CRYSTAL", "BASEDESTROYED", "GAMEOVER"];
-const REPLAY_KEYWORDS = ["REPLAY", "INSTANTREPLAY"];
-const PAUSE_KEYWORDS = ["PAUSE", "PAUSED", "TECHNICALPAUSE"];
+// Stylized broadcast overlays OCR imperfectly — a heavy VICTORY glyph routinely
+// comes back missing its first or last letter, and digit-for-letter confusions
+// (0→O, 1→I, 5→S, 8→B) are common on chrome fonts. So each state carries a few
+// tolerant STEMS (a word with one edge letter dropped) alongside the full word,
+// and normalization maps the common digit confusions to letters before
+// stripping. This lifts recall on a partial read without needing the whole word
+// perfectly. Kept conservative on the crystal set (a false GAME_FINISHED is
+// worse than a missed one, spec §E) — the caller still requires two consecutive
+// crystal frames before finishing, which absorbs a stray single-frame match.
+const CRYSTAL_KEYWORDS = ["VICTORY", "VICTOR", "ICTORY", "DEFEAT", "DEFEA", "EFEAT", "CRYSTAL", "CRYSTA", "BASEDESTROYED", "GAMEOVER"];
+const REPLAY_KEYWORDS = ["REPLAY", "REPLA", "EPLAY", "INSTANTREPLAY"];
+const PAUSE_KEYWORDS = ["PAUSED", "PAUSE", "TECHNICALPAUSE", "PAUS"];
+
+// Match-state normalization maps the common OCR digit-for-letter confusions to
+// letters (a stylized "VICTORY" often reads "V1CT0RY") before stripping to
+// A-Z. Deliberately separate from normalizeBannerText so the kill-banner path
+// (which reads different fonts) keeps its stricter letters-only behavior.
+function normalizeStateText(text: string): string {
+  return text
+    .toUpperCase()
+    .replace(/0/g, "O")
+    .replace(/1/g, "I")
+    .replace(/5/g, "S")
+    .replace(/8/g, "B")
+    .replace(/[^A-Z]/g, "");
+}
 
 // Detailed detector exposing WHICH keyword matched, for the admin diagnostics
 // panel (RAW → NORMALIZED → MATCHED KEYWORD → DETECTED STATE). Crystal/end-game
 // wins over replay/pause when ambiguous.
 export function detectMatchStateDetailed(text: string): { state: MatchState | null; keyword: string | null; normalized: string } {
-  const norm = normalizeBannerText(text);
+  const norm = normalizeStateText(text);
   if (!norm) return { state: null, keyword: null, normalized: norm };
   for (const kw of CRYSTAL_KEYWORDS) if (norm.includes(kw)) return { state: "crystal", keyword: kw, normalized: norm };
   for (const kw of REPLAY_KEYWORDS) if (norm.includes(kw)) return { state: "replay", keyword: kw, normalized: norm };

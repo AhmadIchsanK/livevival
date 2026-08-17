@@ -30,6 +30,8 @@ import { reconstructKills } from "./killEngine.ts";
 import type { PlayerDelta } from "./killEngine.ts";
 import { detectReset, NO_SIGNALS } from "./reset.ts";
 import type { ResetSignals } from "./reset.ts";
+import { gradeEvidence, trackRepetition } from "./confidence.ts";
+import type { EvidenceBand, RepetitionTracker } from "./confidence.ts";
 
 // One tick of observations, already normalized upstream (the engine takes typed
 // values, never raw strings — normalization is a separate, unit-tested layer).
@@ -59,6 +61,10 @@ export type FieldDiagnostic = {
   reason: string;
   confidence: number | null;
   lastObservedAt: number | null;
+  // Evidence grade (spec §30) — advisory only, derived from the validation
+  // status + repetition + source. Never authority over confirmed state.
+  band?: EvidenceBand;
+  score?: number;
 };
 
 export type Engine = {
@@ -71,6 +77,12 @@ export type Engine = {
   lastTurtleKillSeconds: number | null;
   lastLordKillSeconds: number | null;
   diagnostics: Map<string, FieldDiagnostic>;
+  // Per-field repetition counts (spec §30 evidence scoring) — how many
+  // consecutive ticks a field carried the same reading.
+  evidence: RepetitionTracker;
+  // Source of the tick currently being ingested, so setDiag can grade evidence
+  // without threading it through every call site (single synchronous ingest).
+  currentSource?: ObservationSource;
   // seconds of the last confirmed timer (compare basis)
 };
 
@@ -85,11 +97,26 @@ export function createEngine(args: { gameId: GameId; teamAId: TeamId; teamBId: T
     lastTurtleKillSeconds: null,
     lastLordKillSeconds: null,
     diagnostics: new Map(),
+    evidence: new Map(),
   };
 }
 
 function setDiag(e: Engine, d: FieldDiagnostic): void {
-  e.diagnostics.set(d.field, d);
+  // Grade the reading's evidence (spec §30) alongside recording the diagnostic.
+  // Repetition comes from consecutive equal readings for this field; temporal
+  // consistency is read off the validator's own verdict (confirmed = agrees,
+  // rejected = contradicted, candidate/missing = unknown). This only enriches
+  // the diagnostic — it never gates whether an event was emitted.
+  const repetition = trackRepetition(e.evidence, d.field, d.candidateValue);
+  const temporallyConsistent = d.status === "confirmed" ? true : d.status === "rejected" ? false : null;
+  const grade = gradeEvidence({
+    source: e.currentSource ?? "ocr",
+    rawConfidence: d.confidence,
+    repetition,
+    temporallyConsistent,
+    crossFieldConsistent: null,
+  });
+  e.diagnostics.set(d.field, { ...d, band: grade.band, score: grade.score });
 }
 
 function emit(e: Engine, event: GameEvent): void {
@@ -101,6 +128,7 @@ function emit(e: Engine, event: GameEvent): void {
 // empty). Rejected/candidate observations never mutate confirmed state.
 export function ingest(engine: Engine, tick: ObservationTick): GameEvent[] {
   const source = tick.source ?? "ocr";
+  engine.currentSource = source;
   const confidence = tick.confidence ?? null;
   const createdAt = tick.capturedAt ?? Date.now();
   const before = engine.log.events.length;

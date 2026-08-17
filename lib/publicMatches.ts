@@ -116,11 +116,20 @@ export async function getPublicMatches(opts: { status?: PublicMatchStatus; limit
   const supabase = serverSupabase();
   const limit = Math.min(opts.limit, MAX_LIMIT);
 
+  // A scheduled match whose start time has passed (the lifecycle cron promotes
+  // it within ~10 min) counts as live here too, within a recent lookback, so it
+  // never falls between "upcoming" (filtered to the future) and "live".
+  const liveOrOverdueFilter = () => {
+    const nowIso = new Date().toISOString();
+    const overdueSince = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    return `status.eq.live,and(status.eq.scheduled,scheduled_at.lte.${nowIso},scheduled_at.gte.${overdueSince})`;
+  };
+
   if (opts.status === "live") {
     const { data } = await supabase
       .from("matches")
       .select(MATCH_SELECT)
-      .eq("status", "live")
+      .or(liveOrOverdueFilter())
       .order("scheduled_at", { ascending: true })
       .limit(limit);
     return attachScores((data as unknown as MatchRow[]) ?? []);
@@ -154,7 +163,7 @@ export async function getPublicMatches(opts: { status?: PublicMatchStatus; limit
   const now = new Date();
   const windowEnd = new Date(now.getTime() + UPCOMING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const [{ data: liveData }, { data: upcomingData }, { data: finishedData }] = await Promise.all([
-    supabase.from("matches").select(MATCH_SELECT).eq("status", "live").order("scheduled_at", { ascending: true }).limit(QUERY_CAP),
+    supabase.from("matches").select(MATCH_SELECT).or(liveOrOverdueFilter()).order("scheduled_at", { ascending: true }).limit(QUERY_CAP),
     supabase
       .from("matches")
       .select(MATCH_SELECT)

@@ -1,8 +1,12 @@
 {
   "crons": [
     {
+      "path": "/api/cron/match-lifecycle",
+      "schedule": "*/10 * * * *"
+    },
+    {
       "path": "/api/cron/refresh-schedule",
-      "schedule": "0 0 * * *"
+      "schedule": "*/30 * * * *"
     }
   ]
 }

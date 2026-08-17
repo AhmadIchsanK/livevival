@@ -65,7 +65,20 @@ function extractTournaments(html) {
 // future, or unknown) are always kept regardless of window.
 const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 function isWithinPastYear(startDate, endDate) {
-  if (!startDate && !endDate) return false; // can't classify — skip, same as before
+  // DISCOVERY-ONLY policy: the S/A-Tier_Tournaments pages this importer reads
+  // list only current-and-relevant tournaments (upcoming, ongoing, and a
+  // recent completed window) — a tournament appearing there at all is, by
+  // definition, one we want in the table. So an UNparseable date is kept, not
+  // dropped: this is exactly the "a just-announced season whose date string
+  // we couldn't parse silently never appears" bug (see parseDateRange — a
+  // same-month range like "Aug 21–30, 2026" used to yield both-null and get
+  // dropped here). Keeping it as a shell is harmless — the site's own
+  // categorize() falls back to date_display text — whereas dropping it makes
+  // a real tournament vanish. NOTE: this "keep on both-null" rule is safe
+  // *only* for discovery; the match/result importers deliberately do NOT
+  // keep both-null (they walk the full DB incl. years of history and would
+  // flood their rate-limited per-tournament fetches).
+  if (!startDate && !endDate) return true;
   const cutoff = Date.now() - ONE_YEAR_MS;
   const end = endDate ? new Date(endDate).getTime() : null;
   // No end date (e.g. ongoing/ TBD finish) — keep it, it can't be stale.
@@ -73,44 +86,75 @@ function isWithinPastYear(startDate, endDate) {
   return end >= cutoff;
 }
 
-// Liquipedia's date ranges look like "Jul 01 – Aug 01, 2026" (left side
-// missing a year, borrows the right side's) or "Oct 27, 2018 – Jan 13, 2019"
-// (both sides have their own year, when a tournament spans New Year's).
-// Parses into real Date objects so the public site can correctly classify
-// upcoming/ongoing/completed instead of guessing from matches alone.
+const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+function partMonth(str) {
+  const m = str.match(/([A-Za-z]{3,})/);
+  const idx = m ? MONTHS[m[1].slice(0, 3).toLowerCase()] : undefined;
+  return idx == null ? null : idx;
+}
+function partDay(str) {
+  const m = str.match(/(\d{1,2})(?!\d)/);
+  return m ? Number(m[1]) : null;
+}
+function partYear(str) {
+  const m = str.match(/(20\d{2})/);
+  return m ? Number(m[1]) : null;
+}
+function makeUTCDate(month, day, year) {
+  if (month == null || day == null || year == null) return null;
+  const d = new Date(Date.UTC(year, month, day));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Parses Liquipedia's free-text date column into real start/end dates so the
+// public site can classify upcoming/ongoing/completed precisely instead of
+// guessing from match statuses. Token-based (not new Date() on a split half)
+// so it survives every real-world shape seen in production, all of which the
+// previous split-on-dash version silently returned both-null for — the exact
+// failure mode that lets a real (esp. upcoming) tournament get dropped:
+//   "Jul 01 – Aug 01, 2026"        cross-month, left borrows right's year
+//   "Oct 27, 2018 – Jan 13, 2019"  cross-New-Year, each side its own year
+//   "Apr 07–13, 2025"              same-month, right borrows left's month
+//   "Nov 27 - Dec 06, 2020"        ASCII-hyphen separator (not en/em dash)
+//   "Aug 21, 2026"                 single date (start == end)
+// A bare year with no month/day (e.g. "2026", a TBD finish) still yields null
+// deliberately — Jan-1 fabrication would misclassify an upcoming event as
+// already over.
 function parseDateRange(dateDisplay) {
   if (!dateDisplay) return { startDate: null, endDate: null };
+  const parts = dateDisplay.split(/\s*[–—-]\s*/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) return { startDate: null, endDate: null };
 
-  const parts = dateDisplay.split(/[–—]/).map((s) => s.trim());
-  if (parts.length !== 2) return { startDate: null, endDate: null };
+  // The year is stated once (on the right) unless the range crosses New
+  // Year's, in which case each side carries its own — so each part uses its
+  // own year when present, else this single trailing year for the string.
+  const globalYear = partYear(dateDisplay);
 
-  const [left, right] = parts;
-  // A bare 4-digit year (e.g. "2026", meaning Liquipedia hasn't confirmed
-  // an end date yet) would otherwise silently parse as Jan 1 of that year
-  // via `new Date("2026")` — and Jan 1 can land *before* a valid start
-  // date later that same year (a tournament starting in August would
-  // "end" the previous January), misclassifying an upcoming tournament as
-  // already completed. Treat it the same as no end date at all.
-  if (/^\d{4}$/.test(right)) return { startDate: null, endDate: null };
+  const left = parts[0];
+  const leftMonth = partMonth(left);
+  const start = makeUTCDate(leftMonth, partDay(left), partYear(left) ?? globalYear);
 
-  const endDate = new Date(right);
-  if (isNaN(endDate.getTime())) return { startDate: null, endDate: null };
-
-  const leftHasYear = /\d{4}/.test(left);
-  const startDate = leftHasYear ? new Date(left) : new Date(`${left}, ${endDate.getFullYear()}`);
-  if (isNaN(startDate.getTime())) return { startDate: null, endDate: endDate.toISOString().slice(0, 10) };
-
-  // General sanity check regardless of root cause — an end date before
-  // the start date is never correct, and categorizing by a nonsensical
-  // range is worse than falling back to the match-status heuristic.
-  if (endDate.getTime() < startDate.getTime()) {
-    return { startDate: startDate.toISOString().slice(0, 10), endDate: null };
+  if (parts.length === 1) {
+    if (!start) return { startDate: null, endDate: null };
+    const iso = start.toISOString().slice(0, 10);
+    return { startDate: iso, endDate: iso };
   }
 
-  return {
-    startDate: startDate.toISOString().slice(0, 10),
-    endDate: endDate.toISOString().slice(0, 10),
-  };
+  const right = parts[parts.length - 1];
+  // Same-month ranges state the month only on the left ("Apr 07–13") so the
+  // right borrows it; cross-month ranges state their own.
+  const end = makeUTCDate(partMonth(right) ?? leftMonth, partDay(right), partYear(right) ?? globalYear);
+
+  const startIso = start ? start.toISOString().slice(0, 10) : null;
+  const endIso = end ? end.toISOString().slice(0, 10) : null;
+
+  // An end before the start is never correct — fall back to no end date
+  // rather than storing a nonsensical range.
+  if (start && end && end.getTime() < start.getTime()) {
+    return { startDate: startIso, endDate: null };
+  }
+  return { startDate: startIso, endDate: endIso };
 }
 
 async function importTier(pageTitle, tierLabel) {

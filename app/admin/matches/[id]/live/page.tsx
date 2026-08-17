@@ -2279,13 +2279,19 @@ export default function LiveConsolePage() {
   // A randomized ~1-2 minute cadence turns the live game state into a natural
   // one-liner (see lib/matchCommentary). Admin-configurable: master toggle +
   // which condition categories may fire. Config persists per browser.
-  const [commentaryEnabled, setCommentaryEnabled] = useState(false);
+  // Defaults ON: the product rule is "post a line every 60–120s from the
+  // GAME_STARTED phase" automatically — the caster shouldn't have to find a
+  // toggle first. It still only fires during GAME_STARTED and can be turned off
+  // from the panel (the choice persists). The storage key is versioned (:v2)
+  // so the old default-OFF value persisted by earlier builds doesn't keep it
+  // silently suppressed for existing browsers.
+  const [commentaryEnabled, setCommentaryEnabled] = useState(true);
   const [commentaryConditions, setCommentaryConditions] = useState<Set<CommentaryCondition>>(
     () => new Set(COMMENTARY_CONDITIONS.map((c) => c.key))
   );
   useEffect(() => {
     try {
-      const raw = window.localStorage.getItem("livevival:commentary");
+      const raw = window.localStorage.getItem("livevival:commentary:v2");
       if (raw) {
         const cfg = JSON.parse(raw) as { enabled?: boolean; conditions?: CommentaryCondition[] };
         if (typeof cfg.enabled === "boolean") setCommentaryEnabled(cfg.enabled);
@@ -2298,7 +2304,7 @@ export default function LiveConsolePage() {
   useEffect(() => {
     try {
       window.localStorage.setItem(
-        "livevival:commentary",
+        "livevival:commentary:v2",
         JSON.stringify({ enabled: commentaryEnabled, conditions: [...commentaryConditions] })
       );
     } catch {
@@ -4933,7 +4939,13 @@ export default function LiveConsolePage() {
         kills: number;
         deaths: number;
         assists: number;
+        // Silent guards (never-decreases, per-tick spike cap) — clamped and
+        // applied without a confirmation prompt: a KDA read that just follows
+        // the logic shouldn't interrupt the caster.
         heldBack: string[];
+        // Genuine impossibilities only (assists > team kills, deaths > enemy
+        // kills). THESE are the only things that raise a confirmation flag.
+        anomalies: string[];
       };
       const candidates: KdaCandidate[] = kdaParsed.map((row) => {
         // Never-decreases, per stat independently — kills/deaths/assists
@@ -4962,6 +4974,7 @@ export default function LiveConsolePage() {
           deaths: clamp(row.deaths, existing?.deaths, MAX_DEATH_GAIN_PER_TICK, "deaths"),
           assists: clamp(row.assists, existing?.assists, MAX_ASSIST_GAIN_PER_TICK, "assists"),
           heldBack,
+          anomalies: [],
         };
       });
 
@@ -4989,7 +5002,7 @@ export default function LiveConsolePage() {
         if (!enemyTeamId) continue;
         const enemyKills = teamKillTotal(enemyTeamId);
         if (c.deaths > enemyKills) {
-          c.heldBack.push(`deaths ${c.deaths} exceed the enemy team's ${enemyKills} total kills (impossible — a death requires an enemy kill)`);
+          c.anomalies.push(`deaths ${c.deaths} exceed the enemy team's ${enemyKills} total kills (impossible — a death requires an enemy kill)`);
           c.deaths = Math.min(c.deaths, Math.max(c.existing?.deaths ?? 0, enemyKills));
         }
       }
@@ -5003,13 +5016,13 @@ export default function LiveConsolePage() {
       for (const c of candidates) {
         const ownKills = teamKillTotal(c.teamId);
         if (c.assists > ownKills) {
-          c.heldBack.push(`assists ${c.assists} exceed the team's ${ownKills} total kills (impossible — max one assist per team kill)`);
+          c.anomalies.push(`assists ${c.assists} exceed the team's ${ownKills} total kills (impossible — max one assist per team kill)`);
           c.assists = ownKills;
         }
       }
 
       for (const c of candidates) {
-        const { row, existing, heldBack } = c;
+        const { row, existing } = c;
         const { kills, deaths, assists } = c;
         // The kda_group combined tracker never reads a hero name per row
         // (see its case above) — row.heroName is always null there. Fall
@@ -5019,22 +5032,14 @@ export default function LiveConsolePage() {
         // already set.
         const heroName = row.heroName ?? existing?.hero_name ?? null;
         const heroId = matchHeroId(heroName);
-        // Anything the guards above held back — a read below what's
-        // already stored (never-decreases), a single-tick spike, or an
-        // impossible deaths-vs-enemy-kills relationship — is flagged
-        // rather than silently discarded, so a genuine correction can
-        // still be forced through by the admin. Confirming applies the
-        // RAW reading, which is the whole point: the guard's job is to
-        // keep an unverified value out of the database, not to decide the
-        // admin is wrong.
-        const decreased =
-          (existing?.kills != null && row.kills < existing.kills) ||
-          (existing?.deaths != null && row.deaths < existing.deaths) ||
-          (existing?.assists != null && row.assists < existing.assists);
-        if (decreased || heldBack.length > 0) {
-          const reason = decreased
-            ? `Read ${row.kills}/${row.deaths}/${row.assists}, below the stored ${existing?.kills ?? 0}/${existing?.deaths ?? 0}/${existing?.assists ?? 0} — never-decreases guard held it back`
-            : `Read ${row.kills}/${row.deaths}/${row.assists} — ${heldBack.join("; ")}. Confirm to apply the full reading.`;
+        // Per product rule: a KDA read that just follows the logic never asks
+        // for confirmation. The never-decreases and per-tick spike guards
+        // (heldBack) still clamp the value silently — they keep an unverified
+        // read out of the DB without interrupting the caster. ONLY a genuine
+        // impossibility (anomalies: assists > team kills, deaths > enemy kills)
+        // raises a confirmation flag, where an admin override is meaningful.
+        if (c.anomalies.length > 0) {
+          const reason = `Read ${row.kills}/${row.deaths}/${row.assists} — ${c.anomalies.join("; ")}. Confirm to apply the full reading.`;
           flagReading(row.field, {
             label: row.label,
             raw: row.raw,

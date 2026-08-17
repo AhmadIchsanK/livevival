@@ -6076,7 +6076,14 @@ export default function LiveConsolePage() {
   // the Live Scoreboard's edit/delete-player controls just above, which
   // stay usable even while scheduled so roster mistakes can be fixed
   // before a match goes live.
-  const isEditable = match.status !== "scheduled";
+  // A scheduled match is normally locked (guards against editing a match that
+  // hasn't happened). But if the SELECTED game already has real data — logged
+  // picks or stat rows — it was actually played, so correcting it must stay
+  // possible even if the match was later set back to scheduled/not-started
+  // (e.g. a test match, or a reset). Without this, editing such a game showed
+  // its scoreboard/picks read-only with no way to fix them.
+  const gameHasRealData = pickBans.length > 0 || stats.length > 0;
+  const isEditable = match.status !== "scheduled" || gameHasRealData;
   // Phase floors: neither of these made any sense before draft's done
   // (hero picks aren't final) or before the game's actually started
   // (nothing to count yet) — previously clickable in every phase.
@@ -6091,8 +6098,12 @@ export default function LiveConsolePage() {
   // unlocked too.
   const gameFinished = game?.status === "finished";
   const finishedEditUnlocked = gameFinished && editingFinishedGame;
-  const scoreboardEditable = isEditable && SCOREBOARD_EDITABLE_PHASES.has(match.state) && (!gameFinished || finishedEditUnlocked);
-  const objectivesEditable = isEditable && OBJECTIVES_EDITABLE_PHASES.has(match.state) && (!gameFinished || finishedEditUnlocked);
+  // A played game (real picks/stats) stays editable for corrections even if the
+  // match phase reads NOT_STARTED — same reasoning as isEditable above, so a
+  // finished game whose match was reset to scheduled can still have its K/D/A
+  // and objectives fixed.
+  const scoreboardEditable = isEditable && (SCOREBOARD_EDITABLE_PHASES.has(match.state) || gameHasRealData) && (!gameFinished || finishedEditUnlocked);
+  const objectivesEditable = isEditable && (OBJECTIVES_EDITABLE_PHASES.has(match.state) || gameHasRealData) && (!gameFinished || finishedEditUnlocked);
   const pickBanEditable = isEditable && (!gameFinished || finishedEditUnlocked);
   const netWorthEditable = isEditable && (!gameFinished || finishedEditUnlocked);
 
@@ -6522,8 +6533,15 @@ export default function LiveConsolePage() {
     if (!teamId) return [];
     // Before the draft has actually started there's no "who's playing"
     // decided yet — the Live Scoreboard should show nothing rather than a
-    // preset roster guess that may not match who ends up picked.
-    if (match?.state === "MATCH_NOT_STARTED") return [];
+    // preset roster guess that may not match who ends up picked. EXCEPTION:
+    // if this game already has real data (logged picks or stat rows), we're
+    // editing a game that was actually played — e.g. correcting a finished
+    // game whose match was set back to "not started" — so show its five even
+    // though the match phase reads NOT_STARTED. Without this, the whole player
+    // list (and each row's hero picker + K/D/A) vanished when editing such a
+    // game, despite the roster and stats being right there.
+    const gameHasData = pickBans.length > 0 || stats.length > 0;
+    if (match?.state === "MATCH_NOT_STARTED" && !gameHasData) return [];
     const pickedIds = new Set(
       pickBans
         .filter((pb) => pb.type === "pick" && pb.team_id === teamId && (pb.player_id || pb.custom_player_name))
@@ -9176,7 +9194,7 @@ export default function LiveConsolePage() {
             mounted through GAME_STARTED too, purely for that
             correct-by-click ability, since a hero can still turn out
             misattributed after the game's already live. */}
-        {(DRAFT_PHASES.includes(match.state) || match.state === "GAME_STARTED") && match.team_a && match.team_b && (
+        {(DRAFT_PHASES.includes(match.state) || match.state === "GAME_STARTED" || pickBans.length > 0) && match.team_a && match.team_b && (
           <DraftOverlay
             leftTeam={overlayLeftTeam}
             rightTeam={overlayRightTeam}
@@ -9203,7 +9221,7 @@ export default function LiveConsolePage() {
             used to be silent hunting for "why won't Draft started take" —
             handlePhaseChange still owns the actual 5/5 gate, this panel
             just surfaces it inline with a button that acts on it directly. */}
-        {match.state === "MATCH_NOT_STARTED" && (
+        {match.state === "MATCH_NOT_STARTED" && pickBans.length === 0 && (
           <div className="border border-white/10 rounded-lg p-3 space-y-3">
             <p className="text-xs text-white/50">
               Roster setup — confirm who&apos;s playing and fix any name/role before the draft starts.

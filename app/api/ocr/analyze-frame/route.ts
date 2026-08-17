@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { flags } from "@/lib/featureFlags";
+import { observeVision } from "@/lib/reconstruction/visionObserver";
+import type { VisionPlayerStat } from "@/lib/reconstruction/visionObserver";
+import type { PlayerKda } from "@/lib/reconstruction/validators/kda";
+import { asTeamId, asPlayerId } from "@/lib/reconstruction/types";
 
 // Full-frame AI vision analysis for the admin's local-capture live console —
 // the alternative to the manual crop-region OCR (calibratingField/regions
@@ -69,8 +74,9 @@ async function applyDetectionServerSide(
   detection: {
     player_stats?: { player_name: string; team_name: string; hero_name: string | null; kills: number | null; deaths: number | null; assists: number | null; gold: number | null }[];
     net_worth?: { team_a_gold: number | null; team_b_gold: number | null };
+    confidence?: number | null;
   }
-): Promise<{ playerStatsApplied: number; netWorthApplied: boolean; skippedReason?: string }> {
+): Promise<{ playerStatsApplied: number; netWorthApplied: boolean; skippedReason?: string; visionObservations?: number }> {
   const [{ data: match }, { data: gameRow }] = await Promise.all([
     supabase
       .from("matches")
@@ -213,7 +219,77 @@ async function applyDetectionServerSide(
     netWorthApplied = true;
   }
 
-  return { playerStatsApplied, netWorthApplied };
+  // ── AI Vision as a non-authoritative observer (spec §25-27) ──────────────
+  // When enabled, ALSO record this AI reading as append-only evidence in
+  // game_observations, graded through the SAME reconstruction validators +
+  // evidence model (spec §26/§30). This is deliberately separate from the
+  // legacy writes above: it never changes what was committed to
+  // player_stats/net_worth and never affects public reads — it only builds the
+  // observation trail the hybrid-fusion phase reconciles against CV. Wrapped so
+  // any failure here can never corrupt or block the detection response.
+  let visionObservations = 0;
+  if (flags.reconstructionAiObserver && teamA && teamB) {
+    try {
+      const confirmedKda = new Map<string, PlayerKda>();
+      for (const s of statsPool) {
+        if (s.player_id) confirmedKda.set(s.player_id, { kills: s.kills ?? 0, deaths: s.deaths ?? 0, assists: s.assists ?? 0 });
+      }
+      const teamOf = new Map<string, string>();
+      for (const p of playerPool) if (p.team_id) teamOf.set(p.id, p.team_id);
+      const confirmedNetWorth: Record<string, number | null> = {
+        [teamA.id]: latestNetWorth?.team_a_gold ?? null,
+        [teamB.id]: latestNetWorth?.team_b_gold ?? null,
+      };
+
+      // Only observe player rows with a fully-legible K/D/A — a partial row
+      // can't be validated as a batch, and the spec forbids inventing missing
+      // fields (§12). Reuses the same id resolution as the legacy path.
+      const visionPlayers: VisionPlayerStat[] = [];
+      for (const row of detection.player_stats ?? []) {
+        if (row.kills == null || row.deaths == null || row.assists == null) continue;
+        const teamId = matchTeamId(teams, row.team_name);
+        const playerId = matchPlayerId(playerPool, row.player_name, teamId);
+        if (!playerId || !teamId) continue;
+        visionPlayers.push({ playerId: asPlayerId(playerId), teamId: asTeamId(teamId), kills: row.kills, deaths: row.deaths, assists: row.assists });
+      }
+
+      const visionNetWorth: Record<string, number> = {};
+      if (detection.net_worth?.team_a_gold != null) visionNetWorth[teamA.id] = detection.net_worth.team_a_gold;
+      if (detection.net_worth?.team_b_gold != null) visionNetWorth[teamB.id] = detection.net_worth.team_b_gold;
+
+      const observations = observeVision(
+        { players: visionPlayers, netWorth: visionNetWorth },
+        { confirmedKda, confirmedNetWorth, teamOf, teamAId: asTeamId(teamA.id), teamBId: asTeamId(teamB.id) },
+        { rawConfidence: detection.confidence ?? null }
+      );
+
+      if (observations.length > 0) {
+        const now = new Date().toISOString();
+        const gameTime = gameRow?.current_time_seconds ?? null;
+        const rows = observations.map((o) => ({
+          id: globalThis.crypto.randomUUID(),
+          game_id: gameId,
+          match_id: matchId,
+          field: o.field,
+          team_id: o.teamId ?? null,
+          player_id: o.playerId ?? null,
+          game_time_seconds: gameTime,
+          captured_at: now,
+          raw_value: o.rawValue,
+          normalized_value: o.normalizedValue,
+          confidence: detection.confidence ?? null,
+          source: "vision",
+          status: o.status,
+        }));
+        const { error } = await supabase.from("game_observations").insert(rows);
+        if (!error) visionObservations = rows.length;
+      }
+    } catch {
+      // Observer is best-effort evidence — never let it affect the response.
+    }
+  }
+
+  return { playerStatsApplied, netWorthApplied, visionObservations };
 }
 
 function buildPrompt(overlayHint?: string | null) {

@@ -7797,79 +7797,10 @@ export default function LiveConsolePage() {
                   >
                     {trackerEditMode ? "✏️ Edit mode: ON" : "Edit mode: OFF"}
                   </button>
-                  <InlineMenuSelect
-                    value={canvasPhaseFilter}
-                    onChange={setCanvasPhaseFilter}
-                    title="Only regions for this phase are shown on the canvas — auto-follows the match's live phase"
-                    options={[
-                      { value: "", label: "All phases" },
-                      ...TRACKER_PHASES.map((p) => ({ value: p, label: p.replace(/_/g, " ") })),
-                    ]}
-                  />
-                  {/* Captured area — an optional hard boundary trackers get
-                      clamped inside on save and screenshots get cropped to
-                      (see clampBoxToArea/cropVideoToEmbed). forceOpen while
-                      captureAreaEditMode is on keeps Lock/Cancel reachable
-                      for the whole drag, which happens on the canvas above,
-                      outside this popover's own DOM. */}
-                  <InlineMenuPopover
-                    label="Captured area"
-                    icon="🖼"
-                    forceOpen={captureAreaEditMode}
-                    accentClassName={
-                      captureArea
-                        ? "border-yellow-400/50 text-yellow-300 hover:bg-yellow-400/10"
-                        : "border-white/20 text-white/70 hover:bg-white/10"
-                    }
-                  >
-                    <p className="text-[10px] text-white/50">
-                      {captureAreaEditMode
-                        ? "Drag on the canvas above to draw/adjust the captured area, then Lock it in."
-                        : captureArea
-                        ? "Set — every tracker save and screenshot is kept inside it (yellow outline on the canvas above)."
-                        : "Not set — trackers and screenshots use the whole captured frame."}
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {!captureAreaEditMode ? (
-                        <button
-                          type="button"
-                          onClick={startEditingCaptureArea}
-                          className="text-xs rounded px-3 py-1.5 border border-yellow-400/40 text-yellow-300 hover:bg-yellow-400/10 whitespace-nowrap"
-                        >
-                          {captureArea ? "Adjust" : "Set captured area"}
-                        </button>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            onClick={lockCaptureArea}
-                            disabled={!captureAreaDraft}
-                            className="text-xs rounded px-3 py-1.5 bg-yellow-400 text-ink font-semibold disabled:opacity-40 whitespace-nowrap"
-                          >
-                            Lock captured area
-                          </button>
-                          <button
-                            type="button"
-                            onClick={cancelCaptureAreaEdit}
-                            className="text-xs rounded px-3 py-1.5 border border-white/20 text-white/70 hover:bg-white/10 whitespace-nowrap"
-                          >
-                            Cancel
-                          </button>
-                        </>
-                      )}
-                      {captureArea && !captureAreaEditMode && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (confirm("Clear the captured area? Trackers/screenshots go back to using the whole captured frame.")) clearCaptureArea();
-                          }}
-                          className="text-xs rounded px-3 py-1.5 border border-red-500/40 text-red-300 hover:bg-red-500/10 whitespace-nowrap"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-                  </InlineMenuPopover>
+                  {/* Phase filter dropdown and the Captured-area control were
+                      removed — the canvas phase filter auto-follows the live
+                      match phase (see the canvasPhaseFilter effect), and the
+                      captured-area boundary is no longer used. */}
                   {captureMode === "manual" && (
                     <>
                       {/* Saved templates — Apply/Edit/Delete an existing one,
@@ -7885,16 +7816,30 @@ export default function LiveConsolePage() {
                         )}
                         {templatesLoaded && trackerTemplates.length > 0 && (
                           <div className="space-y-1.5 pb-2 border-b border-white/10">
-                            <InlineMenuSelect
-                              value={selectedTrackerTemplate}
-                              onChange={setSelectedTrackerTemplate}
-                              placeholder="Apply a saved template..."
-                              className="w-full"
-                              options={[
-                                { value: "", label: "Apply a saved template..." },
-                                ...trackerTemplates.map((t) => ({ value: t.name, label: `${t.name} (${t.regionCount})` })),
-                              ]}
-                            />
+                            {/* An inline clickable list, NOT a nested dropdown.
+                                The old InlineMenuSelect portaled its panel to
+                                <body> from inside this popover (also portaled to
+                                <body>), so clicking an option registered as an
+                                outside-click that closed the popover before the
+                                selection took — and mispositioned at the 60:40
+                                layout. A plain list inside the panel has neither
+                                problem. */}
+                            <p className="text-[11px] text-white/40">Apply a saved template:</p>
+                            <div className="max-h-40 overflow-y-auto rounded border border-white/10 divide-y divide-white/5">
+                              {trackerTemplates.map((t) => (
+                                <button
+                                  key={t.name}
+                                  type="button"
+                                  onClick={() => setSelectedTrackerTemplate((prev) => (prev === t.name ? "" : t.name))}
+                                  className={`block w-full text-left px-2.5 py-1.5 text-xs whitespace-nowrap hover:bg-white/10 ${
+                                    t.name === selectedTrackerTemplate ? "bg-signal/15 text-signal font-semibold" : "text-white/80"
+                                  }`}
+                                >
+                                  {t.name === selectedTrackerTemplate ? "✓ " : ""}
+                                  {t.name} ({t.regionCount})
+                                </button>
+                              ))}
+                            </div>
                             <div className="flex flex-wrap gap-1.5">
                               <button
                                 onClick={() => applyTrackerTemplate(selectedTrackerTemplate)}

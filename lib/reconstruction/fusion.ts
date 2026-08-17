@@ -21,6 +21,49 @@ import type { ObservationField, ObservationSource } from "./types.ts";
 import { gradeEvidence } from "./confidence.ts";
 import type { EvidenceBand } from "./confidence.ts";
 
+// ── Observation-row fusion ─────────────────────────────────────────────────
+// Consumes persisted game_observations (both source="ocr" and source="vision")
+// and produces a fused verdict per field/team/player. The caller extracts a
+// comparable value from each row's normalized_value and passes rows
+// newest-first per source, so the first row seen for a source is the latest.
+export type ObservationRowInput = {
+  field: string;
+  source: string; // "ocr" | "vision" (others ignored for fusion)
+  value: number | string | null;
+  confidence: number | null;
+  teamId?: string | null;
+  playerId?: string | null;
+};
+
+export type FusedField = {
+  key: string;
+  field: string;
+  teamId: string | null;
+  playerId: string | null;
+  result: FusionResult;
+};
+
+export function fuseObservationsByField(rows: ObservationRowInput[]): FusedField[] {
+  const groups = new Map<string, { field: string; teamId: string | null; playerId: string | null; cv?: FusionReading; ai?: FusionReading }>();
+  for (const r of rows) {
+    if (r.value == null) continue;
+    const teamId = r.teamId ?? null;
+    const playerId = r.playerId ?? null;
+    const key = `${r.field}|${teamId ?? ""}|${playerId ?? ""}`;
+    const g = groups.get(key) ?? { field: r.field, teamId, playerId };
+    const reading: FusionReading = { value: r.value, rawConfidence: r.confidence };
+    // First occurrence per source wins (caller passes newest-first).
+    if (r.source === "ocr" && !g.cv) g.cv = reading;
+    else if (r.source === "vision" && !g.ai) g.ai = reading;
+    groups.set(key, g);
+  }
+  const out: FusedField[] = [];
+  for (const [key, g] of groups) {
+    out.push({ key, field: g.field, teamId: g.teamId, playerId: g.playerId, result: fuseField({ field: g.field as ObservationField, cv: g.cv, ai: g.ai }) });
+  }
+  return out;
+}
+
 export type FieldPolicy = "cv_primary" | "ai_primary";
 
 // §29: numeric telemetry is CV-primary (deterministic local recognition wins);

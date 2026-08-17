@@ -4,6 +4,8 @@ import { requireCaller } from "@/lib/adminApiAuth";
 import { flags } from "@/lib/featureFlags";
 import { reconcile } from "@/lib/reconstruction/reconcile";
 import { buildStateHealth } from "@/lib/reconstruction/health";
+import { fuseObservationsByField } from "@/lib/reconstruction/fusion";
+import type { ObservationRowInput } from "@/lib/reconstruction/fusion";
 import type { ConfirmedState, PlayerState } from "@/lib/reconstruction/types";
 import { asGameId, asTeamId, asPlayerId } from "@/lib/reconstruction/types";
 
@@ -18,6 +20,24 @@ import { asGameId, asTeamId, asPlayerId } from "@/lib/reconstruction/types";
 // the same reconcile() the engine uses, so conflicts surface identically to the
 // live reconstruction path. When RECONSTRUCTION_PERSISTENCE is enabled it also
 // folds in the latest per-field observation metadata from game_observations.
+// Pull a single comparable value out of a stored normalized_value so CV and AI
+// observations of the same field can be fused. Net worth compares on gold,
+// counts on their number, timer on seconds, banners on text, and KDA on kills
+// (the field AI is allowed to inform; team kills stay derived, per §29).
+function extractComparable(nv: unknown): number | string | null {
+  if (nv == null) return null;
+  if (typeof nv === "number" || typeof nv === "string") return nv;
+  if (typeof nv === "object") {
+    const o = nv as Record<string, unknown>;
+    if (typeof o.gold === "number") return o.gold;
+    if (typeof o.count === "number") return o.count;
+    if (typeof o.seconds === "number") return o.seconds;
+    if (typeof o.text === "string") return o.text;
+    if (typeof o.kills === "number") return o.kills;
+  }
+  return null;
+}
+
 export async function GET(req: NextRequest, { params }: { params: { gameId: string } }) {
   if (!flags.adminStateHealth) {
     return NextResponse.json({ error: "State Health is disabled (ADMIN_STATE_HEALTH=0)" }, { status: 404 });
@@ -96,17 +116,21 @@ export async function GET(req: NextRequest, { params }: { params: { gameId: stri
   };
 
   // Optional: fold in latest per-field observation metadata when the
-  // reconstruction tables exist.
+  // reconstruction tables exist. Also drives CV+AI fusion (spec §28-29): the
+  // same rows carry both source="ocr" (CV) and source="vision" (AI), so a
+  // per-field fused verdict (agree/conflict/single) can be surfaced here.
   let observations: Parameters<typeof buildStateHealth>[0]["observations"] = [];
+  let fusion: ReturnType<typeof fuseObservationsByField> = [];
   if (flags.reconstructionPersistence) {
     const { data: obs } = await supabase
       .from("game_observations")
-      .select("field, status, normalized_value, confidence, captured_at")
+      .select("field, source, team_id, player_id, status, normalized_value, confidence, captured_at")
       .eq("game_id", gameId)
       .order("captured_at", { ascending: false })
-      .limit(200);
+      .limit(400);
+    const rows = ((obs as any[]) ?? []);
     const seen = new Set<string>();
-    for (const o of (obs as any[]) ?? []) {
+    for (const o of rows) {
       if (seen.has(o.field)) continue;
       seen.add(o.field);
       observations.push({
@@ -117,10 +141,21 @@ export async function GET(req: NextRequest, { params }: { params: { gameId: stri
         lastObservedAt: o.captured_at ? new Date(o.captured_at).getTime() : null,
       });
     }
+    // Rows come back newest-first, which is exactly the order
+    // fuseObservationsByField expects (first per source = latest).
+    const fusionRows: ObservationRowInput[] = rows.map((o) => ({
+      field: o.field,
+      source: o.source,
+      value: extractComparable(o.normalized_value),
+      confidence: o.confidence,
+      teamId: o.team_id,
+      playerId: o.player_id,
+    }));
+    fusion = fuseObservationsByField(fusionRows);
   }
 
   const report = reconcile(state);
   const health = buildStateHealth({ state, observations, conflicts: report.conflicts });
 
-  return NextResponse.json({ health, reconciliation: report });
+  return NextResponse.json({ health, reconciliation: report, fusion });
 }

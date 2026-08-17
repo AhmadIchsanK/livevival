@@ -48,6 +48,17 @@ export async function POST(req: NextRequest) {
     if (error) return NextResponse.json({ error: `events: ${error.message}` }, { status: 500 });
   }
 
+  // CV observations: append-only evidence (source="ocr"), the counterpart to
+  // the AI observations from §25-27 so the fusion phase can reconcile them.
+  // Best-effort: a failure here must not fail the whole tick (events/snapshot
+  // are the authoritative persistence; observations are the evidence trail).
+  if (Array.isArray(payload.observations) && payload.observations.length > 0) {
+    const now = new Date().toISOString();
+    await supabase
+      .from("game_observations")
+      .insert(payload.observations.map((o) => ({ ...o, captured_at: now })));
+  }
+
   // Snapshot: one row per game, monotonic state_version. Guard against an
   // out-of-order write regressing the version (safe retry behavior).
   const { data: existing } = await supabase

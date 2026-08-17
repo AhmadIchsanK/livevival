@@ -14,6 +14,7 @@
 //     dedups a retried tick.
 import type { GameEvent, ConfirmedState } from "./types.ts";
 import type { PublicGameState } from "./snapshot.ts";
+import type { FieldDiagnostic } from "./engine.ts";
 import { toPublicState } from "./snapshot.ts";
 
 export type EventRow = {
@@ -82,6 +83,62 @@ export type ObservationRow = {
   status: string;
 };
 
+// Field keys the engine emits diagnostics for that map to a real observation
+// field (spec §22 envelope). Diagnostic-only keys like "kill_pending:*" /
+// "death_pending:*" are intentionally excluded — they are engine bookkeeping,
+// not readings.
+const PERSISTABLE_OBSERVATION_FIELDS = new Set([
+  "game_timer",
+  "team_kills",
+  "net_worth",
+  "player_kda",
+  "objective_turtle",
+  "objective_lord",
+  "objective_tower",
+  "base_crystal",
+  "kill_banner",
+  "draft_phase",
+]);
+
+// Turn the engine's per-field diagnostics (which now carry the confirmed/
+// candidate/rejected status + the reading) into append-only CV observation
+// rows (source="ocr"). This is what lets the hybrid-fusion phase reconcile CV
+// against the AI observations from §25-27: both sources land in
+// game_observations and fuseObservationsByField compares them. Field keys are
+// "<field>:<teamId|playerId>" (e.g. "net_worth:A", "player_kda:p1") or bare
+// ("game_timer"); the suffix is a player id for player_kda, otherwise a team id.
+export function observationRowsFromDiagnostics(
+  diagnostics: Map<string, FieldDiagnostic>,
+  gameId: string,
+  matchId: string | null,
+  gameTimeSeconds: number | null
+): ObservationRow[] {
+  const rows: ObservationRow[] = [];
+  for (const [key, d] of diagnostics) {
+    const colon = key.indexOf(":");
+    const base = colon === -1 ? key : key.slice(0, colon);
+    const suffix = colon === -1 ? null : key.slice(colon + 1);
+    if (!PERSISTABLE_OBSERVATION_FIELDS.has(base)) continue;
+    if (d.candidateValue === undefined || d.candidateValue === null) continue;
+    const isPlayer = base === "player_kda";
+    rows.push({
+      id: globalThis.crypto.randomUUID(),
+      game_id: gameId,
+      match_id: matchId,
+      field: base,
+      team_id: isPlayer ? null : suffix,
+      player_id: isPlayer ? suffix : null,
+      game_time_seconds: gameTimeSeconds,
+      raw_value: typeof d.candidateValue === "object" ? JSON.stringify(d.candidateValue) : String(d.candidateValue),
+      normalized_value: d.candidateValue,
+      confidence: d.confidence,
+      source: "ocr",
+      status: d.status,
+    });
+  }
+  return rows;
+}
+
 // A stable observation id from its identity fields, so a retried tick writing
 // the same reading doesn't create a duplicate evidence row.
 export function observationId(gameId: string, field: string, gameTime: number | null, raw: string): string {
@@ -101,12 +158,19 @@ export type IngestPayload = {
   matchId: string | null;
   events: EventRow[];
   snapshot: SnapshotRow;
+  // Optional append-only CV observation rows (source="ocr"), so the fusion
+  // phase can reconcile them against the AI observations. Absent = the caller
+  // opted not to record observations this tick (backward compatible).
+  observations?: ObservationRow[];
 };
 
 export function buildIngestPayload(args: {
   state: ConfirmedState;
   newEvents: GameEvent[];
   matchId: string | null;
+  // When provided, the engine's per-field diagnostics are turned into CV
+  // observation rows and included in the payload.
+  diagnostics?: Map<string, FieldDiagnostic>;
 }): IngestPayload {
   return {
     gameId: args.state.gameId,
@@ -116,5 +180,8 @@ export function buildIngestPayload(args: {
       args.matchId
     ),
     snapshot: snapshotRow(args.state, args.matchId),
+    observations: args.diagnostics
+      ? observationRowsFromDiagnostics(args.diagnostics, args.state.gameId, args.matchId, args.state.timerSeconds)
+      : undefined,
   };
 }

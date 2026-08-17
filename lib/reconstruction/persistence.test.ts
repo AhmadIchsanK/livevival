@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { eventRows, snapshotRow, observationId, buildIngestPayload } from "./persistence.ts";
+import { eventRows, snapshotRow, observationId, buildIngestPayload, observationRowsFromDiagnostics } from "./persistence.ts";
 import { reduceEvents } from "./reducer.ts";
 import { createEvent } from "./events.ts";
+import { createEngine, ingest } from "./engine.ts";
 import { asGameId, asTeamId, asPlayerId } from "./types.ts";
 import type { GameEvent } from "./types.ts";
 
@@ -49,4 +50,38 @@ test("buildIngestPayload: only confirmed events, with snapshot", () => {
   assert.equal(payload.events[0].status, "confirmed");
   assert.equal(payload.snapshot.game_id, "g1");
   assert.equal(payload.gameId, "g1");
+});
+
+test("observationRowsFromDiagnostics: engine diagnostics → CV observation rows", () => {
+  const e = createEngine({ gameId: G, teamAId: A, teamBId: B });
+  ingest(e, {
+    gameTimeSeconds: 60,
+    timer: 60,
+    netWorth: { A: 5000 },
+    playerKda: [{ playerId: asPlayerId("p1"), teamId: A, kda: { kills: 1, deaths: 0, assists: 0 } }],
+    source: "ocr",
+    confidence: 0.9,
+  });
+  const rows = observationRowsFromDiagnostics(e.diagnostics, "g1", "match1", e.state.timerSeconds);
+  // net_worth:A → team row; player_kda:p1 → player row; game_timer → bare.
+  const nw = rows.find((r) => r.field === "net_worth");
+  assert.ok(nw, "expected a net_worth observation");
+  assert.equal(nw!.team_id, "A");
+  assert.equal(nw!.player_id, null);
+  assert.equal(nw!.source, "ocr");
+  const kda = rows.find((r) => r.field === "player_kda");
+  assert.ok(kda, "expected a player_kda observation");
+  assert.equal(kda!.player_id, "p1");
+  assert.equal(kda!.team_id, null);
+  // Diagnostic-only pending keys must never become observation rows.
+  assert.ok(!rows.some((r) => r.field.includes("pending")));
+});
+
+test("buildIngestPayload: includes CV observations when diagnostics passed", () => {
+  const e = createEngine({ gameId: G, teamAId: A, teamBId: B });
+  ingest(e, { gameTimeSeconds: 60, timer: 60, netWorth: { A: 5000 }, source: "ocr", confidence: 0.9 });
+  const withDiag = buildIngestPayload({ state: e.state, newEvents: [], matchId: "m1", diagnostics: e.diagnostics });
+  assert.ok((withDiag.observations?.length ?? 0) > 0);
+  const without = buildIngestPayload({ state: e.state, newEvents: [], matchId: "m1" });
+  assert.equal(without.observations, undefined);
 });

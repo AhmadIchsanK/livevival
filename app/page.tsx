@@ -127,8 +127,18 @@ export default function Home() {
       // Supabase caps unbounded queries at 1000 rows by default, and with
       // matches ordered ascending, any table with 1000+ total rows would
       // silently cut off future matches, which sort last.
+      // A match whose start time has passed but is still "scheduled" (the
+      // lifecycle cron flips it to live within ~10 min) is shown as live right
+      // away, within a recent lookback window, so it never vanishes in that gap
+      // — the exact "disappears when the timer runs out" bug. Bounded to the
+      // last 12h so an ancient never-played scheduled row isn't surfaced.
+      const overdueSinceIso = new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString();
       const [{ data: liveData }, { data: upcomingData }, { data: finishedData }] = await Promise.all([
-        supabase.from("matches").select(MATCH_SELECT).eq("status", "live").order("scheduled_at", { ascending: true }),
+        supabase
+          .from("matches")
+          .select(MATCH_SELECT)
+          .or(`status.eq.live,and(status.eq.scheduled,scheduled_at.lte.${now.toISOString()},scheduled_at.gte.${overdueSinceIso})`)
+          .order("scheduled_at", { ascending: true }),
         supabase
           .from("matches")
           .select(MATCH_SELECT)

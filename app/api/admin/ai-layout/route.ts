@@ -90,6 +90,73 @@ function extractFirstJsonObject(text: string): string | null {
   return null;
 }
 
+// Groq returns 429 with either a Retry-After header or a "try again in 25.71s"
+// phrase in the body when the vision model's per-minute token limit is hit.
+function parseRetrySeconds(retryAfter: string | null, bodyText: string): number | null {
+  if (retryAfter && Number.isFinite(Number(retryAfter))) return Number(retryAfter);
+  const m = bodyText.match(/try again in ([\d.]+)\s*s/i);
+  return m ? Number(m[1]) : null;
+}
+
+type GroqCall =
+  | { ok: true; data: any } // eslint-disable-line @typescript-eslint/no-explicit-any
+  | { ok: false; status: number; message: string };
+
+// One vision call, with a single automatic retry ONLY on a 429 whose suggested
+// wait is short enough to sit inside a serverless request. A longer cooldown
+// returns a friendly, actionable message instead of the raw Groq JSON.
+async function callGroqVision(apiKey: string, model: string, prompt: string, imageBase64: string): Promise<GroqCall> {
+  const doCall = () =>
+    fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        // A 10-box layout needs very little output — a smaller reservation also
+        // lowers this request's per-minute token footprint, which is what trips
+        // the 429 in the first place.
+        max_tokens: 1024,
+        reasoning_format: "hidden",
+        messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: imageBase64 } }] }],
+      }),
+      signal: AbortSignal.timeout(20000),
+    });
+
+  let res: Response;
+  try {
+    res = await doCall();
+  } catch (err) {
+    return { ok: false, status: 502, message: `Groq request failed: ${(err as Error).message}` };
+  }
+
+  if (res.status === 429) {
+    const text = await res.text();
+    const wait = parseRetrySeconds(res.headers.get("retry-after"), text);
+    if (wait != null && wait <= 6) {
+      await new Promise((r) => setTimeout(r, wait * 1000 + 300));
+      try {
+        res = await doCall();
+      } catch (err) {
+        return { ok: false, status: 502, message: `Groq request failed on retry: ${(err as Error).message}` };
+      }
+      if (res.status === 429) {
+        const t2 = await res.text();
+        const w2 = parseRetrySeconds(res.headers.get("retry-after"), t2);
+        return { ok: false, status: 429, message: `The vision model is rate-limited right now${w2 ? ` — try again in ~${Math.ceil(w2)}s` : ", try again shortly"}.` };
+      }
+    } else {
+      return { ok: false, status: 429, message: `The vision model hit its per-minute token limit${wait ? ` — try again in ~${Math.ceil(wait)}s` : ", try again shortly"}. (Tip: a vision model with a higher TPM limit avoids this.)` };
+    }
+  }
+
+  if (!res.ok) {
+    const errText = await res.text();
+    return { ok: false, status: 502, message: `Groq API error (${res.status}): ${errText.slice(0, 300)}` };
+  }
+  return { ok: true, data: await res.json() };
+}
+
 async function requireAdmin(req: NextRequest): Promise<{ supabase: SupabaseLike } | NextResponse> {
   const authHeader = req.headers.get("authorization");
   if (!authHeader) return NextResponse.json({ error: "Missing Authorization header" }, { status: 401 });
@@ -121,38 +188,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing imageBase64" }, { status: 400 });
   }
 
-  let groqRes: Response;
-  try {
-    groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        temperature: 0,
-        max_tokens: 2000,
-        reasoning_format: "hidden",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: buildPrompt() },
-              { type: "image_url", image_url: { url: imageBase64 } },
-            ],
-          },
-        ],
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-  } catch (err) {
-    return NextResponse.json({ error: `Groq request failed: ${(err as Error).message}` }, { status: 502 });
+  const call = await callGroqVision(apiKey, model, buildPrompt(), imageBase64);
+  if (!call.ok) {
+    return NextResponse.json({ error: call.message }, { status: call.status });
   }
-
-  if (!groqRes.ok) {
-    const errText = await groqRes.text();
-    return NextResponse.json({ error: `Groq API error (${groqRes.status}): ${errText}` }, { status: 502 });
-  }
-
-  const groqData = await groqRes.json();
+  const groqData = call.data;
   const choice = groqData.choices?.[0];
   // `??` only substitutes for null/undefined — a genuinely empty string
   // (`content: ""`, which Groq can return when the model spends its whole

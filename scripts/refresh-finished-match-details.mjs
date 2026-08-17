@@ -13,7 +13,7 @@ import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
 import { importTournament } from "./import-finished-match-details.mjs";
 import { importTournamentResults } from "./import-tournament-results.mjs";
-import { fetchRenderedPage, sleep } from "./_liquipedia.mjs";
+import { fetchRenderedPage, sleep, sortByLifecyclePriority } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -77,15 +77,21 @@ async function main() {
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const relevant =
+  const filtered =
     override.length > 0
       ? (tournaments ?? []).filter((t) => override.includes(t.liquipedia_slug))
       : (tournaments ?? []).filter((t) => t.liquipedia_slug && isWithinPastYear(t.start_date, t.end_date));
 
+  // Ongoing first, then imminent-upcoming, then most-recently-completed — same
+  // reasoning as import-liquipedia-matches: this walk has no resume state and
+  // gets cut off by its timeout, so process the currently-active tournaments'
+  // results/picks/VODs before the years-old tail.
+  const relevant = sortByLifecyclePriority(filtered);
+
   console.log(
     override.length > 0
       ? `TOURNAMENT_SLUGS override: processing ${relevant.length} of ${override.length} explicitly requested tournament(s)`
-      : `Processing finished-match details + results for ${relevant.length} tournament(s) (past year, or upcoming/ongoing)`
+      : `Processing finished-match details + results for ${relevant.length} tournament(s) (ongoing first, then upcoming, then recent)`
   );
 
   for (const t of relevant) {

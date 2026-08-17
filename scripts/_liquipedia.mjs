@@ -247,6 +247,46 @@ export function extractInfoboxIconLinks($) {
   return Object.keys(links).length > 0 ? links : null;
 }
 
+// Lifecycle-priority ordering for the tournament walk in the match/detail
+// importers. Both jobs process tournaments sequentially with a hard timeout
+// and NO resume state, so whichever tournaments sit late in the list simply
+// never get processed when a run is cancelled mid-walk (confirmed in prod:
+// the import-matches job is cancelled at its 75-min timeout every single run,
+// so a current season's just-played matches sat "scheduled" with no result
+// for days because the walk never reached/re-reached them in time). Table
+// order is arbitrary, so ordering by lifecycle puts the tournaments whose
+// data is actually changing right now (ongoing, then imminent upcoming, then
+// most-recently-completed) at the front — directly implementing the product
+// priority "update live/finished match results, URLs, picks & bans first".
+export function tournamentPriorityRank(t, now = Date.now()) {
+  const start = t.start_date ? new Date(t.start_date).getTime() : null;
+  const end = t.end_date ? new Date(t.end_date).getTime() : null;
+  // Ongoing: has started and hasn't ended (or has no known end yet).
+  if (start != null && start <= now && (end == null || end >= now)) return 0;
+  // Upcoming: starts in the future.
+  if (start != null && start > now) return 1;
+  // Completed, or dates unknown — lowest priority (the long tail).
+  return 2;
+}
+
+export function sortByLifecyclePriority(tournaments, now = Date.now()) {
+  return [...tournaments].sort((a, b) => {
+    const ra = tournamentPriorityRank(a, now);
+    const rb = tournamentPriorityRank(b, now);
+    if (ra !== rb) return ra - rb;
+    const aStart = a.start_date ? new Date(a.start_date).getTime() : 0;
+    const bStart = b.start_date ? new Date(b.start_date).getTime() : 0;
+    const aEnd = a.end_date ? new Date(a.end_date).getTime() : Infinity;
+    const bEnd = b.end_date ? new Date(b.end_date).getTime() : Infinity;
+    // Ongoing: soonest-ending first (closest to producing final results).
+    if (ra === 0) return aEnd - bEnd;
+    // Upcoming: soonest-starting first.
+    if (ra === 1) return aStart - bStart;
+    // Completed/unknown: most-recently-ended (then -started) first.
+    return bEnd - aEnd || bStart - aStart;
+  });
+}
+
 const REQUEST_TIMEOUT_MS = 20000;
 
 async function requestJson(url, label, attempt, maxRetries) {

@@ -77,3 +77,22 @@ export function detectMatchStateDetailed(text: string): { state: MatchState | nu
 export function detectMatchState(text: string): MatchState | null {
   return detectMatchStateDetailed(text).state;
 }
+
+// Maps an AI-vision phase label (the fallback observer, spec §16/§25/§27 — used
+// when the deterministic keyword read above comes back empty on a stylized
+// overlay) to the same MatchState the OCR path produces, so both feed one
+// handler. The AI classifier answers with one of a small fixed vocabulary; a
+// LIVE / normal-gameplay / unknown answer maps to null (no state change).
+// Kept deliberately narrow: only the end-game screen counts as "crystal", and
+// only explicit replay/pause labels suspend telemetry — anything ambiguous is
+// treated as live, so the AI fallback can never itself finish a game on a guess.
+export function phaseToMatchState(phase: string | null | undefined): MatchState | null {
+  if (!phase) return null;
+  const p = phase.toUpperCase().replace(/[^A-Z]/g, "");
+  if (p.includes("REPLAY")) return "replay";
+  if (p.includes("PAUSE")) return "pause";
+  if (p.includes("VICTORY") || p.includes("DEFEAT") || p.includes("POSTGAME") || p.includes("GAMEOVER") || p.includes("ENDGAME")) {
+    return "crystal";
+  }
+  return null; // LIVE / IN_GAME / DRAFT / LOADING / LOBBY / UNKNOWN → no state
+}

@@ -2475,6 +2475,15 @@ export default function LiveConsolePage() {
   // requires two in a row so a single-frame OCR false positive can't end the
   // game (a false GAME_FINISHED is worse than a missed one).
   const crystalFramesRef = useRef(0);
+  // AI-vision fallback for the center match-state tracker (spec §16/§25/§27):
+  // only consulted when the deterministic keyword OCR comes back empty on text
+  // it couldn't classify (a stylized overlay). Throttled hard so it stays cheap
+  // — a normal-gameplay center crop has no unclassified text, so this fires
+  // essentially only when an overlay is actually up. The pending result is
+  // consumed by the next match_event tick.
+  const aiMatchStateLastCallRef = useRef(0);
+  const aiMatchStateInFlightRef = useRef(false);
+  const aiMatchStatePendingRef = useRef<{ state: "crystal" | "replay" | "pause" | null; at: number } | null>(null);
   type ObjectiveDiagnostic = ObjectiveObservation & {
     confidence: number | null;
     at: number;
@@ -4400,6 +4409,39 @@ export default function LiveConsolePage() {
     }
   }
 
+  // AI-vision fallback classifier for the center match-state crop. Best-effort
+  // and fire-and-forget: it stores its result in a ref the next match_event
+  // tick reads, never blocks the capture loop, and is hard-throttled so it can
+  // fire at most once every AI_MATCHSTATE_THROTTLE_MS. Called only when the
+  // keyword OCR already failed on non-trivial text (a likely stylized overlay).
+  const AI_MATCHSTATE_THROTTLE_MS = 12000;
+  async function classifyMatchStateAI(canvas: HTMLCanvasElement) {
+    if (aiMatchStateInFlightRef.current) return;
+    if (Date.now() - aiMatchStateLastCallRef.current < AI_MATCHSTATE_THROTTLE_MS) return;
+    aiMatchStateInFlightRef.current = true;
+    aiMatchStateLastCallRef.current = Date.now();
+    try {
+      const imageBase64 = canvas.toDataURL("image/jpeg", 0.7);
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess.session?.access_token;
+      if (!token) return;
+      const res = await fetch("/api/ocr/match-state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ imageBase64 }),
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const s = json?.state;
+      const state = s === "crystal" || s === "replay" || s === "pause" ? s : null;
+      aiMatchStatePendingRef.current = { state, at: Date.now() };
+    } catch {
+      /* AI fallback is best-effort; the OCR path keeps running regardless */
+    } finally {
+      aiMatchStateInFlightRef.current = false;
+    }
+  }
+
   async function captureTickBody(video: HTMLVideoElement, worker: NonNullable<typeof workerRef.current>) {
     // Hard stop once this game is done — validation-spec golden rule: "after
     // GAME_FINISHED, reject any additional kills/deaths/assists/net worth/
@@ -4529,13 +4571,38 @@ export default function LiveConsolePage() {
             // prompt AND finish the game in reconstruction. Processed before the
             // telemetry trackers this tick.
             const detail = detectMatchStateDetailed(trimmed);
-            const st = detail.state;
+            let st = detail.state;
+            let stateSource: "ocr" | "ai" = "ocr";
+            // AI-vision fallback (spec §16/§25/§27). If the keyword OCR found
+            // nothing but there IS unclassified text in the center crop, a
+            // stylized overlay likely OCR'd as garbage — ask the vision model.
+            // The call is throttled + fire-and-forget; its result lands in the
+            // ref and is consumed by a later tick (below), so an overlay that
+            // lingers a couple seconds gets classified without blocking capture.
+            if (detail.state === null && detail.normalized.length >= 4) {
+              void classifyMatchStateAI(canvas);
+            }
+            // Consume a recent AI verdict when OCR itself is empty this tick.
+            const aiPend = aiMatchStatePendingRef.current;
+            if (st === null && aiPend && aiPend.state && Date.now() - aiPend.at < 20000) {
+              st = aiPend.state;
+              stateSource = "ai";
+              // Consume once: a single AI verdict must not re-apply every tick
+              // (that would run the crystal-finish counter to 2 in two ticks).
+              // A lingering overlay re-verdicts on the next throttled AI call.
+              aiMatchStatePendingRef.current = null;
+            }
             let matchEvent = "none";
             if (st === "replay" || st === "pause") {
               crystalFramesRef.current = 0;
-              captureSuspendRef.current = { reason: st, until: Date.now() + CAPTURE_SUSPEND_GRACE_MS };
+              // An AI verdict is consume-once and only re-checks every ~12s, so
+              // its suspend must outlast that gap (grace alone, 8s, would lapse
+              // first and briefly un-suspend mid-replay); an OCR verdict renews
+              // every tick, so the shorter grace is enough.
+              const suspendMs = stateSource === "ai" ? AI_MATCHSTATE_THROTTLE_MS + CAPTURE_SUSPEND_GRACE_MS : CAPTURE_SUSPEND_GRACE_MS;
+              captureSuspendRef.current = { reason: st, until: Date.now() + suspendMs };
               setCaptureSuspendReason(st);
-              matchEvent = `CAPTURE SUSPENDED — ${st.toUpperCase()}`;
+              matchEvent = `CAPTURE SUSPENDED — ${st.toUpperCase()}${stateSource === "ai" ? " (AI)" : ""}`;
             } else if (st === "crystal") {
               // No replay/pause; a genuine end-game banner. Require two
               // consecutive crystal frames before finishing (single-frame OCR
@@ -4568,7 +4635,7 @@ export default function LiveConsolePage() {
                 setCaptureSuspendReason(null);
               }
             }
-            setMatchStateDiag({ raw: trimmed, normalized: detail.normalized, keyword: detail.keyword, state: st, event: matchEvent, confidence: data.confidence, at: Date.now() });
+            setMatchStateDiag({ raw: trimmed, normalized: detail.normalized, keyword: stateSource === "ai" ? "AI vision (fallback)" : detail.keyword, state: st, event: matchEvent, confidence: data.confidence, at: Date.now() });
             break;
           }
           case "game_timer": {

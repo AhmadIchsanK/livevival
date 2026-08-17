@@ -42,6 +42,17 @@ export const flags = {
   get adminStateHealth() {
     return boolEnv("ADMIN_STATE_HEALTH", true); // read-only + admin-guarded → safe on
   },
+  // AI Vision as a non-authoritative reconstruction observer (spec §25-27):
+  // when on, the AI frame-analysis route ALSO records its detections as
+  // append-only rows in game_observations — graded through the SAME
+  // reconstruction validators + evidence model (spec §26/§30), tagged
+  // source="vision". OFF by default. This never changes what the legacy write
+  // path commits and never affects public reads — it only builds the evidence
+  // trail the later hybrid-fusion phase reconciles against CV. ROLLBACK: unset
+  // RECONSTRUCTION_AI_OBSERVER (or =0) — the observer step becomes a no-op.
+  get reconstructionAiObserver() {
+    return boolEnv("RECONSTRUCTION_AI_OBSERVER");
+  },
 } as const;
 
 export type FeatureFlags = typeof flags;

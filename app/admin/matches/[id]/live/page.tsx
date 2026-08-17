@@ -5166,6 +5166,9 @@ export default function LiveConsolePage() {
               state: shadowSessionRef.current.engine.state,
               newEvents: shadowSessionRef.current.newEvents,
               matchId: match.id,
+              // Co-persist CV observations (source="ocr") so the fusion phase
+              // can reconcile them against the AI observations (§28-29).
+              diagnostics: shadowSessionRef.current.engine.diagnostics,
             });
             supabase.auth.getSession().then(({ data }) => {
               const token = data.session?.access_token;

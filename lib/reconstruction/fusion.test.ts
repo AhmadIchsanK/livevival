@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fuseField, fieldFusionPolicy, defaultTolerance } from "./fusion.ts";
+import { fuseField, fieldFusionPolicy, defaultTolerance, fuseObservationsByField } from "./fusion.ts";
+import type { ObservationRowInput } from "./fusion.ts";
 
 // ── field policy (§29) ──────────────────────────────────────────────────────
 test("policy: numeric telemetry is CV-primary, semantics AI-primary", () => {
@@ -85,4 +86,45 @@ test("timer within a couple seconds agrees", () => {
   const r = fuseField({ field: "game_timer", cv: { value: 600, rawConfidence: 0.9 }, ai: { value: 602, rawConfidence: 0.8 } });
   assert.equal(r.agreement, "agree");
   assert.equal(r.value, 600);
+});
+
+// ── fuseObservationsByField (persisted rows) ───────────────────────────────
+test("fuse rows: CV + AI for same team net worth are grouped and fused", () => {
+  // Newest-first per source, as the state-health query returns them.
+  const rows: ObservationRowInput[] = [
+    { field: "net_worth", source: "ocr", value: 5000, confidence: 0.9, teamId: "A" },
+    { field: "net_worth", source: "vision", value: 5200, confidence: 0.8, teamId: "A" },
+    { field: "net_worth", source: "ocr", value: 4000, confidence: 0.9, teamId: "A" }, // older CV — ignored
+  ];
+  const fused = fuseObservationsByField(rows);
+  assert.equal(fused.length, 1);
+  assert.equal(fused[0].teamId, "A");
+  assert.equal(fused[0].result.agreement, "agree");
+  assert.equal(fused[0].result.value, 5000); // latest CV, primary
+});
+
+test("fuse rows: conflict surfaces and never averages", () => {
+  const rows: ObservationRowInput[] = [
+    { field: "net_worth", source: "ocr", value: 5000, confidence: 0.9, teamId: "B" },
+    { field: "net_worth", source: "vision", value: 12000, confidence: 0.9, teamId: "B" },
+  ];
+  const fused = fuseObservationsByField(rows);
+  assert.equal(fused[0].result.conflict, true);
+  assert.equal(fused[0].result.value, null);
+});
+
+test("fuse rows: different teams/players are separate groups", () => {
+  const rows: ObservationRowInput[] = [
+    { field: "net_worth", source: "ocr", value: 5000, confidence: 0.9, teamId: "A" },
+    { field: "net_worth", source: "ocr", value: 6000, confidence: 0.9, teamId: "B" },
+    { field: "player_kda", source: "ocr", value: 3, confidence: 0.9, playerId: "p1" },
+  ];
+  const fused = fuseObservationsByField(rows);
+  assert.equal(fused.length, 3);
+});
+
+test("fuse rows: a single source is 'single', not a conflict", () => {
+  const rows: ObservationRowInput[] = [{ field: "net_worth", source: "ocr", value: 5000, confidence: 0.9, teamId: "A" }];
+  const fused = fuseObservationsByField(rows);
+  assert.equal(fused[0].result.agreement, "single");
 });

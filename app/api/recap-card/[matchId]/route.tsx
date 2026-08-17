@@ -602,20 +602,30 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
   const isHotMatch = match.update_source === "local_ocr";
 
   if (games && games.length > 0) {
-    const lastGameId = games[games.length - 1].id;
-    const { data: picksAndBans } = await supabase
+    // Use the LATEST game that actually has a draft logged — not simply the
+    // last game. During a live series the current (final) game often has no
+    // picks yet (or a Normal match's placeholder game has none), and keying off
+    // that blanked the recap's picks/bans entirely. Fetch picks for every game,
+    // then take the last game (in play order) that has any.
+    const gameIds = games.map((g) => g.id);
+    const { data: allPicksAndBans } = await supabase
       .from("hero_picks_bans")
-      .select("team_id, hero_name, type, pick_order, player_id, hero:heroes(icon_url)")
-      .eq("game_id", lastGameId)
+      .select("game_id, team_id, hero_name, type, pick_order, player_id, hero:heroes(icon_url)")
+      .in("game_id", gameIds)
       .in("type", ["pick", "ban"])
       .order("pick_order");
+    let draftGameId: string | null = null;
+    for (const g of games) {
+      if ((allPicksAndBans ?? []).some((p) => p.game_id === g.id)) draftGameId = g.id;
+    }
+    const picksAndBans = (allPicksAndBans ?? []).filter((p) => p.game_id === draftGameId);
 
     let kdaByPlayerId = new Map<string, { kills: number | null; deaths: number | null; assists: number | null }>();
-    if (isHotMatch) {
+    if (isHotMatch && draftGameId) {
       const { data: stats } = await supabase
         .from("player_stats")
         .select("player_id, kills, deaths, assists")
-        .eq("game_id", lastGameId);
+        .eq("game_id", draftGameId);
       kdaByPlayerId = new Map((stats ?? []).filter((s) => s.player_id).map((s) => [s.player_id as string, s]));
     }
 

@@ -1,0 +1,59 @@
+name: App cron (match lifecycle + schedule refresh)
+
+# WHY THIS EXISTS: Vercel's Hobby (free) plan allows only ONE cron run per day
+# per job, so the frequent app crons that used to live in vercel.json — the
+# match-lifecycle promoter (scheduled -> live) every 10 min and the schedule
+# cache refresh every 30 min — made every deployment REJECTED at creation time
+# ("Hobby accounts are limited to daily cron jobs"), which silently froze
+# production. GitHub Actions cron has no per-day limit, so the frequent ticks
+# run here instead and just hit the existing authenticated cron endpoints on
+# the deployed app. vercel.json keeps a single daily refresh-schedule cron,
+# which the Hobby plan accepts.
+#
+# SETUP (one-time): add two repo secrets under Settings -> Secrets and
+# variables -> Actions:
+#   - CRON_SECRET : the SAME value set as CRON_SECRET in the Vercel project
+#                   (the endpoints authorize the caller with it).
+#   - APP_BASE_URL: optional; defaults to https://livevival.vercel.app below.
+#
+# GitHub may delay scheduled runs under load and disables schedules after ~60
+# days of repo inactivity — fine for a best-effort promoter (a match that
+# hasn't flipped yet promotes on the next tick).
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: app-cron
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Promote scheduled matches to live
+        continue-on-error: true
+        env:
+          BASE_URL: ${{ secrets.APP_BASE_URL || 'https://livevival.vercel.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          code=$(curl -sS -m 60 -o /tmp/body -w "%{http_code}" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE_URL}/api/cron/match-lifecycle" || echo "000")
+          echo "match-lifecycle -> HTTP ${code}"
+          head -c 500 /tmp/body || true
+
+      - name: Refresh schedule cache
+        continue-on-error: true
+        env:
+          BASE_URL: ${{ secrets.APP_BASE_URL || 'https://livevival.vercel.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          code=$(curl -sS -m 120 -o /tmp/body2 -w "%{http_code}" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${BASE_URL}/api/cron/refresh-schedule" || echo "000")
+          echo "refresh-schedule -> HTTP ${code}"
+          head -c 500 /tmp/body2 || true

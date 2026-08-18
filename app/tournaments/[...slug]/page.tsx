@@ -8,6 +8,8 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { MatchCard } from "@/components/MatchCard";
+import { MatchTabs } from "@/components/MatchTabs";
+import { useLanguage } from "@/lib/i18n";
 import { FollowButton } from "@/components/FollowButton";
 import { TierBadge } from "@/components/TierBadge";
 
@@ -52,6 +54,7 @@ type PlayerPerformance = {
 
 export default function TournamentPage() {
   const params = useParams();
+  const { t } = useLanguage();
   const slugParts = params.slug as string[] | undefined;
   const slug = (slugParts ?? []).join("/");
 
@@ -61,7 +64,6 @@ export default function TournamentPage() {
   const [standings, setStandings] = useState<Standing[]>([]);
   const [performances, setPerformances] = useState<PlayerPerformance[]>([]);
   const [notFound, setNotFound] = useState(false);
-  const [historyVisibleCount, setHistoryVisibleCount] = useState(20);
   const [totalPrizePool, setTotalPrizePool] = useState(0);
   const [scrapedMvpIgn, setScrapedMvpIgn] = useState<string | null>(null);
   const [scrapedMvpPlayer, setScrapedMvpPlayer] = useState<{ ign: string; team: { name: string; logo_url: string | null } | null } | null>(null);
@@ -223,11 +225,8 @@ export default function TournamentPage() {
     );
   }
 
-  if (!tournament) return <main className="min-h-screen flex items-center justify-center text-white/50 text-sm">Loading...</main>;
+  if (!tournament) return <main className="min-h-screen flex items-center justify-center text-white/50 text-sm">{t("common.loadingShort")}</main>;
 
-  const upcomingAndLive = matches.filter((m) => m.status !== "finished");
-  const history = [...matches.filter((m) => m.status === "finished")].reverse();
-  const visibleHistory = history.slice(0, historyVisibleCount);
 
   return (
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
@@ -361,9 +360,10 @@ export default function TournamentPage() {
       */}
 
       <section className="space-y-3">
-        <h2 className="lv-heading">Upcoming &amp; live</h2>
-        <div className="grid gap-2 lg:grid-cols-2">
-          {upcomingAndLive.map((m) => (
+        <h2 className="lv-heading">{t("nav.matches")}</h2>
+        <MatchTabs
+          matches={matches}
+          renderCard={(m) => (
             <MatchCard
               key={m.id}
               href={`/match/${m.id}`}
@@ -375,39 +375,8 @@ export default function TournamentPage() {
               format={m.format}
               stage={m.stage}
             />
-          ))}
-          {upcomingAndLive.length === 0 && <p className="text-white/30 text-sm">No upcoming matches scheduled yet.</p>}
-        </div>
-      </section>
-
-      <hr className="border-white/10" />
-
-      <section className="space-y-3">
-        <h2 className="lv-heading">Match history</h2>
-        <div className="grid gap-2 lg:grid-cols-2">
-          {visibleHistory.map((m) => (
-            <MatchCard
-              key={m.id}
-              href={`/match/${m.id}`}
-              status={m.status}
-              teamA={m.team_a}
-              teamB={m.team_b}
-              score={scores[m.id]}
-              scheduledAt={m.scheduled_at}
-              format={m.format}
-              stage={m.stage}
-            />
-          ))}
-          {history.length === 0 && <p className="text-white/30 text-sm">No finished matches yet.</p>}
-        </div>
-        {history.length > historyVisibleCount && (
-          <button
-            onClick={() => setHistoryVisibleCount((c) => c + 20)}
-            className="lv-btn-ghost"
-          >
-            See more ({history.length - historyVisibleCount} more)
-          </button>
-        )}
+          )}
+        />
       </section>
     </main>
   );

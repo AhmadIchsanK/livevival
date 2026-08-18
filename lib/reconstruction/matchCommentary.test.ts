@@ -7,6 +7,7 @@ import {
   pickCommentary,
   commentaryCandidates,
   renderTemplate,
+  winProbInterjection,
   COMMENTARY_CONDITIONS,
   type CommentaryCondition,
   type CommentarySnapshot,
@@ -111,6 +112,51 @@ test("pickCommentary returns a pacing line when nothing else is happening", () =
 test("nothing enabled → no commentary", () => {
   const line = pickCommentary(ctx(snap({ netWorth: { A: 34000, B: 20000 } }), null, new Set()), rng);
   assert.equal(line, null);
+});
+
+test("anti-repetition: an exact line just posted is not repeated", () => {
+  const now = snap({ netWorth: { A: 34000, B: 20000 } });
+  // Only net_worth enabled → a small candidate set. The first-choice (rng 0)
+  // builtin line, once marked recent, must not be picked again.
+  const only = new Set<CommentaryCondition>(["net_worth"]);
+  const first = pickCommentary(ctx(now, null, only), rng)!;
+  const second = pickCommentary(ctx(now, null, only), { rng: rngFn, recent: { texts: [first.text] } })!;
+  assert.notEqual(second.text, first.text, "the line just posted is skipped");
+});
+
+test("anti-repetition: a just-spotlighted player is rotated away from", () => {
+  // Two carries both worth a line; having spotlighted Kairi, the next pick
+  // should move to the other player rather than parroting Kairi again.
+  const now = snap({
+    players: [
+      { id: "p1", name: "Kairi", teamId: "A", kills: 6, deaths: 0, assists: 2, heroName: "Ling" },
+      { id: "p2", name: "Sanz", teamId: "B", kills: 5, deaths: 1, assists: 4, heroName: "Fanny" },
+    ],
+  });
+  const onlyKda = new Set<CommentaryCondition>(["player_kda"]);
+  const next = pickCommentary(ctx(now, null, onlyKda), { rng: rngFn, recent: { subjects: ["Kairi"] } })!;
+  assert.equal(next.subject, "Sanz", "rotates to the other standout, not Kairi again");
+});
+
+test("hero flavor never fires on a 0/0/0 player (no inaccurate spotlight)", () => {
+  const now = snap({ players: [{ id: "p1", name: "Nobody", teamId: "A", kills: 0, deaths: 0, assists: 0, heroName: "Layla" }] });
+  const c = commentaryCandidates(ctx(now), rng);
+  assert.ok(!c.some((l) => l.condition === "hero"), "no hero line without real impact");
+});
+
+test("late game past 18:00 gets an intense pacing line", () => {
+  const line = pickCommentary(ctx(snap({ timerSeconds: 19 * 60, netWorth: { A: 23000, B: 20000 } })), rng)!;
+  assert.equal(line.condition, "general");
+  assert.match(line.text, /danger zone|match point|legends|late game/i);
+});
+
+test("winProbInterjection always returns a sentence, phrased to the margin", () => {
+  const even = winProbInterjection(snap({ winProbA: 0.5 }), rngFn);
+  assert.match(even, /coin flip|can't split|even/i);
+  const decisive = winProbInterjection(snap({ winProbA: 0.9 }), rngFn);
+  assert.match(decisive, /90%|favoured|commanding|needle/i);
+  const lean = winProbInterjection(snap({ winProbA: 0.68 }), rngFn);
+  assert.match(lean, /68%|lean|favourites|Edge/i);
 });
 
 test("renderTemplate interpolates placeholders; null when a placeholder is missing", () => {

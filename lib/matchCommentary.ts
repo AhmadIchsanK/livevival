@@ -12,6 +12,12 @@
 // KDA, win probability, hero flavor, pacing) can be toggled on/off by the
 // operator. The trigger logic — WHEN a line is eligible — stays in code; the
 // TEXT is fully editable.
+//
+// Anti-repetition: the caller passes the recently-posted line texts and the
+// recently-spotlighted subjects (a player/hero name, or a condition key). The
+// picker drops any exact line it just used and de-prioritizes any line whose
+// subject was just spotlighted — so the feed stops hammering the same player,
+// the same hero, or the same phrasing over and over.
 
 export type CommentaryCondition =
   | "net_worth"
@@ -109,7 +115,10 @@ export type CommentarySnapshot = {
 // An admin-authored template row (a subset of the DB shape the engine needs).
 export type CommentaryTemplate = { condition: CommentaryCondition; template: string; enabled: boolean };
 
-export type CommentaryLine = { text: string; condition: CommentaryCondition; source: "builtin" | "custom" };
+// `subject` is the thing this line spotlights (a player/hero name, or a coarse
+// key like "net_worth"/"kills"). The picker uses it to avoid re-spotlighting the
+// same subject on consecutive samples.
+export type CommentaryLine = { text: string; condition: CommentaryCondition; source: "builtin" | "custom"; subject?: string };
 
 export type CommentaryContext = {
   now: CommentarySnapshot;
@@ -119,8 +128,9 @@ export type CommentaryContext = {
 
 type Rng = () => number; // [0,1)
 type Facts = Record<string, string | number>;
-// A fired eligibility: a condition, the facts it exposes, and its built-in text.
-type Trigger = { condition: CommentaryCondition; facts: Facts; defaults: string[] };
+// A fired eligibility: a condition, the facts it exposes, its built-in text, and
+// the subject it spotlights (for anti-repetition).
+type Trigger = { condition: CommentaryCondition; facts: Facts; defaults: string[]; subject?: string };
 
 function pick<T>(rng: Rng, arr: T[]): T {
   return arr[Math.min(arr.length - 1, Math.floor(rng() * arr.length))];
@@ -143,6 +153,9 @@ function leaderByNet(s: CommentarySnapshot): { lead: CommentaryTeam; trail: Comm
   return a >= b
     ? { lead: s.teamA, trail: s.teamB, diff: a - b }
     : { lead: s.teamB, trail: s.teamA, diff: b - a };
+}
+function teamNameOf(s: CommentarySnapshot, teamId: string): string {
+  return teamId === s.teamA.id ? s.teamA.name : teamId === s.teamB.id ? s.teamB.name : "";
 }
 
 // Render a `{placeholder}` template against facts. Returns null if the template
@@ -168,19 +181,19 @@ const generators: Generator[] = [
     const { lead, trail, diff } = leaderByNet(now);
     const out: Trigger[] = [];
     if (diff >= 10000) {
-      out.push({ condition: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff) }, defaults: [
+      out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff) }, defaults: [
         "{lead} are running away with this — a {diff} gold lead.",
         "It's turning into a stranglehold; {lead} up {diff} in net worth.",
         "{lead} in complete control of the gold, ahead by {diff}.",
       ] });
     } else if (diff <= 2000) {
-      out.push({ condition: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(Math.max(diff, 500)) }, defaults: [
+      out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(Math.max(diff, 500)) }, defaults: [
         "Dead even on gold — less than {diff} between them.",
         "Anyone's game here, the net worth is razor thin.",
         "Neck and neck; neither side can find a gold cushion.",
       ] });
     } else if (diff >= 4000) {
-      out.push({ condition: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff) }, defaults: [
+      out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff) }, defaults: [
         "{lead} nose in front by {diff} in gold.",
         "A working advantage for {lead}, {diff} up on net worth.",
       ] });
@@ -188,13 +201,13 @@ const generators: Generator[] = [
     if (prev) {
       const pl = leaderByNet(prev);
       if (pl.lead.id === lead.id && pl.diff - diff >= 2500) {
-        out.push({ condition: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff), closed: goldK(pl.diff - diff) }, defaults: [
+        out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff), closed: goldK(pl.diff - diff) }, defaults: [
           "{trail} clawing back — they've shaved {closed} off the deficit.",
           "The gap is closing; {trail} back within {diff}.",
         ] });
       }
       if (pl.lead.id !== lead.id && diff >= 1500) {
-        out.push({ condition: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff) }, defaults: [
+        out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff) }, defaults: [
           "Lead has flipped — {lead} now ahead on gold.",
           "Momentum swing! {lead} have taken over the net worth lead.",
         ] });
@@ -211,12 +224,12 @@ const generators: Generator[] = [
     const out: Trigger[] = [];
     const [lead, trail, hi, lo] = a >= b ? [now.teamA, now.teamB, a, b] : [now.teamB, now.teamA, b, a];
     if (hi - lo >= 6) {
-      out.push({ condition: "kills", facts: { lead: lead.name, trail: trail.name, hi, lo, a, b }, defaults: [
+      out.push({ condition: "kills", subject: "kills", facts: { lead: lead.name, trail: trail.name, hi, lo, a, b }, defaults: [
         "{lead} bullying the scoreboard, {hi}–{lo} on kills.",
         "{lead} with a commanding {hi}–{lo} kill lead.",
       ] });
     } else if (hi + lo >= 6 && hi - lo <= 2) {
-      out.push({ condition: "kills", facts: { lead: lead.name, trail: trail.name, hi, lo, a, b }, defaults: [
+      out.push({ condition: "kills", subject: "kills", facts: { lead: lead.name, trail: trail.name, hi, lo, a, b }, defaults: [
         "Bloodbath and it's even — {hi}–{lo} on the kill count.",
         "Both teams trading everything, {a}–{b} in kills.",
       ] });
@@ -226,13 +239,13 @@ const generators: Generator[] = [
       const totalPrev = tk(prev, now.teamA.id) + tk(prev, now.teamB.id);
       const gained = totalNow - totalPrev;
       if (gained >= 3) {
-        out.push({ condition: "kills", facts: { lead: lead.name, trail: trail.name, count: gained, hi, lo }, defaults: [
+        out.push({ condition: "kills", subject: "kills", facts: { lead: lead.name, trail: trail.name, count: gained, hi, lo }, defaults: [
           "Teamfight just erupted — {count} kills in a blink.",
           "A skirmish breaks out, {count} down in quick succession.",
         ] });
       } else if (gained >= 1) {
         const scorer = tk(now, lead.id) - tk(prev, lead.id) > 0 ? lead : trail;
-        out.push({ condition: "kills", facts: { scorer: scorer.name, lead: lead.name, trail: trail.name, count: gained }, defaults: [
+        out.push({ condition: "kills", subject: "kills", facts: { scorer: scorer.name, lead: lead.name, trail: trail.name, count: gained }, defaults: [
           "{scorer} pick up a kill to keep the pressure on.",
           "The next one goes to {scorer}.",
         ] });
@@ -249,7 +262,7 @@ const generators: Generator[] = [
       const cur = objc(now, team.id, "tower");
       const was = prev ? objc(prev, team.id, "tower") : cur;
       if (prev && cur > was) {
-        out.push({ condition: "tower", facts: { team: team.name, count: cur }, defaults: [
+        out.push({ condition: "tower", subject: `tower:${team.id}`, facts: { team: team.name, count: cur }, defaults: [
           "{team} crack another tower — up to {count} now.",
           "Structure falls; {team} take tower number {count}.",
           "{team} keep chipping the map, {count} towers down.",
@@ -260,7 +273,7 @@ const generators: Generator[] = [
     const tb = objc(now, now.teamB.id, "tower");
     if (Math.abs(ta - tb) >= 3) {
       const leader = ta > tb ? now.teamA : now.teamB;
-      out.push({ condition: "tower", facts: { leader: leader.name, hi: Math.max(ta, tb), lo: Math.min(ta, tb) }, defaults: [
+      out.push({ condition: "tower", subject: "tower_lead", facts: { leader: leader.name, hi: Math.max(ta, tb), lo: Math.min(ta, tb) }, defaults: [
         "{leader} own the map — {hi} towers to {lo}.",
       ] });
     }
@@ -275,7 +288,7 @@ const generators: Generator[] = [
       const cur = objc(now, team.id, "turtle");
       const was = prev ? objc(prev, team.id, "turtle") : cur;
       if (prev && cur > was) {
-        out.push({ condition: "turtle", facts: { team: team.name }, defaults: [
+        out.push({ condition: "turtle", subject: "turtle", facts: { team: team.name }, defaults: [
           "{team} slam the Turtle for the gold and buff.",
           "Turtle goes to {team} — a tidy pickup.",
         ] });
@@ -292,7 +305,7 @@ const generators: Generator[] = [
       const cur = objc(now, team.id, "lord");
       const was = prev ? objc(prev, team.id, "lord") : cur;
       if (prev && cur > was) {
-        out.push({ condition: "lord", facts: { team: team.name }, defaults: [
+        out.push({ condition: "lord", subject: "lord", facts: { team: team.name }, defaults: [
           "{team} secure the LORD — this could be the game-ender.",
           "Lord is down and it belongs to {team}. Massive.",
           "{team} take Lord and now they march.",
@@ -302,25 +315,39 @@ const generators: Generator[] = [
     return out;
   },
 
-  // ── player KDA: unkillable / carry / shutdown ─────────────────────────
+  // ── player KDA: unkillable / carry / good game / shutdown ─────────────
+  // Emits a line for MULTIPLE standout players (not just #1), each tagged with
+  // that player's name as its subject — so the picker can rotate away from a
+  // player it just spotlighted instead of parroting the same name every tick.
+  // Every branch requires a real accomplishment (kills/assists/deaths past a
+  // floor) so a lobby of 0/0/0 rows never gets a spurious "taking over" line.
   (ctx) => {
     const { now } = ctx;
     const out: Trigger[] = [];
-    const star = [...now.players].sort((a, b) => b.kills + b.assists - (a.kills + a.assists))[0];
-    if (star && star.kills >= 4 && star.deaths === 0) {
-      out.push({ condition: "player_kda", facts: { player: star.name, k: star.kills, d: star.deaths, a: star.assists, ka: star.kills + star.assists }, defaults: [
-        "{player} is unkillable — {k} kills and yet to fall.",
-        "Nobody can touch {player}: {k}/{d}/{a}.",
-      ] });
-    } else if (star && star.kills + star.assists >= 8) {
-      out.push({ condition: "player_kda", facts: { player: star.name, k: star.kills, d: star.deaths, a: star.assists, ka: star.kills + star.assists }, defaults: [
-        "{player} is taking over — {k}/{d}/{a} on the board.",
-        "{player} everywhere on the map, already {ka} takedowns involved.",
-      ] });
+    const byImpact = [...now.players].sort((a, b) => b.kills + b.assists - (a.kills + a.assists));
+    for (const p of byImpact.slice(0, 2)) {
+      const ka = p.kills + p.assists;
+      const facts = { player: p.name, k: p.kills, d: p.deaths, a: p.assists, ka };
+      if (p.kills >= 4 && p.deaths === 0) {
+        out.push({ condition: "player_kda", subject: p.name, facts, defaults: [
+          "{player} is unkillable — {k} kills and yet to fall.",
+          "Nobody can touch {player}: {k}/{d}/{a}.",
+        ] });
+      } else if (ka >= 8) {
+        out.push({ condition: "player_kda", subject: p.name, facts, defaults: [
+          "{player} is taking over — {k}/{d}/{a} on the board.",
+          "{player} everywhere on the map, already {ka} takedowns involved.",
+        ] });
+      } else if (ka >= 4) {
+        out.push({ condition: "player_kda", subject: p.name, facts, defaults: [
+          "{player} having a real say in this one — {k}/{d}/{a}.",
+          "{player} racking up the involvement, {ka} kills and assists.",
+        ] });
+      }
     }
     const feeder = [...now.players].sort((a, b) => b.deaths - a.deaths)[0];
     if (feeder && feeder.deaths >= 4 && feeder.deaths > feeder.kills + 1) {
-      out.push({ condition: "player_kda", facts: { player: feeder.name, k: feeder.kills, d: feeder.deaths, a: feeder.assists, ka: feeder.kills + feeder.assists }, defaults: [
+      out.push({ condition: "player_kda", subject: feeder.name, facts: { player: feeder.name, k: feeder.kills, d: feeder.deaths, a: feeder.assists, ka: feeder.kills + feeder.assists }, defaults: [
         "Rough one for {player}, caught out {d} times now.",
         "{player} can't buy a break — down {d} deaths.",
       ] });
@@ -336,7 +363,7 @@ const generators: Generator[] = [
     const favored = p >= 0.5 ? now.teamA : now.teamB;
     const favPct = Math.round((p >= 0.5 ? p : 1 - p) * 100);
     if (favPct >= 85) {
-      out.push({ condition: "win_prob", facts: { favored: favored.name, pct: favPct }, defaults: [
+      out.push({ condition: "win_prob", subject: "win_prob", facts: { favored: favored.name, pct: favPct }, defaults: [
         "The model has {favored} firmly in front — {pct}% to close it out.",
         "{favored} in the driver's seat at {pct}% win chance.",
       ] });
@@ -345,7 +372,7 @@ const generators: Generator[] = [
       const shift = now.winProbA - prev.winProbA;
       if (Math.abs(shift) >= 0.1) {
         const to = shift > 0 ? now.teamA : now.teamB;
-        out.push({ condition: "win_prob", facts: { to: to.name }, defaults: [
+        out.push({ condition: "win_prob", subject: "win_prob", facts: { to: to.name }, defaults: [
           "Momentum swinging toward {to} on the win-probability read.",
           "The needle moves for {to} — this is where games turn.",
         ] });
@@ -355,19 +382,29 @@ const generators: Generator[] = [
   },
 
   // ── hero & player flavor ──────────────────────────────────────────────
+  // Gated on the featured player actually having done something (kills+assists
+  // ≥ 3) so it can't spotlight a hero on the strength of a 0/0/0 line, and
+  // emits the top TWO impactful heroes so the picker can rotate subjects.
   (ctx) => {
     const { now } = ctx;
-    const withHero = now.players.filter((p) => p.heroName);
+    const withHero = now.players.filter((p) => p.heroName && p.kills + p.assists >= 3);
     if (withHero.length === 0) return [];
-    const star = [...withHero].sort((a, b) => b.kills + b.assists - (a.kills + a.assists))[0];
-    return [{ condition: "hero", facts: { player: star.name, hero: star.heroName as string }, defaults: [
-      "{hero} in the hands of {player} is a real problem right now.",
-      "Watch the {hero} — {player} is finding all the angles.",
-      "{player}'s {hero} looking like the pick of the draft.",
-    ] }];
+    const ranked = [...withHero].sort((a, b) => b.kills + b.assists - (a.kills + a.assists));
+    return ranked.slice(0, 2).map((star) => ({
+      condition: "hero" as const,
+      subject: star.name,
+      facts: { player: star.name, hero: star.heroName as string },
+      defaults: [
+        "{hero} in the hands of {player} is a real problem right now.",
+        "Watch the {hero} — {player} is finding all the angles.",
+        "{player}'s {hero} looking like the pick of the draft.",
+      ],
+    }));
   },
 
-  // ── general pacing / hype ─────────────────────────────────────────────
+  // ── general pacing / hype (with an intense late-game section) ──────────
+  // Past 18:00 the game is in high-stakes territory — one fight ends it — so
+  // the phrasing turns up the tension instead of the neutral "late game" filler.
   (ctx) => {
     const { now } = ctx;
     const m = Math.floor(now.timerSeconds / 60);
@@ -381,15 +418,28 @@ const generators: Generator[] = [
         "Mid game and the map is opening up — objectives on the horizon.",
         "Rotations getting sharper as we hit the mid game.",
       ] }];
+    } else if (m < 18) {
+      return [{ condition: "general", facts: {}, defaults: [
+        "Deep into the late game — one fight decides it from here.",
+        "Every pick matters now; there's no respawning your way out of a bad one.",
+      ] }];
     }
     return [{ condition: "general", facts: {}, defaults: [
-      "Deep into the late game — one fight decides it from here.",
-      "Every pick matters now; there's no respawning your way out of a bad one.",
+      "We are into the danger zone past 18 minutes — respawns are long and one clean pick ends it.",
+      "Every base race and Lord call is match point now — nerves of steel required.",
+      "This is where legends are made — a single teamfight from here writes the result.",
+      "Deep, deep late game — buybacks of momentum only; there's no farming your way back now.",
     ] }];
   },
 ];
 
-export type CommentaryOptions = { rng?: Rng; templates?: CommentaryTemplate[] };
+export type CommentaryOptions = {
+  rng?: Rng;
+  templates?: CommentaryTemplate[];
+  // Anti-repetition memory the caller threads through: the exact line texts most
+  // recently posted, and the subjects most recently spotlighted.
+  recent?: { texts?: string[]; subjects?: string[] };
+};
 
 // Build the full candidate set for the current context — built-in phrasings PLUS
 // any enabled admin templates for a fired condition — respecting the enabled
@@ -402,12 +452,12 @@ export function commentaryCandidates(ctx: CommentaryContext, opts: CommentaryOpt
       if (!ctx.enabled.has(trig.condition)) continue;
       for (const d of trig.defaults) {
         const t = renderTemplate(d, trig.facts);
-        if (t) lines.push({ condition: trig.condition, text: t, source: "builtin" });
+        if (t) lines.push({ condition: trig.condition, text: t, source: "builtin", subject: trig.subject });
       }
       for (const tpl of templates) {
         if (!tpl.enabled || tpl.condition !== trig.condition) continue;
         const t = renderTemplate(tpl.template, trig.facts);
-        if (t) lines.push({ condition: trig.condition, text: t, source: "custom" });
+        if (t) lines.push({ condition: trig.condition, text: t, source: "custom", subject: trig.subject });
       }
     }
   }
@@ -416,12 +466,55 @@ export function commentaryCandidates(ctx: CommentaryContext, opts: CommentaryOpt
 
 // Pick ONE natural line for this sample, or null if nothing noteworthy is
 // enabled/true. Event-driven lines (a fight, an objective, a swing) are
-// preferred over ambient pacing filler so the feed reacts to the game.
+// preferred over ambient pacing filler so the feed reacts to the game. Anything
+// whose exact text was just posted is dropped, and lines whose subject was just
+// spotlighted are avoided unless they're all that's left — so the feed doesn't
+// loop on one player, one hero, or one phrasing.
 export function pickCommentary(ctx: CommentaryContext, opts: CommentaryOptions = {}): CommentaryLine | null {
   const rng = opts.rng ?? Math.random;
+  const recentTexts = new Set(opts.recent?.texts ?? []);
+  const recentSubjects = new Set(opts.recent?.subjects ?? []);
   const all = commentaryCandidates(ctx, opts);
   if (all.length === 0) return null;
-  const eventDriven = all.filter((l) => l.condition !== "general");
-  const pool = eventDriven.length > 0 ? eventDriven : all;
+  // Drop exact repeats of lines we just used (fall back to the full set only if
+  // that would leave nothing).
+  const notJustSaid = all.filter((l) => !recentTexts.has(l.text));
+  const usable = notJustSaid.length > 0 ? notJustSaid : all;
+  const eventDriven = usable.filter((l) => l.condition !== "general");
+  let pool = eventDriven.length > 0 ? eventDriven : usable;
+  // Prefer lines whose subject wasn't just spotlighted.
+  const freshSubject = pool.filter((l) => !l.subject || !recentSubjects.has(l.subject));
+  if (freshSubject.length > 0) pool = freshSubject;
   return pick(rng, pool);
+}
+
+// A guaranteed win-probability sentence for the periodic "read" interjection the
+// caller schedules on its own cadence (every few minutes), independent of the
+// threshold-gated win_prob generator above. Always returns text, phrased to the
+// current margin, with light RNG variety so back-to-back reads don't repeat.
+export function winProbInterjection(s: CommentarySnapshot, rng: Rng = Math.random): string {
+  const p = s.winProbA;
+  const aPct = Math.round(p * 100);
+  const bPct = 100 - aPct;
+  const favored = p >= 0.5 ? s.teamA : s.teamB;
+  const favPct = Math.max(aPct, bPct);
+  if (favPct <= 56) {
+    return pick(rng, [
+      `Win probability is a coin flip — ${s.teamA.name} ${aPct}%, ${s.teamB.name} ${bPct}%.`,
+      `The model can't split them: ${aPct}% / ${bPct}%.`,
+      `Dead even on the win-probability read, ${s.teamA.name} ${aPct}% to ${s.teamB.name} ${bPct}%.`,
+    ]);
+  }
+  if (favPct >= 85) {
+    return pick(rng, [
+      `${favored.name} heavily favoured now — ${favPct}% to take it.`,
+      `The needle's pinned to ${favored.name} at ${favPct}%.`,
+      `${favored.name} in commanding shape, ${favPct}% on the model.`,
+    ]);
+  }
+  return pick(rng, [
+    `Win probability leans ${favored.name} at ${favPct}%.`,
+    `${favored.name} the favourites for now, ${favPct}% to close it.`,
+    `Edge to ${favored.name} — ${favPct}% on the win-probability read.`,
+  ]);
 }

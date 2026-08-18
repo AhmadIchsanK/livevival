@@ -28,7 +28,7 @@ import {
   type ObjectiveObservation,
 } from "@/lib/reconstruction/objectivesObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
-import { pickCommentary, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
+import { pickCommentary, winProbInterjection, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
 import { NetWorthLeadChart } from "@/components/NetWorthLeadChart";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
@@ -2332,6 +2332,15 @@ export default function LiveConsolePage() {
   const commentaryConditionsRef = useRef(commentaryConditions);
   const commentaryCanRunRef = useRef(false);
   const commentaryInsertRef = useRef<(text: string, timerSeconds: number) => Promise<void>>(async () => {});
+  // Anti-repetition memory: the last few line texts posted, and the last few
+  // subjects spotlighted (a player/hero name, or a coarse condition key). The
+  // engine reads these to stop the feed looping on one player/hero/phrasing.
+  const commentaryRecentTextsRef = useRef<string[]>([]);
+  const commentaryRecentSubjectsRef = useRef<string[]>([]);
+  const rememberCommentary = (text: string, subject?: string) => {
+    commentaryRecentTextsRef.current = [text, ...commentaryRecentTextsRef.current].slice(0, 8);
+    if (subject) commentaryRecentSubjectsRef.current = [subject, ...commentaryRecentSubjectsRef.current].slice(0, 4);
+  };
   // Admin-authored lines from the DB (editable at /admin/commentary), merged
   // with the built-in phrasings by the engine. Loaded once; the interval reads
   // the ref so it always uses the latest without re-subscribing.
@@ -2355,9 +2364,15 @@ export default function LiveConsolePage() {
         if (commentaryEnabledRef.current && commentaryCanRunRef.current && snap) {
           const line = pickCommentary(
             { now: snap, prev: commentaryPrevRef.current, enabled: commentaryConditionsRef.current },
-            { templates: commentaryTemplatesRef.current }
+            {
+              templates: commentaryTemplatesRef.current,
+              recent: { texts: commentaryRecentTextsRef.current, subjects: commentaryRecentSubjectsRef.current },
+            }
           );
-          if (line) await commentaryInsertRef.current(line.text, snap.timerSeconds);
+          if (line) {
+            await commentaryInsertRef.current(line.text, snap.timerSeconds);
+            rememberCommentary(line.text, line.subject);
+          }
           commentaryPrevRef.current = snap;
         }
       } catch {
@@ -2365,9 +2380,50 @@ export default function LiveConsolePage() {
       }
       if (!cancelled) schedule();
     };
+    const schedule = (first = false) => {
+      // First line lands quickly after the game starts (so minute 0 isn't
+      // silent); after that, 60–120s randomized so lines don't metronome.
+      const delay = first ? 12_000 + Math.floor(Math.random() * 12_000) : 60_000 + Math.floor(Math.random() * 60_000);
+      handle = setTimeout(tick, delay);
+    };
+    schedule(true);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, []);
+
+  // ── Win-probability interjection ──────────────────────────────────────
+  // Separate from the reactive engine above: on its own ~3–4 minute cadence it
+  // posts a guaranteed win-probability "read", so viewers get the momentum
+  // picture a couple of times a game even when nothing crossed a trigger
+  // threshold. Gated by the same master toggle + the win_prob condition.
+  useEffect(() => {
+    let cancelled = false;
+    let handle: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        const snap = commentarySnapshotRef.current;
+        if (
+          commentaryEnabledRef.current &&
+          commentaryCanRunRef.current &&
+          commentaryConditionsRef.current.has("win_prob") &&
+          snap
+        ) {
+          const text = winProbInterjection(snap);
+          if (!commentaryRecentTextsRef.current.includes(text)) {
+            await commentaryInsertRef.current(text, snap.timerSeconds);
+            rememberCommentary(text, "win_prob");
+          }
+        }
+      } catch {
+        /* never let commentary break the page */
+      }
+      if (!cancelled) schedule();
+    };
     const schedule = () => {
-      // 60–120s, randomized so lines don't land on a metronome.
-      handle = setTimeout(tick, 60_000 + Math.floor(Math.random() * 60_000));
+      // 180–240s (3–4 min).
+      handle = setTimeout(tick, 180_000 + Math.floor(Math.random() * 60_000));
     };
     schedule();
     return () => {

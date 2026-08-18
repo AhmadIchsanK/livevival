@@ -1,8 +1,11 @@
+"use client";
+
 import type { ReactNode } from "react";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HotBadge } from "@/components/HotBadge";
 import { TierBadge, TournamentTierIcon } from "@/components/TierBadge";
 import { formatMatchDate } from "@/lib/formatMatchDate";
+import { useLanguage } from "@/lib/i18n";
 
 type CardTeam = { name: string | null | undefined; logo_url?: string | null } | null | undefined;
 
@@ -138,6 +141,7 @@ function MatchCardMeta({
   updateSource?: "liquipedia" | "local_ocr";
   notificationTier?: "normal" | "hot" | "priority" | null;
 }) {
+  const { lang } = useLanguage();
   const bits: ReactNode[] = [];
   if (tournamentName) {
     bits.push(
@@ -161,7 +165,7 @@ function MatchCardMeta({
   if (tier) bits.push(`${tier}-Tier`);
   if (format) bits.push(format);
   if (scheduledAt) {
-    const label = formatMatchDate(scheduledAt);
+    const label = formatMatchDate(scheduledAt, lang);
     if (label) bits.push(label);
   }
 

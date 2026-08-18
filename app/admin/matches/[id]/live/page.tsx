@@ -2226,11 +2226,12 @@ export default function LiveConsolePage() {
           // crystal falls (pops out the declare-winner prompt).
           { category: "match_event", field: "match_event", label: "Match state (replay / pause / crystal → winner)" },
         ];
-        // Team kills is NOT a tracker anymore — it was always the messiest OCR
-        // read and produced counts that didn't reconcile with the players.
-        // Team kills are now derived purely by accumulating the players'
-        // combined K/D/A (see teamAKillsTotal/teamBKillsTotal), which is the
-        // authoritative source. Same choice the reconstruction engine makes.
+        // Team kills IS the tracker again (spec option B): it is now the SOLE
+        // source of the team-kill count on both admin and public (per-player
+        // K/D/A no longer feeds it), so it must be placeable here — one small
+        // box per side around each team's on-screen kill number. Placed first
+        // so it's easy to find in the picker.
+        for (const side of SIDES) items.push({ category: "team_kills", field: `team_kills_${side.key}`, label: `Team kills — ${side.label}` });
         for (const side of SIDES) items.push({ category: "net_worth", field: `net_worth_${side.key}`, label: `Net worth — ${side.label}` });
         // Objectives: ONLY the combined box per side (one region around the
         // whole tower/lord/turtle icon cluster). The per-type/per-team

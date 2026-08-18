@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { aiBaseUrl, aiApiKey, groqTextModelCandidates, isGroqModelUnavailable, stripReasoning } from "@/lib/groqVision";
+import { aiTextProviders, runTextCompletion } from "@/lib/groqVision";
 import {
   COMMENTARY_CONDITIONS,
   COMMENTARY_PLACEHOLDERS,
@@ -81,8 +81,8 @@ export async function POST(req: NextRequest) {
   if (auth instanceof NextResponse) return auth;
   const { supabase } = auth;
 
-  const apiKey = aiApiKey();
-  if (!apiKey) return NextResponse.json({ error: "AI isn't configured — set AI_API_KEY (or GROQ_API_KEY)." }, { status: 503 });
+  if (aiTextProviders().length === 0)
+    return NextResponse.json({ error: "AI isn't configured — set AI_API_KEY (or GROQ_API_KEY) and AI_TEXT_MODEL." }, { status: 503 });
 
   const body = await req.json().catch(() => null);
   const requested: string = body?.condition ?? "all";
@@ -107,43 +107,26 @@ export async function POST(req: NextRequest) {
     existingByCondition.set(r.condition, list);
   }
 
-  const candidates = groqTextModelCandidates();
-  const callModel = (model: string, prompt: string) =>
-    fetch(`${aiBaseUrl()}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, temperature: 0.9, max_tokens: 900, messages: [{ role: "user", content: prompt }] }),
-      signal: AbortSignal.timeout(30000),
-    });
-
   const suggestions: { condition: CommentaryCondition; template: string; reads: string }[] = [];
-  let lastStatus = 502;
-  let lastErr = "";
+  let lastError: { status: number; message: string } | null = null;
 
   for (const condition of targets) {
     const prompt = buildPrompt(condition, perCondition, existingByCondition.get(condition) ?? []);
-    let data: { choices?: { message?: { content?: string } }[] } | null = null;
-    for (const model of candidates) {
-      let res: Response;
-      try {
-        res = await callModel(model, prompt);
-      } catch (err) {
-        return NextResponse.json({ error: `AI request failed: ${(err as Error).message}` }, { status: 502 });
-      }
-      if (res.ok) {
-        data = await res.json();
-        break;
-      }
-      lastStatus = res.status;
-      lastErr = await res.text();
-      if (!isGroqModelUnavailable(res.status, lastErr)) break;
+    // Runs the whole provider chain (primary + numbered backups), falling
+    // through on quota / model-unavailable / empty answer.
+    const result = await runTextCompletion({
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.9,
+      maxTokens: 900,
+    });
+    if (!result.ok) {
+      lastError = { status: result.status, message: result.message };
+      break; // whole chain spent — no point trying more conditions
     }
-    if (!data) break; // fall through to the error handling below
 
-    const text = stripReasoning(data.choices?.[0]?.message?.content || "");
     const existingSet = new Set((existingByCondition.get(condition) ?? []).map((t) => t.toLowerCase()));
     const seen = new Set<string>();
-    for (const line of parseLines(text)) {
+    for (const line of parseLines(result.content)) {
       // Validate: only keep lines whose placeholders the condition supplies.
       const reads = renderTemplate(line, SAMPLE_FACTS[condition]);
       if (!reads) continue;
@@ -155,14 +138,8 @@ export async function POST(req: NextRequest) {
   }
 
   if (suggestions.length === 0) {
-    const message = isGroqModelUnavailable(lastStatus, lastErr)
-      ? `No usable text model at ${aiBaseUrl()} — tried ${candidates.join(", ")}. Check AI_BASE_URL / AI_TEXT_MODEL on Production and redeploy.`
-      : lastStatus === 429
-      ? `AI rate/quota limit hit (429) at ${new URL(aiBaseUrl()).host}. Wait for the free-tier cap to reset or switch provider.`
-      : lastErr
-      ? `AI API error (${lastStatus}): ${lastErr.slice(0, 200)}`
-      : "The model returned no usable lines — try again.";
-    return NextResponse.json({ error: message }, { status: lastStatus === 429 ? 429 : 502 });
+    if (lastError) return NextResponse.json({ error: lastError.message }, { status: lastError.status });
+    return NextResponse.json({ error: "The model returned no usable lines — try again." }, { status: 502 });
   }
 
   return NextResponse.json({ suggestions });

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { aiBaseUrl, aiApiKey, groqTextModelCandidates, isGroqModelUnavailable, stripReasoning } from "@/lib/groqVision";
+import { aiTextProviders, runTextCompletion } from "@/lib/groqVision";
 
 // Post-draft AI analysis. Given both teams' picks and bans, a text model writes
 // at most two short paragraphs — which draft is stronger and why (lane matchups,
@@ -48,8 +48,8 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (auth instanceof NextResponse) return auth;
 
-  const apiKey = aiApiKey();
-  if (!apiKey) return NextResponse.json({ error: "Draft analysis isn't configured — set AI_API_KEY (or GROQ_API_KEY)." }, { status: 503 });
+  if (aiTextProviders().length === 0)
+    return NextResponse.json({ error: "Draft analysis isn't configured — set AI_API_KEY (or GROQ_API_KEY) and AI_TEXT_MODEL." }, { status: 503 });
 
   const body = await req.json().catch(() => null);
   const teamA: Side | undefined = body?.teamA;
@@ -62,62 +62,20 @@ export async function POST(req: NextRequest) {
   }
 
   const prompt = buildPrompt(teamA, teamB);
-  const callModel = (model: string) =>
-    fetch(`${aiBaseUrl()}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model,
-        temperature: 0.4,
-        // Two short paragraphs is ~250 tokens, but a REASONING model (e.g.
-        // gemini-2.5-flash) spends a large, variable budget "thinking" FIRST and
-        // then writes the answer from what's left — too tight a cap and the
-        // visible content either comes back empty ("returned no analysis") or is
-        // truncated mid-sentence ("…Yu Zhong's sustain and"). A roomy budget
-        // covers the hidden reasoning AND the full two paragraphs; any inline
-        // <think> block is stripped below and the prompt still caps the prose.
-        max_tokens: 3000,
-        messages: [{ role: "user", content: prompt }],
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-
-  const candidates = groqTextModelCandidates();
-  let data: { choices?: { message?: { content?: string } }[] } | null = null;
-  let lastStatus = 502;
-  let lastErr = "";
-  for (const model of candidates) {
-    let res: Response;
-    try {
-      res = await callModel(model);
-    } catch (err) {
-      return NextResponse.json({ error: `AI request failed: ${(err as Error).message}` }, { status: 502 });
-    }
-    if (res.ok) {
-      data = await res.json();
-      break;
-    }
-    lastStatus = res.status;
-    lastErr = await res.text();
-    if (!isGroqModelUnavailable(res.status, lastErr)) break;
+  // Runs the whole provider chain (primary + numbered backups, each with its own
+  // model list), falling through on quota / model-unavailable / empty answer.
+  // max_tokens is roomy because a REASONING model (e.g. gemini-2.5-flash) spends
+  // a variable budget "thinking" FIRST; too tight and the visible content comes
+  // back empty or truncated ("…Yu Zhong's sustain and"). The runner strips any
+  // <think> block and treats an empty answer as a reason to try the next model.
+  const result = await runTextCompletion({
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.4,
+    maxTokens: 3000,
+  });
+  if (!result.ok) {
+    return NextResponse.json({ error: result.message }, { status: result.status });
   }
-  if (!data) {
-    const message = isGroqModelUnavailable(lastStatus, lastErr)
-      ? `No usable text model at ${aiBaseUrl()} — tried ${candidates.join(", ")}. If that endpoint is api.groq.com, AI_BASE_URL didn't take effect (check it's set on Production and redeploy). Otherwise set AI_TEXT_MODEL to a model that endpoint serves.`
-      : lastStatus === 429
-      ? `AI rate/quota limit hit (429) at ${new URL(aiBaseUrl()).host}. The free tier's daily cap is used up — wait for it to reset, or switch AI_BASE_URL/AI_TEXT_MODEL to a provider with more headroom (e.g. OpenRouter free models).`
-      : `AI API error (${lastStatus}): ${lastErr.slice(0, 200)}`;
-    return NextResponse.json({ error: message }, { status: lastStatus === 429 ? 429 : 502 });
-  }
-
-  const choice = data.choices?.[0];
-  // `|| ""` (not `??`) so a genuinely empty string from a reasoning model that
-  // spent its whole budget thinking is caught too; strip any inline <think>.
-  const analysis = stripReasoning(choice?.message?.content || "");
-  if (!analysis) {
-    const finishReason = (choice as { finish_reason?: string })?.finish_reason;
-    const hint = finishReason === "length" ? " — it hit the token limit before writing; try again" : " — try again";
-    return NextResponse.json({ error: `The model returned no analysis${hint}.` }, { status: 502 });
-  }
+  const analysis = result.content;
   return NextResponse.json({ analysis });
 }

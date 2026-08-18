@@ -1356,13 +1356,13 @@ export default function PublicMatchPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2 text-xs text-white/60">
-                      <span className="text-white/30 tabular-nums">{new Date(km.created_at).toLocaleTimeString()}</span>
+                    <div className="flex items-start gap-2 text-xs text-white/60">
+                      <span className="text-white/30 tabular-nums shrink-0">{new Date(km.created_at).toLocaleTimeString()}</span>
                       {match.state === "GAME_STARTED" && km.minute_mark != null && (
-                        <span className="text-white/30 tabular-nums">{formatMMSS(km.minute_mark * 60 + (km.second_mark ?? 0))}</span>
+                        <span className="text-white/30 tabular-nums shrink-0">{formatMMSS(km.minute_mark * 60 + (km.second_mark ?? 0))}</span>
                       )}
-                      <span>{renderMomentLabel(km)}</span>
-                      {km.screenshot_url && <span>📸</span>}
+                      <span className="min-w-0 break-words whitespace-pre-wrap leading-relaxed">{renderMomentLabel(km)}</span>
+                      {km.screenshot_url && <span className="shrink-0">📸</span>}
                     </div>
                   )}
                 </div>

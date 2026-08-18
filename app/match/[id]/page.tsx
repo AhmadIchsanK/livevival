@@ -13,7 +13,7 @@ import { FollowButton } from "@/components/FollowButton";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
+import { NetWorthLeadChart } from "@/components/NetWorthLeadChart";
 
 type Match = {
   id: string;
@@ -1564,24 +1564,7 @@ export default function PublicMatchPage() {
               readings to plot. */}
           {nwSeries.length >= 2 && (
             <div className="lv-card-flush p-3 mt-3">
-              <p className="text-[11px] text-white/40 mb-2">
-                Gold lead over time — above the line: <span className="text-signal font-semibold">{match.team_a?.name}</span>, below: <span className="text-signal font-semibold">{match.team_b?.name}</span>
-              </p>
-              <div style={{ width: "100%", height: 180 }}>
-                <ResponsiveContainer>
-                  <LineChart data={nwSeries} margin={{ top: 5, right: 8, bottom: 5, left: 8 }}>
-                    <XAxis dataKey="minute" tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} tickFormatter={(m) => `${m}m`} />
-                    <YAxis tick={{ fontSize: 10, fill: "rgba(255,255,255,0.4)" }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} width={34} />
-                    <Tooltip
-                      contentStyle={{ background: "rgba(10,10,14,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 12 }}
-                      labelFormatter={(m) => `${m}:00`}
-                      formatter={(v: number) => [`${v >= 0 ? "+" : ""}${(v / 1000).toFixed(1)}K ${v >= 0 ? match.team_a?.name : match.team_b?.name}`, "Gold lead"]}
-                    />
-                    <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
-                    <Line type="monotone" dataKey="diff" stroke="var(--signal, #5B8DEF)" strokeWidth={2} dot={false} isAnimationActive={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
+              <NetWorthLeadChart series={nwSeries} teamAName={match.team_a?.name} teamBName={match.team_b?.name} height={180} />
             </div>
           )}
         </section>

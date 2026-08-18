@@ -29,7 +29,7 @@ import {
 } from "@/lib/reconstruction/objectivesObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
 import { pickCommentary, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
-import { LineChart, Line, XAxis, YAxis, Tooltip as RchTooltip, ResponsiveContainer, ReferenceLine } from "recharts";
+import { NetWorthLeadChart } from "@/components/NetWorthLeadChart";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
 // widens it just enough to set/read `--lv-admin-header-h` (see adminHeaderH)
@@ -8704,24 +8704,7 @@ export default function LiveConsolePage() {
                       )}
                       {nwSeries.length >= 2 && (
                         <div className="pt-1">
-                          <p className="text-[10px] text-white/40 mb-1">
-                            Gold lead over time — above: {match.team_a?.name}, below: {match.team_b?.name}
-                          </p>
-                          <div style={{ width: "100%", height: 140 }}>
-                            <ResponsiveContainer>
-                              <LineChart data={nwSeries} margin={{ top: 4, right: 6, bottom: 4, left: 6 }}>
-                                <XAxis dataKey="minute" tick={{ fontSize: 9, fill: "rgba(255,255,255,0.4)" }} tickFormatter={(m) => `${m}m`} />
-                                <YAxis tick={{ fontSize: 9, fill: "rgba(255,255,255,0.4)" }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} width={30} />
-                                <RchTooltip
-                                  contentStyle={{ background: "rgba(10,10,14,0.95)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 8, fontSize: 11 }}
-                                  labelFormatter={(m) => `${m}:00`}
-                                  formatter={(v: number) => [`${v >= 0 ? "+" : ""}${(v / 1000).toFixed(1)}K ${v >= 0 ? match.team_a?.name : match.team_b?.name}`, "Gold lead"]}
-                                />
-                                <ReferenceLine y={0} stroke="rgba(255,255,255,0.2)" />
-                                <Line type="monotone" dataKey="diff" stroke="var(--signal, #5B8DEF)" strokeWidth={2} dot={false} isAnimationActive={false} />
-                              </LineChart>
-                            </ResponsiveContainer>
-                          </div>
+                          <NetWorthLeadChart series={nwSeries} teamAName={match.team_a?.name} teamBName={match.team_b?.name} height={140} />
                         </div>
                       )}
                       {gameFinished && adminMvpStat && (

@@ -1543,8 +1543,21 @@ export default function LiveConsolePage() {
     lord: "First spawns ~08:00. Respawns exactly 3:00 after being slain — OCR won't count another kill sooner than that.",
     turtle: "Max 4 per game (shared, not per side). First spawns 02:00, then every 2 min after the previous is slain. None spawn after one is killed past 06:00 — it becomes an early Lord instead.",
   };
+  // A single game can spawn at most four turtles (shared across both teams —
+  // there is one turtle on the map). This is a hard rule of the game, not an
+  // OCR heuristic, so unlike the timing gates it holds on the MANUAL path too:
+  // a fifth turtle can never legitimately exist no matter who's clicking.
+  const TURTLE_MAX_PER_GAME = 4;
   async function incrementObjective(teamId: string, type: string, opts?: { announce?: boolean }) {
     if (!game || !match) return;
+    // Hard cap: never allow a 5th turtle onto the board from any single +1
+    // (manual click or a one-off template action). Note this reads React state
+    // so it is not loop-safe on its own; setObjectiveCount also clamps the
+    // batch target, which is what protects the direct-set path.
+    if (type === "turtle" && totalObjectiveCount("turtle") >= TURTLE_MAX_PER_GAME) {
+      setError(`Turtle is capped at ${TURTLE_MAX_PER_GAME} per game — that's the most that can spawn.`);
+      return;
+    }
     // A one-click objective button is otherwise silent on the public Moment
     // list — it only ever showed up in the Objectives tab's running count.
     // "objective" isn't one of key_moments_type_check's allowed values —
@@ -4424,8 +4437,17 @@ export default function LiveConsolePage() {
     loadAll();
   }
   async function setObjectiveCount(teamId: string, type: string, target: number) {
-    const clamped = Math.max(0, Math.round(target));
+    let clamped = Math.max(0, Math.round(target));
     const current = objectiveCount(teamId, type);
+    // Turtle is shared and capped at 4 across both teams, so this team can hold
+    // at most (4 − the other team's turtles). Clamp the direct-set target to
+    // that so the batch loop below can't push the game past the hard maximum
+    // (the per-+1 guard in incrementObjective isn't loop-safe on its own).
+    if (type === "turtle") {
+      const otherTurtles = totalObjectiveCount("turtle") - current;
+      clamped = Math.min(clamped, TURTLE_MAX_PER_GAME - otherTurtles);
+      if (clamped < current) clamped = current; // never force a decrease from a clamp
+    }
     markManualObjectiveEdit(teamId, type);
     if (clamped > current) {
       for (let i = current; i < clamped; i++) await incrementObjective(teamId, type);

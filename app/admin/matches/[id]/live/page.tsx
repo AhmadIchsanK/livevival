@@ -2429,7 +2429,7 @@ export default function LiveConsolePage() {
   commentaryTemplatesRef.current = commentaryTemplates;
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from("commentary_templates").select("condition, template, enabled");
+      const { data } = await supabase.from("commentary_templates").select("id, condition, template, enabled");
       if (data) setCommentaryTemplates(data as CommentaryTemplate[]);
     })();
   }, []);
@@ -2452,6 +2452,11 @@ export default function LiveConsolePage() {
           if (line) {
             await commentaryInsertRef.current(line.text, snap.timerSeconds);
             rememberCommentary(line.text, line.subject);
+            // Bump the custom template's usage so /admin/commentary can rank and
+            // prune rarely-fired lines (built-in lines have no id — skipped).
+            if (line.templateId) {
+              supabase.rpc("bump_commentary_use", { template_id: line.templateId }).then(() => {}, () => {});
+            }
           }
           commentaryPrevRef.current = snap;
         }
@@ -5234,6 +5239,16 @@ export default function LiveConsolePage() {
             return sum + (c ? c.kills : s.kills ?? 0);
           }, 0);
       };
+      // DECOUPLED MODEL (option D): per-player K/D/A is an independent tracker,
+      // like Objectives — one player's read is NEVER rewritten because of
+      // another player's (or the team's) numbers. The two cross-checks below
+      // (a player's deaths shouldn't exceed the enemy team's kills; a player's
+      // assists shouldn't exceed their own team's kills) used to CLAMP the
+      // offending value, which is exactly what produced cascading, self-
+      // corrupting reads when any one input in the chain was mis-OCR'd. They are
+      // now FLAG-ONLY: the raw read is still written as-read (subject only to the
+      // per-player never-decrease / spike guards), and a dismissible reconcile
+      // hint tells the operator which row to fix by hand.
       const teamAId = match?.team_a?.id;
       const teamBId = match?.team_b?.id;
       for (const c of candidates) {
@@ -5241,22 +5256,13 @@ export default function LiveConsolePage() {
         if (!enemyTeamId) continue;
         const enemyKills = teamKillTotal(enemyTeamId);
         if (c.deaths > enemyKills) {
-          c.anomalies.push(`deaths ${c.deaths} exceed the enemy team's ${enemyKills} total kills (impossible — a death requires an enemy kill)`);
-          c.deaths = Math.min(c.deaths, Math.max(c.existing?.deaths ?? 0, enemyKills));
+          c.anomalies.push(`deaths ${c.deaths} exceed the enemy team's ${enemyKills} total kills (check the read — a death needs an enemy kill)`);
         }
       }
-
-      // §4 "one assist per team kill" — a player's assists can NEVER exceed their
-      // own team's total kills (a 20-assist line on an 11-kill team is
-      // impossible). OCR over-reads assists constantly and that skews MVP/SVP, so
-      // hard-cap to the team's kills. This is a legitimate downward correction
-      // (a real value is already ≤ team kills, so this never truncates a valid
-      // one); the raw read is still surfaced as a flag for an admin override.
       for (const c of candidates) {
         const ownKills = teamKillTotal(c.teamId);
         if (c.assists > ownKills) {
-          c.anomalies.push(`assists ${c.assists} exceed the team's ${ownKills} total kills (impossible — max one assist per team kill)`);
-          c.assists = ownKills;
+          c.anomalies.push(`assists ${c.assists} exceed the team's ${ownKills} total kills (check the read — max one assist per team kill)`);
         }
       }
 
@@ -5383,8 +5389,10 @@ export default function LiveConsolePage() {
         const legacy: LegacyState = {
           timerSeconds: game.current_time_seconds ?? null,
           teamKills: {
-            [match.team_a.id]: Math.max(game.team_a_kills_override ?? 0, stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a!.id).reduce((a, s) => a + (s.kills ?? 0), 0)),
-            [match.team_b.id]: Math.max(game.team_b_kills_override ?? 0, stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b!.id).reduce((a, s) => a + (s.kills ?? 0), 0)),
+            // Decoupled model (option D): authoritative override, bootstrap to
+            // the player-kill sum only until one exists.
+            [match.team_a.id]: game.team_a_kills_override ?? stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_a!.id).reduce((a, s) => a + (s.kills ?? 0), 0),
+            [match.team_b.id]: game.team_b_kills_override ?? stats.filter((s) => players.find((p) => p.id === s.player_id)?.team_id === match.team_b!.id).reduce((a, s) => a + (s.kills ?? 0), 0),
           },
           netWorth: {
             ...(latestNetWorth?.team_a_gold != null ? { [match.team_a.id]: latestNetWorth.team_a_gold } : {}),
@@ -7058,35 +7066,31 @@ export default function LiveConsolePage() {
     if (s.player_id) return effectivePlayers.find((p) => p.id === s.player_id)?.team_id;
     return effectivePlayers.find((p) => p.ign === s.custom_player_name)?.team_id;
   }
-  // Math.max, not `??` — the OCR team-kills tracker (team_a_kills_override)
-  // updates independently of the per-player K/D/A trackers, and can settle
-  // on a real-but-stale value (including 0, which `??` would trust forever
-  // since 0 isn't null). Team kills can never be less than what's already
-  // individually attributed to that team's players — enforcing that
-  // relationship directly means a lagging override self-heals the moment
-  // per-player kills catch up or pass it, instead of freezing this sticky
-  // header's count while the Live scoreboard section below (computedTeam*
-  // Kills, a pure sum) keeps climbing.
-  const teamAKillsTotal = Math.max(
-    game?.team_a_kills_override ?? 0,
-    stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0)
-  );
-  const teamBKillsTotal = Math.max(
-    game?.team_b_kills_override ?? 0,
-    stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0)
-  );
-  // Live scoreboard's own "Team kills" readout — strictly the sum of that
-  // team's players' kills (no override), cross-checked against the enemy's
-  // summed deaths: every kill is someone else's death, so the two must
-  // match exactly (both start at 0-0 and reconcile trivially before any
-  // kill is logged — TBD rows count as 0, same as the KDA inputs already
-  // treat them). Never rendered when this doesn't hold — a genuine
-  // mismatch means a KDA entry is wrong, not a number to show and trust.
-  const teamADeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
-  const teamBDeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
+  // DECOUPLED MODEL (spec: KDA rework, option D). Team Kills is now its own
+  // AUTHORITATIVE tracker — the team_kills OCR override (or a manual edit / kill
+  // banner) is the single source of truth for the scoreboard's team-kill count,
+  // exactly like the Objectives trackers own their own counts. `??`, not
+  // Math.max: once an override exists it is trusted verbatim (including a
+  // corrected-downward value), so a single over-read player row can no longer
+  // inflate the team number and a lagging player sum can no longer pin it high.
+  // Per-player kills are summed only as the BOOTSTRAP before any override has
+  // been set (and for Normal/Liquipedia matches that never place a team-kills
+  // tracker). The two are otherwise independent — see the per-player K/D/A
+  // handling in captureTickBody, which no longer cross-clamps one player's read
+  // against another's.
   const computedTeamAKills = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const computedTeamBKills = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
-  const teamKillsValid = computedTeamAKills === teamBDeathsTotal && computedTeamBKills === teamADeathsTotal;
+  const teamAKillsTotal = game?.team_a_kills_override ?? computedTeamAKills;
+  const teamBKillsTotal = game?.team_b_kills_override ?? computedTeamBKills;
+  // Soft reconciliation signal only (never hides the count). Every kill is one
+  // enemy death, and a team's own kills should track the sum of its players'
+  // kills — so we compare the authoritative team-kill totals against the summed
+  // per-player deaths/kills and surface a dismissible hint when they drift. This
+  // NEVER blocks or rewrites either value — the operator decides which side is
+  // right and corrects it directly, the same way a mis-read objective is fixed.
+  const teamADeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
+  const teamBDeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
+  const teamKillsValid = teamAKillsTotal === teamBDeathsTotal && teamBKillsTotal === teamADeathsTotal;
 
   // ── Analytics (shared with the public page via lib/matchAnalytics) ────────
   // Net-worth-difference series over the game timer, win probability, and the
@@ -7155,8 +7159,10 @@ export default function LiveConsolePage() {
   // assists (a "20 assists" on an 11-kill team is impossible) and that skews
   // MVP/SVP, so clamp each player's assists to their team's kills before
   // scoring — keeps the pick honest without touching the raw stored value.
+  // Uses the authoritative team-kill totals (option D) so the clamp matches the
+  // number the scoreboard actually shows, not just the summed player kills.
   const teamKillsForOwner = (teamId: string | null | undefined): number =>
-    teamId === match.team_a?.id ? computedTeamAKills : teamId === match.team_b?.id ? computedTeamBKills : 0;
+    teamId === match.team_a?.id ? teamAKillsTotal : teamId === match.team_b?.id ? teamBKillsTotal : 0;
   const adminMvpSvp =
     gameFinished && stats.length > 0
       ? computeMvpSvp(
@@ -9085,17 +9091,14 @@ export default function LiveConsolePage() {
                           </button>
                         </div>
                       </div>
-                      {/* Same teamAKillsTotal/teamBKillsTotal the sticky
-                          header above and the public match page both use
-                          (Math.max of the OCR team-kills override and the
-                          summed player kills) — this used to show a
-                          different, stricter number (pure player-kill sum,
-                          or "Not shown" entirely when it didn't reconcile
-                          with enemy deaths), which meant this page could
-                          show two different Team Kills counts for the same
-                          game at the same time. teamKillsValid still drives
-                          a warning note, just not a second, disagreeing
-                          number. */}
+                      {/* Authoritative Team Kills (option D): the same
+                          teamAKillsTotal/teamBKillsTotal the sticky header and
+                          public page use — the team-kills override when set,
+                          bootstrapping to the summed player kills only until
+                          then. It is an independent tracker (like Objectives),
+                          not derived from the K/D/A rows, so it always shows a
+                          single number; teamKillsValid only drives a soft
+                          reconcile hint the operator can act on by hand. */}
                       <div className="flex items-center gap-4 text-xs flex-wrap">
                         <span className="text-white/50">Team kills:</span>
                         <span className="font-bold tabular-nums">

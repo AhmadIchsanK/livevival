@@ -69,12 +69,14 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({
         model,
         temperature: 0.4,
-        // Two short paragraphs is ~250 tokens, but a REASONING model spends its
-        // budget "thinking" first and returns empty visible content if the cap
-        // is too tight (the "returned no analysis" case). A roomier budget lets
-        // it finish the reasoning AND write the answer; any inline <think> block
-        // is stripped below.
-        max_tokens: 1200,
+        // Two short paragraphs is ~250 tokens, but a REASONING model (e.g.
+        // gemini-2.5-flash) spends a large, variable budget "thinking" FIRST and
+        // then writes the answer from what's left — too tight a cap and the
+        // visible content either comes back empty ("returned no analysis") or is
+        // truncated mid-sentence ("…Yu Zhong's sustain and"). A roomy budget
+        // covers the hidden reasoning AND the full two paragraphs; any inline
+        // <think> block is stripped below and the prompt still caps the prose.
+        max_tokens: 3000,
         messages: [{ role: "user", content: prompt }],
       }),
       signal: AbortSignal.timeout(30000),

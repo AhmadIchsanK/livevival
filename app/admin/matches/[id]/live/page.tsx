@@ -395,7 +395,7 @@ function InlineMenuPopover({
               position: "fixed",
               top: pos.top,
               left: pos.left,
-              minWidth: Math.max(pos.width, 300),
+              minWidth: Math.max(pos.width, 340),
               // Cap to the remaining viewport height and scroll — otherwise a
               // panel opened near the bottom of the screen (e.g. the Templates
               // list + its Apply/Edit/Delete buttons) runs off the bottom and
@@ -8012,7 +8012,7 @@ export default function LiveConsolePage() {
                           one panel instead of the dropdown+3 buttons+name-
                           input+save-button that used to be their own whole
                           toolbar row. */}
-                      <InlineMenuPopover label="Templates" icon="🗂">
+                      <InlineMenuPopover label={trackerTemplates.length > 0 ? `Templates (${trackerTemplates.length})` : "Templates"} icon="🗂">
                         {templatesLoaded && trackerTemplates.length === 0 && (
                           <p className="text-[11px] text-white/40 pb-2 border-b border-white/10">
                             No saved templates yet. Calibrate your tracker boxes, type a name below, and Save — it&apos;ll appear here to load on any future match via Auto-place.
@@ -8028,36 +8028,47 @@ export default function LiveConsolePage() {
                                 selection took — and mispositioned at the 60:40
                                 layout. A plain list inside the panel has neither
                                 problem. */}
-                            <p className="text-[11px] text-white/40">Apply a saved template:</p>
-                            <div className="max-h-40 overflow-y-auto rounded border border-white/10 divide-y divide-white/5">
-                              {trackerTemplates.map((t) => (
-                                <button
-                                  key={t.name}
-                                  type="button"
-                                  onClick={() => setSelectedTrackerTemplate((prev) => (prev === t.name ? "" : t.name))}
-                                  className={`block w-full text-left px-2.5 py-1.5 text-xs whitespace-nowrap hover:bg-white/10 ${
-                                    t.name === selectedTrackerTemplate ? "bg-signal/15 text-signal font-semibold" : "text-white/80"
-                                  }`}
-                                >
-                                  {t.name === selectedTrackerTemplate ? "✓ " : ""}
-                                  {t.name} ({t.regionCount})
-                                </button>
-                              ))}
+                            <p className="text-xs text-white/50 font-medium">Saved layouts — pick one, then Apply:</p>
+                            <div className="max-h-56 overflow-y-auto rounded-md border border-white/15 divide-y divide-white/5">
+                              {trackerTemplates.map((t) => {
+                                const active = t.name === selectedTrackerTemplate;
+                                return (
+                                  <button
+                                    key={t.name}
+                                    type="button"
+                                    onClick={() => setSelectedTrackerTemplate((prev) => (prev === t.name ? "" : t.name))}
+                                    className={`flex w-full items-center justify-between gap-3 text-left px-3 py-2.5 text-sm whitespace-nowrap ${
+                                      active ? "bg-signal/20 text-signal font-semibold" : "text-white/85 hover:bg-white/10"
+                                    }`}
+                                  >
+                                    <span className="flex items-center gap-2 min-w-0">
+                                      <span className={`shrink-0 ${active ? "opacity-100" : "opacity-0"}`}>✓</span>
+                                      <span className="truncate">{t.name}</span>
+                                    </span>
+                                    <span className={`shrink-0 text-[11px] rounded-full px-2 py-0.5 ${active ? "bg-signal/20 text-signal" : "bg-white/10 text-white/50"}`}>
+                                      {t.regionCount} box{t.regionCount === 1 ? "" : "es"}
+                                    </span>
+                                  </button>
+                                );
+                              })}
                             </div>
                             <div className="flex flex-wrap gap-1.5">
+                              {/* Apply is the primary action (signal-filled) so
+                                  the path from "pick a template" to "use it" is
+                                  obvious; Edit/Delete stay secondary. */}
                               <button
                                 onClick={() => applyTrackerTemplate(selectedTrackerTemplate)}
                                 disabled={!selectedTrackerTemplate || applyingTemplate}
-                                className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                                className="flex-1 text-sm rounded px-3 py-2 font-semibold whitespace-nowrap bg-signal text-ink hover:bg-signal/90 disabled:opacity-40 disabled:bg-white/10 disabled:text-white/40"
                                 title="Fills in whatever this template has for any field not already tracked — never touches ones that already are"
                               >
-                                {applyingTemplate ? "Applying…" : "Apply"}
+                                {applyingTemplate ? "Applying…" : selectedTrackerTemplate ? `Apply “${selectedTrackerTemplate}”` : "Apply"}
                               </button>
                               <button
                                 onClick={() => renameTrackerTemplate(selectedTrackerTemplate)}
                                 disabled={!selectedTrackerTemplate || renamingTemplate}
                                 title="Rename this template"
-                                className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
+                                className="text-sm border border-white/20 text-white/70 rounded px-3 py-2 hover:bg-white/10 disabled:opacity-40 whitespace-nowrap"
                               >
                                 Edit
                               </button>
@@ -8065,7 +8076,7 @@ export default function LiveConsolePage() {
                                 onClick={() => deleteTrackerTemplate(selectedTrackerTemplate)}
                                 disabled={!selectedTrackerTemplate || deletingTemplate}
                                 title="Delete this template — matches already using it keep their trackers, this only removes it from the list"
-                                className="text-xs border border-red-500/40 text-red-300 rounded px-2 py-1.5 hover:bg-red-500/10 disabled:opacity-40 whitespace-nowrap"
+                                className="text-sm border border-red-500/40 text-red-300 rounded px-3 py-2 hover:bg-red-500/10 disabled:opacity-40 whitespace-nowrap"
                               >
                                 Delete
                               </button>

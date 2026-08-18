@@ -113,12 +113,14 @@ export type CommentarySnapshot = {
 };
 
 // An admin-authored template row (a subset of the DB shape the engine needs).
-export type CommentaryTemplate = { condition: CommentaryCondition; template: string; enabled: boolean };
+// `id` is optional so tests can pass bare templates; when present it flows onto
+// the picked line as `templateId`, letting the caller bump that row's use_count.
+export type CommentaryTemplate = { id?: string; condition: CommentaryCondition; template: string; enabled: boolean };
 
 // `subject` is the thing this line spotlights (a player/hero name, or a coarse
 // key like "net_worth"/"kills"). The picker uses it to avoid re-spotlighting the
 // same subject on consecutive samples.
-export type CommentaryLine = { text: string; condition: CommentaryCondition; source: "builtin" | "custom"; subject?: string };
+export type CommentaryLine = { text: string; condition: CommentaryCondition; source: "builtin" | "custom"; subject?: string; templateId?: string };
 
 export type CommentaryContext = {
   now: CommentarySnapshot;
@@ -538,7 +540,7 @@ export function commentaryCandidates(ctx: CommentaryContext, opts: CommentaryOpt
       for (const tpl of templates) {
         if (!tpl.enabled || tpl.condition !== trig.condition) continue;
         const t = renderTemplate(tpl.template, trig.facts);
-        if (t) lines.push({ condition: trig.condition, text: t, source: "custom", subject: trig.subject });
+        if (t) lines.push({ condition: trig.condition, text: t, source: "custom", subject: trig.subject, templateId: tpl.id });
       }
     }
   }

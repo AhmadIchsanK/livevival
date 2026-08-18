@@ -15,7 +15,14 @@ type Row = {
   template: string;
   enabled: boolean;
   updated_at: string;
+  use_count: number;
+  last_used_at: string | null;
 };
+
+// Hard cap on how many custom lines the library holds. Built-in lines ship in
+// code on top of this; 300 editable rows is plenty of variety without letting
+// the table grow unbounded (and keeps the AI auto-improve tool from over-adding).
+const MAX_TEMPLATES = 300;
 
 // Sample facts per condition so the editor can show a live preview of a
 // template as it would read on the Moment list.
@@ -80,6 +87,10 @@ export default function CommentaryTemplatesPage() {
   }
 
   async function acceptSuggestion(s: { condition: CommentaryCondition; template: string }) {
+    if (rows.length >= MAX_TEMPLATES) {
+      setAiError(`Template limit reached (${MAX_TEMPLATES}). Delete some lines before adding more.`);
+      return;
+    }
     const { error } = await supabase.from("commentary_templates").insert({ condition: s.condition, template: s.template });
     if (error) {
       setAiError(error.message);
@@ -91,21 +102,32 @@ export default function CommentaryTemplatesPage() {
 
   async function acceptAllSuggestions() {
     if (suggestions.length === 0) return;
+    const room = MAX_TEMPLATES - rows.length;
+    if (room <= 0) {
+      setAiError(`Template limit reached (${MAX_TEMPLATES}). Delete some lines before adding more.`);
+      return;
+    }
+    const toAdd = suggestions.slice(0, room);
     const { error } = await supabase
       .from("commentary_templates")
-      .insert(suggestions.map((s) => ({ condition: s.condition, template: s.template })));
+      .insert(toAdd.map((s) => ({ condition: s.condition, template: s.template })));
     if (error) {
       setAiError(error.message);
       return;
     }
-    setSuggestions([]);
+    if (toAdd.length < suggestions.length) {
+      setAiError(`Added ${toAdd.length}; stopped at the ${MAX_TEMPLATES}-line cap. Prune least-used lines to make room for the rest.`);
+      setSuggestions((prev) => prev.slice(toAdd.length));
+    } else {
+      setSuggestions([]);
+    }
     load();
   }
 
   async function load() {
     const { data, error } = await supabase
       .from("commentary_templates")
-      .select("id, condition, template, enabled, updated_at")
+      .select("id, condition, template, enabled, updated_at, use_count, last_used_at")
       .order("condition", { ascending: true })
       .order("updated_at", { ascending: false });
     if (error) setError(error.message);
@@ -124,6 +146,10 @@ export default function CommentaryTemplatesPage() {
   async function add(e: React.FormEvent) {
     e.preventDefault();
     if (!newTemplate.trim()) return;
+    if (rows.length >= MAX_TEMPLATES) {
+      setError(`Template limit reached (${MAX_TEMPLATES}). Delete some lines — e.g. the least-used — before adding more.`);
+      return;
+    }
     setLoading(true);
     setError(null);
     const { error } = await supabase.from("commentary_templates").insert({ condition: newCondition, template: newTemplate.trim() });
@@ -158,6 +184,39 @@ export default function CommentaryTemplatesPage() {
   async function remove(id: string) {
     if (!window.confirm("Delete this commentary line?")) return;
     const { error } = await supabase.from("commentary_templates").delete().eq("id", id);
+    if (error) setError(error.message);
+    else load();
+  }
+
+  // Batch-prune the lines that fire least often. Ranks by use_count (then oldest
+  // last_used) and deletes the lowest N, after an explicit confirm — keeps the
+  // library lean and varied without hunting one dud line at a time.
+  async function deleteLeastUsed() {
+    if (rows.length === 0) return;
+    const answer = window.prompt(
+      `How many of the LEAST-used lines should be deleted? (1–${rows.length})\n\nLines are ranked by how often they've actually fired; ties broken by oldest last-used.`,
+      "20"
+    );
+    if (answer == null) return;
+    const n = Math.min(rows.length, Math.max(1, Math.floor(Number(answer)) || 0));
+    if (!n) return;
+    const ranked = [...rows].sort((a, b) => {
+      if (a.use_count !== b.use_count) return a.use_count - b.use_count;
+      const at = a.last_used_at ? Date.parse(a.last_used_at) : 0;
+      const bt = b.last_used_at ? Date.parse(b.last_used_at) : 0;
+      return at - bt;
+    });
+    const victims = ranked.slice(0, n);
+    const preview = victims.slice(0, 8).map((r) => `• (${r.use_count}×) ${r.template}`).join("\n");
+    if (
+      !window.confirm(
+        `Delete these ${victims.length} least-used line${victims.length === 1 ? "" : "s"}? This cannot be undone.\n\n${preview}${
+          victims.length > 8 ? `\n…and ${victims.length - 8} more` : ""
+        }`
+      )
+    )
+      return;
+    const { error } = await supabase.from("commentary_templates").delete().in("id", victims.map((v) => v.id));
     if (error) setError(error.message);
     else load();
   }
@@ -328,8 +387,8 @@ export default function CommentaryTemplatesPage() {
         )}
       </div>
 
-      {/* Filter */}
-      <div className="flex items-center gap-2">
+      {/* Filter + library controls */}
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-xs text-white/40">Filter:</span>
         <select
           value={conditionFilter}
@@ -344,6 +403,17 @@ export default function CommentaryTemplatesPage() {
           ))}
         </select>
         <span className="text-xs text-white/30">{filtered.length} line{filtered.length === 1 ? "" : "s"}</span>
+        <span className={`text-xs ${rows.length >= MAX_TEMPLATES ? "text-amber-300" : "text-white/30"}`}>
+          · {rows.length}/{MAX_TEMPLATES} stored
+        </span>
+        <button
+          onClick={deleteLeastUsed}
+          disabled={rows.length === 0}
+          title="Bulk-delete the lines that fire least often (ranked by usage), after a confirm"
+          className="text-xs border border-white/15 text-red-300 rounded px-2 py-1 hover:bg-red-500/10 disabled:opacity-40 ml-auto"
+        >
+          🧹 Delete least-used…
+        </button>
       </div>
 
       {/* List */}
@@ -389,6 +459,12 @@ export default function CommentaryTemplatesPage() {
                       {CONDITION_LABEL[r.condition] ?? r.condition}
                     </span>
                     {!r.enabled && <span className="text-[10px] text-white/40 border border-white/15 rounded px-1.5 py-0.5">muted</span>}
+                    <span
+                      className={`text-[10px] border rounded px-1.5 py-0.5 ${r.use_count > 0 ? "text-white/50 border-white/15" : "text-white/30 border-white/10"}`}
+                      title={r.last_used_at ? `Last fired ${new Date(r.last_used_at).toLocaleString()}` : "Hasn't fired yet"}
+                    >
+                      {r.use_count}× used
+                    </span>
                   </div>
                   <p className={`text-sm mt-1 ${r.enabled ? "text-white/85" : "text-white/40 line-through"}`}>{r.template}</p>
                   <p className="text-[11px] text-white/30 mt-0.5">

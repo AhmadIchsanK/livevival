@@ -719,15 +719,13 @@ export default function PublicMatchPage() {
   // older rows from before the column existed.
   const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId && s.player?.is_active_roster !== false);
   const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId && s.player?.is_active_roster !== false);
-  // Math.max, not `??` — the OCR team-kills tracker (team_a_kills_override,
-  // see the admin live console's captureTickBody) updates independently of
-  // the per-player K/D/A trackers and can settle on a real-but-stale value,
-  // including 0 (which `??` would trust forever since 0 isn't null). Team
-  // kills can never be less than what's already individually attributed to
-  // that team's players, so this self-heals the moment per-player kills
-  // catch up or pass a stale override instead of freezing the display.
-  const teamAKills = Math.max(selectedGame?.team_a_kills_override ?? 0, teamAStats.reduce((sum, s) => sum + (s.kills ?? 0), 0));
-  const teamBKills = Math.max(selectedGame?.team_b_kills_override ?? 0, teamBStats.reduce((sum, s) => sum + (s.kills ?? 0), 0));
+  // Authoritative Team Kills (decoupled model, option D — matches the admin
+  // live console). Team kills is its own tracker: the team-kills override when
+  // set (trusted verbatim, including a corrected-downward value), bootstrapping
+  // to the summed player kills only until an override exists. `??`, not
+  // Math.max, so a single over-read player row can't inflate the team number.
+  const teamAKills = selectedGame?.team_a_kills_override ?? teamAStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  const teamBKills = selectedGame?.team_b_kills_override ?? teamBStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const teamAActiveRoster = roster.filter((p) => p.team_id === teamAId && p.is_active_roster);
   const teamBActiveRoster = roster.filter((p) => p.team_id === teamBId && p.is_active_roster);
   // Once both teams have their 5-player roster decided, show it on the

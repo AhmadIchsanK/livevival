@@ -439,7 +439,7 @@ export async function POST(req: NextRequest) {
     try {
       res = await callModel(model);
     } catch (err) {
-      return NextResponse.json({ error: `Groq request failed: ${(err as Error).message}` }, { status: 502 });
+      return NextResponse.json({ error: `AI request failed: ${(err as Error).message}` }, { status: 502 });
     }
     if (res.ok) {
       groqRes = res;
@@ -452,8 +452,10 @@ export async function POST(req: NextRequest) {
   if (!groqRes) {
     const message = isGroqModelUnavailable(lastStatus, lastErr)
       ? `No usable vision model at ${aiBaseUrl()} — tried ${candidates.join(", ")}. If that endpoint is api.groq.com, AI_BASE_URL didn't take effect (check it's set on Production and redeploy). Otherwise set AI_VISION_MODEL to a model that endpoint serves.`
-      : `Groq API error (${lastStatus}): ${lastErr}`;
-    return NextResponse.json({ error: message }, { status: 502 });
+      : lastStatus === 429
+      ? `Vision model rate/quota limit hit (429) at ${new URL(aiBaseUrl()).host}. Free tiers have low daily caps — full-frame AI capture (an image every ~60s) burns through them fast. Use manual OCR for live capture and keep AI for occasional draft analysis / layout, or switch to a provider with more headroom.`
+      : `AI API error (${lastStatus}): ${lastErr.slice(0, 200)}`;
+    return NextResponse.json({ error: message }, { status: lastStatus === 429 ? 429 : 502 });
   }
 
   const groqData = await groqRes.json();

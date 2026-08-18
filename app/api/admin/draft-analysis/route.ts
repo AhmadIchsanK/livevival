@@ -89,7 +89,7 @@ export async function POST(req: NextRequest) {
     try {
       res = await callModel(model);
     } catch (err) {
-      return NextResponse.json({ error: `Groq request failed: ${(err as Error).message}` }, { status: 502 });
+      return NextResponse.json({ error: `AI request failed: ${(err as Error).message}` }, { status: 502 });
     }
     if (res.ok) {
       data = await res.json();
@@ -102,8 +102,10 @@ export async function POST(req: NextRequest) {
   if (!data) {
     const message = isGroqModelUnavailable(lastStatus, lastErr)
       ? `No usable text model at ${aiBaseUrl()} — tried ${candidates.join(", ")}. If that endpoint is api.groq.com, AI_BASE_URL didn't take effect (check it's set on Production and redeploy). Otherwise set AI_TEXT_MODEL to a model that endpoint serves.`
-      : `Groq API error (${lastStatus}): ${lastErr.slice(0, 200)}`;
-    return NextResponse.json({ error: message }, { status: 502 });
+      : lastStatus === 429
+      ? `AI rate/quota limit hit (429) at ${new URL(aiBaseUrl()).host}. The free tier's daily cap is used up — wait for it to reset, or switch AI_BASE_URL/AI_TEXT_MODEL to a provider with more headroom (e.g. OpenRouter free models).`
+      : `AI API error (${lastStatus}): ${lastErr.slice(0, 200)}`;
+    return NextResponse.json({ error: message }, { status: lastStatus === 429 ? 429 : 502 });
   }
 
   const choice = data.choices?.[0];

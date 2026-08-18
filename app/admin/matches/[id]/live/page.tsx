@@ -4488,6 +4488,19 @@ export default function LiveConsolePage() {
     }
     loadAll();
   }
+  // Clear a team's authoritative team-kills override (option D). Sets the column
+  // back to null so the count falls back to the player-kill sum bootstrap — the
+  // one-click undo for a bad OCR read or a stale manual entry mid-match.
+  async function resetTeamKillsOverride(teamId: string) {
+    if (!game || !match) return;
+    const column = teamId === match.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+    const { error } = await supabase.from("games").update({ [column]: null }).eq("id", game.id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    loadAll();
+  }
   async function setObjectiveCount(teamId: string, type: string, target: number) {
     let clamped = Math.max(0, Math.round(target));
     const current = objectiveCount(teamId, type);
@@ -9111,26 +9124,39 @@ export default function LiveConsolePage() {
                             database directly, since the never-decreases
                             guard blocks any lower value from OCR itself. */}
                         {[
-                          { team: match.team_a, value: teamAKillsTotal },
-                          { team: match.team_b, value: teamBKillsTotal },
-                        ].map(({ team, value }, idx) =>
+                          { team: match.team_a, value: teamAKillsTotal, override: game?.team_a_kills_override },
+                          { team: match.team_b, value: teamBKillsTotal, override: game?.team_b_kills_override },
+                        ].map(({ team, value, override }, idx) =>
                           team ? (
-                            <input
-                              key={team.id}
-                              type="number"
-                              min={0}
-                              disabled={!scoreboardEditable}
-                              placeholder={String(value)}
-                              title={`Manually set ${team.name}'s team kill count (overrides the OCR-read value)`}
-                              onBlur={(e) => {
-                                if (e.target.value === "") return;
-                                const n = Number(e.target.value);
-                                if (!Number.isFinite(n) || n < 0) return;
-                                setTeamKillsOverride(team.id, n);
-                                e.target.value = "";
-                              }}
-                              className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
-                            />
+                            <span key={team.id} className="inline-flex items-center gap-1">
+                              <input
+                                type="number"
+                                min={0}
+                                disabled={!scoreboardEditable}
+                                placeholder={String(value)}
+                                title={`Manually set ${team.name}'s team kill count (overrides the OCR-read value)`}
+                                onBlur={(e) => {
+                                  if (e.target.value === "") return;
+                                  const n = Number(e.target.value);
+                                  if (!Number.isFinite(n) || n < 0) return;
+                                  setTeamKillsOverride(team.id, n);
+                                  e.target.value = "";
+                                }}
+                                className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
+                              />
+                              {/* One-click undo: clear the override so the count
+                                  falls back to the player-kill sum. Only shown
+                                  when an override is actually set. */}
+                              {override != null && scoreboardEditable && (
+                                <button
+                                  onClick={() => resetTeamKillsOverride(team.id)}
+                                  title={`Reset ${team.name}'s team-kill override (fall back to the summed player kills)`}
+                                  className="text-[11px] text-white/40 border border-white/10 rounded px-1.5 py-1 hover:bg-white/10 hover:text-white/70"
+                                >
+                                  ↺
+                                </button>
+                              )}
+                            </span>
                           ) : (
                             <span key={idx} />
                           )

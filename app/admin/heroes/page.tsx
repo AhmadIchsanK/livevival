@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useLanguage } from "@/lib/i18n";
 import { HeroIcon } from "@/components/HeroIcon";
 
 type Hero = {
@@ -23,6 +24,7 @@ function parseAliases(input: string): string[] {
 }
 
 export default function HeroesPage() {
+  const { t } = useLanguage();
   const [heroes, setHeroes] = useState<Hero[]>([]);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -198,7 +200,7 @@ export default function HeroesPage() {
   return (
     <div className="text-white space-y-6 max-w-6xl">
       <div>
-        <h1 className="lv-heading text-lg">Heroes</h1>
+        <h1 className="lv-heading text-lg">{t("nav.heroes")}</h1>
         <p className="text-xs text-white/40 mt-1">
           Auto-imported from Liquipedia every 6h (name, icon, role, lane, region). Edit any field here, or add
           anything the importer missed — the importer never overwrites a field it finds already set.
@@ -207,7 +209,7 @@ export default function HeroesPage() {
 
       <form onSubmit={handleAdd} className="grid grid-cols-2 gap-3 max-w-xl">
         <div className="col-span-2 space-y-1">
-          <label className="text-xs text-white/50">Hero name</label>
+          <label className="text-xs text-white/50">{t("admin.c.heroName")}</label>
           <input
             required
             value={name}
@@ -217,7 +219,7 @@ export default function HeroesPage() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Role</label>
+          <label className="text-xs text-white/50">{t("admin.c.role")}</label>
           <input
             value={role}
             onChange={(e) => setRole(e.target.value)}
@@ -226,7 +228,7 @@ export default function HeroesPage() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Lane</label>
+          <label className="text-xs text-white/50">{t("admin.c.lane")}</label>
           <input
             value={lane}
             onChange={(e) => setLane(e.target.value)}
@@ -235,7 +237,7 @@ export default function HeroesPage() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Region</label>
+          <label className="text-xs text-white/50">{t("admin.c.region")}</label>
           <input
             value={region}
             onChange={(e) => setRegion(e.target.value)}
@@ -244,7 +246,7 @@ export default function HeroesPage() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Icon URL</label>
+          <label className="text-xs text-white/50">{t("admin.c.iconUrl")}</label>
           <input
             value={iconUrl}
             onChange={(e) => setIconUrl(e.target.value)}
@@ -253,7 +255,7 @@ export default function HeroesPage() {
           />
         </div>
         <div className="col-span-2 space-y-1">
-          <label className="text-xs text-white/50">Aliases (comma-separated, optional)</label>
+          <label className="text-xs text-white/50">{t("admin.h.aliases")}</label>
           <input
             value={aliases}
             onChange={(e) => setAliases(e.target.value)}
@@ -297,7 +299,7 @@ export default function HeroesPage() {
         <input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Filter by name, role, or alias..."
+          placeholder={t("admin.h.filter")}
           className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
         />
         {selected.size > 0 && (
@@ -412,7 +414,7 @@ export default function HeroesPage() {
                 <tr className="border-t border-white/5 bg-white/[0.02]">
                   <td className="py-2" colSpan={2} />
                   <td className="py-2 pr-2" colSpan={2}>
-                    <label className="text-[10px] text-white/40 block mb-1">Aliases (comma-separated)</label>
+                    <label className="text-[10px] text-white/40 block mb-1">{t("admin.h.aliasesShort")}</label>
                     <input
                       value={editAliases}
                       onChange={(e) => setEditAliases(e.target.value)}
@@ -421,7 +423,7 @@ export default function HeroesPage() {
                     />
                   </td>
                   <td className="py-2 pr-2" colSpan={2}>
-                    <label className="text-[10px] text-white/40 block mb-1">Icon URL</label>
+                    <label className="text-[10px] text-white/40 block mb-1">{t("admin.c.iconUrl")}</label>
                     <input
                       value={editIconUrl}
                       onChange={(e) => setEditIconUrl(e.target.value)}

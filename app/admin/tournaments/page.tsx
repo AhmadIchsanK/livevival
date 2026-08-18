@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useLanguage } from "@/lib/i18n";
 import { TeamLogo, LOGO_BG_OVERRIDES, type LogoBgOverride } from "@/components/TeamLogo";
 import { loadRecentEdits, timeAgoShort, type RecentEdit } from "@/lib/recentEdits";
 
@@ -39,6 +40,7 @@ function categorize(t: Tournament): Status {
 }
 
 export default function TournamentsAdminPage() {
+  const { t: tr } = useLanguage();
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [filter, setFilter] = useState("");
   const [tierFilter, setTierFilter] = useState("");
@@ -318,7 +320,7 @@ export default function TournamentsAdminPage() {
   return (
     <div className="text-white space-y-6 max-w-6xl">
       <div>
-        <h1 className="lv-heading text-lg">Tournaments</h1>
+        <h1 className="lv-heading text-lg">{tr("nav.tournaments")}</h1>
         <p className="text-xs text-white/40 mt-1">
           S/A-Tier tournaments auto-import from Liquipedia every 6h, scoped to a rolling past year
           (or still upcoming/ongoing). Edit dates/logo here, or add one manually if Liquipedia hasn&apos;t yet.
@@ -327,7 +329,7 @@ export default function TournamentsAdminPage() {
 
       <form onSubmit={handleAdd} className="grid grid-cols-2 gap-3 max-w-xl">
         <div className="col-span-2 space-y-1">
-          <label className="text-xs text-white/50">Name</label>
+          <label className="text-xs text-white/50">{tr("admin.c.name")}</label>
           <input
             required
             value={name}
@@ -336,7 +338,7 @@ export default function TournamentsAdminPage() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Tier</label>
+          <label className="text-xs text-white/50">{tr("admin.c.tier")}</label>
           <select
             value={tier}
             onChange={(e) => setTier(e.target.value)}
@@ -347,7 +349,7 @@ export default function TournamentsAdminPage() {
           </select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Liquipedia slug (optional)</label>
+          <label className="text-xs text-white/50">{tr("admin.t.slugOptional")}</label>
           <input
             value={slug}
             onChange={(e) => setSlug(e.target.value)}
@@ -359,7 +361,7 @@ export default function TournamentsAdminPage() {
           </p>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Start date</label>
+          <label className="text-xs text-white/50">{tr("admin.c.startDate")}</label>
           <input
             type="date"
             value={startDate}
@@ -368,7 +370,7 @@ export default function TournamentsAdminPage() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">End date</label>
+          <label className="text-xs text-white/50">{tr("admin.c.endDate")}</label>
           <input
             type="date"
             value={endDate}
@@ -377,7 +379,7 @@ export default function TournamentsAdminPage() {
           />
         </div>
         <div className="col-span-2 space-y-1">
-          <label className="text-xs text-white/50">Logo URL</label>
+          <label className="text-xs text-white/50">{tr("admin.c.logoUrl")}</label>
           <input
             value={logoUrl}
             onChange={(e) => setLogoUrl(e.target.value)}
@@ -385,7 +387,7 @@ export default function TournamentsAdminPage() {
           />
         </div>
         <div className="col-span-2 space-y-1">
-          <label className="text-xs text-white/50">YouTube channel URL (optional)</label>
+          <label className="text-xs text-white/50">{tr("admin.t.youtubeOptional")}</label>
           <input
             value={youtubeChannelUrl}
             onChange={(e) => setYoutubeChannelUrl(e.target.value)}
@@ -434,7 +436,7 @@ export default function TournamentsAdminPage() {
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter by name or slug..."
+            placeholder={tr("admin.t.filter")}
             className="flex-1 min-w-[160px] bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
@@ -442,7 +444,7 @@ export default function TournamentsAdminPage() {
             onChange={(e) => setTierFilter(e.target.value)}
             className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
-            <option value="">All tiers</option>
+            <option value="">{tr("admin.c.allTiers")}</option>
             <option value="S">S-Tier</option>
             <option value="A">A-Tier</option>
           </select>
@@ -451,9 +453,9 @@ export default function TournamentsAdminPage() {
             onChange={(e) => setSortKey(e.target.value as SortKey)}
             className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
-            <option value="start_desc">Newest first</option>
-            <option value="start_asc">Oldest first</option>
-            <option value="name">Name A→Z</option>
+            <option value="start_desc">{tr("admin.c.newestFirst")}</option>
+            <option value="start_asc">{tr("admin.c.oldestFirst")}</option>
+            <option value="name">{tr("admin.c.nameAZ")}</option>
           </select>
         </div>
         {selected.size > 0 && (
@@ -509,7 +511,7 @@ export default function TournamentsAdminPage() {
                             onChange={(e) => setEditLogoBgOverride(e.target.value as LogoBgOverride | "")}
                             className="w-full bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
                           >
-                            <option value="">Auto</option>
+                            <option value="">{tr("admin.c.auto")}</option>
                             {LOGO_BG_OVERRIDES.map((o) => (
                               <option key={o.value} value={o.value}>{o.label}</option>
                             ))}
@@ -556,7 +558,7 @@ export default function TournamentsAdminPage() {
                           <input
                             value={editFmvpIgn}
                             onChange={(e) => setEditFmvpIgn(e.target.value)}
-                            placeholder="FMVP IGN (optional)"
+                            placeholder={tr("admin.t.fmvpOptional")}
                             list="all-player-igns"
                             className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           />
@@ -568,7 +570,7 @@ export default function TournamentsAdminPage() {
                           <input
                             value={editYoutubeChannelUrl}
                             onChange={(e) => setEditYoutubeChannelUrl(e.target.value)}
-                            placeholder="YouTube channel URL (optional)"
+                            placeholder={tr("admin.t.youtubeOptional")}
                             className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                           />
                         </td>
@@ -599,7 +601,7 @@ export default function TournamentsAdminPage() {
                             onChange={(e) => setLogoBgOverride(t.id, e.target.value as LogoBgOverride | "")}
                             className="w-full bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
                           >
-                            <option value="">Auto</option>
+                            <option value="">{tr("admin.c.auto")}</option>
                             {LOGO_BG_OVERRIDES.map((o) => (
                               <option key={o.value} value={o.value}>{o.label}</option>
                             ))}

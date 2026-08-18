@@ -12,13 +12,18 @@ const MONTH_NAMES = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-export function formatMatchDate(iso: string | null | undefined): string {
+const MONTH_NAMES_ID = [
+  "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+  "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+];
+
+export function formatMatchDate(iso: string | null | undefined, lang: "en" | "id" = "en"): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
 
   const year = d.getFullYear();
-  const month = MONTH_NAMES[d.getMonth()];
+  const month = (lang === "id" ? MONTH_NAMES_ID : MONTH_NAMES)[d.getMonth()];
   const day = String(d.getDate()).padStart(2, "0");
 
   let hours = d.getHours();

@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { useLanguage } from "@/lib/i18n";
+import { localeFor } from "@/lib/messages";
 import { TeamLogo } from "@/components/TeamLogo";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
@@ -320,6 +321,12 @@ function MonthCalendar({
   selectedDate: string | null;
   onSelect: (day: string) => void;
 }) {
+  const { t, lang } = useLanguage();
+  const loc = localeFor(lang);
+  // Localized weekday initials, Sun→Sat (Sep 1 2024 is a Sunday).
+  const weekdayInitials = Array.from({ length: 7 }, (_, i) =>
+    new Date(2024, 8, 1 + i).toLocaleDateString(loc, { weekday: "narrow" })
+  );
   const [monthOffset, setMonthOffset] = useState(0);
   const base = new Date();
   const viewMonth = new Date(base.getFullYear(), base.getMonth() + monthOffset, 1);
@@ -342,14 +349,14 @@ function MonthCalendar({
           ←
         </button>
         <p className="text-xs font-semibold uppercase tracking-wide text-paper">
-          {viewMonth.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+          {viewMonth.toLocaleDateString(loc, { month: "long", year: "numeric" })}
         </p>
         <button onClick={() => setMonthOffset((v) => v + 1)} className="text-xs text-paper/70 hover:text-signal px-2 py-1 rounded hover:bg-white/10 transition-colors">
           →
         </button>
       </div>
       <div className="grid grid-cols-7 gap-1 text-[10px] text-paper/55 mb-1">
-        {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
+        {weekdayInitials.map((d, i) => (
           <div key={i} className="text-center">{d}</div>
         ))}
       </div>
@@ -374,7 +381,7 @@ function MonthCalendar({
           );
         })}
       </div>
-      <p className="text-[10px] text-paper/55 mt-2">Green = at least one match that day.</p>
+      <p className="text-[10px] text-paper/55 mt-2">{t("home.calendarLegend")}</p>
     </div>
   );
 }
@@ -405,7 +412,8 @@ function MatchCountdown({ scheduledAt, now }: { scheduledAt: string; now: number
 }
 
 function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; selectedDate: string | null }) {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
+  const loc = localeFor(lang);
   const scrollerRef = useRef<HTMLDivElement>(null);
 
   const byDay = new Map<string, MatchRow[]>();
@@ -461,7 +469,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
               }`}
             >
               <p className="text-xs font-semibold text-white/60 uppercase tracking-wide sticky top-0">
-                {new Date(day + "T00:00:00").toLocaleDateString(undefined, {
+                {new Date(day + "T00:00:00").toLocaleDateString(loc, {
                   weekday: "short",
                   month: "short",
                   day: "numeric",
@@ -525,7 +533,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
 }
 
 function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Record<string, { a: number; b: number }> }) {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const visible = matches.slice(0, visibleCount);
   const hasMore = matches.length > visibleCount;
@@ -587,7 +595,7 @@ function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Reco
                   <TournamentTierIcon tier={m.tournament?.default_notification_tier} />{" "}
                   · {m.tournament?.tier}-Tier · {m.format}
                   {m.stage ? ` · ${m.stage}` : ""}
-                  {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString()}` : ""}
+                  {m.scheduled_at ? ` · ${new Date(m.scheduled_at).toLocaleString(localeFor(lang))}` : ""}
                 </p>
                 <div className="flex items-center gap-1.5">
                   <HotBadge updateSource={m.update_source} />

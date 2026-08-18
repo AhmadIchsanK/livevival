@@ -20,6 +20,12 @@ export function normalizeLang(v: string | undefined | null): Lang {
   return v === "id" ? "id" : "en";
 }
 
+// BCP-47 locale for Intl/toLocale* date formatting, so months and weekdays
+// render in the chosen language ("Agustus 2026", "Kam, 20 Agu").
+export function localeFor(lang: Lang): string {
+  return lang === "id" ? "id-ID" : "en-US";
+}
+
 type Entry = { en: string; id: string };
 
 export const MESSAGES = {
@@ -127,6 +133,7 @@ export const MESSAGES = {
     id: "Skor, draft, dan analitik esports MLBB secara live",
   },
   "home.liveNow": { en: "Live now", id: "Sedang Live" },
+  "home.calendarLegend": { en: "Green = at least one match that day.", id: "Hijau = ada minimal satu match hari itu." },
   "home.upcomingNextDays": { en: "Upcoming — next {n} days", id: "Mendatang — {n} hari ke depan" },
   "home.noUpcomingInDays": {
     en: "No upcoming matches scheduled in the next {n} days.",
@@ -140,6 +147,14 @@ export const MESSAGES = {
   },
 
   // ── Language / theme toggles ─────────────────────────────────────────
+  "search.placeholder": { en: "Search tournaments, players, teams, heroes, matches...", id: "Cari turnamen, pemain, tim, hero, pertandingan..." },
+  "search.button": { en: "Search", id: "Cari" },
+  "search.filterByCategory": { en: "Filter by category", id: "Saring berdasarkan kategori" },
+  "search.cat.match": { en: "Match", id: "Pertandingan" },
+  "search.cat.tournament": { en: "Tournament", id: "Turnamen" },
+  "search.cat.player": { en: "Player", id: "Pemain" },
+  "search.cat.team": { en: "Team", id: "Tim" },
+  "search.cat.hero": { en: "Hero", id: "Hero" },
   "toggle.language": { en: "Language", id: "Bahasa" },
   "toggle.switchToId": { en: "Switch to Bahasa Indonesia", id: "Ganti ke Bahasa Indonesia" },
   "toggle.switchToEn": { en: "Switch to English", id: "Ganti ke Bahasa Inggris" },

@@ -520,8 +520,11 @@ export type CommentaryOptions = {
   rng?: Rng;
   templates?: CommentaryTemplate[];
   // Anti-repetition memory the caller threads through: the exact line texts most
-  // recently posted, and the subjects most recently spotlighted.
-  recent?: { texts?: string[]; subjects?: string[] };
+  // recently posted, the subjects most recently spotlighted, and the conditions
+  // most recently used. The picker drops exact repeats, then rotates away from
+  // recent subjects AND recent conditions so the feed doesn't loop on one
+  // player, one hero, one phrasing, or one KIND of line (e.g. win-prob) in a row.
+  recent?: { texts?: string[]; subjects?: string[]; conditions?: CommentaryCondition[] };
 };
 
 // Build the full candidate set for the current context — built-in phrasings PLUS
@@ -557,6 +560,7 @@ export function pickCommentary(ctx: CommentaryContext, opts: CommentaryOptions =
   const rng = opts.rng ?? Math.random;
   const recentTexts = new Set(opts.recent?.texts ?? []);
   const recentSubjects = new Set(opts.recent?.subjects ?? []);
+  const recentConditions = new Set(opts.recent?.conditions ?? []);
   const all = commentaryCandidates(ctx, opts);
   if (all.length === 0) return null;
   // Drop exact repeats of lines we just used (fall back to the full set only if
@@ -565,7 +569,12 @@ export function pickCommentary(ctx: CommentaryContext, opts: CommentaryOptions =
   const usable = notJustSaid.length > 0 ? notJustSaid : all;
   const eventDriven = usable.filter((l) => l.condition !== "general");
   let pool = eventDriven.length > 0 ? eventDriven : usable;
-  // Prefer lines whose subject wasn't just spotlighted.
+  // Prefer lines whose CONDITION wasn't just used — stops the feed running a
+  // string of win-prob (or any one category) reads back to back when other
+  // categories are also eligible. Only applied when it leaves something.
+  const freshCondition = pool.filter((l) => !recentConditions.has(l.condition));
+  if (freshCondition.length > 0) pool = freshCondition;
+  // Then prefer lines whose subject wasn't just spotlighted.
   const freshSubject = pool.filter((l) => !l.subject || !recentSubjects.has(l.subject));
   if (freshSubject.length > 0) pool = freshSubject;
   return pick(rng, pool);
@@ -586,6 +595,9 @@ export function winProbInterjection(s: CommentarySnapshot, rng: Rng = Math.rando
       `Win probability is a coin flip — ${s.teamA.name} ${aPct}%, ${s.teamB.name} ${bPct}%.`,
       `The model can't split them: ${aPct}% / ${bPct}%.`,
       `Dead even on the win-probability read, ${s.teamA.name} ${aPct}% to ${s.teamB.name} ${bPct}%.`,
+      `Too close to call — ${aPct}% versus ${bPct}% on the model.`,
+      `Nothing between these two: ${s.teamA.name} ${aPct}%, ${s.teamB.name} ${bPct}%.`,
+      `The odds are a dead heat right now, ${aPct}% each way barely.`,
     ]);
   }
   if (favPct >= 85) {
@@ -593,11 +605,17 @@ export function winProbInterjection(s: CommentarySnapshot, rng: Rng = Math.rando
       `${favored.name} heavily favoured now — ${favPct}% to take it.`,
       `The needle's pinned to ${favored.name} at ${favPct}%.`,
       `${favored.name} in commanding shape, ${favPct}% on the model.`,
+      `It's ${favored.name}'s to lose — ${favPct}% on the win-probability read.`,
+      `The model has all but called it: ${favored.name} ${favPct}%.`,
+      `${favored.name} closing in on this one, ${favPct}% and climbing.`,
     ]);
   }
   return pick(rng, [
     `Win probability leans ${favored.name} at ${favPct}%.`,
     `${favored.name} the favourites for now, ${favPct}% to close it.`,
     `Edge to ${favored.name} — ${favPct}% on the win-probability read.`,
+    `${favored.name} nudging ahead on the model, ${favPct}%.`,
+    `The odds tip ${favored.name}'s way, ${favPct}% to ${100 - favPct}%.`,
+    `Slight lean to ${favored.name} here, ${favPct}% on the read.`,
   ]);
 }

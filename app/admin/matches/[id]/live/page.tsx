@@ -2418,9 +2418,14 @@ export default function LiveConsolePage() {
   // engine reads these to stop the feed looping on one player/hero/phrasing.
   const commentaryRecentTextsRef = useRef<string[]>([]);
   const commentaryRecentSubjectsRef = useRef<string[]>([]);
-  const rememberCommentary = (text: string, subject?: string) => {
-    commentaryRecentTextsRef.current = [text, ...commentaryRecentTextsRef.current].slice(0, 8);
-    if (subject) commentaryRecentSubjectsRef.current = [subject, ...commentaryRecentSubjectsRef.current].slice(0, 4);
+  const commentaryRecentConditionsRef = useRef<CommentaryCondition[]>([]);
+  // Bigger windows so the feed doesn't circle back to a line/subject/kind after
+  // only a couple of posts — the library is deep enough now (140+ built-ins plus
+  // DB lines) to sustain a long no-repeat run.
+  const rememberCommentary = (text: string, subject?: string, condition?: CommentaryCondition) => {
+    commentaryRecentTextsRef.current = [text, ...commentaryRecentTextsRef.current].slice(0, 16);
+    if (subject) commentaryRecentSubjectsRef.current = [subject, ...commentaryRecentSubjectsRef.current].slice(0, 8);
+    if (condition) commentaryRecentConditionsRef.current = [condition, ...commentaryRecentConditionsRef.current].slice(0, 3);
   };
   // Admin-authored lines from the DB (editable at /admin/commentary), merged
   // with the built-in phrasings by the engine. Loaded once; the interval reads
@@ -2455,12 +2460,16 @@ export default function LiveConsolePage() {
             { now: snap, prev: commentaryPrevRef.current, enabled: commentaryConditionsRef.current },
             {
               templates: commentaryTemplatesRef.current,
-              recent: { texts: commentaryRecentTextsRef.current, subjects: commentaryRecentSubjectsRef.current },
+              recent: {
+                texts: commentaryRecentTextsRef.current,
+                subjects: commentaryRecentSubjectsRef.current,
+                conditions: commentaryRecentConditionsRef.current,
+              },
             }
           );
           if (line) {
             await commentaryInsertRef.current(line.text, snap.timerSeconds);
-            rememberCommentary(line.text, line.subject);
+            rememberCommentary(line.text, line.subject, line.condition);
             // Bump the custom template's usage so /admin/commentary can rank and
             // prune rarely-fired lines (built-in lines have no id — skipped).
             if (line.templateId) {
@@ -2507,7 +2516,7 @@ export default function LiveConsolePage() {
           const text = winProbInterjection(snap);
           if (!commentaryRecentTextsRef.current.includes(text)) {
             await commentaryInsertRef.current(text, snap.timerSeconds);
-            rememberCommentary(text, "win_prob");
+            rememberCommentary(text, "win_prob", "win_prob");
           }
         }
       } catch {

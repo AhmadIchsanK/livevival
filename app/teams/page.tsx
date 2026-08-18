@@ -7,6 +7,7 @@ import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
+import { useLanguage } from "@/lib/i18n";
 import { ViewToggle } from "@/components/ViewToggle";
 import { TeamSocialLinks } from "@/components/TeamSocialLinks";
 import { useViewMode } from "@/lib/useViewMode";
@@ -39,6 +40,7 @@ export default function TeamsIndexPage() {
 }
 
 function TeamsIndexPageInner() {
+  const { t } = useLanguage();
   const searchParams = useSearchParams();
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
@@ -103,8 +105,8 @@ function TeamsIndexPageInner() {
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
       <header className="space-y-1 flex items-start justify-between">
         <div>
-          <a href="/" className="lv-nav-link">&larr; Matches</a>
-          <h1 className="font-display font-light text-2xl tracking-tight">Teams</h1>
+          <a href="/" className="lv-nav-link">&larr; {t("nav.matches")}</a>
+          <h1 className="font-display font-light text-2xl tracking-tight">{t("nav.teams")}</h1>
         </div>
         <div className="flex items-center gap-2">
           <LanguageToggle />
@@ -117,7 +119,7 @@ function TeamsIndexPageInner() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search teams, location, or region..."
+          placeholder={t("teams.searchPlaceholder")}
           className="flex-1 min-w-[200px] bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal/60"
         />
         <select
@@ -152,7 +154,7 @@ function TeamsIndexPageInner() {
         </p>
       )}
 
-      {loading && <p className="text-white/40 text-sm">Loading...</p>}
+      {loading && <p className="text-white/40 text-sm">{t("common.loadingShort")}</p>}
 
       {!loading && view === "grid" && (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3">
@@ -234,7 +236,7 @@ function TeamsIndexPageInner() {
 
             <div className="w-full mt-2 pt-3 border-t border-white/10 text-left">
               <p className="text-xs text-white/40 uppercase tracking-wide mb-2">Roster</p>
-              {rosterLoading && <p className="text-xs text-white/30">Loading roster...</p>}
+              {rosterLoading && <p className="text-xs text-white/30">{t("teams.loadingRoster")}</p>}
               {!rosterLoading && roster && roster.length === 0 && (
                 <p className="text-xs text-white/30">No players on record.</p>
               )}

@@ -135,6 +135,8 @@ export const MESSAGES = {
   "matches.recentResults": { en: "Recent results", id: "Hasil Terbaru" },
   "matches.noLive": { en: "No live matches right now", id: "Nggak ada match live sekarang" },
   "matches.noUpcoming": { en: "No upcoming matches scheduled", id: "Belum ada match terjadwal" },
+  "matches.noOngoing": { en: "No ongoing matches.", id: "Nggak ada match yang berlangsung." },
+  "matches.noFinished": { en: "No finished matches yet.", id: "Belum ada match yang selesai." },
   "matches.searchPlaceholder": { en: "Search team or tournament...", id: "Cari tim atau turnamen..." },
   "matches.noneHere": { en: "No matches here.", id: "Nggak ada match di sini." },
   "matches.loadingMatches": { en: "Loading matches...", id: "Memuat pertandingan..." },

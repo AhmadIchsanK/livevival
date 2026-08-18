@@ -8479,39 +8479,70 @@ export default function LiveConsolePage() {
                             <div key={team.id} className="space-y-1">
                               <p className="text-xs text-white/50">{team.name}</p>
                               <div className="flex flex-wrap gap-1.5">
-                                {OBJECTIVE_TYPES.map((type) => (
-                                  <span key={type} className="inline-flex items-center gap-1">
-                                    <button
-                                      onClick={() => incrementObjective(team.id, type)}
-                                      onContextMenu={(e) => {
-                                        e.preventDefault();
-                                        decrementObjective(team.id, type);
-                                      }}
-                                      disabled={!objectivesEditable}
-                                      title={`${team.name} takes a ${type} — right-click to undo. ${OBJECTIVE_RULE_HINTS[type]} (This button always applies — those limits are what OCR auto-reads are held to, not you.)`}
-                                      className="text-xs border border-white/10 rounded px-2 py-1 hover:border-signal/50 hover:bg-signal/10 disabled:opacity-40 flex items-center gap-1"
+                                {OBJECTIVE_TYPES.map((type) => {
+                                  // Explicit −/＋ stepper plus a directly-editable
+                                  // count, mirroring the per-player K/D/A control:
+                                  // the value box always shows the real current
+                                  // count and an edit sets it absolutely, so a
+                                  // correction never "resets" or clears itself the
+                                  // way the old empty-placeholder input did. The old
+                                  // single button (left-click add / right-click undo)
+                                  // was easy to trip — right-click is non-obvious and
+                                  // fires the browser context menu on some devices —
+                                  // so down is now its own button. Both steppers mark
+                                  // a manual edit so the next OCR tick can't clobber
+                                  // the admin's correction (see markManualObjectiveEdit).
+                                  const count = objectiveCount(team.id, type);
+                                  return (
+                                    <span
+                                      key={type}
+                                      className="inline-flex items-center gap-1 border border-white/10 rounded px-1.5 py-0.5"
                                     >
-                                      <span>{OBJECTIVE_ICONS[type]}</span>
-                                      <span className="capitalize">{type}</span>
-                                      <span className="font-bold tabular-nums">{objectiveCount(team.id, type)}</span>
-                                    </button>
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      disabled={!objectivesEditable}
-                                      placeholder={String(objectiveCount(team.id, type))}
-                                      title={`Set ${team.name}'s ${type} count directly`}
-                                      onBlur={(e) => {
-                                        if (e.target.value === "") return;
-                                        const n = Math.max(0, Math.trunc(Number(e.target.value)));
-                                        if (Number.isNaN(n)) return;
-                                        setObjectiveCount(team.id, type, n);
-                                        e.target.value = "";
-                                      }}
-                                      className="w-9 bg-white/10 border border-white/10 rounded px-1 py-1 text-[10px] disabled:opacity-40 placeholder:text-white/30"
-                                    />
-                                  </span>
-                                ))}
+                                      <span className="text-xs">{OBJECTIVE_ICONS[type]}</span>
+                                      <span className="text-xs capitalize text-white/60">{type}</span>
+                                      <button
+                                        onClick={() => decrementObjective(team.id, type)}
+                                        disabled={!objectivesEditable || count === 0}
+                                        title={`Remove one ${type} from ${team.name}`}
+                                        className="w-5 h-5 rounded bg-white/5 hover:bg-white/15 text-white/70 disabled:opacity-30 leading-none text-sm"
+                                      >
+                                        −
+                                      </button>
+                                      <input
+                                        key={`obj-${team.id}-${type}-${count}`}
+                                        type="number"
+                                        min={0}
+                                        defaultValue={count}
+                                        disabled={!objectivesEditable}
+                                        title={`${team.name}'s ${type} count — type to set it directly. ${OBJECTIVE_RULE_HINTS[type]} (Your edit always applies — those limits are only what OCR auto-reads are held to.)`}
+                                        onBlur={(e) => {
+                                          if (e.target.value === "") {
+                                            e.target.value = String(count);
+                                            return;
+                                          }
+                                          const n = Math.max(0, Math.trunc(Number(e.target.value)));
+                                          if (Number.isNaN(n)) {
+                                            e.target.value = String(count);
+                                            return;
+                                          }
+                                          if (n !== count) setObjectiveCount(team.id, type, n);
+                                        }}
+                                        className="w-9 bg-white/10 border border-white/10 rounded px-1 py-0.5 text-xs text-center tabular-nums disabled:opacity-40"
+                                      />
+                                      <button
+                                        onClick={() => {
+                                          markManualObjectiveEdit(team.id, type);
+                                          incrementObjective(team.id, type);
+                                        }}
+                                        disabled={!objectivesEditable}
+                                        title={`Add one ${type} for ${team.name}`}
+                                        className="w-5 h-5 rounded bg-white/5 hover:bg-signal/20 text-white/70 disabled:opacity-30 leading-none text-sm"
+                                      >
+                                        ＋
+                                      </button>
+                                    </span>
+                                  );
+                                })}
                               </div>
                             </div>
                           ) : (

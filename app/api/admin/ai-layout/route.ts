@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
 
 // AI-suggested tracker layout — the admin takes one screenshot of the
 // current capture (already-fullscreened broadcast, same frame the manual
@@ -100,7 +101,7 @@ function parseRetrySeconds(retryAfter: string | null, bodyText: string): number 
 
 type GroqCall =
   | { ok: true; data: any } // eslint-disable-line @typescript-eslint/no-explicit-any
-  | { ok: false; status: number; message: string };
+  | { ok: false; status: number; message: string; modelUnavailable?: boolean };
 
 // One vision call, with a single automatic retry ONLY on a 429 whose suggested
 // wait is short enough to sit inside a serverless request. A longer cooldown
@@ -152,7 +153,12 @@ async function callGroqVision(apiKey: string, model: string, prompt: string, ima
 
   if (!res.ok) {
     const errText = await res.text();
-    return { ok: false, status: 502, message: `Groq API error (${res.status}): ${errText.slice(0, 300)}` };
+    return {
+      ok: false,
+      status: 502,
+      message: `Groq API error (${res.status}): ${errText.slice(0, 300)}`,
+      modelUnavailable: isGroqModelUnavailable(res.status, errText),
+    };
   }
   return { ok: true, data: await res.json() };
 }
@@ -180,17 +186,26 @@ export async function POST(req: NextRequest) {
   if (!apiKey) {
     return NextResponse.json({ error: "AI layout suggestions aren't configured yet — set GROQ_API_KEY." }, { status: 503 });
   }
-  const model = process.env.GROQ_VISION_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct";
-
   const body = await req.json().catch(() => null);
   const imageBase64: string | undefined = body?.imageBase64;
   if (!imageBase64 || typeof imageBase64 !== "string") {
     return NextResponse.json({ error: "Missing imageBase64" }, { status: 400 });
   }
 
-  const call = await callGroqVision(apiKey, model, buildPrompt(), imageBase64);
+  // Try each candidate vision model in order, falling through to the next only
+  // when Groq says the current id is unavailable for this account (deprecated /
+  // no access / 404). Any other failure (rate limit, bad response) stops here.
+  const candidates = groqVisionModelCandidates();
+  let call: GroqCall = { ok: false, status: 502, message: "No vision model configured", modelUnavailable: true };
+  for (const model of candidates) {
+    call = await callGroqVision(apiKey, model, buildPrompt(), imageBase64);
+    if (call.ok || !call.modelUnavailable) break;
+  }
   if (!call.ok) {
-    return NextResponse.json({ error: call.message }, { status: call.status });
+    const message = call.modelUnavailable
+      ? `No usable Groq vision model — tried ${candidates.join(", ")}. Set GROQ_VISION_MODEL to a model your account can access, or enable one in the Groq console.`
+      : call.message;
+    return NextResponse.json({ error: message }, { status: call.status });
   }
   const groqData = call.data;
   const choice = groqData.choices?.[0];

@@ -5,6 +5,7 @@ import { observeVision } from "@/lib/reconstruction/visionObserver";
 import type { VisionPlayerStat } from "@/lib/reconstruction/visionObserver";
 import type { PlayerKda } from "@/lib/reconstruction/validators/kda";
 import { asTeamId, asPlayerId } from "@/lib/reconstruction/types";
+import { groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
 
 // Full-frame AI vision analysis for the admin's local-capture live console —
 // the alternative to the manual crop-region OCR (calibratingField/regions
@@ -386,8 +387,6 @@ export async function POST(req: NextRequest) {
       { status: 503 }
     );
   }
-  const model = process.env.GROQ_VISION_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct";
-
   const body = await req.json().catch(() => null);
   const imageBase64: string | undefined = body?.imageBase64;
   const overlayHint: string | undefined = body?.overlayHint;
@@ -401,9 +400,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing imageBase64" }, { status: 400 });
   }
 
-  let groqRes: Response;
-  try {
-    groqRes = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const callModel = (model: string) =>
+    fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -427,13 +425,33 @@ export async function POST(req: NextRequest) {
       }),
       signal: AbortSignal.timeout(30000),
     });
-  } catch (err) {
-    return NextResponse.json({ error: `Groq request failed: ${(err as Error).message}` }, { status: 502 });
-  }
 
-  if (!groqRes.ok) {
-    const errText = await groqRes.text();
-    return NextResponse.json({ error: `Groq API error (${groqRes.status}): ${errText}` }, { status: 502 });
+  // Try each candidate vision model, falling through only when Groq says the
+  // current id is unavailable for this account (deprecated / no access / 404).
+  const candidates = groqVisionModelCandidates();
+  let groqRes: Response | null = null;
+  let lastErr = "";
+  let lastStatus = 502;
+  for (const model of candidates) {
+    let res: Response;
+    try {
+      res = await callModel(model);
+    } catch (err) {
+      return NextResponse.json({ error: `Groq request failed: ${(err as Error).message}` }, { status: 502 });
+    }
+    if (res.ok) {
+      groqRes = res;
+      break;
+    }
+    lastErr = await res.text();
+    lastStatus = res.status;
+    if (!isGroqModelUnavailable(res.status, lastErr)) break; // real error → stop
+  }
+  if (!groqRes) {
+    const message = isGroqModelUnavailable(lastStatus, lastErr)
+      ? `No usable Groq vision model — tried ${candidates.join(", ")}. Set GROQ_VISION_MODEL to a model your account can access.`
+      : `Groq API error (${lastStatus}): ${lastErr}`;
+    return NextResponse.json({ error: message }, { status: 502 });
   }
 
   const groqData = await groqRes.json();

@@ -187,7 +187,7 @@ const DEFAULT_MOMENT_LABELS: Record<string, string> = {
 // confirmed against the real broadcast overlay order, which had roamer
 // before gold laner (was previously the other way around).
 const ROLE_ORDER = ["Exp Laner", "Jungler", "Mid Laner", "Roamer", "Gold Laner"];
-const MAPS = ["Expanding Rivers", "Flying Cloud", "Dangerous Grass"];
+const MAPS = ["Expanding Rivers", "Flying Cloud", "Dangerous Grass", "Broken Walls"];
 function roleIndex(role: string | null) {
   const i = ROLE_ORDER.indexOf(role ?? "");
   return i === -1 ? ROLE_ORDER.length : i;
@@ -5756,11 +5756,57 @@ export default function LiveConsolePage() {
     loadAll();
   }
 
+  const [customMapConditions, setCustomMapConditions] = useState<{ id: string; label: string }[]>([]);
+  const [newMapCondition, setNewMapCondition] = useState("");
+  const loadMapConditions = useCallback(async () => {
+    const { data } = await supabase.from("match_map_conditions").select("id, label").eq("match_id", matchId).order("created_at");
+    setCustomMapConditions((data as { id: string; label: string }[]) ?? []);
+  }, [matchId]);
+  useEffect(() => {
+    loadMapConditions();
+  }, [loadMapConditions]);
   async function setGameMap(map: string) {
     if (!game) return;
     const { error } = await supabase.from("games").update({ map }).eq("id", game.id);
     if (error) setError(error.message);
     else loadAll();
+  }
+  // Per-match custom map conditions (match_map_conditions) — labels the admin
+  // adds that show in the map picker for THIS match only, on top of the global
+  // MAPS presets. Setting a game's map to one still just writes games.map; this
+  // list only remembers/edits the custom labels so they're reusable per match.
+  async function addMapCondition(rawLabel: string) {
+    const label = rawLabel.trim();
+    if (!label) return;
+    if (MAPS.includes(label) || customMapConditions.some((c) => c.label === label)) {
+      setNewMapCondition("");
+      return; // already available, nothing to add
+    }
+    const { error } = await supabase.from("match_map_conditions").insert({ match_id: matchId, label });
+    if (error) setError(error.message);
+    else {
+      setNewMapCondition("");
+      loadMapConditions();
+    }
+  }
+  async function renameMapCondition(id: string, current: string) {
+    const next = (window.prompt("Rename map condition:", current) ?? "").trim();
+    if (!next || next === current) return;
+    const { error } = await supabase.from("match_map_conditions").update({ label: next }).eq("id", id);
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    // Carry the rename onto any of this match's games already set to the old label.
+    await supabase.from("games").update({ map: next }).eq("match_id", matchId).eq("map", current);
+    loadMapConditions();
+    loadAll();
+  }
+  async function deleteMapCondition(id: string, label: string) {
+    if (!window.confirm(`Delete the custom map condition "${label}"? Games already set to it keep the value.`)) return;
+    const { error } = await supabase.from("match_map_conditions").delete().eq("id", id);
+    if (error) setError(error.message);
+    else loadMapConditions();
   }
 
   // Finishes the current game with a winner, then either closes out the
@@ -7448,7 +7494,7 @@ export default function LiveConsolePage() {
               );
             })()}
             <section className="flex items-center gap-3 flex-wrap">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <label className="text-xs text-white/50">Map</label>
                 <select
                   value={game.map ?? ""}
@@ -7460,7 +7506,44 @@ export default function LiveConsolePage() {
                   {MAPS.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
+                  {customMapConditions.length > 0 && (
+                    <optgroup label="Custom (this match)">
+                      {customMapConditions.map((c) => (
+                        <option key={c.id} value={c.label}>{c.label}</option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
+                {/* Add / edit / delete custom map conditions scoped to THIS
+                    match only — presets stay global, customs never leak to
+                    other matches' pickers. */}
+                {isEditable && (
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <input
+                      value={newMapCondition}
+                      onChange={(e) => setNewMapCondition(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") addMapCondition(newMapCondition);
+                      }}
+                      placeholder="Add custom map condition…"
+                      className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-44"
+                    />
+                    <button
+                      onClick={() => addMapCondition(newMapCondition)}
+                      disabled={!newMapCondition.trim()}
+                      className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40"
+                    >
+                      Add
+                    </button>
+                    {customMapConditions.map((c) => (
+                      <span key={c.id} className="inline-flex items-center gap-1 text-[11px] bg-white/5 border border-white/10 rounded px-1.5 py-0.5">
+                        {c.label}
+                        <button onClick={() => renameMapCondition(c.id, c.label)} title="Rename" className="text-white/40 hover:text-white/80">✎</button>
+                        <button onClick={() => deleteMapCondition(c.id, c.label)} title="Delete" className="text-white/40 hover:text-red-400">✕</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               {game.status === "finished" && (
                 <div className="flex items-center gap-2">

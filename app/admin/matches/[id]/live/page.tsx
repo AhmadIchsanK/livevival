@@ -17,6 +17,7 @@ import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, typ
 import type { LegacyState } from "@/lib/reconstruction/snapshot";
 import { buildIngestPayload } from "@/lib/reconstruction/persistence";
 import { bannerMatch, extractBannerPlayerName, detectMatchState, detectMatchStateDetailed } from "@/lib/reconstruction/ocrBanners";
+import { parseKda, parseKdaGroupLines } from "@/lib/reconstruction/parseKda";
 import { validateNetWorth } from "@/lib/reconstruction/validators/netWorth";
 import {
   OBJECTIVE_SIDE_ORDER,
@@ -4226,32 +4227,12 @@ export default function LiveConsolePage() {
   // single-character separator" fallback was exactly the kind of
   // non-numeric-character tolerance that risked misreads; "/" is the only
   // punctuation this shape is allowed. Cleaned to digits + "/" first.
-  function parseKda(text: string): { kills: number; deaths: number; assists: number } | null {
-    // Match K/D/A on the ORIGINAL text (spaces around the slashes allowed), NOT
-    // on a version with all non-digit/slash characters stripped out. The old
-    // strip-first approach glued anything on the same row onto the numbers — a
-    // player row like "0/0/0  2956" (K/D/A followed by that player's net worth)
-    // became "0/0/02956", so the net worth bled straight into ASSISTS. Each KDA
-    // value is 1-2 digits; the trailing (?![\d/]) rejects a longer run (a net
-    // worth) fused onto the third number instead of misreading it as assists.
-    const slash = text.match(/(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{1,2})(?![\d/])/);
-    if (!slash) return null;
-    return { kills: Number(slash[1]), deaths: Number(slash[2]), assists: Number(slash[3]) };
-  }
-  // The "kda_group" combined tracker's whole point: one region spanning
-  // all 5 KDA rows, one OCR pass, split back into 5 readings by line. Only
-  // a real "N/N/N" line counts — anything else on the same line (a spell
-  // cooldown digit, a partial/garbled row) simply doesn't match the shape
-  // and is dropped rather than guessed at, exactly the "ignore it if it
-  // doesn't follow x/x/x" behavior asked for. Order in, order out: relies
-  // entirely on Tesseract preserving top-to-bottom line order, which is
-  // what a role-ordered column of rows naturally OCRs as.
-  function parseKdaGroupLines(text: string): { kills: number; deaths: number; assists: number }[] {
-    return text
-      .split(/\n+/)
-      .map((line) => parseKda(line))
-      .filter((k): k is { kills: number; deaths: number; assists: number } => k !== null);
-  }
+  // parseKda / parseKdaGroupLines now live in lib/reconstruction/parseKda (pure
+  // + unit-tested): strict N/N/N shape, net-worth-bleed guard, plus a fallback
+  // that recovers a field OCR'd as look-alike letters (O→0, l→1, S→5, B→8,
+  // Z→2) — a fully-lettered field like "O/O/O" or "S/1/B" now reads instead of
+  // being dropped, which lifts both per-player KDA and the team sums built from
+  // them.
   // The "objectives_group" combined tracker's equivalent: one region
   // spanning the tower/lord/turtle icon cluster, digit-only OCR (icons
   // themselves are images, never text, so they can't appear in the

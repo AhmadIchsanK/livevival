@@ -3156,8 +3156,11 @@ export default function LiveConsolePage() {
     kill_banner: { category: "kill_banner", label: "Kill banner (SAVAGE/MANIAC/etc.)" },
     net_worth_left: { category: "net_worth", label: "Net worth — Left" },
     net_worth_right: { category: "net_worth", label: "Net worth — Right" },
-    // team_kills intentionally omitted — no longer a tracker (derived from
-    // players' combined K/D/A instead).
+    // team_kills re-enabled (option C): the direct scoreboard kill count is a
+    // fast, clean read that speeds up the header; it's validated against the
+    // summed player kills in its handler, so a bad read is held, never trusted.
+    team_kills_left: { category: "team_kills", label: "Team kills — Left" },
+    team_kills_right: { category: "team_kills", label: "Team kills — Right" },
     objectives_group_left: { category: "objectives_group", label: objectivesGroupLabelFor("objectives_group_left")! },
     objectives_group_right: { category: "objectives_group", label: objectivesGroupLabelFor("objectives_group_right")! },
     kda_group_left: { category: "kda_group", label: "K/D/A (combined) — Left: all 5, role order" },
@@ -3518,6 +3521,11 @@ export default function LiveConsolePage() {
     items.push({ category: "net_worth", field: "net_worth_left", label: "Net worth — Left", box: { xPct: 1, yPct: 1, wPct: 11, hPct: 4.5 } });
     items.push({ category: "net_worth", field: "net_worth_right", label: "Net worth — Right", box: { xPct: 88, yPct: 1, wPct: 11, hPct: 4.5 } });
     items.push({ category: "game_timer", field: "game_timer", label: "Game timer", box: { xPct: 45, yPct: 1, wPct: 10, hPct: 4.5 } });
+    // Team kill counts flank the timer at top-center (the big "6 — 5"). Small,
+    // clean 1-2 digit reads that update the header fast (option C); rough
+    // starting boxes, the admin nudges them onto the actual digits.
+    items.push({ category: "team_kills", field: "team_kills_left", label: "Team kills — Left", box: { xPct: 37, yPct: 1, wPct: 5, hPct: 4.5 } });
+    items.push({ category: "team_kills", field: "team_kills_right", label: "Team kills — Right", box: { xPct: 58, yPct: 1, wPct: 5, hPct: 4.5 } });
     // Objectives: SIX small numeric sub-region boxes — three per side — not
     // one combined strip box. Each crops ONLY one objective's number (beside
     // its icon) and is OCR'd digits-only, independently. LEFT reads
@@ -4479,7 +4487,15 @@ export default function LiveConsolePage() {
     // strip box must NOT keep OCRing the combined "0 / 0 / 0" blob). This
     // guarantees a stale box can't feed a bad count into the scoreboard or the
     // reconstruction shadow.
-    const RETIRED_TRACKER_CATEGORIES = new Set(["team_kills", "objective", "player_kda", "objectives_group"]);
+    // team_kills is NO LONGER retired (spec team-kills "option C"): the direct
+    // scoreboard kill-count read is a fast, clean 1-2 digit number that updates
+    // the header instantly, and it's already validated against the summed
+    // player kills in its handler below (never-decreases + a suspicious-jump
+    // flag when it runs more than 10 ahead of what players are individually
+    // credited with). The displayed team kills stay max(direct read, Σ player
+    // kills), so the direct read only ever speeds the count up — the player sum
+    // remains the floor/source of truth, never overwritten by a bad read.
+    const RETIRED_TRACKER_CATEGORIES = new Set(["objective", "player_kda", "objectives_group"]);
     // match_event is processed FIRST each tick so a REPLAY/PAUSE overlay
     // detected this frame suspends the telemetry trackers that follow it in the
     // same pass (see suspendedNow() and the guards in the telemetry cases).
@@ -6902,7 +6918,10 @@ export default function LiveConsolePage() {
         [aId]: latestNetWorth?.team_a_gold ?? 0,
         [bId]: latestNetWorth?.team_b_gold ?? 0,
       },
-      teamKills: { [aId]: computedTeamAKills, [bId]: computedTeamBKills },
+      // Fast display value (option C): max(direct scoreboard read, Σ player
+      // kills), so commentary reacts to the header count without waiting for
+      // all 10 per-player KDA regions to be re-read.
+      teamKills: { [aId]: teamAKillsTotal, [bId]: teamBKillsTotal },
       objectives: {
         [aId]: { turtle: objectiveCount(aId, "turtle"), lord: objectiveCount(aId, "lord"), tower: objectiveCount(aId, "tower") },
         [bId]: { turtle: objectiveCount(bId, "turtle"), lord: objectiveCount(bId, "lord"), tower: objectiveCount(bId, "tower") },

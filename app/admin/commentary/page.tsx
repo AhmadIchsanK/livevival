@@ -46,6 +46,62 @@ export default function CommentaryTemplatesPage() {
   const [editTemplate, setEditTemplate] = useState("");
   const [editCondition, setEditCondition] = useState<CommentaryCondition>("net_worth");
 
+  // AI auto-improve panel
+  const [aiCondition, setAiCondition] = useState<string>("all");
+  const [aiCount, setAiCount] = useState<number>(8);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<{ condition: CommentaryCondition; template: string; reads: string }[]>([]);
+
+  async function generateSuggestions() {
+    setAiLoading(true);
+    setAiError(null);
+    setSuggestions([]);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const res = await fetch("/api/admin/commentary-suggest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ condition: aiCondition, count: aiCount }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setAiError(json.error ?? `Request failed (${res.status})`);
+        return;
+      }
+      setSuggestions(json.suggestions ?? []);
+      if ((json.suggestions ?? []).length === 0) setAiError("The model returned no new lines — try again.");
+    } catch (err) {
+      setAiError((err as Error).message);
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
+  async function acceptSuggestion(s: { condition: CommentaryCondition; template: string }) {
+    const { error } = await supabase.from("commentary_templates").insert({ condition: s.condition, template: s.template });
+    if (error) {
+      setAiError(error.message);
+      return;
+    }
+    setSuggestions((prev) => prev.filter((x) => !(x.condition === s.condition && x.template === s.template)));
+    load();
+  }
+
+  async function acceptAllSuggestions() {
+    if (suggestions.length === 0) return;
+    const { error } = await supabase
+      .from("commentary_templates")
+      .insert(suggestions.map((s) => ({ condition: s.condition, template: s.template })));
+    if (error) {
+      setAiError(error.message);
+      return;
+    }
+    setSuggestions([]);
+    load();
+  }
+
   async function load() {
     const { data, error } = await supabase
       .from("commentary_templates")
@@ -180,6 +236,97 @@ export default function CommentaryTemplatesPage() {
           )}
         </div>
       </form>
+
+      {/* AI auto-improve */}
+      <div className="border border-signal/25 rounded-lg p-4 bg-signal/5 space-y-3">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="text-sm font-semibold flex items-center gap-2">
+              <span>✨ AI auto-improve</span>
+            </h2>
+            <p className="text-xs text-white/50 mt-1 max-w-xl">
+              Generate fresh, varied caster lines with AI. Every suggestion is validated to use only the placeholders its
+              condition supplies, and de-duplicated against what you already have. Review below and add the ones you like.
+            </p>
+          </div>
+          <div className="flex items-end gap-2">
+            <label className="text-xs">
+              <span className="block text-white/50 mb-1">Condition</span>
+              <select
+                value={aiCondition}
+                onChange={(e) => setAiCondition(e.target.value)}
+                className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
+              >
+                <option value="all">All conditions</option>
+                {COMMENTARY_CONDITIONS.map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs">
+              <span className="block text-white/50 mb-1">Per condition</span>
+              <input
+                type="number"
+                min={3}
+                max={12}
+                value={aiCount}
+                onChange={(e) => setAiCount(Math.min(12, Math.max(3, Number(e.target.value) || 8)))}
+                className="w-16 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
+              />
+            </label>
+            <button onClick={generateSuggestions} disabled={aiLoading} className="lv-btn-primary text-sm disabled:opacity-40">
+              {aiLoading ? "Generating…" : "Generate"}
+            </button>
+          </div>
+        </div>
+
+        {aiError && <div className="lv-alert-warning text-xs px-3 py-2">{aiError}</div>}
+
+        {suggestions.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-white/40">{suggestions.length} suggestion{suggestions.length === 1 ? "" : "s"}</span>
+              <div className="flex gap-2">
+                <button onClick={acceptAllSuggestions} className="lv-btn-primary text-xs">
+                  Add all
+                </button>
+                <button onClick={() => setSuggestions([])} className="lv-btn-ghost text-xs">
+                  Dismiss all
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1.5 max-h-96 overflow-y-auto pr-1">
+              {suggestions.map((s, i) => (
+                <div key={`${s.condition}-${i}`} className="flex items-start gap-3 border border-white/10 rounded p-2 bg-black/20">
+                  <div className="flex-1 min-w-0">
+                    <span className="text-[10px] uppercase tracking-wide text-signal/80 bg-signal/10 border border-signal/20 rounded px-1.5 py-0.5">
+                      {CONDITION_LABEL[s.condition] ?? s.condition}
+                    </span>
+                    <p className="text-sm text-white/85 mt-1">{s.template}</p>
+                    <p className="text-[11px] text-white/30 mt-0.5">Reads: &ldquo;{s.reads}&rdquo;</p>
+                  </div>
+                  <div className="flex gap-1 shrink-0">
+                    <button
+                      onClick={() => acceptSuggestion(s)}
+                      className="text-[11px] border border-white/15 text-emerald-300 rounded px-2 py-1 hover:bg-emerald-500/10"
+                    >
+                      Add
+                    </button>
+                    <button
+                      onClick={() => setSuggestions((prev) => prev.filter((_, idx) => idx !== i))}
+                      className="text-[11px] border border-white/15 rounded px-2 py-1 hover:bg-white/10"
+                    >
+                      Skip
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Filter */}
       <div className="flex items-center gap-2">

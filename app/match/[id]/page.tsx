@@ -1612,6 +1612,9 @@ export default function PublicMatchPage() {
             leaving it to eyeballing the bar width. */}
         {showMomentum && (
           <div className="mb-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-white/60 mb-1.5">
+              Win probability <span className="text-white/30 normal-case font-normal">· live estimate</span>
+            </p>
             <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-white/40 mb-1">
               <span className="truncate max-w-[30%]">{match.team_a?.name}</span>
               <span className="normal-case tracking-normal shrink-0 px-1 text-center text-white/70">

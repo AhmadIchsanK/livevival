@@ -4,19 +4,38 @@
 // heavily stylized, so all matching is done against a letters-only, uppercased
 // normalization with tolerant substrings rather than strict word boundaries.
 
+// Full words PLUS one-edge-letter-dropped stems, so a heavily-stylized banner
+// that OCR returns a letter short still matches. Order matters: the more
+// specific streak words (ACE, MANIAC) are unambiguous; DOUBLE/TRIPLE stems are
+// checked as whole-ish tokens. Stems are chosen to be very unlikely to appear
+// in unrelated center-screen text.
 export const KILL_BANNER_KEYWORDS: { needles: string[]; type: string }[] = [
-  { needles: ["SAVAGE"], type: "savage" },
-  { needles: ["MANIAC"], type: "maniac" },
-  { needles: ["TRIPLEKILL", "TRIPLE"], type: "triple_kill" },
-  { needles: ["DOUBLEKILL", "DOUBLE"], type: "double_kill" },
+  { needles: ["SAVAGE", "SAVAG", "AVAGE"], type: "savage" },
+  { needles: ["MANIAC", "MANIA", "ANIAC"], type: "maniac" },
+  { needles: ["TRIPLEKILL", "TRIPLE", "TRIPL", "RIPLE"], type: "triple_kill" },
+  { needles: ["DOUBLEKILL", "DOUBLE", "DOUBL", "OUBLE"], type: "double_kill" },
 ];
 
 export function normalizeBannerText(text: string): string {
   return text.toUpperCase().replace(/[^A-Z]/g, "");
 }
 
+// Like normalizeBannerText but also maps the common OCR digit-for-letter
+// confusions to letters (a stylized "SAVAGE" often reads "5AVAGE", "MANIAC" as
+// "MAN1AC") before stripping, so a partly-numeric read still matches a needle.
+function normalizeBannerGlyphs(text: string): string {
+  return text
+    .toUpperCase()
+    .replace(/0/g, "O")
+    .replace(/1/g, "I")
+    .replace(/5/g, "S")
+    .replace(/8/g, "B")
+    .replace(/4/g, "A")
+    .replace(/[^A-Z]/g, "");
+}
+
 export function bannerMatch(text: string): { type: string } | null {
-  const norm = normalizeBannerText(text);
+  const norm = normalizeBannerGlyphs(text);
   if (!norm) return null;
   for (const k of KILL_BANNER_KEYWORDS) {
     if (k.needles.some((n) => norm.includes(n))) return { type: k.type };

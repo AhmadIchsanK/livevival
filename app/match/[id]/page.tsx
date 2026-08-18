@@ -40,14 +40,15 @@ type Match = {
 // Same phase set as the admin live console (matches the match_state enum).
 // Only shown for live matches — for scheduled/finished ones the plainer
 // status badge already says everything useful.
-const PHASE_LABELS: Record<string, string> = {
-  MATCH_NOT_STARTED: "Waiting",
-  DRAFT_STARTED: "Draft in progress",
-  DRAFT_COMPLETE: "Draft complete",
-  GAME_STARTED: "Game ongoing",
-  GAME_FINISHED: "Game finished",
-  SERIES_FINISHED: "Match finished",
-  TECHNICAL_PAUSE: "Technical pause",
+import type { MsgKey } from "@/lib/messages";
+const PHASE_LABEL_KEYS: Record<string, MsgKey> = {
+  MATCH_NOT_STARTED: "match.phase.waiting",
+  DRAFT_STARTED: "match.phase.draftInProgress",
+  DRAFT_COMPLETE: "match.draftComplete",
+  GAME_STARTED: "match.gameOngoing",
+  GAME_FINISHED: "match.gameFinished",
+  SERIES_FINISHED: "match.phase.matchFinished",
+  TECHNICAL_PAUSE: "match.phase.technicalPause",
 };
 
 // The site owner's revised "four states, one page" spec (superseding the
@@ -1045,7 +1046,7 @@ export default function PublicMatchPage() {
           )}
           {match.status === "live" && (
             <span className="lv-badge bg-white/10 text-white/70">
-              {PHASE_LABELS[match.state] ?? match.state}
+              {PHASE_LABEL_KEYS[match.state] ? t(PHASE_LABEL_KEYS[match.state]) : match.state}
             </span>
           )}
           {liveGameClockLabel && (
@@ -1264,7 +1265,7 @@ export default function PublicMatchPage() {
               aria-expanded={chatOpen}
               className="absolute top-2 right-2 z-10 text-xs rounded-full px-3 py-1.5 bg-black/60 backdrop-blur border border-white/20 text-white hover:bg-black/80 shadow"
             >
-              💬 {chatOpen ? "Hide chat" : "Chat"}
+              💬 {chatOpen ? t("match.hideChat") : t("match.chat")}
             </button>
           )}
         </div>
@@ -1324,7 +1325,7 @@ export default function PublicMatchPage() {
               </span>
             )}
             <span className="text-sm text-white/60">
-              {PHASE_LABELS[match.state] ?? match.state}
+              {PHASE_LABEL_KEYS[match.state] ? t(PHASE_LABEL_KEYS[match.state]) : match.state}
             </span>
           </div>
           {/* Reads top-to-bottom like a chat log — oldest first, newest at
@@ -1849,7 +1850,7 @@ export default function PublicMatchPage() {
                   Share ↗
                 </button>
                 <button onClick={handleCopyLink} className="px-3 py-1.5 rounded border border-white/10 text-white/50 hover:bg-white/5">
-                  {copied ? "Copied!" : "Copy link"}
+                  {copied ? t("match.copied") : t("match.copyLink")}
                 </button>
                 <button
                   onClick={() => setRecapRefreshKey((k) => k + 1)}

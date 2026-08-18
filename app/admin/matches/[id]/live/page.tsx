@@ -5824,6 +5824,11 @@ export default function LiveConsolePage() {
 
   const [customMapConditions, setCustomMapConditions] = useState<{ id: string; label: string }[]>([]);
   const [newMapCondition, setNewMapCondition] = useState("");
+  // Which game's map-selection pop-out has been dismissed. The pop-out shows
+  // once the draft is complete and the game has no map yet (see the overlay near
+  // the end of the render) so the admin is prompted to pick the map before
+  // starting the game rather than forgetting it in the small Map dropdown.
+  const [dismissedMapPromptGameId, setDismissedMapPromptGameId] = useState<string | null>(null);
   const loadMapConditions = useCallback(async () => {
     const { data } = await supabase.from("match_map_conditions").select("id, label").eq("match_id", matchId).order("created_at");
     setCustomMapConditions((data as { id: string; label: string }[]) ?? []);
@@ -9953,6 +9958,73 @@ export default function LiveConsolePage() {
         <p className="text-xs text-emerald-300 fixed bottom-16 right-4 bg-black/80 border border-emerald-500/30 rounded px-3 py-2 z-50">
           {undoStatus}
         </p>
+      )}
+
+      {/* Map-selection pop-out — appears once the draft is complete and the
+          game still has no map, so the admin picks it before starting the game
+          instead of overlooking the small Map dropdown. Dismissable (Skip), and
+          selecting a map closes it. */}
+      {match.state === "DRAFT_COMPLETE" && game && !game.map && dismissedMapPromptGameId !== game.id && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md bg-ink border border-white/15 rounded-xl shadow-2xl p-5 space-y-4">
+            <div>
+              <h3 className="text-base font-bold">Select the map for Game {game.game_number}</h3>
+              <p className="text-xs text-white/50 mt-0.5">Draft is complete — pick the map/condition before starting the game.</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {MAPS.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => {
+                    setGameMap(m);
+                    setDismissedMapPromptGameId(game.id);
+                  }}
+                  className="text-sm border border-white/15 rounded-lg px-3 py-2.5 hover:border-signal hover:bg-signal/10 text-left"
+                >
+                  {m}
+                </button>
+              ))}
+              {customMapConditions.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => {
+                    setGameMap(c.label);
+                    setDismissedMapPromptGameId(game.id);
+                  }}
+                  className="text-sm border border-white/15 rounded-lg px-3 py-2.5 hover:border-signal hover:bg-signal/10 text-left"
+                >
+                  {c.label} <span className="text-white/40 text-[10px]">· custom</span>
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <input
+                value={newMapCondition}
+                onChange={(e) => setNewMapCondition(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") addMapCondition(newMapCondition);
+                }}
+                placeholder="Add a custom map condition…"
+                className="flex-1 min-w-0 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
+              />
+              <button
+                onClick={() => addMapCondition(newMapCondition)}
+                disabled={!newMapCondition.trim()}
+                className="text-xs border border-white/20 text-white/70 rounded px-2 py-1.5 hover:bg-white/10 disabled:opacity-40 shrink-0"
+              >
+                Add
+              </button>
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={() => setDismissedMapPromptGameId(game.id)}
+                className="text-xs text-white/50 hover:text-white/80 px-3 py-1.5"
+              >
+                Skip for now
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Action errors (rejected phase change, blocked delete, etc.) —

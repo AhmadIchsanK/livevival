@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useLanguage } from "@/lib/i18n";
 import { TeamSocialLinks } from "@/components/TeamSocialLinks";
 import { TeamLogo, LOGO_BG_OVERRIDES, type LogoBgOverride } from "@/components/TeamLogo";
 import { loadRecentEdits, timeAgoShort, type RecentEdit } from "@/lib/recentEdits";
@@ -125,6 +126,7 @@ function teamToForm(t: Team): TeamFormState {
 const TEAMS_PAGE_SIZE = 50;
 
 export default function TeamsPage() {
+  const { t: tr } = useLanguage();
   const [teams, setTeams] = useState<Team[]>([]);
   const [hasMoreTeams, setHasMoreTeams] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -354,12 +356,12 @@ export default function TeamsPage() {
 
   return (
     <div className="text-white space-y-6 max-w-5xl">
-      <h1 className="lv-heading text-lg">Teams</h1>
+      <h1 className="lv-heading text-lg">{tr("nav.teams")}</h1>
 
       <form onSubmit={handleAdd} className="space-y-3">
         <div className="flex gap-3 items-end flex-wrap">
           <div className="flex-1 min-w-[160px] space-y-1">
-            <label className="text-xs text-white/50">Team name</label>
+            <label className="text-xs text-white/50">{tr("admin.c.teamName")}</label>
             <input
               required
               value={form.name}
@@ -374,7 +376,7 @@ export default function TeamsPage() {
             )}
           </div>
           <div className="w-40 space-y-1">
-            <label className="text-xs text-white/50">Location</label>
+            <label className="text-xs text-white/50">{tr("admin.c.location")}</label>
             <input
               value={form.location}
               onChange={(e) => setFormField("location", e.target.value)}
@@ -383,7 +385,7 @@ export default function TeamsPage() {
             />
           </div>
           <div className="w-32 space-y-1">
-            <label className="text-xs text-white/50">Region</label>
+            <label className="text-xs text-white/50">{tr("admin.c.region")}</label>
             <input
               value={form.region}
               onChange={(e) => setFormField("region", e.target.value)}
@@ -392,7 +394,7 @@ export default function TeamsPage() {
             />
           </div>
           <div className="flex-1 min-w-[200px] space-y-1">
-            <label className="text-xs text-white/50">Logo URL</label>
+            <label className="text-xs text-white/50">{tr("admin.c.logoUrl")}</label>
             <input
               value={form.logoUrl}
               onChange={(e) => setFormField("logoUrl", e.target.value)}
@@ -417,7 +419,7 @@ export default function TeamsPage() {
             <input
               value={form.websiteUrl}
               onChange={(e) => setFormField("websiteUrl", e.target.value)}
-              placeholder="Website URL"
+              placeholder={tr("admin.teams.website")}
               className={socialInputClass}
             />
             <input
@@ -462,7 +464,7 @@ export default function TeamsPage() {
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter by name, location, or region..."
+            placeholder={tr("admin.teams.filter")}
             className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
@@ -470,8 +472,8 @@ export default function TeamsPage() {
             onChange={(e) => setSortKey(e.target.value as SortKey)}
             className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
-            <option value="name">Name A→Z</option>
-            <option value="name_desc">Name Z→A</option>
+            <option value="name">{tr("admin.c.nameAZ")}</option>
+            <option value="name_desc">{tr("admin.c.nameZA")}</option>
           </select>
         </div>
         {selected.size > 0 && (
@@ -481,7 +483,7 @@ export default function TeamsPage() {
               onChange={(e) => setMergeTargetId(e.target.value)}
               className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
             >
-              <option value="">Merge into...</option>
+              <option value="">{tr("admin.c.mergeInto")}</option>
               {teams
                 .filter((t) => !selected.has(t.id))
                 .map((t) => (
@@ -538,7 +540,7 @@ export default function TeamsPage() {
                       onChange={(e) => setEditField("logoBgOverride", e.target.value as LogoBgOverride | "")}
                       className="w-full bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
                     >
-                      <option value="">Auto</option>
+                      <option value="">{tr("admin.c.auto")}</option>
                       {LOGO_BG_OVERRIDES.map((o) => (
                         <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
@@ -642,7 +644,7 @@ export default function TeamsPage() {
                       onChange={(e) => setLogoBgOverride(t.id, e.target.value as LogoBgOverride | "")}
                       className="w-full bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs"
                     >
-                      <option value="">Auto</option>
+                      <option value="">{tr("admin.c.auto")}</option>
                       {LOGO_BG_OVERRIDES.map((o) => (
                         <option key={o.value} value={o.value}>{o.label}</option>
                       ))}

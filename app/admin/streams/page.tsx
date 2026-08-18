@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useLanguage } from "@/lib/i18n";
 import { loadRecentEdits, timeAgoShort, type RecentEdit } from "@/lib/recentEdits";
 
 type Option = { id: string; label: string };
@@ -86,6 +87,7 @@ function YoutubeThumbnail({ url, className }: { url: string; className: string }
 }
 
 export default function StreamsPage() {
+  const { t } = useLanguage();
   const [tournaments, setTournaments] = useState<Option[]>([]);
   const [streams, setStreams] = useState<Stream[]>([]);
   const [linkedStreamIds, setLinkedStreamIds] = useState<Set<string>>(new Set());
@@ -325,7 +327,7 @@ export default function StreamsPage() {
   return (
     <div className="text-white space-y-8 max-w-6xl">
       <div>
-        <h1 className="lv-heading text-lg mb-2">Add a livestream / VOD link</h1>
+        <h1 className="lv-heading text-lg mb-2">{t("admin.s.addTitle")}</h1>
         <p className="text-xs text-white/40 mb-4">
           Streams are just the embeddable YouTube link(s) shown on a match's public page —
           they don't drive automation. Live match state/score comes from the always-on Liquipedia
@@ -338,7 +340,7 @@ export default function StreamsPage() {
         </p>
         <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4 max-w-xl">
           <div className="col-span-2 space-y-1">
-            <label className="text-xs text-white/50">YouTube livestream URL</label>
+            <label className="text-xs text-white/50">{t("admin.s.ytUrl")}</label>
             <div className="flex gap-2 items-start">
               <input
                 required
@@ -361,20 +363,20 @@ export default function StreamsPage() {
             {titleFetchError && <p className="text-[10px] text-red-400">{titleFetchError}</p>}
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-white/50">Tournament</label>
+            <label className="text-xs text-white/50">{t("admin.m.tournament")}</label>
             <select
               value={tournamentId}
               onChange={(e) => setTournamentId(e.target.value)}
               className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
             >
-              <option value="">None</option>
+              <option value="">{t("admin.c.none")}</option>
               {tournaments.map((t) => (
                 <option key={t.id} value={t.id}>{t.label}</option>
               ))}
             </select>
           </div>
           <div className="space-y-1">
-            <label className="text-xs text-white/50">Overlay hint (auto-filled from YouTube title, editable)</label>
+            <label className="text-xs text-white/50">{t("admin.s.overlayHint")}</label>
             <input
               value={overlayTemplate}
               onChange={(e) => setOverlayTemplate(e.target.value)}
@@ -395,7 +397,7 @@ export default function StreamsPage() {
 
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="lv-heading text-lg">Streams</h2>
+          <h2 className="lv-heading text-lg">{t("admin.s.streams")}</h2>
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex gap-1 text-xs">
               {(["all", "scheduled", "live", "ended"] as const).map((s) => (
@@ -415,7 +417,7 @@ export default function StreamsPage() {
               onChange={(e) => setTournamentFilter(e.target.value)}
               className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
             >
-              <option value="">All tournaments</option>
+              <option value="">{t("admin.c.allTournaments")}</option>
               {tournaments.map((t) => (
                 <option key={t.id} value={t.id}>{t.label}</option>
               ))}
@@ -426,8 +428,8 @@ export default function StreamsPage() {
               title="A stream is 'linked' when at least one match points at it"
               className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
             >
-              <option value="all">All streams</option>
-              <option value="unlinked">Unlinked only</option>
+              <option value="all">{t("admin.c.allTournaments")}</option>
+              <option value="unlinked">{t("admin.s.unlinkedOnly")}</option>
             </select>
             <label className="flex items-center gap-1.5 text-xs text-white/50">
               <input type="checkbox" checked={showEnded} onChange={(e) => setShowEnded(e.target.checked)} />
@@ -438,8 +440,8 @@ export default function StreamsPage() {
               onChange={(e) => setSortKey(e.target.value as SortKey)}
               className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
             >
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
+              <option value="newest">{t("admin.c.newestFirst")}</option>
+              <option value="oldest">{t("admin.c.oldestFirst")}</option>
             </select>
             {selected.size > 0 && (
               <button
@@ -480,7 +482,7 @@ export default function StreamsPage() {
                         onChange={(e) => setEditTournamentId(e.target.value)}
                         className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                       >
-                        <option value="">No tournament</option>
+                        <option value="">{t("admin.c.noTournament")}</option>
                         {tournaments.map((t) => (
                           <option key={t.id} value={t.id}>{t.label}</option>
                         ))}

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useLanguage } from "@/lib/i18n";
 import { PlayerCountryFlag } from "@/components/PlayerCountryFlag";
 import { PlayerLinks } from "@/components/PlayerLinks";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
@@ -25,6 +26,7 @@ type SortKey = "ign" | "team" | "role";
 const ROLES = ["Exp Laner", "Jungler", "Mid Laner", "Gold Laner", "Roamer"];
 
 export default function PlayersPage() {
+  const { t: tr } = useLanguage();
   const [players, setPlayers] = useState<Player[]>([]);
   const [teams, setTeams] = useState<Option[]>([]);
   const [filter, setFilter] = useState("");
@@ -257,7 +259,7 @@ export default function PlayersPage() {
 
   return (
     <div className="text-white space-y-6 max-w-7xl">
-      <h1 className="lv-heading text-lg">Players</h1>
+      <h1 className="lv-heading text-lg">{tr("nav.players")}</h1>
 
       <form onSubmit={handleAdd} className="grid grid-cols-3 gap-3 max-w-xl items-end">
         <div className="space-y-1">
@@ -270,26 +272,26 @@ export default function PlayersPage() {
           />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Role</label>
+          <label className="text-xs text-white/50">{tr("admin.c.role")}</label>
           <select
             value={role}
             onChange={(e) => setRole(e.target.value)}
             className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           >
-            <option value="">Unknown</option>
+            <option value="">{tr("admin.c.unknown")}</option>
             {ROLES.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}
           </select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-white/50">Team</label>
+          <label className="text-xs text-white/50">{tr("admin.c.team")}</label>
           <select
             value={teamId}
             onChange={(e) => setTeamId(e.target.value)}
             className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           >
-            <option value="">None</option>
+            <option value="">{tr("admin.c.none")}</option>
             {teams.map((t) => (
               <option key={t.id} value={t.id}>{t.label}</option>
             ))}
@@ -312,7 +314,7 @@ export default function PlayersPage() {
             onChange={(e) => setBulkTeamId(e.target.value)}
             className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
           >
-            <option value="">Select team...</option>
+            <option value="">{tr("admin.c.selectTeam")}</option>
             {teams.map((t) => (
               <option key={t.id} value={t.id}>{t.label}</option>
             ))}
@@ -344,7 +346,7 @@ export default function PlayersPage() {
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            placeholder="Filter by IGN or team..."
+            placeholder={tr("admin.players.filter")}
             className="flex-1 min-w-[160px] bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm"
           />
           <select
@@ -352,7 +354,7 @@ export default function PlayersPage() {
             onChange={(e) => setTeamFilter(e.target.value)}
             className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
-            <option value="">All teams</option>
+            <option value="">{tr("admin.c.allTeams")}</option>
             {teams.map((t) => (
               <option key={t.id} value={t.id}>{t.label}</option>
             ))}
@@ -362,7 +364,7 @@ export default function PlayersPage() {
             onChange={(e) => setRoleFilter(e.target.value)}
             className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
-            <option value="">All roles</option>
+            <option value="">{tr("admin.c.allRoles")}</option>
             {ROLES.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}
@@ -372,9 +374,9 @@ export default function PlayersPage() {
             onChange={(e) => setSortKey(e.target.value as SortKey)}
             className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
-            <option value="ign">Sort: IGN</option>
-            <option value="team">Sort: Team</option>
-            <option value="role">Sort: Role</option>
+            <option value="ign">{tr("admin.c.sortIgn")}</option>
+            <option value="team">{tr("admin.c.sortTeam")}</option>
+            <option value="role">{tr("admin.c.sortRole")}</option>
           </select>
         </div>
         {selected.size > 0 && (
@@ -384,7 +386,7 @@ export default function PlayersPage() {
               onChange={(e) => setBulkTeamId(e.target.value)}
               className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
             >
-              <option value="">Reassign to team...</option>
+              <option value="">{tr("admin.c.reassignTeam")}</option>
               {teams.map((t) => (
                 <option key={t.id} value={t.id}>{t.label}</option>
               ))}
@@ -454,7 +456,7 @@ export default function PlayersPage() {
                       onChange={(e) => setEditRole(e.target.value)}
                       className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     >
-                      <option value="">Unknown</option>
+                      <option value="">{tr("admin.c.unknown")}</option>
                       {ROLES.map((r) => (
                         <option key={r} value={r}>{r}</option>
                       ))}
@@ -466,7 +468,7 @@ export default function PlayersPage() {
                       onChange={(e) => setEditTeamId(e.target.value)}
                       className="w-full bg-white/10 border border-white/10 rounded px-2 py-1 text-sm"
                     >
-                      <option value="">None</option>
+                      <option value="">{tr("admin.c.none")}</option>
                       {teams.map((t) => (
                         <option key={t.id} value={t.id}>{t.label}</option>
                       ))}

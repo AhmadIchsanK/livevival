@@ -4073,12 +4073,24 @@ export default function LiveConsolePage() {
       const id = setInterval(tick, 1000);
       return () => clearInterval(id);
     }
-    if (captureActive) return; // captureTick() owns it while actively reading
+    // OCR clock source: interpolate every second from the persisted anchor
+    // (current_time_seconds @ current_time_updated_at) so the admin timer keeps
+    // moving between OCR reads — exactly like the public page's live clock,
+    // which ticks off a 1s `nowMs` — instead of freezing on the last read.
+    // captureTick() still re-anchors current_time_seconds/_updated_at on each
+    // real read (which re-runs this effect via its deps), so the interpolation
+    // is corrected against ground truth every capture cycle rather than drifting.
     if (game.current_time_seconds == null || !game.current_time_updated_at) return;
-    const elapsed = Math.floor((Date.now() - new Date(game.current_time_updated_at).getTime()) / 1000);
-    const totalSeconds = game.current_time_seconds + elapsed;
-    setMinute(Math.floor(totalSeconds / 60));
-    setSecondOfMinute(totalSeconds % 60);
+    const anchorSeconds = game.current_time_seconds;
+    const anchorAt = new Date(game.current_time_updated_at).getTime();
+    const tick = () => {
+      const totalSeconds = anchorSeconds + Math.floor((Date.now() - anchorAt) / 1000);
+      setMinute(Math.floor(totalSeconds / 60));
+      setSecondOfMinute(totalSeconds % 60);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     game?.id,
@@ -4088,7 +4100,6 @@ export default function LiveConsolePage() {
     game?.manual_time_started_at,
     game?.current_time_seconds,
     game?.current_time_updated_at,
-    captureActive,
   ]);
 
   // Same pattern as updateGameClock but for the two other phase-scoped
@@ -6307,9 +6318,16 @@ export default function LiveConsolePage() {
         {trackers
           .filter((t) => (canvasPhaseFilter ? t.phase === canvasPhaseFilter : true))
           .filter(({ field }) => field !== calibratingField)
-          .map(({ field, label }) => {
+          // The center match-state box spans ~40%×22% of the frame, so it
+          // overlaps most other trackers. Render it FIRST and pin it to the
+          // back (zIndex 0) so its click target never sits on top of and
+          // blocks the smaller trackers underneath when editing the layout.
+          .slice()
+          .sort((a, b) => (a.category === "match_event" ? -1 : 0) - (b.category === "match_event" ? -1 : 0))
+          .map(({ field, label, category }) => {
             const box = regions[field];
             if (!box) return null;
+            const boxZ = category === "match_event" ? 0 : 2;
             // Tracker edit mode OFF: present but inert — a thin outline
             // only, no click handler, no drag handles, so it never
             // intercepts a click meant for whatever's playing underneath.
@@ -6339,6 +6357,7 @@ export default function LiveConsolePage() {
                       top: `${box.yPct}%`,
                       width: `${box.wPct}%`,
                       height: `${box.hPct}%`,
+                      zIndex: boxZ,
                     }}
                   />
                   {dot}
@@ -6364,6 +6383,7 @@ export default function LiveConsolePage() {
                     top: `${box.yPct}%`,
                     width: `${box.wPct}%`,
                     height: `${box.hPct}%`,
+                    zIndex: boxZ,
                   }}
                 />
                 {dot}

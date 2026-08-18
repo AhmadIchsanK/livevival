@@ -315,7 +315,7 @@ export default function PublicMatchPage() {
   const matchId = params.id as string;
   const { theme, resolvedTheme } = useTheme();
   const isDarkTheme = (resolvedTheme ?? theme) === "dark";
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
   // Helper for the "— Game N" suffix so it localizes with the rest.
   const gameSuffix = (n: number | undefined) => (games.length > 1 && n ? ` — ${t("match.game")} ${n}` : "");
 
@@ -970,7 +970,7 @@ export default function PublicMatchPage() {
           )}{" "}
           · {match.tournament?.tier}-Tier · {match.format}
           {match.stage ? ` · ${match.stage}` : ""}
-          {match.scheduled_at ? ` · ${formatMatchDate(match.scheduled_at)}` : ""}
+          {match.scheduled_at ? ` · ${formatMatchDate(match.scheduled_at, lang)}` : ""}
         </p>
         <div className="flex items-center gap-3 flex-wrap">
           {/* items-start (not items-end) — the logo is always the first
@@ -1057,7 +1057,7 @@ export default function PublicMatchPage() {
           )}
           {liveCountdownLabel ? (
             <span className="lv-badge bg-white/10 text-white/70 tabular-nums" title="Starts in">
-              ⏳ Starts in {liveCountdownLabel}
+              ⏳ {t("match.startsIn", { t: liveCountdownLabel })}
             </span>
           ) : (
             match.state === "MATCH_NOT_STARTED" &&
@@ -1112,18 +1112,18 @@ export default function PublicMatchPage() {
         </div>
 
         {isForfeitWin && seriesWinnerName && (
-          <p className="lv-alert-warning">🟥 {seriesWinnerName} win by default — this match was decided without any games being played.</p>
+          <p className="lv-alert-warning">🟥 {t("match.forfeitWin", { name: seriesWinnerName })}</p>
         )}
 
         {mvp && (
           <p className="text-sm text-white/70">
-            <span title="Role-weighted MVP — fair across roles (kills, assists, deaths and team-fight participation)">🏆 Game {selectedGame?.game_number} MVP:</span>{" "}
+            <span title="Role-weighted MVP — fair across roles (kills, assists, deaths and team-fight participation)">🏆 {t("match.mvpLabel", { n: selectedGame?.game_number ?? "" })}</span>{" "}
             {mvp.player?.ign} ({mvp.hero_name}) — {mvp.kills ?? "TBD"}/{mvp.deaths ?? "TBD"}/{mvp.assists ?? "TBD"}
           </p>
         )}
         {svpStat && svpStat.id !== mvp?.id && (
           <p className="text-sm text-white/50">
-            <span title="Standout on the other team (silver MVP), same role-weighted scoring">🥈 SVP:</span>{" "}
+            <span title="Standout on the other team (silver MVP), same role-weighted scoring">🥈 {t("match.svpLabel")}</span>{" "}
             {svpStat.player?.ign} ({svpStat.hero_name}) — {svpStat.kills ?? "TBD"}/{svpStat.deaths ?? "TBD"}/{svpStat.assists ?? "TBD"}
           </p>
         )}
@@ -1197,10 +1197,10 @@ export default function PublicMatchPage() {
                   <span className="font-semibold">{t("match.game")} {g.game_number}</span>
                   <span className="text-white/60">
                     {winnerName
-                      ? `Recap — ${winnerName} won`
+                      ? t("match.recapWon", { name: winnerName })
                       : g.id === liveGameId && match.state !== "SERIES_FINISHED"
                       ? "In progress…"
-                      : "Not started yet"}
+                      : t("match.notStartedYet")}
                   </span>
                 </button>
               );
@@ -1255,7 +1255,7 @@ export default function PublicMatchPage() {
           ) : (
             videoUrl && (
               <a href={videoUrl} target="_blank" className="lv-nav-link block">
-                Watch Game {selectedGame?.game_number} ↗ (link not embeddable)
+                {t("match.watchGameN", { n: selectedGame?.game_number ?? "" })}
               </a>
             )
           )}
@@ -1834,7 +1834,7 @@ export default function PublicMatchPage() {
                       recapRatio === r ? "border-signal text-signal" : "border-white/10 text-white/50 hover:bg-white/5"
                     }`}
                   >
-                    {r === "portrait" ? "Portrait" : "Landscape"}
+                    {r === "portrait" ? t("match.portrait") : t("match.landscape")}
                   </button>
                 ))}
               </div>

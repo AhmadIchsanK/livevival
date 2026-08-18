@@ -43,6 +43,43 @@ export function bannerMatch(text: string): { type: string } | null {
   return null;
 }
 
+// The words that make up the banner PHRASE itself (streak name + "KILL"), so
+// they can be told apart from the player's IGN in the same crop. Includes the
+// same one-edge-dropped stems the matcher tolerates, plus the KILL suffix.
+const BANNER_PHRASE_WORDS = new Set<string>([
+  "SAVAGE", "SAVAG", "AVAGE",
+  "MANIAC", "MANIA", "ANIAC",
+  "DOUBLE", "DOUBL", "OUBLE", "DOUBLEKILL",
+  "TRIPLE", "TRIPL", "RIPLE", "TRIPLEKILL",
+  "KILL", "KILLS", "ILL",
+]);
+
+// Best-effort player/IGN extraction from a kill-banner OCR crop. MLBB renders
+// the banner as "{IGN} DOUBLE KILL" (occasionally the IGN trails the phrase),
+// so drop the banner-phrase words and take the most name-like leftover token —
+// the longest remaining run of letters/digits, which an IGN reliably is next to
+// stray single-glyph noise. Returns null when nothing but the phrase is present
+// (e.g. "SAVAGE!!"), in which case the banner is still logged, just unattributed.
+export function extractBannerPlayerName(text: string): string | null {
+  const tokens = text.split(/[^A-Za-z0-9]+/).map((t) => t.trim()).filter(Boolean);
+  const candidates = tokens.filter((t) => {
+    if (!/[A-Za-z]/.test(t)) return false; // must contain letters (a pure number isn't an IGN)
+    const lettersOnly = t.toUpperCase().replace(/[^A-Z]/g, "");
+    if (lettersOnly.length < 3) return false; // too short to distinguish from noise
+    if (BANNER_PHRASE_WORDS.has(lettersOnly)) return false; // it's the banner phrase, not a name
+    return true;
+  });
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => b.length - a.length)[0];
+}
+
+// bannerMatch plus the player name it can recover from the same crop.
+export function bannerMatchDetailed(text: string): { type: string; playerName: string | null } | null {
+  const m = bannerMatch(text);
+  if (!m) return null;
+  return { type: m.type, playerName: extractBannerPlayerName(text) };
+}
+
 export type MatchState = "crystal" | "replay" | "pause";
 
 // End-game keywords MLBB shows the instant the base crystal falls. VICTORY /

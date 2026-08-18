@@ -16,7 +16,7 @@ import { clientShadowModeEnabled } from "@/lib/featureFlags";
 import { ensureSession, runShadowTick, emptyShadowReads, type ShadowSession, type ShadowTickReads } from "@/lib/reconstruction/shadowCapture";
 import type { LegacyState } from "@/lib/reconstruction/snapshot";
 import { buildIngestPayload } from "@/lib/reconstruction/persistence";
-import { bannerMatch, detectMatchState, detectMatchStateDetailed } from "@/lib/reconstruction/ocrBanners";
+import { bannerMatch, extractBannerPlayerName, detectMatchState, detectMatchStateDetailed } from "@/lib/reconstruction/ocrBanners";
 import { validateNetWorth } from "@/lib/reconstruction/validators/netWorth";
 import {
   OBJECTIVE_SIDE_ORDER,
@@ -4670,12 +4670,14 @@ export default function LiveConsolePage() {
             // banners.
             const found = bannerMatch(trimmed);
             if (found && (dismissedSuggestionUntilRef.current[found.type] ?? 0) <= Date.now()) {
-              // MLBB's own kill banner reads "{player} {MOMENT TEXT}" — the
-              // first alphabetic run is the best guess at a player name;
-              // matchPlayerId tolerates OCR noise via its substring fallback,
-              // and simply comes back null (still loggable, just unattributed)
-              // if nothing resolves.
-              const namePart = (trimmed.match(/[A-Za-z]{3,}/)?.[0] ?? "").trim();
+              // MLBB's own kill banner reads "{IGN} {MOMENT TEXT}" — recover the
+              // IGN by stripping the banner-phrase words (SAVAGE/MANIAC/DOUBLE/
+              // TRIPLE/KILL) and taking the most name-like leftover token, rather
+              // than blindly grabbing the first alphabetic run (which was usually
+              // the banner word itself). matchPlayerId tolerates OCR noise via its
+              // substring fallback, and comes back null (still loggable, just
+              // unattributed) if nothing resolves.
+              const namePart = extractBannerPlayerName(trimmed) ?? "";
               const playerId = namePart ? matchPlayerId(namePart) : null;
               const playerName = playerId ? players.find((p) => p.id === playerId)?.ign ?? null : null;
               setSuggestion({ type: found.type, raw: trimmed, playerId, playerName });

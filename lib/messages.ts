@@ -103,9 +103,26 @@ export const MESSAGES = {
   "matches.recentResults": { en: "Recent results", id: "Hasil Terbaru" },
   "matches.noLive": { en: "No live matches right now", id: "Nggak ada match live sekarang" },
   "matches.noUpcoming": { en: "No upcoming matches scheduled", id: "Belum ada match terjadwal" },
+  "matches.searchPlaceholder": { en: "Search team or tournament...", id: "Cari tim atau turnamen..." },
+  "matches.noneHere": { en: "No matches here.", id: "Nggak ada match di sini." },
+  "matches.loadingMatches": { en: "Loading matches...", id: "Memuat pertandingan..." },
+  "matches.sortEarliest": { en: "Date: earliest first", id: "Tanggal: paling awal dulu" },
+  "matches.sortLatest": { en: "Date: latest first", id: "Tanggal: paling akhir dulu" },
   "home.tagline": {
     en: "Live MLBB esports scores, drafts, and analytics",
     id: "Skor, draft, dan analitik esports MLBB secara live",
+  },
+  "home.liveNow": { en: "Live now", id: "Sedang Live" },
+  "home.upcomingNextDays": { en: "Upcoming — next {n} days", id: "Mendatang — {n} hari ke depan" },
+  "home.noUpcomingInDays": {
+    en: "No upcoming matches scheduled in the next {n} days.",
+    id: "Belum ada match terjadwal dalam {n} hari ke depan.",
+  },
+  "common.tbd": { en: "TBD", id: "TBD" },
+  "common.liveBadge": { en: "Live", id: "Live" },
+  "home.noLiveCheckUpcoming": {
+    en: "No matches live right now — check upcoming below.",
+    id: "Nggak ada match live sekarang — cek yang mendatang di bawah.",
   },
 
   // ── Language / theme toggles ─────────────────────────────────────────

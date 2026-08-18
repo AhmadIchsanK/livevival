@@ -7,6 +7,7 @@ import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
+import { useLanguage } from "@/lib/i18n";
 import { MatchCard } from "@/components/MatchCard";
 
 type MatchRow = {
@@ -33,9 +34,9 @@ const MATCH_SELECT = `id, status, scheduled_at, format, stage, update_source, no
 const FINISHED_FETCH_CAP = 300;
 
 const TABS = [
-  { key: "live", label: "Ongoing" },
-  { key: "scheduled", label: "Upcoming" },
-  { key: "finished", label: "Finished" },
+  { key: "live", labelKey: "common.ongoing" },
+  { key: "scheduled", labelKey: "common.upcoming" },
+  { key: "finished", labelKey: "common.finished" },
 ] as const;
 type TabKey = (typeof TABS)[number]["key"];
 
@@ -50,6 +51,7 @@ export default function MatchesPage() {
 }
 
 function MatchesPageInner() {
+  const { t: tr } = useLanguage();
   const searchParams = useSearchParams();
   const [tab, setTab] = useState<TabKey>("live");
   const [byStatus, setByStatus] = useState<Record<TabKey, MatchRow[]>>({ live: [], scheduled: [], finished: [] });
@@ -120,12 +122,12 @@ function MatchesPageInner() {
       </header>
 
       <div>
-        <h1 className="lv-heading mb-4">Matches</h1>
+        <h1 className="lv-heading mb-4">{tr("nav.matches")}</h1>
         <div className="flex flex-wrap gap-2 mb-4">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search team or tournament..."
+            placeholder={tr("matches.searchPlaceholder")}
             className="flex-1 min-w-[200px] bg-white/5 border border-white/10 rounded px-3 py-1.5 text-sm outline-none focus:border-signal"
           />
           <select
@@ -133,27 +135,27 @@ function MatchesPageInner() {
             onChange={(e) => setSortKey(e.target.value as SortKey)}
             className="bg-white/5 border border-white/10 rounded px-2 py-1.5 text-sm"
           >
-            <option value="date_asc">Date: earliest first</option>
-            <option value="date_desc">Date: latest first</option>
+            <option value="date_asc">{tr("matches.sortEarliest")}</option>
+            <option value="date_desc">{tr("matches.sortLatest")}</option>
           </select>
         </div>
         <div className="flex gap-2 border-b border-white/10">
-          {TABS.map((t) => (
+          {TABS.map((tb) => (
             <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
+              key={tb.key}
+              onClick={() => setTab(tb.key)}
               className={`px-3 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${
-                tab === t.key ? "border-signal text-signal" : "border-transparent text-white/50 hover:text-white"
+                tab === tb.key ? "border-signal text-signal" : "border-transparent text-white/50 hover:text-white"
               }`}
             >
-              {t.label} <span className="text-white/30 tabular-nums">({byStatus[t.key].length})</span>
+              {tr(tb.labelKey)} <span className="text-white/30 tabular-nums">({byStatus[tb.key].length})</span>
             </button>
           ))}
         </div>
       </div>
 
       {loading ? (
-        <p className="text-white/40 text-sm">Loading matches...</p>
+        <p className="text-white/40 text-sm">{tr("matches.loadingMatches")}</p>
       ) : (
         <div className="grid gap-2 lg:grid-cols-2">
           {list.map((m) => (
@@ -175,7 +177,7 @@ function MatchesPageInner() {
               notificationTier={m.notification_tier}
             />
           ))}
-          {list.length === 0 && <p className="text-white/30 text-sm text-center py-8">No matches here.</p>}
+          {list.length === 0 && <p className="text-white/30 text-sm text-center py-8">{tr("matches.noneHere")}</p>}
         </div>
       )}
     </main>

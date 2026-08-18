@@ -1084,7 +1084,7 @@ export default function LiveConsolePage() {
       `${match.team_a?.name} ${aWins} – ${bWins} ${match.team_b?.name}\n${match.tournament?.name}`,
       buildDraftRecap(),
       kdaLines,
-      momentLines ? `<b>Moments</b>\n${momentLines}` : "",
+      momentLines ? `<b>{tt("lc.moments")}</b>\n${momentLines}` : "",
     ].filter(Boolean);
 
     await postToTelegram(parts.join("\n\n"), {
@@ -2091,7 +2091,7 @@ export default function LiveConsolePage() {
       // screenshot used to be an entirely separate system with no path to
       // the channel at all.
       postToTelegram(
-        `📸 <b>Screenshot</b> — ${match?.team_a?.name} vs ${match?.team_b?.name}${noteOverride ?? screenshotNote ? `\n${noteOverride ?? screenshotNote}` : ""}`,
+        `📸 <b>{tt("lc.screenshot")}</b> — ${match?.team_a?.name} vs ${match?.team_b?.name}${noteOverride ?? screenshotNote ? `\n${noteOverride ?? screenshotNote}` : ""}`,
         { entityType: "game", entityId: game.id, notificationType: "screenshot" },
         pub.publicUrl
       );
@@ -6027,7 +6027,7 @@ export default function LiveConsolePage() {
         const recap = await buildSeriesHeroRecap();
         const matchMsg = telegramMessageFor(
           "match_finish",
-          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
+          `🏆 <b>{tt("lc.matchFinished")}</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
           { ...vars, winner: seriesWinnerName ?? "" }
         );
         if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
@@ -6070,7 +6070,7 @@ export default function LiveConsolePage() {
         const recap = await buildSeriesHeroRecap();
         const matchMsg = telegramMessageFor(
           "match_finish",
-          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
+          `🏆 <b>{tt("lc.matchFinished")}</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
           {
             team_a: match.team_a?.name ?? "",
             team_b: match.team_b?.name ?? "",
@@ -6294,7 +6294,7 @@ export default function LiveConsolePage() {
       (match.notification_tier === "priority" || match.notification_tier === "hot")
     ) {
       const startMsg =
-        `🟢 <b>Match started</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}` +
+        `🟢 <b>{tt("lc.matchStarted")}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}` +
         (match.youtube_url ? `\n${match.youtube_url}` : "");
       await postToTelegram(startMsg, { entityType: "match", entityId: match.id, notificationType: "match_started" });
     }
@@ -6332,8 +6332,8 @@ export default function LiveConsolePage() {
           DRAFT_STARTED: `✏️ <b>Draft started — Game ${game.game_number}</b>\n${header}`,
           DRAFT_COMPLETE: `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
           GAME_STARTED: `🎮 <b>Game ${game.game_number} ongoing</b>\n${header}`,
-          TECHNICAL_PAUSE: `⏸️ <b>Technical pause</b>\n${header}`,
-          STREAM_ENDED: `📴 <b>Stream ended</b>\n${header}`,
+          TECHNICAL_PAUSE: `⏸️ <b>{tt("lc.technicalPause")}</b>\n${header}`,
+          STREAM_ENDED: `📴 <b>{tt("lc.streamEnded")}</b>\n${header}`,
         };
         // Draft-complete specifically must not announce a recap that's
         // still missing picks — a phase transition can happen (manually,
@@ -6682,7 +6682,7 @@ export default function LiveConsolePage() {
             container gives no other cue to click-drag. */}
         {calibratingField && !draftBox && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Click and drag to draw the region</span>
+            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">{tt("lc.dragToDrawRegion")}</span>
           </div>
         )}
 
@@ -6727,7 +6727,7 @@ export default function LiveConsolePage() {
             style={{ left: `${regionOverlayPos(pendingBox).left}%`, top: `${regionOverlayPos(pendingBox).top}%`, maxWidth: "44%" }}
             onMouseDown={(e) => e.stopPropagation()}
           >
-            <span className="text-[10px] text-white/50 uppercase tracking-wider whitespace-nowrap">New tracker</span>
+            <span className="text-[10px] text-white/50 uppercase tracking-wider whitespace-nowrap">{tt("lc.newTracker")}</span>
             <select
               value={pendingBoxPhase}
               onChange={(e) => {
@@ -6766,7 +6766,7 @@ export default function LiveConsolePage() {
         )}
         {!calibratingField && !pendingBox && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag anywhere to place a new tracker</span>
+            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">{tt("lc.dragToPlaceTracker")}</span>
           </div>
         )}
       </div>
@@ -6822,7 +6822,7 @@ export default function LiveConsolePage() {
         )}
         {captureAreaEditMode && !captureAreaDraft && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">Drag to draw the captured area</span>
+            <span className="text-xs text-white/70 bg-black/60 px-2 py-1 rounded">{tt("lc.dragToDrawArea")}</span>
           </div>
         )}
       </div>
@@ -7310,7 +7310,7 @@ export default function LiveConsolePage() {
               SHADOW VALIDATION audit after each live game. Shown in full,
               monospace, with a one-click Copy button. */}
           <div className="inline-flex items-center gap-1.5 bg-white/5 border border-white/10 rounded px-2 py-1">
-            <span className="text-[10px] uppercase tracking-wide text-white/40">Game ID</span>
+            <span className="text-[10px] uppercase tracking-wide text-white/40">{tt("lc.gameId")}</span>
             <code className="text-[11px] text-white/80 font-mono select-all break-all">{game.id}</code>
             <button
               type="button"
@@ -7330,7 +7330,7 @@ export default function LiveConsolePage() {
               if (error) setError(error.message);
               else loadAll();
             }}
-            placeholder="Livestream URL (YouTube or Facebook)"
+            placeholder={tt("lc.livestreamUrl")}
             className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs w-56"
           />
           {phaseSignals && (
@@ -7452,7 +7452,7 @@ export default function LiveConsolePage() {
           instead of sharing one outer border that stretched the shorter
           pane's box down to match the taller one, leaving a dead gap. */}
       <div className="flex items-center gap-3 mb-2 text-xs text-white/50">
-        <span className="shrink-0">Monitor / action deck split</span>
+        <span className="shrink-0">{tt("lc.deckSplit")}</span>
         {/* A drag slider is the primary control — it sets the value directly on
             every input event, so it resizes reliably in any match state (the
             old paired number inputs clamped mid-keystroke and could feel
@@ -7530,7 +7530,7 @@ export default function LiveConsolePage() {
           <div className="p-3 lg:p-4 pb-0 shrink-0 space-y-3">
             {!DRAFT_PHASES.includes(match.state) && game.status === "live" && !gameFinished && (
               <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
-                <h3 className="font-semibold text-sm">Declare Game Winner</h3>
+                <h3 className="font-semibold text-sm">{tt("lc.declareWinner")}</h3>
                 <div className="flex gap-2 flex-wrap">
                   {[match.team_a, match.team_b].map((team) =>
                     team ? (
@@ -7558,7 +7558,7 @@ export default function LiveConsolePage() {
                 for a broadcast that mirrors the sides. */}
             {match.update_source === "local_ocr" && match.team_a && match.team_b && (
               <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
-                <h3 className="font-semibold text-sm">Broadcast left side</h3>
+                <h3 className="font-semibold text-sm">{tt("lc.broadcastLeft")}</h3>
                 <div className="flex items-center gap-2 flex-wrap">
                   <label className="text-xs text-white/50">Which team is on the left of the broadcast overlay?</label>
                   <select
@@ -7593,7 +7593,7 @@ export default function LiveConsolePage() {
               };
               return (
                 <div className="flex items-center gap-2 flex-wrap">
-                  <label className="text-xs text-white/50">Viewing / editing</label>
+                  <label className="text-xs text-white/50">{tt("lc.viewingEditing")}</label>
                   <select
                     value={game.game_number}
                     onChange={(e) => setSelectedGameNumber(Number(e.target.value))}
@@ -7624,14 +7624,14 @@ export default function LiveConsolePage() {
             })()}
             <section className="flex items-center gap-3 flex-wrap">
               <div className="flex items-center gap-2 flex-wrap">
-                <label className="text-xs text-white/50">Map</label>
+                <label className="text-xs text-white/50">{tt("lc.map")}</label>
                 <select
                   value={game.map ?? ""}
                   onChange={(e) => setGameMap(e.target.value)}
                   disabled={!isEditable}
                   className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
                 >
-                  <option value="">Not set</option>
+                  <option value="">{tt("lc.notSet")}</option>
                   {MAPS.map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
@@ -7654,7 +7654,7 @@ export default function LiveConsolePage() {
                       onKeyDown={(e) => {
                         if (e.key === "Enter") addMapCondition(newMapCondition);
                       }}
-                      placeholder="Add custom map condition…"
+                      placeholder={tt("lc.addMapCondition")}
                       className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-44"
                     />
                     <button
@@ -7715,7 +7715,7 @@ export default function LiveConsolePage() {
               since nothing sets it anymore — this replaces the old
               embed-relative cropping entirely, not just as a fallback). */}
           <div className="p-3 lg:p-4 pb-0 shrink-0 space-y-2">
-            <h3 className="font-semibold text-sm">Match capture</h3>
+            <h3 className="font-semibold text-sm">{tt("lc.matchCapture")}</h3>
             <div
               data-crop-container
               className="relative w-full border border-white/10 rounded overflow-hidden select-none bg-white/5 min-h-[120px]"
@@ -8114,7 +8114,7 @@ export default function LiveConsolePage() {
                   AI full-frame (beta)
                 </button>
               </div>
-              {captureActive && <span className="text-[10px] text-white/30">Stop capture to switch</span>}
+              {captureActive && <span className="text-[10px] text-white/30">{tt("lc.stopCaptureToSwitch")}</span>}
             </div>
             <p className="text-[10px] text-white/40 bg-white/5 border border-white/10 rounded px-2 py-1.5">
               {captureMode === "manual"
@@ -8128,7 +8128,7 @@ export default function LiveConsolePage() {
                   value={overlayHint}
                   onChange={(e) => setOverlayHint(e.target.value)}
                   onBlur={saveOverlayHint}
-                  placeholder="Overlay hint (optional) — e.g. &quot;kill banners appear top-center in yellow text&quot;"
+                  placeholder={tt("lc.overlayHintPlaceholder")}
                   className="flex-1 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                 />
                 <button
@@ -8280,7 +8280,7 @@ export default function LiveConsolePage() {
                           <input
                             value={newTemplateName}
                             onChange={(e) => setNewTemplateName(e.target.value)}
-                            placeholder="Save current layout as..."
+                            placeholder={tt("lc.saveLayoutAs")}
                             className="flex-1 min-w-0 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                           />
                           <button
@@ -8447,7 +8447,7 @@ export default function LiveConsolePage() {
                     }}
                     className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm text-white"
                   >
-                    <option value="">No player</option>
+                    <option value="">{tt("lc.noPlayer")}</option>
                     {[...(match.team_a ? players.filter((p) => p.team_id === match.team_a!.id) : []), ...(match.team_b ? players.filter((p) => p.team_id === match.team_b!.id) : [])].map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.ign}
@@ -8526,7 +8526,7 @@ export default function LiveConsolePage() {
                   Current minute mark (used for every log action below): <span className="font-bold text-white text-sm tabular-nums">{minute}&apos;</span>
                   {" "}— follows whichever clock source is selected, no manual entry needed.
                 </p>
-                <label className="text-xs text-white/50 block pt-2">Public clock source</label>
+                <label className="text-xs text-white/50 block pt-2">{tt("lc.publicClockSource")}</label>
                 <div className="flex gap-1">
                   {(["ocr", "manual"] as const).map((src) => (
                     <button
@@ -8627,7 +8627,7 @@ export default function LiveConsolePage() {
                       here too, not just in the header row above. */}
                   {(match.state === "GAME_STARTED" || match.state === "TECHNICAL_PAUSE") && (
                     <span className="text-base font-bold text-signal tabular-nums" title="Live in-game clock">
-                      ⏱ {mmssTimestamp()} <span className="text-white/50 font-normal text-xs">Game ongoing</span>
+                      ⏱ {mmssTimestamp()} <span className="text-white/50 font-normal text-xs">{tt("lc.gameOngoing")}</span>
                     </span>
                   )}
                   {captureSuspendReason && (
@@ -8881,14 +8881,14 @@ export default function LiveConsolePage() {
                         </select>
                         {selectedTemplate?.label_template.includes("{team}") && (
                           <select value={kmTeam} onChange={(e) => setKmTeam(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-                            <option value="">Team</option>
+                            <option value="">{tt("lc.team")}</option>
                             {match.team_a && <option value={match.team_a.id}>{match.team_a.name}</option>}
                             {match.team_b && <option value={match.team_b.id}>{match.team_b.name}</option>}
                           </select>
                         )}
                         {selectedTemplate?.label_template.includes("{hero}") && (
                           <select value={kmHero} onChange={(e) => setKmHero(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-                            <option value="">Hero</option>
+                            <option value="">{tt("lc.hero")}</option>
                             {heroes.map((h) => (
                               <option key={h.id} value={h.id}>{h.name}</option>
                             ))}
@@ -8896,7 +8896,7 @@ export default function LiveConsolePage() {
                         )}
                         {selectedTemplate?.label_template.includes("{player}") && (
                           <select value={kmPlayer} onChange={(e) => setKmPlayer(e.target.value)} className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm">
-                            <option value="">Player</option>
+                            <option value="">{tt("lc.player")}</option>
                             {players.map((p) => (
                               <option key={p.id} value={p.id}>{p.ign}</option>
                             ))}
@@ -8906,7 +8906,7 @@ export default function LiveConsolePage() {
                           <input
                             value={kmCustomText}
                             onChange={(e) => setKmCustomText(e.target.value)}
-                            placeholder="Type the custom moment..."
+                            placeholder={tt("lc.typeCustomMoment")}
                             className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-sm min-w-[220px]"
                           />
                         )}
@@ -8964,7 +8964,7 @@ export default function LiveConsolePage() {
                         <input
                           value={screenshotNote}
                           onChange={(e) => setScreenshotNote(e.target.value)}
-                          placeholder="Note (optional)"
+                          placeholder={tt("lc.noteOptional")}
                           className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs w-40"
                         />
                         {screenshotUploading && <span className="text-xs text-white/40">Uploading...</span>}
@@ -9004,7 +9004,7 @@ export default function LiveConsolePage() {
                                   type="number"
                                   defaultValue={latestNetWorth?.[key] ?? ""}
                                   disabled={!netWorthEditable}
-                                  placeholder="Gold"
+                                  placeholder={tt("lc.gold")}
                                   className="w-28 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm disabled:opacity-40"
                                   onBlur={(e) => {
                                     const value = Number(e.target.value);
@@ -9209,9 +9209,9 @@ export default function LiveConsolePage() {
                         <div key={idx} className="space-y-1 overflow-x-auto">
                           <p className="text-xs text-white/50">{idx === 0 ? match.team_a?.name : match.team_b?.name}</p>
                           <div className="flex gap-2 items-center text-[10px] text-white/40 pl-8 min-w-max">
-                            <span className="w-24">Player</span>
-                            <span className="w-20">Role</span>
-                            <span className="w-24">Hero</span>
+                            <span className="w-24">{tt("lc.player")}</span>
+                            <span className="w-20">{tt("lc.role")}</span>
+                            <span className="w-24">{tt("lc.hero")}</span>
                             <span className="w-[122px]">K/D/A</span>
                           </div>
                           {teamPlayers.map((p) => {
@@ -9279,7 +9279,7 @@ export default function LiveConsolePage() {
                                     disabled={!scoreboardEditable}
                                     className="w-24 bg-white/10 border border-white/10 rounded px-2 py-1 text-xs disabled:opacity-40"
                                   >
-                                    <option value="">Hero</option>
+                                    <option value="">{tt("lc.hero")}</option>
                                     {heroes.map((h) => (
                                       <option key={h.id} value={h.name}>{h.name}</option>
                                     ))}
@@ -9365,7 +9365,7 @@ export default function LiveConsolePage() {
                                       onChange={(e) => setAddPlayerSelect((prev) => ({ ...prev, [teamId]: e.target.value }))}
                                       className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
                                     >
-                                      <option value="">Add player...</option>
+                                      <option value="">{tt("lc.addPlayer")}...</option>
                                       {available.map((p) => (
                                         <option key={p.id} value={p.id}>{p.ign}{p.role ? ` (${p.role})` : ""}</option>
                                       ))}

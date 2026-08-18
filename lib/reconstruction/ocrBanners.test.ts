@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { bannerMatch, detectMatchState, detectMatchStateDetailed, normalizeBannerText, phaseToMatchState } from "./ocrBanners.ts";
+import { bannerMatch, bannerMatchDetailed, extractBannerPlayerName, detectMatchState, detectMatchStateDetailed, normalizeBannerText, phaseToMatchState } from "./ocrBanners.ts";
 
 test("kill banner: tolerant match on stylized/fragmented OCR text", () => {
   assert.equal(bannerMatch("SAVAGE!!")?.type, "savage");
@@ -9,6 +9,18 @@ test("kill banner: tolerant match on stylized/fragmented OCR text", () => {
   assert.equal(bannerMatch("TRIPLE")?.type, "triple_kill", "'KILL' often not read cleanly");
   assert.equal(bannerMatch("Kairi DOUBLE KILL")?.type, "double_kill");
   assert.equal(bannerMatch("12:34"), null, "no letters → no banner");
+});
+
+test("kill banner: recovers the player IGN and strips the banner phrase", () => {
+  assert.equal(extractBannerPlayerName("Kairi DOUBLE KILL"), "Kairi");
+  assert.equal(extractBannerPlayerName("SAVAGE Wannn"), "Wannn", "IGN can trail the phrase");
+  assert.equal(extractBannerPlayerName("SAVAGE!!"), null, "phrase only → no name");
+  assert.equal(extractBannerPlayerName("S A V A G E"), null, "single glyphs are not a name");
+  assert.equal(extractBannerPlayerName("12:34"), null, "pure numbers are not a name");
+  // bannerMatchDetailed pairs the type with the recovered name.
+  assert.deepEqual(bannerMatchDetailed("Kairi TRIPLE KILL"), { type: "triple_kill", playerName: "Kairi" });
+  assert.deepEqual(bannerMatchDetailed("MANIAC"), { type: "maniac", playerName: null });
+  assert.equal(bannerMatchDetailed("12:34"), null, "no banner → null");
 });
 
 test("match state: REPLAY / PAUSE / crystal (VICTORY/DEFEAT) detection", () => {

@@ -7406,28 +7406,41 @@ export default function LiveConsolePage() {
           bordered box now (see the "why two boxes, not one" note below)
           instead of sharing one outer border that stretched the shorter
           pane's box down to match the taller one, leaving a dead gap. */}
-      <div className="flex items-center gap-2 mb-2 text-xs text-white/50">
-        <span>Monitor / action deck split</span>
+      <div className="flex items-center gap-3 mb-2 text-xs text-white/50">
+        <span className="shrink-0">Monitor / action deck split</span>
+        {/* A drag slider is the primary control — it sets the value directly on
+            every input event, so it resizes reliably in any match state (the
+            old paired number inputs clamped mid-keystroke and could feel
+            "stuck", especially right after a reset re-rendered the console). The
+            number boxes remain for precise entry, committing on blur/Enter so a
+            partially-typed value isn't clamped out from under you. */}
         <input
-          type="number"
+          type="range"
           min={20}
           max={80}
+          step={1}
           value={splitLeftPct}
-          onChange={(e) => applySplit(Number(e.target.value) || splitLeftPct)}
-          className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-center"
+          onChange={(e) => applySplit(Number(e.target.value))}
+          className="w-40 accent-signal cursor-pointer"
+          aria-label="Monitor / action deck split"
         />
-        <span>–</span>
+        <span className="tabular-nums text-white/70 shrink-0">{splitLeftPct}–{100 - splitLeftPct}</span>
         <input
           type="number"
           min={20}
           max={80}
-          value={100 - splitLeftPct}
-          onChange={(e) => applySplit(100 - (Number(e.target.value) || 100 - splitLeftPct))}
+          defaultValue={splitLeftPct}
+          key={`split-${splitLeftPct}`}
+          onBlur={(e) => applySplit(Number(e.target.value) || splitLeftPct)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") applySplit(Number((e.target as HTMLInputElement).value) || splitLeftPct);
+          }}
           className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-center"
+          title="Monitor % — press Enter or click away to apply"
         />
         <button
           onClick={() => applySplit(60)}
-          className="text-white/40 hover:text-white/70 underline underline-offset-2"
+          className="text-white/40 hover:text-white/70 underline underline-offset-2 shrink-0"
         >
           Reset to 60–40
         </button>
@@ -8634,15 +8647,19 @@ export default function LiveConsolePage() {
                       </div>
                     );
                   }
+                  // The draft-analysis entry is a full multi-paragraph write-up,
+                  // not a one-line moment — let it wrap instead of truncating to
+                  // a single clipped line like the compact event rows.
+                  const isLongMoment = (km.description ?? "").startsWith("🧠 Draft analysis");
                   return (
                     <div
                       key={km.id}
-                      className={`px-3 py-2 rounded flex items-center gap-1.5 ${
+                      className={`px-3 py-2 rounded flex gap-1.5 ${isLongMoment ? "items-start" : "items-center"} ${
                         km.is_key_moment ? "bg-signal/30 border border-signal/50 font-semibold" : "bg-white/10"
                       }`}
                     >
                       {heroIconUrl && <HeroIcon url={heroIconUrl} name={heroName} size="xs" className="shrink-0" />}
-                      <span className="flex-1 min-w-0 truncate">
+                      <span className={`flex-1 min-w-0 ${isLongMoment ? "whitespace-pre-wrap break-words leading-relaxed" : "truncate"}`}>
                         {km.is_key_moment && "⭐ "}
                         {km.minute_mark}&apos; {labelNode}
                         {km.screenshot_url && " 📸"}

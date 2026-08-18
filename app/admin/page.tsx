@@ -18,6 +18,7 @@ import {
   Legend,
 } from "recharts";
 import { supabase } from "@/lib/supabaseClient";
+import { useLanguage } from "@/lib/i18n";
 import { proxiedImageUrl } from "@/lib/proxiedImageUrl";
 
 type MatchRow = {
@@ -118,6 +119,7 @@ function TournamentAxisTick({
 }
 
 export default function AdminHome() {
+  const { t } = useLanguage();
   const { resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -322,7 +324,7 @@ export default function AdminHome() {
             disabled={refreshing}
             className="lv-btn-ghost !px-3 !py-1.5 text-xs disabled:opacity-50"
           >
-            {refreshing ? "Refreshing…" : "↻ Refresh"}
+            {refreshing ? t("admin.dash.refreshing") : t("admin.dash.refresh")}
           </button>
         </div>
       </div>
@@ -333,11 +335,11 @@ export default function AdminHome() {
         <>
           {/* Real-time match status summary */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatTile label="Live now" value={statusSummary.base.live} sub={tierSubline("live")} />
-            <StatTile label="Upcoming" value={statusSummary.base.scheduled} sub={tierSubline("scheduled")} />
-            <StatTile label="Finished" value={statusSummary.base.finished} sub={tierSubline("finished")} />
+            <StatTile label={t("admin.dash.liveNow")} value={statusSummary.base.live} sub={tierSubline("live")} />
+            <StatTile label={t("admin.dash.upcoming")} value={statusSummary.base.scheduled} sub={tierSubline("scheduled")} />
+            <StatTile label={t("admin.dash.finished")} value={statusSummary.base.finished} sub={tierSubline("finished")} />
             <StatTile
-              label="Stream link coverage (30d)"
+              label={t("admin.dash.streamCoverage")}
               value={`${streamIngestion.last30d.rate}%`}
               sub={`${streamIngestion.last30d.resolved} / ${streamIngestion.last30d.total} matches · all-time ${streamIngestion.allTime.rate}%`}
             />
@@ -422,7 +424,7 @@ export default function AdminHome() {
                 {streamIngestion.missingFinished.map((m) => (
                   <li key={m.id} className="flex items-center justify-between gap-2 text-sm">
                     <a href="/admin/matches" className="truncate hover:text-signal transition-colors">
-                      {tournamentById.get(m.tournament_id ?? "")?.name ?? "Unknown tournament"}
+                      {tournamentById.get(m.tournament_id ?? "")?.name ?? t("admin.unknownTournament")}
                     </a>
                     <span className="shrink-0 text-xs text-white/40">
                       {m.scheduled_at ? new Date(m.scheduled_at).toLocaleDateString() : "—"}
@@ -435,7 +437,7 @@ export default function AdminHome() {
 
           {/* Interactive charts */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <ChartCard title="Match volume — last 12 months">
+            <ChartCard title={t("admin.dash.chartVolume")}>
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={volumeByMonth} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
                   <CartesianGrid stroke={chartColors.grid} vertical={false} />
@@ -448,7 +450,7 @@ export default function AdminHome() {
             </ChartCard>
 
             <div className="lg:col-span-2">
-              <ChartCard title="Tournament participation — top 10 by match count" heightClass="h-[420px]">
+              <ChartCard title={t("admin.dash.chartParticipation")} heightClass="h-[420px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={topTournaments} layout="vertical" margin={{ top: 4, right: 16, left: 24, bottom: 0 }}>
                     <CartesianGrid stroke={chartColors.grid} horizontal={false} />
@@ -469,7 +471,7 @@ export default function AdminHome() {
               </ChartCard>
             </div>
 
-            <ChartCard title="Matches by tournament tier">
+            <ChartCard title={t("admin.dash.chartTier")}>
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={volumeByTier} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
                   <CartesianGrid stroke={chartColors.grid} vertical={false} />
@@ -481,7 +483,7 @@ export default function AdminHome() {
               </ResponsiveContainer>
             </ChartCard>
 
-            <ChartCard title="Platform engagement — streams by platform">
+            <ChartCard title={t("admin.dash.chartPlatform")}>
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie

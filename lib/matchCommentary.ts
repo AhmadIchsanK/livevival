@@ -185,17 +185,29 @@ const generators: Generator[] = [
         "{lead} are running away with this — a {diff} gold lead.",
         "It's turning into a stranglehold; {lead} up {diff} in net worth.",
         "{lead} in complete control of the gold, ahead by {diff}.",
+        "This is a landslide on the economy — {lead} plus {diff}.",
+        "{lead} have broken the game open, {diff} clear on gold.",
+        "The net worth gap is brutal now: {lead} up {diff}.",
+        "{lead} snowballing hard, a {diff} advantage and climbing.",
       ] });
     } else if (diff <= 2000) {
       out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(Math.max(diff, 500)) }, defaults: [
         "Dead even on gold — less than {diff} between them.",
         "Anyone's game here, the net worth is razor thin.",
         "Neck and neck; neither side can find a gold cushion.",
+        "You couldn't slide a coin between these two on gold.",
+        "The economy is a stalemate — under {diff} separating them.",
+        "Nothing to choose on net worth, it's a genuine coin flip.",
+        "Both sides matching each other gold for gold.",
       ] });
     } else if (diff >= 4000) {
       out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff) }, defaults: [
         "{lead} nose in front by {diff} in gold.",
         "A working advantage for {lead}, {diff} up on net worth.",
+        "{lead} edging the economy, {diff} to the good.",
+        "It's {lead} with the gold cushion now — {diff} clear.",
+        "{lead} building something here, {diff} up on net worth.",
+        "The economy tilts {lead}'s way, a {diff} lead.",
       ] });
     }
     if (prev) {
@@ -204,12 +216,18 @@ const generators: Generator[] = [
         out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff), closed: goldK(pl.diff - diff) }, defaults: [
           "{trail} clawing back — they've shaved {closed} off the deficit.",
           "The gap is closing; {trail} back within {diff}.",
+          "{trail} chipping into the lead, {closed} of it gone already.",
+          "Momentum with {trail} — the deficit's down to {diff}.",
+          "{trail} refusing to fold, {closed} clawed back off the gold gap.",
         ] });
       }
       if (pl.lead.id !== lead.id && diff >= 1500) {
         out.push({ condition: "net_worth", subject: "net_worth", facts: { lead: lead.name, trail: trail.name, diff: goldK(diff) }, defaults: [
           "Lead has flipped — {lead} now ahead on gold.",
           "Momentum swing! {lead} have taken over the net worth lead.",
+          "The gold lead changes hands — it's {lead} in front now.",
+          "{lead} have turned it around and now hold the economy edge.",
+          "Complete reversal on net worth — {lead} on top by {diff}.",
         ] });
       }
     }
@@ -227,11 +245,19 @@ const generators: Generator[] = [
       out.push({ condition: "kills", subject: "kills", facts: { lead: lead.name, trail: trail.name, hi, lo, a, b }, defaults: [
         "{lead} bullying the scoreboard, {hi}–{lo} on kills.",
         "{lead} with a commanding {hi}–{lo} kill lead.",
+        "{lead} winning every fight that matters — {hi}–{lo}.",
+        "It's one-way traffic on the kill feed, {lead} up {hi}–{lo}.",
+        "{lead} dictating the pace, {hi} kills to {lo}.",
+        "The scoreboard says it all: {lead} {hi}, {trail} {lo}.",
       ] });
     } else if (hi + lo >= 6 && hi - lo <= 2) {
       out.push({ condition: "kills", subject: "kills", facts: { lead: lead.name, trail: trail.name, hi, lo, a, b }, defaults: [
         "Bloodbath and it's even — {hi}–{lo} on the kill count.",
         "Both teams trading everything, {a}–{b} in kills.",
+        "A proper slugfest, blows landing both ways at {a}–{b}.",
+        "Neither side backing down — {a}–{b} and every fight is a scrap.",
+        "End to end stuff, the kills level at {hi}–{lo}.",
+        "They are trading punches, {a}–{b} and nothing given easy.",
       ] });
     }
     if (prev) {
@@ -242,12 +268,20 @@ const generators: Generator[] = [
         out.push({ condition: "kills", subject: "kills", facts: { lead: lead.name, trail: trail.name, count: gained, hi, lo }, defaults: [
           "Teamfight just erupted — {count} kills in a blink.",
           "A skirmish breaks out, {count} down in quick succession.",
+          "It's kicked off! {count} taken in the scramble.",
+          "Chaos in the fight — {count} kills traded already.",
+          "The dam breaks: {count} go down at once.",
+          "Big fight, big swing — {count} on the feed just like that.",
         ] });
       } else if (gained >= 1) {
         const scorer = tk(now, lead.id) - tk(prev, lead.id) > 0 ? lead : trail;
         out.push({ condition: "kills", subject: "kills", facts: { scorer: scorer.name, lead: lead.name, trail: trail.name, count: gained }, defaults: [
           "{scorer} pick up a kill to keep the pressure on.",
           "The next one goes to {scorer}.",
+          "{scorer} find a pick and tilt the numbers.",
+          "First blood of this exchange belongs to {scorer}.",
+          "{scorer} catch one out — advantage pressed.",
+          "A clean pickoff for {scorer}.",
         ] });
       }
     }
@@ -266,6 +300,10 @@ const generators: Generator[] = [
           "{team} crack another tower — up to {count} now.",
           "Structure falls; {team} take tower number {count}.",
           "{team} keep chipping the map, {count} towers down.",
+          "Another one gone — {team} now on {count} towers.",
+          "{team} pry open the map, {count} structures to their name.",
+          "Tower down for {team}, that's {count} in the bank.",
+          "{team} trade the fight for a tower — {count} total.",
         ] });
       }
     }
@@ -275,6 +313,9 @@ const generators: Generator[] = [
       const leader = ta > tb ? now.teamA : now.teamB;
       out.push({ condition: "tower", subject: "tower_lead", facts: { leader: leader.name, hi: Math.max(ta, tb), lo: Math.min(ta, tb) }, defaults: [
         "{leader} own the map — {hi} towers to {lo}.",
+        "Territory is all {leader}: {hi} towers to {lo}.",
+        "{leader} have the map choked, {hi}–{lo} on structures.",
+        "Half the map belongs to {leader}, {hi} towers to {lo}.",
       ] });
     }
     return out;
@@ -291,6 +332,10 @@ const generators: Generator[] = [
         out.push({ condition: "turtle", subject: "turtle", facts: { team: team.name }, defaults: [
           "{team} slam the Turtle for the gold and buff.",
           "Turtle goes to {team} — a tidy pickup.",
+          "{team} secure the Turtle, gold for the whole squad.",
+          "That's the Turtle for {team}, momentum and money.",
+          "{team} bank the Turtle without a fuss.",
+          "Easy gold for {team} off the back of that Turtle.",
         ] });
       }
     }
@@ -309,6 +354,10 @@ const generators: Generator[] = [
           "{team} secure the LORD — this could be the game-ender.",
           "Lord is down and it belongs to {team}. Massive.",
           "{team} take Lord and now they march.",
+          "The Lord is {team}'s — the siege is coming.",
+          "{team} slay the Lord; this is a match-defining call.",
+          "Huge for {team} — Lord in the bag and pushing.",
+          "{team} get the Lord and now the base is under threat.",
         ] });
       }
     }
@@ -332,16 +381,25 @@ const generators: Generator[] = [
         out.push({ condition: "player_kda", subject: p.name, facts, defaults: [
           "{player} is unkillable — {k} kills and yet to fall.",
           "Nobody can touch {player}: {k}/{d}/{a}.",
+          "{player} is on a different level, {k} kills without a death.",
+          "A flawless game so far from {player} — {k}/{d}/{a}.",
+          "{player} untouchable, {k} to their name and still standing.",
         ] });
       } else if (ka >= 8) {
         out.push({ condition: "player_kda", subject: p.name, facts, defaults: [
           "{player} is taking over — {k}/{d}/{a} on the board.",
           "{player} everywhere on the map, already {ka} takedowns involved.",
+          "{player} carrying the load, {ka} kills and assists so far.",
+          "This is the {player} show — {k}/{d}/{a}.",
+          "{player} stamping their name on this game, {ka} involvements.",
         ] });
       } else if (ka >= 4) {
         out.push({ condition: "player_kda", subject: p.name, facts, defaults: [
           "{player} having a real say in this one — {k}/{d}/{a}.",
           "{player} racking up the involvement, {ka} kills and assists.",
+          "{player} showing up in the fights, {k}/{d}/{a}.",
+          "Good game building for {player}: {ka} takedowns involved.",
+          "{player} making their presence felt, {k}/{d}/{a}.",
         ] });
       }
     }
@@ -350,6 +408,9 @@ const generators: Generator[] = [
       out.push({ condition: "player_kda", subject: feeder.name, facts: { player: feeder.name, k: feeder.kills, d: feeder.deaths, a: feeder.assists, ka: feeder.kills + feeder.assists }, defaults: [
         "Rough one for {player}, caught out {d} times now.",
         "{player} can't buy a break — down {d} deaths.",
+        "The opposition are hunting {player}, {d} times already.",
+        "{player} having a nightmare, {k}/{d}/{a} on the game.",
+        "It's not falling for {player} — {d} deaths and counting.",
       ] });
     }
     return out;
@@ -366,6 +427,9 @@ const generators: Generator[] = [
       out.push({ condition: "win_prob", subject: "win_prob", facts: { favored: favored.name, pct: favPct }, defaults: [
         "The model has {favored} firmly in front — {pct}% to close it out.",
         "{favored} in the driver's seat at {pct}% win chance.",
+        "The numbers love {favored} here, {pct}% to win it.",
+        "{favored} heavy favourites now — {pct}% on the model.",
+        "It's {favored}'s to lose, the read sits at {pct}%.",
       ] });
     }
     if (prev) {
@@ -375,6 +439,9 @@ const generators: Generator[] = [
         out.push({ condition: "win_prob", subject: "win_prob", facts: { to: to.name }, defaults: [
           "Momentum swinging toward {to} on the win-probability read.",
           "The needle moves for {to} — this is where games turn.",
+          "{to} tilting the odds their way now.",
+          "Big shift on the model, and it's {to} climbing.",
+          "The win probability lurches toward {to}.",
         ] });
       }
     }
@@ -398,6 +465,9 @@ const generators: Generator[] = [
         "{hero} in the hands of {player} is a real problem right now.",
         "Watch the {hero} — {player} is finding all the angles.",
         "{player}'s {hero} looking like the pick of the draft.",
+        "{player} has the {hero} humming — a menace in every fight.",
+        "That {hero} pick is paying off for {player}.",
+        "{player} making the {hero} look broken right now.",
       ],
     }));
   },
@@ -412,16 +482,25 @@ const generators: Generator[] = [
       return [{ condition: "general", facts: {}, defaults: [
         "Still early doors — both sides settling into the farm.",
         "Opening exchanges, feeling each other out.",
+        "Laning phase in full swing, last hits and level leads for now.",
+        "Quiet start — everyone's heads down farming.",
+        "Early game jostling for the jungle and lane priority.",
       ] }];
     } else if (m < 12) {
       return [{ condition: "general", facts: {}, defaults: [
         "Mid game and the map is opening up — objectives on the horizon.",
         "Rotations getting sharper as we hit the mid game.",
+        "The game's stretching its legs now — expect the fights to start.",
+        "Cores coming online, and the tempo is picking up.",
+        "Mid game chess — positioning and vision for the next objective.",
       ] }];
     } else if (m < 18) {
       return [{ condition: "general", facts: {}, defaults: [
         "Deep into the late game — one fight decides it from here.",
         "Every pick matters now; there's no respawning your way out of a bad one.",
+        "The stakes are climbing — full builds and long respawns.",
+        "This is the business end; a single mistake could be terminal.",
+        "Late game tension — both sides walking on eggshells around the map.",
       ] }];
     }
     return [{ condition: "general", facts: {}, defaults: [
@@ -429,6 +508,8 @@ const generators: Generator[] = [
       "Every base race and Lord call is match point now — nerves of steel required.",
       "This is where legends are made — a single teamfight from here writes the result.",
       "Deep, deep late game — buybacks of momentum only; there's no farming your way back now.",
+      "Sudden-death territory now — one thrown fight and it's over.",
+      "Everything on a knife's edge past 18 — the next objective could end it.",
     ] }];
   },
 ];

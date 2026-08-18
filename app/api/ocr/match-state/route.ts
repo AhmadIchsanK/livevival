@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { phaseToMatchState } from "@/lib/reconstruction/ocrBanners";
+import { groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
 
 // AI-vision fallback for the center match-state tracker (spec §16/§25/§27).
 // The deterministic keyword OCR (detectMatchStateDetailed) is the fast path;
@@ -43,17 +44,14 @@ export async function POST(req: NextRequest) {
 
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "AI match-state isn't configured — set GROQ_API_KEY." }, { status: 503 });
-  const model = process.env.GROQ_VISION_MODEL ?? "meta-llama/llama-4-scout-17b-16e-instruct";
-
   const body = await req.json().catch(() => null);
   const imageBase64: string | undefined = body?.imageBase64;
   if (!imageBase64 || typeof imageBase64 !== "string") {
     return NextResponse.json({ error: "Missing imageBase64" }, { status: 400 });
   }
 
-  let res: Response;
-  try {
-    res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+  const callModel = (model: string) =>
+    fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -64,17 +62,35 @@ export async function POST(req: NextRequest) {
       }),
       signal: AbortSignal.timeout(15000),
     });
-  } catch (err) {
-    return NextResponse.json({ error: `Groq request failed: ${(err as Error).message}` }, { status: 502 });
-  }
 
-  if (res.status === 429) {
-    // A short cooldown here isn't worth blocking the capture loop over — the
-    // caller throttles its own calls and the OCR path keeps running meanwhile.
-    return NextResponse.json({ state: null, phase: null, rateLimited: true });
+  // Try each candidate vision model, falling through only when Groq reports the
+  // current id is unavailable for this account (deprecated / no access / 404).
+  const candidates = groqVisionModelCandidates();
+  let res: Response | null = null;
+  let lastStatus = 502;
+  let lastErr = "";
+  for (const model of candidates) {
+    let r: Response;
+    try {
+      r = await callModel(model);
+    } catch (err) {
+      return NextResponse.json({ error: `Groq request failed: ${(err as Error).message}` }, { status: 502 });
+    }
+    if (r.status === 429) {
+      // A short cooldown here isn't worth blocking the capture loop over — the
+      // caller throttles its own calls and the OCR path keeps running meanwhile.
+      return NextResponse.json({ state: null, phase: null, rateLimited: true });
+    }
+    if (r.ok) {
+      res = r;
+      break;
+    }
+    lastStatus = r.status;
+    lastErr = await r.text();
+    if (!isGroqModelUnavailable(r.status, lastErr)) break;
   }
-  if (!res.ok) {
-    return NextResponse.json({ error: `Groq API error (${res.status})` }, { status: 502 });
+  if (!res) {
+    return NextResponse.json({ error: `Groq API error (${lastStatus})` }, { status: 502 });
   }
 
   const data = await res.json();

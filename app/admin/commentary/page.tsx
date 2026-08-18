@@ -49,6 +49,8 @@ export default function CommentaryTemplatesPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [conditionFilter, setConditionFilter] = useState<string>("");
+  const [searchText, setSearchText] = useState("");
+  const [sortKey, setSortKey] = useState<"condition" | "az" | "za" | "most_used" | "least_used" | "recent">("condition");
 
   const [newCondition, setNewCondition] = useState<CommentaryCondition>("net_worth");
   const [newTemplate, setNewTemplate] = useState("");
@@ -144,10 +146,32 @@ export default function CommentaryTemplatesPage() {
     load();
   }, []);
 
-  const filtered = useMemo(
-    () => (conditionFilter ? rows.filter((r) => r.condition === conditionFilter) : rows),
-    [rows, conditionFilter]
-  );
+  const filtered = useMemo(() => {
+    const q = searchText.trim().toLowerCase();
+    let out = rows.filter((r) => {
+      if (conditionFilter && r.condition !== conditionFilter) return false;
+      if (q && !r.template.toLowerCase().includes(q) && !(r.template_id ?? "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+    out = [...out].sort((a, b) => {
+      switch (sortKey) {
+        case "az":
+          return a.template.localeCompare(b.template);
+        case "za":
+          return b.template.localeCompare(a.template);
+        case "most_used":
+          return b.use_count - a.use_count || a.template.localeCompare(b.template);
+        case "least_used":
+          return a.use_count - b.use_count || a.template.localeCompare(b.template);
+        case "recent":
+          return (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0);
+        case "condition":
+        default:
+          return a.condition.localeCompare(b.condition) || a.template.localeCompare(b.template);
+      }
+    });
+    return out;
+  }, [rows, conditionFilter, searchText, sortKey]);
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
@@ -406,12 +430,18 @@ export default function CommentaryTemplatesPage() {
         )}
       </div>
 
-      {/* Filter + library controls */}
+      {/* Filter + sort + library controls */}
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-xs text-white/40">Filter:</span>
+        <input
+          value={searchText}
+          onChange={(e) => setSearchText(e.target.value)}
+          placeholder="Search lines (EN or ID)…"
+          className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs min-w-[180px]"
+        />
         <select
           value={conditionFilter}
           onChange={(e) => setConditionFilter(e.target.value)}
+          title="Filter by condition"
           className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
         >
           <option value="">All conditions</option>
@@ -420,6 +450,19 @@ export default function CommentaryTemplatesPage() {
               {c.label}
             </option>
           ))}
+        </select>
+        <select
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value as typeof sortKey)}
+          title="Sort by"
+          className="bg-white/10 border border-white/10 rounded px-2 py-1 text-xs"
+        >
+          <option value="condition">Sort: by condition</option>
+          <option value="az">Sort: A → Z</option>
+          <option value="za">Sort: Z → A</option>
+          <option value="most_used">Sort: most used</option>
+          <option value="least_used">Sort: least used</option>
+          <option value="recent">Sort: recently updated</option>
         </select>
         <span className="text-xs text-white/30">{filtered.length} line{filtered.length === 1 ? "" : "s"}</span>
         <span className={`text-xs ${rows.length >= MAX_TEMPLATES ? "text-amber-300" : "text-white/30"}`}>

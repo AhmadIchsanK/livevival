@@ -719,13 +719,15 @@ export default function PublicMatchPage() {
   // older rows from before the column existed.
   const teamAStats = gameStats.filter((s) => s.player?.team_id === teamAId && s.player?.is_active_roster !== false);
   const teamBStats = gameStats.filter((s) => s.player?.team_id === teamBId && s.player?.is_active_roster !== false);
-  // Authoritative Team Kills (decoupled model, option D — matches the admin
-  // live console). Team kills is its own tracker: the team-kills override when
-  // set (trusted verbatim, including a corrected-downward value), bootstrapping
-  // to the summed player kills only until an override exists. `??`, not
-  // Math.max, so a single over-read player row can't inflate the team number.
-  const teamAKills = selectedGame?.team_a_kills_override ?? teamAStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
-  const teamBKills = selectedGame?.team_b_kills_override ?? teamBStats.reduce((sum, s) => sum + (s.kills ?? 0), 0);
+  // Team Kills = the team-kill tracker only (option B — matches the admin
+  // console). The team-kills override is the sole source of truth; per-player
+  // K/D/A never contributes. The summed player kills are used only as a display
+  // bootstrap for Normal/Liquipedia matches that never place a team-kills
+  // tracker — on a hot (local_ocr) match the count is exactly the override,
+  // defaulting to 0 until the tracker reads.
+  const usesKillTracker = match.update_source === "local_ocr";
+  const teamAKills = selectedGame?.team_a_kills_override ?? (usesKillTracker ? 0 : teamAStats.reduce((sum, s) => sum + (s.kills ?? 0), 0));
+  const teamBKills = selectedGame?.team_b_kills_override ?? (usesKillTracker ? 0 : teamBStats.reduce((sum, s) => sum + (s.kills ?? 0), 0));
   const teamAActiveRoster = roster.filter((p) => p.team_id === teamAId && p.is_active_roster);
   const teamBActiveRoster = roster.filter((p) => p.team_id === teamBId && p.is_active_roster);
   // Once both teams have their 5-player roster decided, show it on the

@@ -2427,6 +2427,14 @@ export default function LiveConsolePage() {
   const [commentaryTemplates, setCommentaryTemplates] = useState<CommentaryTemplate[]>([]);
   const commentaryTemplatesRef = useRef<CommentaryTemplate[]>([]);
   commentaryTemplatesRef.current = commentaryTemplates;
+
+  // When did the admin last MANUALLY set/reset a team's kill count (per team id)?
+  // For a short window after a manual edit the OCR team-kills tracker stops
+  // writing that team, so an intentional downward correction (or a Reset) isn't
+  // instantly clobbered back up by the next frame's read. Set by
+  // setTeamKillsOverride / resetTeamKillsOverride, checked in captureTickBody.
+  const manualKillEditAtRef = useRef<Record<string, number>>({});
+  const MANUAL_KILL_HOLD_MS = 20_000;
   useEffect(() => {
     (async () => {
       const { data } = await supabase.from("commentary_templates").select("id, condition, template, enabled");
@@ -4479,8 +4487,13 @@ export default function LiveConsolePage() {
   // always wins, same as every other admin override in this page.
   async function setTeamKillsOverride(teamId: string, value: number) {
     if (!game || !match) return;
+    // Any non-negative integer, INCLUDING a lower one — a manual edit is an
+    // explicit correction and may decrease the count (the OCR never-decreases
+    // guard only applies to noisy reads, not to the admin).
     const clamped = Math.max(0, Math.round(value));
     const column = teamId === match.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+    // Hold OCR off this team briefly so the manual value isn't re-inflated.
+    manualKillEditAtRef.current[teamId] = Date.now();
     const { error } = await supabase.from("games").update({ [column]: clamped }).eq("id", game.id);
     if (error) {
       setError(error.message);
@@ -4488,12 +4501,15 @@ export default function LiveConsolePage() {
     }
     loadAll();
   }
-  // Clear a team's authoritative team-kills override (option D). Sets the column
-  // back to null so the count falls back to the player-kill sum bootstrap — the
-  // one-click undo for a bad OCR read or a stale manual entry mid-match.
+  // Clear a team's team-kills override. Sets the column back to null — on a hot
+  // (local_ocr) match the displayed count then reads 0 until the tracker fills
+  // it again; on Normal/Liquipedia matches it falls back to the player-kill sum.
+  // Also opens the manual-hold window so the OCR tracker doesn't immediately
+  // re-write it on the very next frame.
   async function resetTeamKillsOverride(teamId: string) {
     if (!game || !match) return;
     const column = teamId === match.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+    manualKillEditAtRef.current[teamId] = Date.now();
     const { error } = await supabase.from("games").update({ [column]: null }).eq("id", game.id);
     if (error) {
       setError(error.message);
@@ -4856,6 +4872,11 @@ export default function LiveConsolePage() {
           }
           case "team_kills": {
             if (!sideTeamId || !game) break;
+            // Manual-hold: if the admin just set/reset this team's count, don't
+            // let OCR overwrite it for a short window — so a deliberate downward
+            // correction (or a Reset) actually sticks instead of snapping back.
+            const manualAt = manualKillEditAtRef.current[sideTeamId];
+            if (manualAt && Date.now() - manualAt < MANUAL_KILL_HOLD_MS) break;
             // Digits only — this is the tracker the admin called out as
             // "keep failing," so it gets the strictest cleaning of any
             // category here plus a sanity bound: a raw \d+ match on
@@ -4891,29 +4912,20 @@ export default function LiveConsolePage() {
             }
             // Suspicious-increase guard (validation spec §3 rule 5) — the
             // <=300 check above only catches outright garbage, not a
-            // plausible-looking digit string that's still wrong. A team
-            // kill count is never legitimately far ahead of what's already
-            // individually attributed to that team's players (some lag
-            // between the two independent OCR reads is normal — see the
-            // soft kdaMismatch warning below — but not a leap of a dozen-
-            // plus kills that no player has been credited with at all).
-            // This was the actual cause of a team showing a wildly wrong
-            // kill count with every one of its players still at 0: a single
-            // garbled read got auto-committed here and then Math.max'd
-            // forever after by the never-decreases guard above. A genuine
-            // fast run of real kills still gets through fine next tick, once
-            // this same check re-evaluates against the (by-then) higher
-            // floor — it only holds back the one outlier tick, not the team.
-            const teamPlayerKillSum = stats
-              .filter((s) => players.find((p) => p.id === s.player_id)?.team_id === sideTeamId)
-              .reduce((sum, s) => sum + (s.kills ?? 0), 0);
-            const plausibleFloor = Math.max(currentKills ?? 0, teamPlayerKillSum);
+            // plausible-looking digit string that's still wrong. Team kills is
+            // now its OWN tracker (option B), independent of per-player K/D/A,
+            // so the floor is purely the count this tracker already holds — the
+            // player-kill sum is deliberately NOT consulted here. A single
+            // garbled read that leaps a dozen-plus kills over the current count
+            // is held back for confirmation; a genuine fast run still gets
+            // through next tick once the floor catches up.
+            const plausibleFloor = currentKills ?? 0;
             if (kills - plausibleFloor > 10) {
               flagReading(tracker.field, {
                 label: tracker.label,
                 raw: trimmed,
                 confidence: data.confidence,
-                reason: `Read ${kills}, a jump of ${kills - plausibleFloor} over the current count (${plausibleFloor}, incl. per-player kills) — held back as a likely misread, needs confirmation`,
+                reason: `Read ${kills}, a jump of ${kills - plausibleFloor} over the current count (${plausibleFloor}) — held back as a likely misread, needs confirmation`,
                 apply: async () => {
                   await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
                 },
@@ -7079,28 +7091,24 @@ export default function LiveConsolePage() {
     if (s.player_id) return effectivePlayers.find((p) => p.id === s.player_id)?.team_id;
     return effectivePlayers.find((p) => p.ign === s.custom_player_name)?.team_id;
   }
-  // DECOUPLED MODEL (spec: KDA rework, option D). Team Kills is now its own
-  // AUTHORITATIVE tracker — the team_kills OCR override (or a manual edit / kill
-  // banner) is the single source of truth for the scoreboard's team-kill count,
-  // exactly like the Objectives trackers own their own counts. `??`, not
-  // Math.max: once an override exists it is trusted verbatim (including a
-  // corrected-downward value), so a single over-read player row can no longer
-  // inflate the team number and a lagging player sum can no longer pin it high.
-  // Per-player kills are summed only as the BOOTSTRAP before any override has
-  // been set (and for Normal/Liquipedia matches that never place a team-kills
-  // tracker). The two are otherwise independent — see the per-player K/D/A
-  // handling in captureTickBody, which no longer cross-clamps one player's read
-  // against another's.
+  // TEAM KILLS = THE TEAM-KILL TRACKER, FULL STOP (spec option B). The team_kills
+  // override — set by the team-kills OCR tracker, a manual edit, or the reset —
+  // is the SOLE source of truth for the scoreboard's team-kill count on both the
+  // admin and public pages. Per-player K/D/A has ZERO effect on it: the summed
+  // player kills are used only as a display bootstrap for Normal/Liquipedia
+  // matches that never place a team-kills tracker (update_source !== local_ocr).
+  // For a hot (local_ocr) match the count is exactly the override, defaulting to
+  // 0 until the tracker reads — so a bad player-KDA row can never move it and a
+  // Reset visibly clears it to 0 instead of snapping back to the player sum.
+  const usesKillTracker = match.update_source === "local_ocr";
   const computedTeamAKills = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
   const computedTeamBKills = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.kills ?? 0), 0);
-  const teamAKillsTotal = game?.team_a_kills_override ?? computedTeamAKills;
-  const teamBKillsTotal = game?.team_b_kills_override ?? computedTeamBKills;
-  // Soft reconciliation signal only (never hides the count). Every kill is one
-  // enemy death, and a team's own kills should track the sum of its players'
-  // kills — so we compare the authoritative team-kill totals against the summed
-  // per-player deaths/kills and surface a dismissible hint when they drift. This
-  // NEVER blocks or rewrites either value — the operator decides which side is
-  // right and corrects it directly, the same way a mis-read objective is fixed.
+  const teamAKillsTotal = game?.team_a_kills_override ?? (usesKillTracker ? 0 : computedTeamAKills);
+  const teamBKillsTotal = game?.team_b_kills_override ?? (usesKillTracker ? 0 : computedTeamBKills);
+  // Soft, informational reconcile hint only (never hides or rewrites anything).
+  // Team kills and per-player K/D/A are now independent trackers, so this just
+  // flags when the summed player deaths drift from the authoritative team kills
+  // — a nudge that a KDA row may need a manual fix, not a gate on either value.
   const teamADeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_a?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
   const teamBDeathsTotal = stats.filter((s) => statOwnerTeamId(s) === match.team_b?.id).reduce((sum, s) => sum + (s.deaths ?? 0), 0);
   const teamKillsValid = teamAKillsTotal === teamBDeathsTotal && teamBKillsTotal === teamADeathsTotal;

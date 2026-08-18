@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { groqTextModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
+import { aiBaseUrl, aiApiKey, groqTextModelCandidates, isGroqModelUnavailable, stripReasoning } from "@/lib/groqVision";
 
 // Post-draft AI analysis. Given both teams' picks and bans, a text model writes
 // at most two short paragraphs — which draft is stronger and why (lane matchups,
@@ -48,8 +48,8 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (auth instanceof NextResponse) return auth;
 
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "Draft analysis isn't configured — set GROQ_API_KEY." }, { status: 503 });
+  const apiKey = aiApiKey();
+  if (!apiKey) return NextResponse.json({ error: "Draft analysis isn't configured — set AI_API_KEY (or GROQ_API_KEY)." }, { status: 503 });
 
   const body = await req.json().catch(() => null);
   const teamA: Side | undefined = body?.teamA;
@@ -63,13 +63,18 @@ export async function POST(req: NextRequest) {
 
   const prompt = buildPrompt(teamA, teamB);
   const callModel = (model: string) =>
-    fetch("https://api.groq.com/openai/v1/chat/completions", {
+    fetch(`${aiBaseUrl()}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
         temperature: 0.4,
-        max_tokens: 400, // two short paragraphs
+        // Two short paragraphs is ~250 tokens, but a REASONING model spends its
+        // budget "thinking" first and returns empty visible content if the cap
+        // is too tight (the "returned no analysis" case). A roomier budget lets
+        // it finish the reasoning AND write the answer; any inline <think> block
+        // is stripped below.
+        max_tokens: 1200,
         messages: [{ role: "user", content: prompt }],
       }),
       signal: AbortSignal.timeout(30000),
@@ -96,12 +101,19 @@ export async function POST(req: NextRequest) {
   }
   if (!data) {
     const message = isGroqModelUnavailable(lastStatus, lastErr)
-      ? `No usable Groq text model — tried ${candidates.join(", ")}. Set GROQ_TEXT_MODEL to a model your account can access.`
+      ? `No usable text model — tried ${candidates.join(", ")}. Set AI_TEXT_MODEL (and AI_BASE_URL/AI_API_KEY for a non-Groq provider) to a model your account can access.`
       : `Groq API error (${lastStatus}): ${lastErr.slice(0, 200)}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }
 
-  const analysis = (data.choices?.[0]?.message?.content ?? "").trim();
-  if (!analysis) return NextResponse.json({ error: "The model returned no analysis, try again." }, { status: 502 });
+  const choice = data.choices?.[0];
+  // `|| ""` (not `??`) so a genuinely empty string from a reasoning model that
+  // spent its whole budget thinking is caught too; strip any inline <think>.
+  const analysis = stripReasoning(choice?.message?.content || "");
+  if (!analysis) {
+    const finishReason = (choice as { finish_reason?: string })?.finish_reason;
+    const hint = finishReason === "length" ? " — it hit the token limit before writing; try again" : " — try again";
+    return NextResponse.json({ error: `The model returned no analysis${hint}.` }, { status: 502 });
+  }
   return NextResponse.json({ analysis });
 }

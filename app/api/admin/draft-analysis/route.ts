@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
   }
   if (!data) {
     const message = isGroqModelUnavailable(lastStatus, lastErr)
-      ? `No usable text model — tried ${candidates.join(", ")}. Set AI_TEXT_MODEL (and AI_BASE_URL/AI_API_KEY for a non-Groq provider) to a model your account can access.`
+      ? `No usable text model at ${aiBaseUrl()} — tried ${candidates.join(", ")}. If that endpoint is api.groq.com, AI_BASE_URL didn't take effect (check it's set on Production and redeploy). Otherwise set AI_TEXT_MODEL to a model that endpoint serves.`
       : `Groq API error (${lastStatus}): ${lastErr.slice(0, 200)}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }

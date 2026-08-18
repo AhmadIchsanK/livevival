@@ -423,7 +423,7 @@ export default function LiveConsolePage() {
   // Current UI language — drives the language of auto-commentary the console
   // posts and the AI draft analysis it requests. Mirrored into a ref so the
   // commentary scheduler (which reads refs, not props) always sees the latest.
-  const { lang: uiLang } = useLanguage();
+  const { lang: uiLang, t: tt } = useLanguage();
   const commentaryLangRef = useRef<"en" | "id">(uiLang);
   commentaryLangRef.current = uiLang;
 
@@ -8621,7 +8621,7 @@ export default function LiveConsolePage() {
                   scrolls the action deck. */}
               <div className="flex items-center justify-between gap-2 flex-wrap sticky top-0 z-20 bg-ink/95 backdrop-blur py-1.5 -mx-1 px-1 rounded">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="font-bold">Moment Timeline</h2>
+                  <h2 className="font-bold">{tt("admin.momentTimeline")}</h2>
                   {/* Same live in-game clock the public match page shows
                       beside its own Moment Timeline heading — easy to spot
                       here too, not just in the header row above. */}
@@ -8771,7 +8771,7 @@ export default function LiveConsolePage() {
                     <div className="space-y-4">
                     <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
                       <div className="flex items-center justify-between">
-                        <h3 className="font-semibold text-sm">Objectives</h3>
+                        <h3 className="font-semibold text-sm">{tt("admin.objectives")}</h3>
                         <button
                           onClick={() =>
                             postToTelegram(buildObjectivesMessage(), { entityType: "match", entityId: match.id, notificationType: "objectives_share" })
@@ -8864,7 +8864,7 @@ export default function LiveConsolePage() {
                         Objectives, directly below it. */}
                     <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
                       <div className="flex items-center justify-between">
-                        <h3 className="font-semibold text-sm">Log a moment</h3>
+                        <h3 className="font-semibold text-sm">{tt("admin.logMoment")}</h3>
                         <a href="/admin/moment-templates" className="text-[10px] text-white/40 hover:text-signal">Manage templates ↗</a>
                       </div>
                       <div className="flex gap-2 items-end flex-wrap">
@@ -8990,7 +8990,7 @@ export default function LiveConsolePage() {
                     {/* Net worth — top of the right column, directly above
                         Live scoreboard. */}
                     <section className="space-y-2">
-                      <h2 className="font-bold">Net worth</h2>
+                      <h2 className="font-bold">{tt("admin.netWorth")}</h2>
                       <div className="flex flex-wrap gap-4 items-end">
                         {[
                           { team: match.team_a, key: "team_a_gold" as const, other: latestNetWorth?.team_b_gold ?? 0 },
@@ -9103,7 +9103,7 @@ export default function LiveConsolePage() {
 
                     <section className="space-y-3">
                       <div className="flex items-center justify-between">
-                        <h2 className="font-bold">Live scoreboard</h2>
+                        <h2 className="font-bold">{tt("admin.liveScoreboard")}</h2>
                         <div className="flex items-center gap-2">
                           {gameFinished && (
                             <button
@@ -9139,7 +9139,7 @@ export default function LiveConsolePage() {
                           single number; teamKillsValid only drives a soft
                           reconcile hint the operator can act on by hand. */}
                       <div className="flex items-center gap-4 text-xs flex-wrap">
-                        <span className="text-white/50">Team kills:</span>
+                        <span className="text-white/50">{tt("admin.teamKillsColon")}</span>
                         <span className="font-bold tabular-nums">
                           {match.team_a?.name} {teamAKillsTotal} – {teamBKillsTotal} {match.team_b?.name}
                         </span>
@@ -9424,7 +9424,7 @@ export default function LiveConsolePage() {
                   </div>
                 ) : (
                   <section className="space-y-2">
-                    <h3 className="font-semibold text-sm">Objectives</h3>
+                    <h3 className="font-semibold text-sm">{tt("admin.objectives")}</h3>
                     <div className="bg-white/5 rounded p-2 space-y-1 max-h-40 overflow-y-auto">
                       {objectives.map((obj) => (
                         <div key={obj.id} className="flex items-center justify-between text-xs bg-white/5 rounded px-2 py-1">

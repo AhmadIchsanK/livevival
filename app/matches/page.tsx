@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { MatchCard } from "@/components/MatchCard";
 
@@ -112,6 +113,7 @@ function MatchesPageInner() {
       <header className="flex items-center justify-between">
         <BrandLockup />
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <ThemeToggle />
           <NavMenu />
         </div>

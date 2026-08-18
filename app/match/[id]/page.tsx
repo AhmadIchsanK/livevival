@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { HeroIcon } from "@/components/HeroIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { BrandLockup } from "@/components/Brand";
 import { FollowButton } from "@/components/FollowButton";
@@ -14,6 +15,7 @@ import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
 import { NetWorthLeadChart } from "@/components/NetWorthLeadChart";
+import { useLanguage } from "@/lib/i18n";
 
 type Match = {
   id: string;
@@ -312,6 +314,9 @@ export default function PublicMatchPage() {
   const matchId = params.id as string;
   const { theme, resolvedTheme } = useTheme();
   const isDarkTheme = (resolvedTheme ?? theme) === "dark";
+  const { t } = useLanguage();
+  // Helper for the "— Game N" suffix so it localizes with the rest.
+  const gameSuffix = (n: number | undefined) => (games.length > 1 && n ? ` — ${t("match.game")} ${n}` : "");
 
   const [match, setMatch] = useState<Match | null>(null);
   const [games, setGames] = useState<Game[]>([]);
@@ -949,7 +954,8 @@ export default function PublicMatchPage() {
         <div className="flex items-center justify-between">
           <BrandLockup imgClassName="h-6 w-auto" />
           <div className="flex items-center gap-2">
-            <ThemeToggle />
+            <LanguageToggle />
+          <ThemeToggle />
             <NavMenu />
           </div>
         </div>
@@ -1187,7 +1193,7 @@ export default function PublicMatchPage() {
                   }`}
                 >
                   <span className="shrink-0">{expanded ? "▼" : "▶"}</span>
-                  <span className="font-semibold">Game {g.game_number}</span>
+                  <span className="font-semibold">{t("match.game")} {g.game_number}</span>
                   <span className="text-white/60">
                     {winnerName
                       ? `Recap — ${winnerName} won`
@@ -1212,10 +1218,10 @@ export default function PublicMatchPage() {
                       : "border-white/10 hover:border-signal/40 hover:bg-white/5"
                   }`}
                 >
-                  Game {g.game_number}
+                  {t("match.game")} {g.game_number}
                   {g.winner_team_id && (
                     <span className="ml-1 text-white/60">
-                      ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} won)
+                      ({g.winner_team_id === teamAId ? match.team_a?.name : match.team_b?.name} {t("match.wins")})
                     </span>
                   )}
                 </button>
@@ -1306,7 +1312,7 @@ export default function PublicMatchPage() {
                 panel "Moment Timeline" regardless of phase, so this now
                 matches that exactly instead of the two sides using
                 different names for the same feed. */}
-            <h2 className="lv-heading">Moment Timeline</h2>
+            <h2 className="lv-heading">{t("match.momentTimeline")}</h2>
             {/* Header badges above can wrap/scroll out of view on mobile —
                 repeating the live clock + phase here, bigger, means the
                 status is still visible without scrolling back up while
@@ -1381,7 +1387,7 @@ export default function PublicMatchPage() {
       {layoutBucket === "draft" && (
         <section>
           <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <h2 className="lv-heading">Draft {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+            <h2 className="lv-heading">{t("match.draft")}{gameSuffix(selectedGame?.game_number)}</h2>
             {match.state === "DRAFT_STARTED" && <span className="text-xs text-white/50">Picks lock in live, top to bottom.</span>}
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1420,7 +1426,7 @@ export default function PublicMatchPage() {
           covers it — no point duplicating the same picks twice. */}
       {(layoutBucket === "finished" || (layoutBucket === "game" && match.update_source !== "local_ocr")) && (
       <section>
-        <h2 className="lv-heading mb-3">Draft recap {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <h2 className="lv-heading mb-3">{t("match.draftRecap")}{gameSuffix(selectedGame?.game_number)}</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
           {[
             { name: match.team_a?.name, bans: teamABans, picks: teamAPicks, teamId: teamAId },
@@ -1514,7 +1520,7 @@ export default function PublicMatchPage() {
       {match.update_source === "local_ocr" && (layoutBucket === "game" || layoutBucket === "finished") && (
       <>
       <section>
-        <h2 className="lv-heading mb-2">Objectives {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <h2 className="lv-heading mb-2">{t("match.objectives")}{gameSuffix(selectedGame?.game_number)}</h2>
         <div className="flex gap-8 text-sm">
           {[
             { name: match.team_a?.name, teamId: teamAId },
@@ -1540,7 +1546,7 @@ export default function PublicMatchPage() {
           team's card corner. */}
       {latestNetWorth != null && (
         <section>
-          <h2 className="lv-heading mb-2">Net worth {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+          <h2 className="lv-heading mb-2">{t("match.netWorth")}{gameSuffix(selectedGame?.game_number)}</h2>
           <div className="grid grid-cols-2 gap-4">
             {[
               { name: match.team_a?.name, gold: latestNetWorth?.team_a_gold },
@@ -1567,7 +1573,7 @@ export default function PublicMatchPage() {
       <section>
         <div className="flex items-center justify-between mb-2">
           <h2 className="lv-heading">
-            {layoutBucket === "finished" ? "Statistics" : "Scoreboard"} {games.length > 1 && `— Game ${selectedGame?.game_number}`}
+            {layoutBucket === "finished" ? t("match.statistics") : t("match.scoreboard")}{gameSuffix(selectedGame?.game_number)}
           </h2>
         </div>
         {/* Team-kill score — large, above the scoreboard itself, not a
@@ -1577,7 +1583,7 @@ export default function PublicMatchPage() {
             <span className={teamAKills > teamBKills ? "text-signal" : "text-white/70"}>{teamAKills}</span>
             <span className="text-white/30 mx-2">—</span>
             <span className={teamBKills > teamAKills ? "text-signal" : "text-white/70"}>{teamBKills}</span>
-            <span className="text-white/40 text-sm font-normal block mt-1">team kills</span>
+            <span className="text-white/40 text-sm font-normal block mt-1">{t("match.teamKills")}</span>
           </p>
         )}
         {/* Win probability — deliberately identical markup to the admin live
@@ -1586,11 +1592,11 @@ export default function PublicMatchPage() {
         {showMomentum && (
           <div className="mb-4 space-y-1">
             <p className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
-              Win probability <span className="text-white/30 normal-case font-normal">· live estimate</span>
+              {t("match.winProbability")} <span className="text-white/30 normal-case font-normal">· {t("match.liveEstimate")}</span>
             </p>
             <div className="flex items-center justify-between text-[11px] text-white/50">
               <span>{match.team_a?.name} {Math.round(momentumTeamAPct)}%</span>
-              <span className="text-white/30">est.</span>
+              <span className="text-white/30">{t("match.est")}</span>
               <span>{Math.round(100 - momentumTeamAPct)}% {match.team_b?.name}</span>
             </div>
             <div className="h-2 rounded-full overflow-hidden bg-white/10 flex" role="img" aria-label={`Win probability estimate: ${Math.round(momentumTeamAPct)}% ${match.team_a?.name ?? "Team A"}, ${Math.round(100 - momentumTeamAPct)}% ${match.team_b?.name ?? "Team B"}`}>
@@ -1603,17 +1609,17 @@ export default function PublicMatchPage() {
           {[
             { name: match.team_a?.name, list: scoreRowsFor(teamAStats, teamAActiveRoster) },
             { name: match.team_b?.name, list: scoreRowsFor(teamBStats, teamBActiveRoster) },
-          ].map((t, i) => (
+          ].map((col, i) => (
             <div key={i} className="lv-card-flush p-4">
               {/* Net worth now has its own section directly above (same
                   column) instead of a badge pinned to this card's corner. */}
-              <p className="text-white/70 font-semibold mb-2 text-sm">{t.name}</p>
+              <p className="text-white/70 font-semibold mb-2 text-sm">{col.name}</p>
               <table className="w-full text-xs">
                 <thead className="text-white/40 text-left uppercase tracking-wide">
-                  <tr><th className="pb-1.5">Player</th><th className="pb-1.5">Role</th><th className="pb-1.5">Hero</th><th className="pb-1.5">K/D/A</th></tr>
+                  <tr><th className="pb-1.5">{t("match.player")}</th><th className="pb-1.5">{t("match.role")}</th><th className="pb-1.5">{t("match.hero")}</th><th className="pb-1.5">K/D/A</th></tr>
                 </thead>
                 <tbody>
-                  {t.list.map((s) => (
+                  {col.list.map((s) => (
                     <tr key={s.id} className="border-t border-white/10">
                       <td className="py-1.5">
                         {s.ign}
@@ -1631,8 +1637,8 @@ export default function PublicMatchPage() {
                       <td className="tabular-nums">{s.kills ?? 0}/{s.deaths ?? 0}/{s.assists ?? 0}</td>
                     </tr>
                   ))}
-                  {t.list.length === 0 && (
-                    <tr><td colSpan={4} className="py-2 text-white/30">No stats yet.</td></tr>
+                  {col.list.length === 0 && (
+                    <tr><td colSpan={4} className="py-2 text-white/30">{t("match.noStatsYet")}</td></tr>
                   )}
                 </tbody>
               </table>
@@ -1643,7 +1649,7 @@ export default function PublicMatchPage() {
             to the admin console. Rendered whenever the game has one stored. */}
         {selectedGame?.draft_analysis && (
           <div className="lv-card-flush p-4 mt-4 space-y-1.5">
-            <p className="text-white/70 font-semibold text-sm">🧠 Draft analysis</p>
+            <p className="text-white/70 font-semibold text-sm">🧠 {t("match.draftAnalysis")}</p>
             {selectedGame.draft_analysis.split(/\n\n+/).map((para, i) => (
               <p key={i} className="text-xs text-white/60 leading-relaxed">{para}</p>
             ))}
@@ -1653,7 +1659,7 @@ export default function PublicMatchPage() {
             not the finished/"Statistics" replay of the same table. */}
         {layoutBucket === "game" && (
           <p className="text-[10px] text-white/35 italic text-center mt-3">
-            This match is covered using a manual vision tracker. Numbers might not be accurate. We will keep improving our system for better data.
+            {t("match.coveredManualVision")}
           </p>
         )}
       </section>
@@ -1666,7 +1672,7 @@ export default function PublicMatchPage() {
           still carry their own inline screenshot in the Moment list above. */}
       {match.update_source === "local_ocr" && (layoutBucket === "game" || layoutBucket === "finished") && gameScreenshots.length > 0 && (
       <section>
-        <h2 className="lv-heading mb-2">Screenshots {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <h2 className="lv-heading mb-2">{t("match.screenshots")}{gameSuffix(selectedGame?.game_number)}</h2>
         <div className="overflow-x-auto pr-2">
           <div className="flex gap-3 pb-2">
             {gameScreenshots.map((s) => (
@@ -1705,7 +1711,7 @@ export default function PublicMatchPage() {
       {/* Screenshots empty state for finished matches that have no shots */}
       {match.update_source === "local_ocr" && layoutBucket === "finished" && gameScreenshots.length === 0 && (
       <section>
-        <h2 className="lv-heading mb-2">Screenshots {games.length > 1 && `— Game ${selectedGame?.game_number}`}</h2>
+        <h2 className="lv-heading mb-2">{t("match.screenshots")}{gameSuffix(selectedGame?.game_number)}</h2>
         <span className="text-white/30 text-xs">No screenshots captured.</span>
       </section>
       )}

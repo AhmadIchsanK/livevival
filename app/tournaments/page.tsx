@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { TeamLogo } from "@/components/TeamLogo";
 import { NavMenu } from "@/components/NavMenu";
 import { TierBadge } from "@/components/TierBadge";
@@ -185,6 +186,7 @@ function TournamentsIndexPageInner() {
           <h1 className="font-display font-light text-2xl tracking-tight">Tournaments</h1>
         </div>
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <ThemeToggle />
           <NavMenu />
         </div>

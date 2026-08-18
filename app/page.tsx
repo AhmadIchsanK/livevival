@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { TeamLogo } from "@/components/TeamLogo";
 import { GlobalSearch } from "@/components/GlobalSearch";
@@ -210,6 +211,7 @@ export default function Home() {
       <header className="flex items-center justify-between">
         <BrandLockup />
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <ThemeToggle />
           <NavMenu />
         </div>

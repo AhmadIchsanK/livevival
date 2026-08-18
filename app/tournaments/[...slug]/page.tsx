@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { MatchCard } from "@/components/MatchCard";
 import { FollowButton } from "@/components/FollowButton";
@@ -233,6 +234,7 @@ export default function TournamentPage() {
       <div className="flex items-center justify-between">
         <a href="/tournaments" className="lv-nav-link">&larr; All tournaments</a>
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <ThemeToggle />
           <NavMenu />
         </div>

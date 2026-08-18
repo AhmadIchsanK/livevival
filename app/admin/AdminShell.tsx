@@ -5,6 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandMark } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 
 type AdminInfo = { email: string; role: "super_admin" | "moderator" };
 
@@ -503,7 +504,8 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
             <a href="/" className="lv-nav-link" target="_blank" rel="noopener noreferrer">
               View site ↗
             </a>
-            <ThemeToggle />
+            <LanguageToggle />
+          <ThemeToggle />
             <button onClick={handleLogout} className="lv-btn-ghost">
               Sign out
             </button>

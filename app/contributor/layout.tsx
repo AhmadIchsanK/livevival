@@ -5,6 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandMark } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 
 type ContributorInfo = { id: string; name: string; status: "pending" | "approved" | "rejected"; decision_note: string | null };
 
@@ -160,6 +161,7 @@ export default function ContributorLayout({ children }: { children: React.ReactN
           <a href="/" className="lv-nav-link" target="_blank" rel="noopener noreferrer">
             View site ↗
           </a>
+          <LanguageToggle />
           <ThemeToggle />
           <button onClick={handleLogout} className="lv-btn-ghost">
             Sign out

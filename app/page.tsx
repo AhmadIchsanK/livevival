@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { BrandLockup } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
+import { useLanguage } from "@/lib/i18n";
 import { TeamLogo } from "@/components/TeamLogo";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
@@ -111,6 +113,7 @@ function dateKey(iso: string) {
 }
 
 export default function Home() {
+  const { t } = useLanguage();
   const [live, setLive] = useState<MatchRow[]>([]);
   const [upcoming, setUpcoming] = useState<MatchRow[]>([]);
   const [finished, setFinished] = useState<MatchRow[]>([]);
@@ -210,6 +213,7 @@ export default function Home() {
       <header className="flex items-center justify-between">
         <BrandLockup />
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <ThemeToggle />
           <NavMenu />
         </div>
@@ -224,10 +228,10 @@ export default function Home() {
         <section className="space-y-3">
           <h2 className="lv-heading flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-signal-light animate-lv-pulse-glow" />
-            Live now
+            {t("home.liveNow")}
           </h2>
           {live.length === 0 && (
-            <p className="text-white/30 text-sm">No matches live right now — check upcoming below.</p>
+            <p className="text-white/30 text-sm">{t("home.noLiveCheckUpcoming")}</p>
           )}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {live.map((m) => (
@@ -262,13 +266,14 @@ function seriesScoreLabel(score: { a: number; b: number } | undefined) {
 }
 
 function LiveScoreCard({ m, score }: { m: MatchRow; score: { a: number; b: number } | undefined }) {
+  const { t } = useLanguage();
   return (
     <a
       href={`/match/${m.id}`}
       className="lv-card lv-clip-corner block border-signal/30 bg-signal/[0.04] hover:border-signal/60 px-5 py-4"
     >
       <div className="flex items-center gap-2 mb-3">
-        <p className="lv-badge-live">Live</p>
+        <p className="lv-badge-live">{t("common.liveBadge")}</p>
         <HotBadge updateSource={m.update_source} />
         <TierBadge tier={m.notification_tier} updateSource={m.update_source} />
       </div>
@@ -400,6 +405,7 @@ function MatchCountdown({ scheduledAt, now }: { scheduledAt: string; now: number
 }
 
 function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; selectedDate: string | null }) {
+  const { t } = useLanguage();
   const scrollerRef = useRef<HTMLDivElement>(null);
 
   const byDay = new Map<string, MatchRow[]>();
@@ -433,7 +439,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
   return (
     <section className="space-y-3 min-w-0">
       <div className="flex items-center justify-between">
-        <h2 className="lv-heading">Upcoming — next {UPCOMING_DAYS_RANGE} days</h2>
+        <h2 className="lv-heading">{t("home.upcomingNextDays", { n: UPCOMING_DAYS_RANGE })}</h2>
         {days.length > 0 && (
           <div className="flex gap-1">
             <button onClick={() => scrollBy(-320)} className="lv-btn-ghost !px-2 !py-1">←</button>
@@ -442,7 +448,7 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
         )}
       </div>
 
-      {days.length === 0 && <p className="text-white/30 text-sm">No upcoming matches scheduled in the next {UPCOMING_DAYS_RANGE} days.</p>}
+      {days.length === 0 && <p className="text-white/30 text-sm">{t("home.noUpcomingInDays", { n: UPCOMING_DAYS_RANGE })}</p>}
 
       {days.length > 0 && (
         <div ref={scrollerRef} className="flex gap-4 overflow-x-auto pb-2 snap-x snap-mandatory">
@@ -519,13 +525,14 @@ function UpcomingDaySlider({ matches, selectedDate }: { matches: MatchRow[]; sel
 }
 
 function ResultsSection({ matches, scores }: { matches: MatchRow[]; scores: Record<string, { a: number; b: number }> }) {
+  const { t } = useLanguage();
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const visible = matches.slice(0, visibleCount);
   const hasMore = matches.length > visibleCount;
 
   return (
     <section className="space-y-3">
-      <h2 className="lv-heading">Recent results</h2>
+      <h2 className="lv-heading">{t("matches.recentResults")}</h2>
       {matches.length === 0 && <p className="text-white/30 text-sm">No finished matches yet.</p>}
       <div className="grid gap-2 lg:grid-cols-2">
         {visible.map((m) => {

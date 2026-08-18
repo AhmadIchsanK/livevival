@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { TeamLogo } from "@/components/TeamLogo";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { ViewToggle } from "@/components/ViewToggle";
 import { TeamSocialLinks } from "@/components/TeamSocialLinks";
@@ -106,6 +107,7 @@ function TeamsIndexPageInner() {
           <h1 className="font-display font-light text-2xl tracking-tight">Teams</h1>
         </div>
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <ThemeToggle />
           <NavMenu />
         </div>

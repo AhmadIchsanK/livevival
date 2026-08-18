@@ -1,8 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Rajdhani, JetBrains_Mono } from "next/font/google";
+import { cookies } from "next/headers";
 import "./globals.css";
 import { PageTransition } from "@/components/PageTransition";
 import { ThemeProvider } from "@/components/ThemeProvider";
+import { LanguageProvider } from "@/lib/i18n";
+import { LANG_COOKIE, normalizeLang } from "@/lib/messages";
 
 // Per Livevival_Brand_Guide.pdf ("Typography"): Rajdhani for headings/
 // scoreboard, Inter for body/UI, JetBrains Mono for figures that must
@@ -72,16 +75,23 @@ export default function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
+  // Seed the language from the cookie so the first server render is already in
+  // the visitor's chosen language (no EN→ID flash). Reading a cookie opts this
+  // layout into dynamic rendering, which is fine — the app is realtime and
+  // client-driven anyway.
+  const initialLang = normalizeLang(cookies().get(LANG_COOKIE)?.value);
   return (
     // suppressHydrationWarning on <html> is the documented next-themes
     // pattern — the theme class gets set client-side before React
     // hydrates, which otherwise reads as a hydration mismatch even though
     // it's expected and harmless.
-    <html lang="en" className={`${displayFont.variable} ${bodyFont.variable} ${monoFont.variable}`} suppressHydrationWarning>
+    <html lang={initialLang} className={`${displayFont.variable} ${bodyFont.variable} ${monoFont.variable}`} suppressHydrationWarning>
       <body>
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem themes={["dark", "light"]}>
-          <PageTransition>{children}</PageTransition>
-        </ThemeProvider>
+        <LanguageProvider initialLang={initialLang}>
+          <ThemeProvider attribute="class" defaultTheme="dark" enableSystem themes={["dark", "light"]}>
+            <PageTransition>{children}</PageTransition>
+          </ThemeProvider>
+        </LanguageProvider>
       </body>
     </html>
   );

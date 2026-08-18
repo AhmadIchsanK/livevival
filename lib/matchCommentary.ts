@@ -19,6 +19,8 @@
 // subject was just spotlighted — so the feed stops hammering the same player,
 // the same hero, or the same phrasing over and over.
 
+import { ID_TEMPLATES, ID_WINPROB } from "./commentaryId.ts";
+
 export type CommentaryCondition =
   | "net_worth"
   | "kills"
@@ -128,6 +130,7 @@ export type CommentaryContext = {
   enabled: Set<CommentaryCondition>;
 };
 
+export type CommentaryLang = "en" | "id";
 type Rng = () => number; // [0,1)
 type Facts = Record<string, string | number>;
 // A fired eligibility: a condition, the facts it exposes, its built-in text, and
@@ -519,9 +522,16 @@ const generators: Generator[] = [
 export type CommentaryOptions = {
   rng?: Rng;
   templates?: CommentaryTemplate[];
+  // Language for the built-in phrasings. "id" swaps each built-in line for its
+  // Bahasa Indonesia equivalent (ID_TEMPLATES) before rendering; DB custom
+  // templates render as authored regardless. Defaults to English.
+  lang?: CommentaryLang;
   // Anti-repetition memory the caller threads through: the exact line texts most
-  // recently posted, and the subjects most recently spotlighted.
-  recent?: { texts?: string[]; subjects?: string[] };
+  // recently posted, the subjects most recently spotlighted, and the conditions
+  // most recently used. The picker drops exact repeats, then rotates away from
+  // recent subjects AND recent conditions so the feed doesn't loop on one
+  // player, one hero, one phrasing, or one KIND of line (e.g. win-prob) in a row.
+  recent?: { texts?: string[]; subjects?: string[]; conditions?: CommentaryCondition[] };
 };
 
 // Build the full candidate set for the current context — built-in phrasings PLUS
@@ -529,12 +539,17 @@ export type CommentaryOptions = {
 // toggles. Used by tests and by weighted selection.
 export function commentaryCandidates(ctx: CommentaryContext, opts: CommentaryOptions = {}): CommentaryLine[] {
   const templates = opts.templates ?? [];
+  const lang = opts.lang ?? "en";
   const lines: CommentaryLine[] = [];
   for (const g of generators) {
     for (const trig of g(ctx)) {
       if (!ctx.enabled.has(trig.condition)) continue;
       for (const d of trig.defaults) {
-        const t = renderTemplate(d, trig.facts);
+        // In Bahasa Indonesia mode, swap the built-in line for its ID
+        // equivalent (placeholders preserved) before rendering; fall back to
+        // English if a line has no translation yet.
+        const src = lang === "id" ? ID_TEMPLATES[d] ?? d : d;
+        const t = renderTemplate(src, trig.facts);
         if (t) lines.push({ condition: trig.condition, text: t, source: "builtin", subject: trig.subject });
       }
       for (const tpl of templates) {
@@ -557,6 +572,7 @@ export function pickCommentary(ctx: CommentaryContext, opts: CommentaryOptions =
   const rng = opts.rng ?? Math.random;
   const recentTexts = new Set(opts.recent?.texts ?? []);
   const recentSubjects = new Set(opts.recent?.subjects ?? []);
+  const recentConditions = new Set(opts.recent?.conditions ?? []);
   const all = commentaryCandidates(ctx, opts);
   if (all.length === 0) return null;
   // Drop exact repeats of lines we just used (fall back to the full set only if
@@ -565,7 +581,12 @@ export function pickCommentary(ctx: CommentaryContext, opts: CommentaryOptions =
   const usable = notJustSaid.length > 0 ? notJustSaid : all;
   const eventDriven = usable.filter((l) => l.condition !== "general");
   let pool = eventDriven.length > 0 ? eventDriven : usable;
-  // Prefer lines whose subject wasn't just spotlighted.
+  // Prefer lines whose CONDITION wasn't just used — stops the feed running a
+  // string of win-prob (or any one category) reads back to back when other
+  // categories are also eligible. Only applied when it leaves something.
+  const freshCondition = pool.filter((l) => !recentConditions.has(l.condition));
+  if (freshCondition.length > 0) pool = freshCondition;
+  // Then prefer lines whose subject wasn't just spotlighted.
   const freshSubject = pool.filter((l) => !l.subject || !recentSubjects.has(l.subject));
   if (freshSubject.length > 0) pool = freshSubject;
   return pick(rng, pool);
@@ -575,17 +596,35 @@ export function pickCommentary(ctx: CommentaryContext, opts: CommentaryOptions =
 // caller schedules on its own cadence (every few minutes), independent of the
 // threshold-gated win_prob generator above. Always returns text, phrased to the
 // current margin, with light RNG variety so back-to-back reads don't repeat.
-export function winProbInterjection(s: CommentarySnapshot, rng: Rng = Math.random): string {
+export function winProbInterjection(s: CommentarySnapshot, rng: Rng = Math.random, lang: CommentaryLang = "en"): string {
   const p = s.winProbA;
   const aPct = Math.round(p * 100);
   const bPct = 100 - aPct;
   const favored = p >= 0.5 ? s.teamA : s.teamB;
   const favPct = Math.max(aPct, bPct);
+  if (lang === "id") {
+    // Same three margin bands, Bahasa Indonesia. Placeholders filled here so the
+    // team names (data) stay original.
+    const fill = (tpl: string) =>
+      tpl
+        .split("{teamA}").join(s.teamA.name)
+        .split("{teamB}").join(s.teamB.name)
+        .split("{favored}").join(favored.name)
+        .split("{aPct}").join(String(aPct))
+        .split("{bPct}").join(String(bPct))
+        .split("{favPct}").join(String(favPct))
+        .split("{rest}").join(String(100 - favPct));
+    const band = favPct <= 56 ? ID_WINPROB.even : favPct >= 85 ? ID_WINPROB.heavy : ID_WINPROB.lean;
+    return fill(pick(rng, band));
+  }
   if (favPct <= 56) {
     return pick(rng, [
       `Win probability is a coin flip — ${s.teamA.name} ${aPct}%, ${s.teamB.name} ${bPct}%.`,
       `The model can't split them: ${aPct}% / ${bPct}%.`,
       `Dead even on the win-probability read, ${s.teamA.name} ${aPct}% to ${s.teamB.name} ${bPct}%.`,
+      `Too close to call — ${aPct}% versus ${bPct}% on the model.`,
+      `Nothing between these two: ${s.teamA.name} ${aPct}%, ${s.teamB.name} ${bPct}%.`,
+      `The odds are a dead heat right now, ${aPct}% each way barely.`,
     ]);
   }
   if (favPct >= 85) {
@@ -593,11 +632,17 @@ export function winProbInterjection(s: CommentarySnapshot, rng: Rng = Math.rando
       `${favored.name} heavily favoured now — ${favPct}% to take it.`,
       `The needle's pinned to ${favored.name} at ${favPct}%.`,
       `${favored.name} in commanding shape, ${favPct}% on the model.`,
+      `It's ${favored.name}'s to lose — ${favPct}% on the win-probability read.`,
+      `The model has all but called it: ${favored.name} ${favPct}%.`,
+      `${favored.name} closing in on this one, ${favPct}% and climbing.`,
     ]);
   }
   return pick(rng, [
     `Win probability leans ${favored.name} at ${favPct}%.`,
     `${favored.name} the favourites for now, ${favPct}% to close it.`,
     `Edge to ${favored.name} — ${favPct}% on the win-probability read.`,
+    `${favored.name} nudging ahead on the model, ${favPct}%.`,
+    `The odds tip ${favored.name}'s way, ${favPct}% to ${100 - favPct}%.`,
+    `Slight lean to ${favored.name} here, ${favPct}% on the read.`,
   ]);
 }

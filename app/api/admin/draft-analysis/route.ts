@@ -28,9 +28,25 @@ async function requireAdmin(req: NextRequest): Promise<{ supabase: SupabaseLike 
 
 type Side = { name: string; picks: string[]; bans: string[] };
 
-function buildPrompt(a: Side, b: Side): string {
+function buildPrompt(a: Side, b: Side, lang: "en" | "id"): string {
   const fmt = (s: Side) =>
     `${s.name}\n  Picks: ${s.picks.length ? s.picks.join(", ") : "—"}\n  Bans: ${s.bans.length ? s.bans.join(", ") : "—"}`;
+  if (lang === "id") {
+    // Bahasa Indonesia, semi-formal Gen-Z. In-game terms (Lord, Turtle, draft,
+    // teamfight, pick-off, hero names) stay English; the edge line format is
+    // kept identical so the client can parse it the same way.
+    return `Kamu analis draft Mobile Legends: Bang Bang profesional. Analisis draft yang udah selesai ini dalam Bahasa Indonesia yang santai tapi tetap rapi (gaya Gen-Z, jangan kaku).
+
+${fmt(a)}
+
+${fmt(b)}
+
+Tulis MAKSIMAL DUA paragraf pendek, teks biasa (tanpa markdown, tanpa heading):
+1) Tim mana yang draft-nya lebih kuat dan kenapa — matchup lane yang konkret, counter hero, dan komposisi / win condition tiap tim (misal early-game dive, late-game scaling, teamfight, pick-off).
+2) Akhiri dengan satu baris persis seperti ini: "Draft edge: <NAMA TIM> ~NN%" di mana NN itu peluang menang tim itu murni dari draft (biasanya 50–75; pakai 50% cuma kalau bener-bener imbang).
+
+Ringkas, spesifik, netral. Jangan ngarang hero yang nggak ada di daftar. Istilah dalam game (Lord, Turtle, teamfight, pick-off, nama hero) tetap pakai Bahasa Inggris.`;
+  }
   return `You are a professional Mobile Legends: Bang Bang draft analyst. Analyze this completed draft.
 
 ${fmt(a)}
@@ -61,7 +77,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No picks to analyze yet" }, { status: 400 });
   }
 
-  const prompt = buildPrompt(teamA, teamB);
+  const lang = body?.lang === "id" ? "id" : "en";
+  const prompt = buildPrompt(teamA, teamB, lang);
   // Runs the whole provider chain (primary + numbered backups, each with its own
   // model list), falling through on quota / model-unavailable / empty answer.
   // max_tokens is roomy because a REASONING model (e.g. gemini-2.5-flash) spends

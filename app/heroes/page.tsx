@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import { HeroIcon } from "@/components/HeroIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { ViewToggle } from "@/components/ViewToggle";
 import { useViewMode } from "@/lib/useViewMode";
@@ -93,6 +94,7 @@ function HeroesIndexPageInner() {
           <h1 className="font-display font-light text-2xl tracking-tight">Heroes</h1>
         </div>
         <div className="flex items-center gap-2">
+          <LanguageToggle />
           <ThemeToggle />
           <NavMenu />
         </div>

@@ -6,6 +6,8 @@ import { supabase } from "@/lib/supabaseClient";
 import { BrandMark } from "@/components/Brand";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
+import { useLanguage } from "@/lib/i18n";
+import type { MsgKey } from "@/lib/messages";
 
 type AdminInfo = { email: string; role: "super_admin" | "moderator" };
 
@@ -221,12 +223,13 @@ function Icon({ name, className = "w-[18px] h-[18px]" }: { name: IconName; class
   }
 }
 
-type NavItem = { href: string; label: string; icon: IconName };
-type NavGroup = { title: string; items: NavItem[] };
+type NavItem = { href: string; labelKey: MsgKey; icon: IconName };
+type NavGroup = { titleKey: MsgKey; items: NavItem[] };
 
 export default function AdminShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const { t } = useLanguage();
   const [checking, setChecking] = useState(true);
   const [admin, setAdmin] = useState<AdminInfo | null>(null);
   const [isApprovedContributor, setIsApprovedContributor] = useState(false);
@@ -343,41 +346,41 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
   // the logo). "Manage Admins" stays the one super_admin-only item, per
   // the confirmed scope — every other item is identical for both roles.
   const navGroups: NavGroup[] = [
-    { title: "Overview", items: [{ href: "/admin", label: "Dashboard", icon: "home" }] },
+    { titleKey: "admin.grp.overview", items: [{ href: "/admin", labelKey: "admin.dashboard", icon: "home" }] },
     {
-      title: "Content",
+      titleKey: "admin.grp.content",
       items: [
-        { href: "/admin/tournaments", label: "Tournaments", icon: "trophy" },
-        { href: "/admin/teams", label: "Teams", icon: "users" },
-        { href: "/admin/players", label: "Players", icon: "user" },
-        { href: "/admin/heroes", label: "Heroes", icon: "shield" },
-        { href: "/admin/matches", label: "Matches", icon: "calendar" },
-        { href: "/admin/streams", label: "Streams", icon: "video" },
+        { href: "/admin/tournaments", labelKey: "admin.nav.tournaments", icon: "trophy" },
+        { href: "/admin/teams", labelKey: "admin.nav.teams", icon: "users" },
+        { href: "/admin/players", labelKey: "admin.nav.players", icon: "user" },
+        { href: "/admin/heroes", labelKey: "admin.nav.heroes", icon: "shield" },
+        { href: "/admin/matches", labelKey: "admin.nav.matches", icon: "calendar" },
+        { href: "/admin/streams", labelKey: "admin.nav.streams", icon: "video" },
       ],
     },
     {
-      title: "Automation",
+      titleKey: "admin.grp.automation",
       items: [
-        { href: "/admin/moment-templates", label: "Moment Templates", icon: "sparkles" },
-        { href: "/admin/commentary", label: "Auto-commentary", icon: "sparkles" },
-        { href: "/admin/telegram-notifications", label: "Telegram Notifications", icon: "bell" },
-        { href: "/admin/data-sync", label: "Data Sync", icon: "sync" },
+        { href: "/admin/moment-templates", labelKey: "admin.nav.momentTemplates", icon: "sparkles" },
+        { href: "/admin/commentary", labelKey: "admin.nav.autoCommentary", icon: "sparkles" },
+        { href: "/admin/telegram-notifications", labelKey: "admin.nav.telegram", icon: "bell" },
+        { href: "/admin/data-sync", labelKey: "admin.nav.dataSync", icon: "sync" },
       ],
     },
     {
-      title: "Community",
+      titleKey: "admin.grp.community",
       items: [
-        { href: "/admin/manage-contributors", label: "Manage Contributors", icon: "userPlus" },
-        { href: "/admin/contributor-requests", label: "Contributor Requests", icon: "inbox" },
+        { href: "/admin/manage-contributors", labelKey: "admin.nav.manageContributors", icon: "userPlus" },
+        { href: "/admin/contributor-requests", labelKey: "admin.nav.contributorRequests", icon: "inbox" },
       ],
     },
     {
-      title: "Account",
+      titleKey: "admin.grp.account",
       items: [
-        { href: "/admin/change-log", label: "Change Log", icon: "history" },
-        { href: "/admin/change-password", label: "Change Password", icon: "lock" },
+        { href: "/admin/change-log", labelKey: "admin.nav.changeLog", icon: "history" },
+        { href: "/admin/change-password", labelKey: "admin.nav.changePassword", icon: "lock" },
         ...(admin.role === "super_admin"
-          ? [{ href: "/admin/manage-admins", label: "Manage Admins", icon: "shieldCheck" as IconName }]
+          ? [{ href: "/admin/manage-admins", labelKey: "admin.nav.manageAdmins" as MsgKey, icon: "shieldCheck" as IconName }]
           : []),
       ],
     },
@@ -395,10 +398,10 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
     return (
       <nav className="flex-1 overflow-y-auto py-3 space-y-4">
         {navGroups.map((group) => (
-          <div key={group.title}>
+          <div key={group.titleKey}>
             {showLabels && (
               <div className="px-3 mb-1 text-[10px] font-semibold uppercase tracking-widest text-white/30">
-                {group.title}
+                {t(group.titleKey)}
               </div>
             )}
             <div className="space-y-0.5 px-2">
@@ -408,7 +411,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
                   <a
                     key={item.href}
                     href={item.href}
-                    title={showLabels ? undefined : item.label}
+                    title={showLabels ? undefined : t(item.labelKey)}
                     className={`flex items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors duration-150 ${
                       showLabels ? "" : "justify-center"
                     } ${
@@ -418,7 +421,7 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
                     }`}
                   >
                     <Icon name={item.icon} />
-                    {showLabels && <span className="truncate">{item.label}</span>}
+                    {showLabels && <span className="truncate">{t(item.labelKey)}</span>}
                   </a>
                 );
               })}

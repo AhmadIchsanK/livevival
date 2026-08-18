@@ -79,3 +79,19 @@ test("phaseToMatchState: AI phase labels map to the same MatchState", () => {
   assert.equal(phaseToMatchState(null), null);
   assert.equal(phaseToMatchState(""), null);
 });
+
+test("kill banners: tolerant to partial/garbled stylized OCR", () => {
+  // one edge letter dropped
+  assert.equal(bannerMatch("AVAGE")?.type, "savage");
+  assert.equal(bannerMatch("SAVAG")?.type, "savage");
+  assert.equal(bannerMatch("ANIAC")?.type, "maniac");
+  assert.equal(bannerMatch("RIPLE")?.type, "triple_kill");
+  assert.equal(bannerMatch("OUBLE")?.type, "double_kill");
+  // digit-for-letter confusions
+  assert.equal(bannerMatch("5AVAGE")?.type, "savage"); // 5->S
+  assert.equal(bannerMatch("MAN1AC")?.type, "maniac"); // 1->I
+  assert.equal(bannerMatch("S4VAGE")?.type, "savage"); // 4->A
+  // negatives: plain numbers still aren't banners
+  assert.equal(bannerMatch("12:34"), null);
+  assert.equal(bannerMatch("53500"), null);
+});

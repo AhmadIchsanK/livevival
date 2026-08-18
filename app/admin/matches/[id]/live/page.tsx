@@ -391,7 +391,19 @@ function InlineMenuPopover({
         createPortal(
           <div
             ref={panelRef}
-            style={{ position: "fixed", top: pos.top, left: pos.left, minWidth: Math.max(pos.width, 300) }}
+            style={{
+              position: "fixed",
+              top: pos.top,
+              left: pos.left,
+              minWidth: Math.max(pos.width, 300),
+              // Cap to the remaining viewport height and scroll — otherwise a
+              // panel opened near the bottom of the screen (e.g. the Templates
+              // list + its Apply/Edit/Delete buttons) runs off the bottom and
+              // those controls become unreachable.
+              maxHeight: `calc(100vh - ${Math.round(pos.top) + 12}px)`,
+              overflowY: "auto",
+              overscrollBehavior: "contain",
+            }}
             className="z-[100] bg-[#111116] border border-white/15 rounded shadow-lg p-3 space-y-2"
           >
             {children}
@@ -8657,9 +8669,12 @@ export default function LiveConsolePage() {
                           operator. See lib/matchAnalytics. */}
                       {winProbA != null && match.team_a && match.team_b && (
                         <div className="space-y-1 pt-1">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
+                            Win probability <span className="text-white/30 normal-case font-normal">· live estimate</span>
+                          </p>
                           <div className="flex items-center justify-between text-[11px] text-white/50">
                             <span>{match.team_a.name} {Math.round(winProbA * 100)}%</span>
-                            <span className="text-white/30">win probability (est.)</span>
+                            <span className="text-white/30">est.</span>
                             <span>{Math.round((1 - winProbA) * 100)}% {match.team_b.name}</span>
                           </div>
                           <div className="h-2 rounded-full overflow-hidden bg-white/10 flex">

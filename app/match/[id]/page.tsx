@@ -830,13 +830,6 @@ export default function PublicMatchPage() {
   // Net-worth-difference series (Team A − Team B gold over the game timer) for
   // the chart — one point per minute (see netWorthDiffSeries).
   const nwSeries = netWorthDiffSeries(gameNetWorth);
-  // Explicit numeric "Win %" figure on top of the same bar/calc above —
-  // whichever side the lean currently favors, expressed as "62% — Team A"
-  // rather than making people read bar-width by eye. Still the same rough
-  // lean, still clearly labeled as an estimate; no new modelling.
-  const momentumLeaderIsA = momentumTeamAPct >= 50;
-  const momentumLeaderPct = Math.round(momentumLeaderIsA ? momentumTeamAPct : 100 - momentumTeamAPct);
-  const momentumLeaderName = momentumLeaderIsA ? match.team_a?.name : match.team_b?.name;
 
   const mvp = gameStats.find((s) => s.id === mvpSvp.mvpId) ?? null;
 
@@ -1586,28 +1579,22 @@ export default function PublicMatchPage() {
             <span className="text-white/40 text-sm font-normal block mt-1">team kills</span>
           </p>
         )}
-        {/* Momentum — approximate lean from live net worth + kills only,
-            see the derivation above. Deliberately small/muted and labeled
-            "rough estimate" so it doesn't read as a precise stat. Now also
-            spells out an explicit numeric Win % on the bar itself
-            (momentumLeaderPct/momentumLeaderName, derived from the exact
-            same momentumTeamAPct calc — no second system) instead of
-            leaving it to eyeballing the bar width. */}
+        {/* Win probability — deliberately identical markup to the admin live
+            console (same winProbabilityTeamA model, same label row and bar
+            colours) so the public and operator views read the same. */}
         {showMomentum && (
-          <div className="mb-4">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-white/60 mb-1.5">
+          <div className="mb-4 space-y-1">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
               Win probability <span className="text-white/30 normal-case font-normal">· live estimate</span>
             </p>
-            <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-white/40 mb-1">
-              <span className="truncate max-w-[30%]">{match.team_a?.name}</span>
-              <span className="normal-case tracking-normal shrink-0 px-1 text-center text-white/70">
-                {momentumLeaderPct}% — {momentumLeaderName ?? "—"} <span className="text-white/40">· rough estimate</span>
-              </span>
-              <span className="truncate max-w-[30%] text-right">{match.team_b?.name}</span>
+            <div className="flex items-center justify-between text-[11px] text-white/50">
+              <span>{match.team_a?.name} {Math.round(momentumTeamAPct)}%</span>
+              <span className="text-white/30">est.</span>
+              <span>{Math.round(100 - momentumTeamAPct)}% {match.team_b?.name}</span>
             </div>
-            <div className="flex h-2 rounded-full overflow-hidden bg-white/10" role="img" aria-label={`Momentum lean, approximate: ${Math.round(momentumTeamAPct)}% ${match.team_a?.name ?? "Team A"}, ${Math.round(100 - momentumTeamAPct)}% ${match.team_b?.name ?? "Team B"}`}>
+            <div className="h-2 rounded-full overflow-hidden bg-white/10 flex" role="img" aria-label={`Win probability estimate: ${Math.round(momentumTeamAPct)}% ${match.team_a?.name ?? "Team A"}, ${Math.round(100 - momentumTeamAPct)}% ${match.team_b?.name ?? "Team B"}`}>
               <div className="bg-signal transition-all duration-500" style={{ width: `${momentumTeamAPct}%` }} />
-              <div className="bg-win transition-all duration-500" style={{ width: `${100 - momentumTeamAPct}%` }} />
+              <div className="bg-amber-500/60 transition-all duration-500" style={{ width: `${100 - momentumTeamAPct}%` }} />
             </div>
           </div>
         )}

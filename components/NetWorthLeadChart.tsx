@@ -42,18 +42,17 @@ export function NetWorthLeadChart({
   const off = max === min ? 0.5 : max / (max - min);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
+      {/* Team A sits ABOVE the chart because the area rises into A's colour when
+          A leads; Team B sits BELOW for the same reason. This reads as a
+          top/bottom split rather than a side legend, so which side "up" and
+          "down" belong to is unmistakable. Headline states the current leader. */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-3 text-[11px] text-white/60">
-          <span className="inline-flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full" style={{ background: A_COLOR }} />
-            {a}
-          </span>
-          <span className="inline-flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full" style={{ background: B_COLOR }} />
-            {b}
-          </span>
-        </div>
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: A_COLOR }}>
+          <span className="w-2 h-2 rounded-full" style={{ background: A_COLOR }} />
+          {a}
+          <span className="text-white/40 font-normal">▲ up</span>
+        </span>
         <p className="text-xs font-semibold" style={{ color: leaderName ? leaderColor : "rgba(255,255,255,0.6)" }}>
           {leaderName ? `${leaderName} leads +${leadK}K gold` : "Gold even"}
         </p>
@@ -94,9 +93,14 @@ export function NetWorthLeadChart({
           <Area type="monotone" dataKey="diff" stroke="url(#nwlead-stroke)" strokeWidth={2} fill="url(#nwlead-fill)" isAnimationActive={false} />
         </AreaChart>
       </ResponsiveContainer>
-      <p className="text-[10px] text-white/30 text-center">
-        Gold lead over time — up = <span style={{ color: A_COLOR }}>{a}</span> ahead, down = <span style={{ color: B_COLOR }}>{b}</span> ahead
-      </p>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold" style={{ color: B_COLOR }}>
+          <span className="w-2 h-2 rounded-full" style={{ background: B_COLOR }} />
+          {b}
+          <span className="text-white/40 font-normal">▼ down</span>
+        </span>
+        <span className="text-[10px] text-white/30">Gold lead over the game timer</span>
+      </div>
     </div>
   );
 }

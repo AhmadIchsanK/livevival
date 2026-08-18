@@ -104,6 +104,7 @@ type Game = {
   manual_time_started_at: string | null;
   team_a_kills_override: number | null;
   team_b_kills_override: number | null;
+  draft_analysis: string | null;
 };
 type PickBan = {
   id: string;
@@ -403,7 +404,7 @@ export default function PublicMatchPage() {
     const { data: gameRows } = await supabase
       .from("games")
       .select(
-        "id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, team_a_kills_override, team_b_kills_override"
+        "id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, team_a_kills_override, team_b_kills_override, draft_analysis"
       )
       .eq("match_id", matchId)
       .order("game_number", { ascending: true });
@@ -1638,6 +1639,16 @@ export default function PublicMatchPage() {
             </div>
           ))}
         </div>
+        {/* AI draft analysis — stuck directly below the scoreboard, identical
+            to the admin console. Rendered whenever the game has one stored. */}
+        {selectedGame?.draft_analysis && (
+          <div className="lv-card-flush p-4 mt-4 space-y-1.5">
+            <p className="text-white/70 font-semibold text-sm">🧠 Draft analysis</p>
+            {selectedGame.draft_analysis.split(/\n\n+/).map((para, i) => (
+              <p key={i} className="text-xs text-white/60 leading-relaxed">{para}</p>
+            ))}
+          </div>
+        )}
         {/* Only in the During-Game layout — this is about the live read,
             not the finished/"Statistics" replay of the same table. */}
         {layoutBucket === "game" && (

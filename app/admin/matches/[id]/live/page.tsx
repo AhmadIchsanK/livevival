@@ -94,6 +94,7 @@ type Game = {
   current_time_updated_at: string | null;
   team_a_kills_override: number | null;
   team_b_kills_override: number | null;
+  draft_analysis: string | null;
 };
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
 // custom_player_name/custom_player_role: a match-local player who isn't in
@@ -631,7 +632,7 @@ export default function LiveConsolePage() {
 
     let { data: gameRow } = await supabase
       .from("games")
-      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override")
+      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis")
       .eq("match_id", matchId)
       .eq("game_number", targetGameNumber)
       .maybeSingle();
@@ -653,7 +654,7 @@ export default function LiveConsolePage() {
           { match_id: matchId, game_number: targetGameNumber, status: targetGameNumber === m.current_game_number ? "live" : "draft" },
           { onConflict: "match_id,game_number" }
         )
-        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override")
+        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis")
         .single();
       if (createErr) {
         setError(createErr.message);
@@ -819,6 +820,71 @@ export default function LiveConsolePage() {
       })
       .join("\n\n");
   }
+
+  // ── AI draft analysis ─────────────────────────────────────────────────
+  // Once a draft is complete, ask a text model which side's draft is stronger
+  // (matchups, counters, composition) with an explicit win-probability split,
+  // capped at two paragraphs. Stored on games.draft_analysis (rendered below the
+  // scoreboard on both admin + public) and posted once to the moment feed. Auto-
+  // runs a single time when both teams have 5 picks; a manual button can re-run.
+  const [analyzingDraft, setAnalyzingDraft] = useState(false);
+  const draftAnalysisAutoRef = useRef<string | null>(null);
+  async function analyzeDraft(opts?: { auto?: boolean }) {
+    if (!game || !match?.team_a || !match?.team_b) return;
+    const sideFor = (teamId: string) => ({
+      name: (teamId === match.team_a!.id ? match.team_a!.name : match.team_b!.name) ?? "Team",
+      picks: pickBans.filter((pb) => pb.team_id === teamId && pb.type === "pick").map((pb) => pb.hero_name).filter(Boolean),
+      bans: pickBans.filter((pb) => pb.team_id === teamId && pb.type === "ban").map((pb) => pb.hero_name).filter(Boolean),
+    });
+    const teamA = sideFor(match.team_a.id);
+    const teamB = sideFor(match.team_b.id);
+    if (teamA.picks.length === 0 && teamB.picks.length === 0) {
+      if (!opts?.auto) setError("No picks drafted yet to analyze.");
+      return;
+    }
+    setAnalyzingDraft(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      const res = await fetch("/api/admin/draft-analysis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ teamA, teamB }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (!opts?.auto) setError(json.error ?? "Draft analysis failed.");
+        return;
+      }
+      const analysis: string = json.analysis;
+      await supabase.from("games").update({ draft_analysis: analysis, draft_analysis_at: new Date().toISOString() }).eq("id", game.id);
+      await supabase.from("key_moments").insert({
+        game_id: game.id,
+        match_id: matchId,
+        type: "custom",
+        description: `🧠 Draft analysis — ${analysis}`,
+        minute_mark: 0,
+        second_mark: 0,
+        source: "auto_commentary",
+      });
+      loadAll();
+    } catch (e) {
+      if (!opts?.auto) setError(`Draft analysis failed: ${(e as Error).message}`);
+    } finally {
+      setAnalyzingDraft(false);
+    }
+  }
+  useEffect(() => {
+    if (!game || game.draft_analysis || !match?.team_a || !match?.team_b) return;
+    if (draftAnalysisAutoRef.current === game.id) return; // only auto-try once per game
+    const aPicks = pickBans.filter((pb) => pb.team_id === match.team_a!.id && pb.type === "pick").length;
+    const bPicks = pickBans.filter((pb) => pb.team_id === match.team_b!.id && pb.type === "pick").length;
+    if (aPicks >= 5 && bPicks >= 5) {
+      draftAnalysisAutoRef.current = game.id;
+      void analyzeDraft({ auto: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game?.id, game?.draft_analysis, pickBans, match?.team_a?.id, match?.team_b?.id]);
 
   // Full-series hero-picks recap for the automatic match-finished
   // notification (Priority and Hot tiers both get this) — same
@@ -9247,6 +9313,36 @@ export default function LiveConsolePage() {
                         </div>
                       ))}
                     </section>
+                    {/* AI draft analysis — stuck directly below the Live
+                        scoreboard (spec: post-draft breakdown). Same text the
+                        public match page renders, plus a re-run control. */}
+                    {game.draft_analysis ? (
+                      <section className="space-y-1.5 bg-white/5 rounded p-3 border border-white/10">
+                        <div className="flex items-center justify-between">
+                          <h3 className="font-semibold text-sm">🧠 Draft analysis</h3>
+                          <button
+                            onClick={() => analyzeDraft()}
+                            disabled={analyzingDraft}
+                            className="text-[10px] border border-white/10 rounded px-2 py-1 hover:bg-white/10 disabled:opacity-40"
+                          >
+                            {analyzingDraft ? "Analyzing…" : "Re-analyze"}
+                          </button>
+                        </div>
+                        {game.draft_analysis.split(/\n\n+/).map((para, i) => (
+                          <p key={i} className="text-xs text-white/70 leading-relaxed">{para}</p>
+                        ))}
+                      </section>
+                    ) : (
+                      pickBans.some((pb) => pb.type === "pick") && (
+                        <button
+                          onClick={() => analyzeDraft()}
+                          disabled={analyzingDraft}
+                          className="text-xs border border-signal/40 text-signal rounded px-3 py-1.5 hover:bg-signal/10 disabled:opacity-40 self-start"
+                        >
+                          {analyzingDraft ? "Analyzing draft…" : "🧠 Analyze draft"}
+                        </button>
+                      )
+                    )}
                     </div>
                   </div>
                 ) : (

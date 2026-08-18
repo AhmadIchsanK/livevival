@@ -7,6 +7,7 @@ import { HeroIcon } from "@/components/HeroIcon";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
+import { useLanguage } from "@/lib/i18n";
 import { ViewToggle } from "@/components/ViewToggle";
 import { useViewMode } from "@/lib/useViewMode";
 
@@ -29,6 +30,7 @@ export default function HeroesIndexPage() {
 }
 
 function HeroesIndexPageInner() {
+  const { t } = useLanguage();
   const searchParams = useSearchParams();
   const [heroes, setHeroes] = useState<Hero[]>([]);
   const [loading, setLoading] = useState(true);
@@ -90,8 +92,8 @@ function HeroesIndexPageInner() {
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-8">
       <header className="space-y-1 flex items-start justify-between">
         <div>
-          <a href="/" className="lv-nav-link">&larr; Matches</a>
-          <h1 className="font-display font-light text-2xl tracking-tight">Heroes</h1>
+          <a href="/" className="lv-nav-link">&larr; {t("nav.matches")}</a>
+          <h1 className="font-display font-light text-2xl tracking-tight">{t("nav.heroes")}</h1>
         </div>
         <div className="flex items-center gap-2">
           <LanguageToggle />
@@ -104,7 +106,7 @@ function HeroesIndexPageInner() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search heroes..."
+          placeholder={t("heroes.searchPlaceholder")}
           className="flex-1 min-w-[200px] bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal/60"
         />
         <select
@@ -152,7 +154,7 @@ function HeroesIndexPageInner() {
         {heroes.length} heroes total · {visible.length} shown after filter
       </p>
 
-      {loading && <p className="text-white/40 text-sm">Loading...</p>}
+      {loading && <p className="text-white/40 text-sm">{t("common.loadingShort")}</p>}
 
       {!loading && view === "grid" && (
         <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">

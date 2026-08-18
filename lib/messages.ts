@@ -54,6 +54,12 @@ export const MESSAGES = {
   "common.noData": { en: "No data yet", id: "Belum ada data" },
   "common.watchLive": { en: "Watch live", id: "Tonton live" },
   "common.bestOf": { en: "Best of {n}", id: "Best of {n}" },
+  "common.loadingShort": { en: "Loading...", id: "Memuat..." },
+  "players.searchPlaceholder": { en: "Search players or teams...", id: "Cari pemain atau tim..." },
+  "teams.searchPlaceholder": { en: "Search teams, location, or region...", id: "Cari tim, lokasi, atau region..." },
+  "teams.loadingRoster": { en: "Loading roster...", id: "Memuat roster..." },
+  "tournaments.searchPlaceholder": { en: "Search tournaments...", id: "Cari turnamen..." },
+  "heroes.searchPlaceholder": { en: "Search heroes...", id: "Cari hero..." },
 
   // ── Public match page ────────────────────────────────────────────────
   "match.game": { en: "Game", id: "Game" },

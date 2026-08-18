@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
 import { TeamLogo } from "@/components/TeamLogo";
 import { NavMenu } from "@/components/NavMenu";
+import { useLanguage } from "@/lib/i18n";
 import { TierBadge } from "@/components/TierBadge";
 
 type Tournament = {
@@ -72,6 +73,7 @@ export default function TournamentsIndexPage() {
 }
 
 function TournamentsIndexPageInner() {
+  const { t } = useLanguage();
   const searchParams = useSearchParams();
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
   const [matchStatuses, setMatchStatuses] = useState<MatchStatus[]>([]);
@@ -182,8 +184,8 @@ function TournamentsIndexPageInner() {
     <main className="min-h-screen bg-ink text-paper px-6 py-10 max-w-6xl mx-auto space-y-10">
       <header className="space-y-1 flex items-start justify-between">
         <div>
-          <a href="/" className="lv-nav-link">&larr; Matches</a>
-          <h1 className="font-display font-light text-2xl tracking-tight">Tournaments</h1>
+          <a href="/" className="lv-nav-link">&larr; {t("nav.matches")}</a>
+          <h1 className="font-display font-light text-2xl tracking-tight">{t("nav.tournaments")}</h1>
         </div>
         <div className="flex items-center gap-2">
           <LanguageToggle />
@@ -196,7 +198,7 @@ function TournamentsIndexPageInner() {
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search tournaments..."
+          placeholder={t("tournaments.searchPlaceholder")}
           className="flex-1 min-w-[200px] bg-white/10 border border-white/10 rounded px-3 py-2 text-sm outline-none focus:border-signal/60"
         />
         <select
@@ -219,7 +221,7 @@ function TournamentsIndexPageInner() {
         </select>
       </div>
 
-      {loading && <p className="text-white/40 text-sm">Loading...</p>}
+      {loading && <p className="text-white/40 text-sm">{t("common.loadingShort")}</p>}
 
       {!loading && (
         <>

@@ -18,6 +18,19 @@ export function groqVisionModelCandidates(): string[] {
   return [...new Set([envModel, ...defaults].filter(Boolean) as string[])];
 }
 
+// Ordered TEXT (non-vision) candidates for the draft-analysis route. env
+// override first (GROQ_TEXT_MODEL), then current general-purpose Groq models as
+// fallbacks. Same fall-through-on-unavailable contract as the vision list.
+export function groqTextModelCandidates(): string[] {
+  const envModel = process.env.GROQ_TEXT_MODEL?.trim();
+  const defaults = [
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+  ];
+  return [...new Set([envModel, ...defaults].filter(Boolean) as string[])];
+}
+
 // True when a Groq error response means THIS model id is unusable for the
 // account (missing, deprecated, or no access) — the signal to try the next
 // candidate rather than surfacing the error. A 429/500/timeout is NOT this: it

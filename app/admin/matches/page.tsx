@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+import { useLanguage } from "@/lib/i18n";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 import { displayMatchTier, matchTierFields, MATCH_TIER_LABELS, type MatchTier } from "@/lib/matchTier";
 import { withQueryCache } from "@/lib/queryCache";
@@ -130,6 +131,7 @@ type Match = {
 };
 
 export default function MatchesPage() {
+  const { t } = useLanguage();
   const [tournaments, setTournaments] = useState<Option[]>([]);
   const [teams, setTeams] = useState<Option[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
@@ -287,7 +289,7 @@ export default function MatchesPage() {
     setNotice(null);
 
     if (teamAId && teamAId === teamBId) {
-      setError("Team A and Team B can't be the same team.");
+      setError(t("admin.m.sameTeam"));
       return;
     }
 
@@ -330,7 +332,7 @@ export default function MatchesPage() {
     // an explicit success notice — otherwise, creating a match while viewing
     // the Ongoing/Finished tab looked like nothing happened (the new row landed
     // in a tab the admin wasn't looking at, with no confirmation).
-    setNotice("Match created — showing it in Upcoming below.");
+    setNotice(t("admin.m.matchCreated"));
     setActiveTab("scheduled");
     loadMatches("scheduled");
   }
@@ -373,7 +375,7 @@ export default function MatchesPage() {
   }
 
   async function deleteMatch(id: string) {
-    if (!confirm("Delete this match? This also deletes all its games, stats, picks/bans, objectives, and key moments.")) return;
+    if (!confirm(t("admin.m.deleteConfirm"))) return;
     const { error } = await supabase.from("matches").delete().eq("id", id);
     if (error) setError(error.message);
     else loadMatches(activeTab);
@@ -496,7 +498,7 @@ export default function MatchesPage() {
 
   async function saveEditMatch(id: string) {
     if (editTeamAId && editTeamAId === editTeamBId) {
-      setError("Team A and Team B can't be the same team.");
+      setError(t("admin.m.sameTeam"));
       return;
     }
     await updateMatch(id, {
@@ -518,7 +520,7 @@ export default function MatchesPage() {
           <input
             value={detectUrl}
             onChange={(e) => setDetectUrl(e.target.value)}
-            placeholder="Paste a YouTube video URL"
+            placeholder={t("admin.m.pasteYoutube")}
             className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
           />
           <button
@@ -526,7 +528,7 @@ export default function MatchesPage() {
             disabled={detectLoading || !detectUrl}
             className="lv-btn-primary !py-2"
           >
-            {detectLoading ? "Checking..." : "Detect"}
+            {detectLoading ? t("admin.m.checking") : t("admin.m.detect")}
           </button>
         </div>
         {detectError && <p className="text-sm text-red-400 mt-2">{detectError}</p>}
@@ -563,31 +565,31 @@ export default function MatchesPage() {
         <form onSubmit={handleCreate} className="grid grid-cols-2 gap-4 max-w-xl">
           <div className="col-span-2">
             <CreatableSelect
-              label="Tournament"
+              label={t("admin.m.tournament")}
               options={tournaments}
               value={tournamentId}
               onChange={setTournamentId}
               onCreate={createTournamentInline}
-              placeholder="Select tournament"
+              placeholder={t("admin.m.selectTournament")}
             />
           </div>
 
           <CreatableSelect
-            label="Team A"
+            label={t("admin.m.teamA")}
             options={teams}
             value={teamAId}
             onChange={setTeamAId}
             onCreate={createTeamInline}
-            placeholder="Select team"
+            placeholder={t("admin.m.selectTeam")}
           />
 
           <CreatableSelect
-            label="Team B"
+            label={t("admin.m.teamB")}
             options={teams}
             value={teamBId}
             onChange={setTeamBId}
             onCreate={createTeamInline}
-            placeholder="Select team"
+            placeholder={t("admin.m.selectTeam")}
           />
 
           <div className="space-y-1">
@@ -620,7 +622,7 @@ export default function MatchesPage() {
             <input
               value={stage}
               onChange={(e) => setStage(e.target.value)}
-              placeholder="e.g. Group A, Regular Season, Playoffs, Grand Final"
+              placeholder={t("admin.m.stagePlaceholder")}
               className="w-full bg-white/10 border border-white/10 rounded px-3 py-2 text-sm"
             />
           </div>
@@ -629,9 +631,7 @@ export default function MatchesPage() {
             type="submit"
             disabled={loading}
             className="col-span-2 lv-btn-primary !py-2"
-          >
-            Create match
-          </button>
+          >{t("admin.m.createMatch")}</button>
         </form>
         {error && <p className="text-sm text-red-400 mt-2">{error}</p>}
         {notice && <p className="text-sm text-emerald-400 mt-2">{notice}</p>}
@@ -640,9 +640,9 @@ export default function MatchesPage() {
       <div>
         <div className="flex gap-1 mb-4">
           {([
-            { key: "live", label: "🔴 Ongoing" },
-            { key: "scheduled", label: "Upcoming" },
-            { key: "finished", label: "Finished" },
+            { key: "live", label: `🔴 ${t("common.ongoing")}` },
+            { key: "scheduled", label: t("common.upcoming") },
+            { key: "finished", label: t("common.finished") },
           ] as const).map((tab) => (
             <button
               key={tab.key}
@@ -666,13 +666,13 @@ export default function MatchesPage() {
 
         <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
           <h2 className="lv-heading text-lg">
-            {activeTab === "live" ? "Ongoing matches" : activeTab === "scheduled" ? "Upcoming matches" : "Finished matches"}
+            {activeTab === "live" ? t("admin.m.ongoingMatches") : activeTab === "scheduled" ? t("admin.m.upcomingMatches") : t("admin.m.finishedMatches")}
           </h2>
           <div className="flex items-center gap-2 flex-wrap">
             <input
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
-              placeholder="Search team or tournament..."
+              placeholder={t("admin.m.searchPlaceholder")}
               className="bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs w-56"
             />
             <select
@@ -680,9 +680,9 @@ export default function MatchesPage() {
               onChange={(e) => setSortBy(e.target.value as "newest" | "oldest" | "status")}
               className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
             >
-              <option value="newest">Newest first</option>
-              <option value="oldest">Oldest first</option>
-              <option value="status">Sort by status</option>
+              <option value="newest">{t("admin.m.newestFirst")}</option>
+              <option value="oldest">{t("admin.m.oldestFirst")}</option>
+              <option value="status">{t("admin.m.sortByStatus")}</option>
             </select>
             <select
               value={tierFilter}
@@ -690,7 +690,7 @@ export default function MatchesPage() {
               title="Filter by Normal / Priority / Hot"
               className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
             >
-              <option value="">All tiers</option>
+              <option value="">{t("admin.m.allTiers")}</option>
               {(Object.keys(MATCH_TIER_LABELS) as MatchTier[]).map((t) => (
                 <option key={t} value={t}>{MATCH_TIER_LABELS[t]}</option>
               ))}
@@ -706,7 +706,7 @@ export default function MatchesPage() {
                   title="Set tier for all selected matches"
                   className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                 >
-                  <option value="">Set tier...</option>
+                  <option value="">{t("admin.m.setTier")}</option>
                   {(Object.keys(MATCH_TIER_LABELS) as MatchTier[]).map((t) => (
                     <option key={t} value={t}>{MATCH_TIER_LABELS[t]}</option>
                   ))}
@@ -720,7 +720,7 @@ export default function MatchesPage() {
                   title="Reassign all selected matches to a tournament"
                   className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs max-w-[160px]"
                 >
-                  <option value="">Reassign tournament...</option>
+                  <option value="">{t("admin.m.reassignTournament")}</option>
                   {tournaments.map((t) => (
                     <option key={t.id} value={t.id}>{t.label}</option>
                   ))}
@@ -807,7 +807,7 @@ export default function MatchesPage() {
                     <input
                       value={editStage}
                       onChange={(e) => setEditStage(e.target.value)}
-                      placeholder="Stage (e.g. Group A, Playoffs)"
+                      placeholder={t("admin.m.stagePlaceholderShort")}
                       className="col-span-2 bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs"
                     />
                   </div>
@@ -878,7 +878,7 @@ export default function MatchesPage() {
                   onChange={(e) => updateMatch(m.id, { stream_id: e.target.value || null })}
                   className="bg-white/10 border border-white/10 rounded px-2 py-1.5 text-xs max-w-[180px]"
                 >
-                  <option value="">No stream linked</option>
+                  <option value="">{t("admin.m.noStreamLinked")}</option>
                   {streams.map((s) => {
                     // Real title once set (see admin/streams' own backfill/
                     // manual-edit pattern) — falls back to the raw URL for
@@ -921,7 +921,7 @@ export default function MatchesPage() {
               <div className="flex gap-2 items-center">
                 <input
                   defaultValue={m.youtube_url ?? ""}
-                  placeholder="YouTube livestream URL (manual console only)"
+                  placeholder={t("admin.m.streamUrlManual")}
                   onBlur={(e) => updateMatch(m.id, { youtube_url: e.target.value })}
                   className="flex-1 bg-white/10 border border-white/10 rounded px-3 py-1.5 text-xs"
                 />
@@ -949,15 +949,11 @@ export default function MatchesPage() {
                       : undefined
                   }
                   className="lv-btn border border-win/50 text-win hover:bg-win/10 hover:border-win disabled:opacity-40"
-                >
-                  Set live
-                </button>
+                >{t("admin.m.setLive")}</button>
                 <button
                   onClick={() => updateMatch(m.id, { status: "finished" })}
                   className="lv-btn border border-white/30 text-white/70 hover:bg-white/10 hover:border-white/50"
-                >
-                  Set finished
-                </button>
+                >{t("admin.m.setFinished")}</button>
                 <a
                   href={`/admin/matches/${m.id}/live`}
                   className="lv-btn-primary"
@@ -988,7 +984,7 @@ export default function MatchesPage() {
                       <span className="text-xs text-white/50 w-14 shrink-0">Game {g.game_number}</span>
                       <input
                         defaultValue={g.vod_url ?? ""}
-                        placeholder="VOD URL"
+                        placeholder={t("admin.m.vodUrl")}
                         onBlur={(e) => {
                           if (e.target.value !== (g.vod_url ?? "")) {
                             updateGameVod(m.id, g.id, { vod_url: e.target.value || null, vod_url_source: "manual" });
@@ -1006,7 +1002,7 @@ export default function MatchesPage() {
                             : "Auto-synced from Liquipedia on every refresh"
                         }
                       >
-                        {g.vod_url_source === "manual" ? "Manual" : "Auto"}
+                        {g.vod_url_source === "manual" ? t("admin.m.manual") : t("admin.m.auto")}
                       </span>
                       {g.vod_url_source === "manual" && (
                         <button

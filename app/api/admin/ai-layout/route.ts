@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
+import { aiBaseUrl, aiApiKey, groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
 
 // AI-suggested tracker layout — the admin takes one screenshot of the
 // current capture (already-fullscreened broadcast, same frame the manual
@@ -108,17 +108,17 @@ type GroqCall =
 // returns a friendly, actionable message instead of the raw Groq JSON.
 async function callGroqVision(apiKey: string, model: string, prompt: string, imageBase64: string): Promise<GroqCall> {
   const doCall = () =>
-    fetch("https://api.groq.com/openai/v1/chat/completions", {
+    fetch(`${aiBaseUrl()}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
         temperature: 0,
-        // A 10-box layout needs very little output — a smaller reservation also
-        // lowers this request's per-minute token footprint, which is what trips
-        // the 429 in the first place.
+        // A 10-box layout needs little output — a smaller reservation also lowers
+        // the per-minute token footprint that trips a 429. (Any reasoning a model
+        // emits inline is stripped from the response below, so no provider-
+        // specific "hidden reasoning" flag is sent — keeps this portable.)
         max_tokens: 1024,
-        reasoning_format: "hidden",
         messages: [{ role: "user", content: [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: imageBase64 } }] }],
       }),
       signal: AbortSignal.timeout(20000),
@@ -182,9 +182,9 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (auth instanceof NextResponse) return auth;
 
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = aiApiKey();
   if (!apiKey) {
-    return NextResponse.json({ error: "AI layout suggestions aren't configured yet — set GROQ_API_KEY." }, { status: 503 });
+    return NextResponse.json({ error: "AI layout suggestions aren't configured yet — set AI_API_KEY (or GROQ_API_KEY)." }, { status: 503 });
   }
   const body = await req.json().catch(() => null);
   const imageBase64: string | undefined = body?.imageBase64;
@@ -203,7 +203,7 @@ export async function POST(req: NextRequest) {
   }
   if (!call.ok) {
     const message = call.modelUnavailable
-      ? `No usable Groq vision model — tried ${candidates.join(", ")}. Set GROQ_VISION_MODEL to a model your account can access, or enable one in the Groq console.`
+      ? `No usable vision model — tried ${candidates.join(", ")}. Set AI_VISION_MODEL (and AI_BASE_URL/AI_API_KEY for a non-Groq provider) to a model your account can access.`
       : call.message;
     return NextResponse.json({ error: message }, { status: call.status });
   }

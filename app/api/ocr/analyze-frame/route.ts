@@ -5,7 +5,7 @@ import { observeVision } from "@/lib/reconstruction/visionObserver";
 import type { VisionPlayerStat } from "@/lib/reconstruction/visionObserver";
 import type { PlayerKda } from "@/lib/reconstruction/validators/kda";
 import { asTeamId, asPlayerId } from "@/lib/reconstruction/types";
-import { groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
+import { aiBaseUrl, aiApiKey, groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
 
 // Full-frame AI vision analysis for the admin's local-capture live console —
 // the alternative to the manual crop-region OCR (calibratingField/regions
@@ -380,10 +380,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Admin access required" }, { status: 403 });
   }
 
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = aiApiKey();
   if (!apiKey) {
     return NextResponse.json(
-      { error: "AI frame analysis isn't configured yet — set GROQ_API_KEY." },
+      { error: "AI frame analysis isn't configured yet — set AI_API_KEY (or GROQ_API_KEY)." },
       { status: 503 }
     );
   }
@@ -401,7 +401,7 @@ export async function POST(req: NextRequest) {
   }
 
   const callModel = (model: string) =>
-    fetch("https://api.groq.com/openai/v1/chat/completions", {
+    fetch(`${aiBaseUrl()}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
@@ -412,7 +412,9 @@ export async function POST(req: NextRequest) {
         // single 10-player scoreboard + full draft board response still
         // fits comfortably under 2000.
         max_tokens: 2000,
-        reasoning_format: "hidden",
+        // No provider-specific "hidden reasoning" flag — any inline <think> the
+        // model emits is stripped from the response below, which keeps this
+        // request portable across OpenAI-compatible providers.
         messages: [
           {
             role: "user",
@@ -449,7 +451,7 @@ export async function POST(req: NextRequest) {
   }
   if (!groqRes) {
     const message = isGroqModelUnavailable(lastStatus, lastErr)
-      ? `No usable Groq vision model — tried ${candidates.join(", ")}. Set GROQ_VISION_MODEL to a model your account can access.`
+      ? `No usable vision model — tried ${candidates.join(", ")}. Set AI_VISION_MODEL (and AI_BASE_URL/AI_API_KEY for a non-Groq provider) to a model your account can access.`
       : `Groq API error (${lastStatus}): ${lastErr}`;
     return NextResponse.json({ error: message }, { status: 502 });
   }

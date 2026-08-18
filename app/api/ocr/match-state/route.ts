@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { phaseToMatchState } from "@/lib/reconstruction/ocrBanners";
-import { groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
+import { aiBaseUrl, aiApiKey, groqVisionModelCandidates, isGroqModelUnavailable } from "@/lib/groqVision";
 
 // AI-vision fallback for the center match-state tracker (spec §16/§25/§27).
 // The deterministic keyword OCR (detectMatchStateDetailed) is the fast path;
@@ -42,8 +42,8 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (auth instanceof NextResponse) return auth;
 
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "AI match-state isn't configured — set GROQ_API_KEY." }, { status: 503 });
+  const apiKey = aiApiKey();
+  if (!apiKey) return NextResponse.json({ error: "AI match-state isn't configured — set AI_API_KEY (or GROQ_API_KEY)." }, { status: 503 });
   const body = await req.json().catch(() => null);
   const imageBase64: string | undefined = body?.imageBase64;
   if (!imageBase64 || typeof imageBase64 !== "string") {
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
   }
 
   const callModel = (model: string) =>
-    fetch("https://api.groq.com/openai/v1/chat/completions", {
+    fetch(`${aiBaseUrl()}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({

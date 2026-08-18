@@ -30,6 +30,7 @@ import {
 } from "@/lib/reconstruction/objectivesObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
 import { pickCommentary, winProbInterjection, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
+import { useLanguage } from "@/lib/i18n";
 import { NetWorthLeadChart } from "@/components/NetWorthLeadChart";
 
 // CSS custom properties aren't part of React's CSSProperties type — this
@@ -419,6 +420,12 @@ function InlineMenuPopover({
 export default function LiveConsolePage() {
   const params = useParams();
   const matchId = params.id as string;
+  // Current UI language — drives the language of auto-commentary the console
+  // posts and the AI draft analysis it requests. Mirrored into a ref so the
+  // commentary scheduler (which reads refs, not props) always sees the latest.
+  const { lang: uiLang } = useLanguage();
+  const commentaryLangRef = useRef<"en" | "id">(uiLang);
+  commentaryLangRef.current = uiLang;
 
   const [match, setMatch] = useState<Match | null>(null);
   const [game, setGame] = useState<Game | null>(null);
@@ -849,7 +856,7 @@ export default function LiveConsolePage() {
       const res = await fetch("/api/admin/draft-analysis", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ teamA, teamB }),
+        body: JSON.stringify({ teamA, teamB, lang: commentaryLangRef.current }),
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -2460,6 +2467,7 @@ export default function LiveConsolePage() {
             { now: snap, prev: commentaryPrevRef.current, enabled: commentaryConditionsRef.current },
             {
               templates: commentaryTemplatesRef.current,
+              lang: commentaryLangRef.current,
               recent: {
                 texts: commentaryRecentTextsRef.current,
                 subjects: commentaryRecentSubjectsRef.current,
@@ -2513,7 +2521,7 @@ export default function LiveConsolePage() {
           commentaryConditionsRef.current.has("win_prob") &&
           snap
         ) {
-          const text = winProbInterjection(snap);
+          const text = winProbInterjection(snap, Math.random, commentaryLangRef.current);
           if (!commentaryRecentTextsRef.current.includes(text)) {
             await commentaryInsertRef.current(text, snap.timerSeconds);
             rememberCommentary(text, "win_prob", "win_prob");

@@ -68,6 +68,7 @@ type Match = {
   id: string;
   youtube_url: string | null;
   format: string | null;
+  stage: string | null;
   current_game_number: number;
   status: string;
   state: string;
@@ -636,7 +637,7 @@ export default function LiveConsolePage() {
     const { data: matchData, error: matchErr } = await supabase
       .from("matches")
       .select(
-        `id, youtube_url, format, current_game_number, status, state, custom_state_label, update_source, notification_tier, series_winner_team_id, tournament_id, ocr_left_team_id,
+        `id, youtube_url, format, stage, current_game_number, status, state, custom_state_label, update_source, notification_tier, series_winner_team_id, tournament_id, ocr_left_team_id,
          tournament:tournaments(name, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
@@ -7409,7 +7410,7 @@ export default function LiveConsolePage() {
             ) : (
               match.tournament?.name
             )}{" "}
-            · {match.format} · Game {game.game_number}
+            · {match.format}{match.stage ? ` · ${match.stage}` : ""} · Game {game.game_number}
           </p>
           {/* Game ID (games.id UUID) — the value the admin hands off for the
               SHADOW VALIDATION audit after each live game. Shown in full,

@@ -885,7 +885,7 @@ export default function PublicMatchPage() {
     // no fallback double-prompt afterward.
     if (typeof navigator.canShare === "function") {
       try {
-        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}&t=${recapRefreshKey}`);
+        const res = await fetch(`/api/recap-card/${match?.id}?ratio=${recapRatio}&lang=${lang}&t=${recapRefreshKey}`);
         const blob = await res.blob();
         const file = new File([blob], "livevival-recap.png", { type: "image/png" });
         if (navigator.canShare({ files: [file] })) {
@@ -1849,7 +1849,7 @@ export default function PublicMatchPage() {
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 key={recapRefreshKey}
-                src={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
+                src={`/api/recap-card/${match.id}?ratio=${recapRatio}&lang=${lang}&t=${recapRefreshKey}`}
                 alt="Match recap card"
                 className="w-full rounded"
               />
@@ -1870,7 +1870,7 @@ export default function PublicMatchPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <a
-                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
+                  href={`/api/recap-card/${match.id}?ratio=${recapRatio}&lang=${lang}&t=${recapRefreshKey}`}
                   download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
                   className="lv-btn-primary inline-block !text-xs !py-1.5"
                 >
@@ -1904,13 +1904,13 @@ export default function PublicMatchPage() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               key={recapRefreshKey}
-              src={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
+              src={`/api/recap-card/${match.id}?ratio=${recapRatio}&lang=${lang}&t=${recapRefreshKey}`}
               alt="Match recap card preview"
               className="w-full rounded lv-card-flush"
             />
             <div className="flex flex-wrap gap-2 justify-center">
               <a
-                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&t=${recapRefreshKey}`}
+                href={`/api/recap-card/${match.id}?ratio=${recapRatio}&lang=${lang}&t=${recapRefreshKey}`}
                 download={`livevival-${match.team_a?.name}-vs-${match.team_b?.name}.png`}
                 className="lv-btn-primary inline-block !text-xs !py-1.5"
               >

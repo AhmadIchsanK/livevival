@@ -1,20 +1,30 @@
 import { ImageResponse } from "next/og";
 import { createClient } from "@supabase/supabase-js";
+import { computeMvpSvp } from "@/lib/matchAnalytics";
 
-// Date-only formatter for recap card (time removed to fit safe area in portrait)
-function formatRecapDate(iso: string | null | undefined): string {
+type Lang = "en" | "id";
+
+// Date-only formatter for recap card (time removed to fit safe area in portrait).
+// Only the DATE and the "Final game picks & bans" heading are localized on the
+// card (per request) — everything else stays English in both languages.
+const MONTH_NAMES: Record<Lang, string[]> = {
+  en: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+  id: ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"],
+};
+function formatRecapDate(iso: string | null | undefined, lang: Lang): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
-  const MONTH_NAMES = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-  ];
   const year = d.getFullYear();
-  const month = MONTH_NAMES[d.getMonth()];
+  const month = MONTH_NAMES[lang][d.getMonth()];
   const day = String(d.getDate()).padStart(2, "0");
-  return `${year} ${month} ${day}`;
+  // ID uses the natural "14 Agustus 2026" order; EN keeps "2026 August 14".
+  return lang === "id" ? `${day} ${month} ${year}` : `${year} ${month} ${day}`;
 }
+const FINAL_GAME_LABEL: Record<Lang, string> = {
+  en: "Final game picks & bans",
+  id: "Pick & ban game terakhir",
+};
 
 export const runtime = "edge";
 
@@ -27,15 +37,30 @@ const INK = "#0A0A0A";
 const SIGNAL = "#E31E2A";
 
 type Ratio = "portrait" | "landscape";
+type LogoBg = "white" | "grey" | "ink" | "surface" | null;
+type CardTeam = { id: string; name: string; logo_url: string | null; logo_bg_override: LogoBg } | null;
 type CardMatch = {
   format: string | null;
   stage: string | null;
   scheduled_at: string | null;
   series_winner_team_id: string | null;
   tournament: { name: string } | null;
-  team_a: { id: string; name: string; logo_url: string | null } | null;
-  team_b: { id: string; name: string; logo_url: string | null } | null;
+  team_a: CardTeam;
+  team_b: CardTeam;
 };
+// MVP shown for Hot (OCR-tracked) matches — the standout player of the final game.
+type CardMvp = { ign: string; hero: string | null; kills: number; deaths: number; assists: number; teamName: string | null } | null;
+// The admin per-team backing choice, mapped to the exact hexes TeamLogo uses.
+// Default (no override) is white — the same "white by default" plate rule.
+const LOGO_BG_HEX: Record<Exclude<LogoBg, null>, string> = {
+  white: "#FFFFFF",
+  grey: "#8A8A8A",
+  ink: "#0A0A0A",
+  surface: "#141414",
+};
+function logoBgHex(bg: LogoBg): string {
+  return bg ? LOGO_BG_HEX[bg] : "#FFFFFF";
+}
 type CardGame = { winner_team_id: string | null };
 type CardHeroPick = {
   team_id: string;
@@ -95,12 +120,16 @@ function renderCard({
   heroPicks,
   ratio,
   logoUrl,
+  lang,
+  mvp,
 }: {
   match: CardMatch;
   games: CardGame[];
   heroPicks: CardHeroPick[];
   ratio: Ratio;
   logoUrl: string;
+  lang: Lang;
+  mvp: CardMvp;
 }) {
   const teamA = match.team_a;
   const teamB = match.team_b;
@@ -213,7 +242,7 @@ function renderCard({
           style={{
             fontSize: 19 * scale,
             fontWeight: 700,
-            color: p.type === "ban" ? "#ffffff88" : "#ffffffee",
+            color: p.type === "ban" ? "#ffffffbb" : "#ffffffee",
             textAlign: "center",
             textTransform: "uppercase",
             letterSpacing: 0.5,
@@ -248,7 +277,7 @@ function renderCard({
   // by the frame's own definite width, so flex-grow resolves correctly
   // there and both columns split the row evenly as intended.
   const subLabel = (text: string) => (
-    <span style={{ display: "flex", fontSize: 15 * scale, fontWeight: 700, color: "#ffffff55", textTransform: "uppercase", letterSpacing: 2 }}>
+    <span style={{ display: "flex", fontSize: 15 * scale, fontWeight: 700, color: "#ffffff99", textTransform: "uppercase", letterSpacing: 2 }}>
       {text}
     </span>
   );
@@ -304,7 +333,7 @@ function renderCard({
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 36 * scale }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16 * scale }}>
         {ticks.left}
-        <span style={{ fontSize: 22 * scale, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 4 }}>Final game picks &amp; bans</span>
+        <span style={{ fontSize: 22 * scale, color: "#ffffffdd", textTransform: "uppercase", letterSpacing: 4 }}>{FINAL_GAME_LABEL[lang]}</span>
         {ticks.right}
       </div>
       <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 80 * scale : 36 * scale, width: "100%" }}>
@@ -319,7 +348,13 @@ function renderCard({
   // reference exactly — the landscape reference's single centered trophy
   // is a cosmetic variant of the same information, and a per-team badge
   // reads unambiguously at any size, so it's used for both ratios.
-  const teamBox = (team: CardMatch["team_a"], wins: number, isWinner: boolean, hasWinner: boolean) => (
+  // Both plates render at the IDENTICAL size and the name at the identical
+  // font size — the winner is signalled by border COLOR + glow only, never by a
+  // thicker border that would make one plate physically bigger than the other.
+  // The plate background follows the team's admin backing choice (logo_bg_override),
+  // defaulting to white — same rule as TeamLogo on the rest of the site.
+  const PLATE_BORDER = 3;
+  const teamBox = (team: CardTeam, wins: number, isWinner: boolean, hasWinner: boolean) => (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16 * scale, flex: 1, opacity: hasWinner && !isWinner ? 0.55 : 1 }}>
       <div
         style={{
@@ -329,8 +364,8 @@ function renderCard({
           width: 220 * scale * logoBoost,
           height: 220 * scale * logoBoost,
           borderRadius: 32 * scale,
-          background: "#f5f5f5",
-          border: `${isWinner ? 7 : 2}px solid ${isWinner ? SIGNAL : "#ffffff2a"}`,
+          background: logoBgHex(team?.logo_bg_override ?? null),
+          border: `${PLATE_BORDER}px solid ${isWinner ? SIGNAL : "#ffffff2a"}`,
           padding: 24 * scale * logoBoost,
           boxShadow: isWinner ? `0 0 ${72 * scale}px ${SIGNAL}66` : "none",
         }}
@@ -345,26 +380,28 @@ function renderCard({
       <span style={{ fontSize: 36 * scale, fontWeight: 700, color: isWinner ? SIGNAL : "#ffffff", textAlign: "center" }}>
         {team?.name ?? "TBD"}
       </span>
-      {isWinner && (
-        <span
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6 * scale,
-            fontSize: 17 * scale,
-            fontWeight: 700,
-            color: SIGNAL,
-            textTransform: "uppercase",
-            letterSpacing: 1,
-            background: `${SIGNAL}1a`,
-            border: `1px solid ${SIGNAL}55`,
-            borderRadius: 999,
-            padding: `${5 * scale}px ${16 * scale}px`,
-          }}
-        >
-          🏆 Winner
-        </span>
-      )}
+      {/* Always rendered (invisible on the non-winner side) so BOTH columns are
+          the exact same height — keeps the two logo plates and the two team
+          names on the same baseline instead of the winner's column being taller. */}
+      <span
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6 * scale,
+          fontSize: 17 * scale,
+          fontWeight: 700,
+          color: SIGNAL,
+          textTransform: "uppercase",
+          letterSpacing: 1,
+          background: `${SIGNAL}1a`,
+          border: `1px solid ${SIGNAL}55`,
+          borderRadius: 999,
+          padding: `${5 * scale}px ${16 * scale}px`,
+          opacity: isWinner ? 1 : 0,
+        }}
+      >
+        🏆 Winner
+      </span>
     </div>
   );
 
@@ -376,16 +413,19 @@ function renderCard({
   // Either piece is omitted gracefully when absent — a null stage never
   // renders as a stray "null" or empty dot-separator.
   // Date-only format (time removed) ensures portrait mode content stays within safe area
-  const dateLabel = formatRecapDate(match.scheduled_at);
-  const stageDateBits = [match.stage, dateLabel || null].filter(Boolean);
+  const dateLabel = formatRecapDate(match.scheduled_at, lang);
+  // Stage ALWAYS shows (its own line, brighter than before) — falls back to a
+  // dash placeholder so the recap never hides which stage of the event it is.
+  const stageText = (match.stage && match.stage.trim()) || "—";
+  const stageDateBits = [stageText, dateLabel || null].filter(Boolean);
 
   const scoreBar = (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
-      <span style={{ fontSize: 22 * scale, color: "#ffffff66", textTransform: "uppercase", letterSpacing: 3, textAlign: "center" }}>
+      <span style={{ fontSize: 22 * scale, color: "#ffffffcc", textTransform: "uppercase", letterSpacing: 3, textAlign: "center" }}>
         {match.tournament?.name ?? ""} {match.format ? `· ${match.format}` : ""}
       </span>
       {stageDateBits.length > 0 && (
-        <span style={{ fontSize: 16 * scale, fontWeight: 700, color: "#ffffff44", textTransform: "uppercase", letterSpacing: 2, textAlign: "center" }}>
+        <span style={{ fontSize: 17 * scale, fontWeight: 700, color: "#ffffffaa", textTransform: "uppercase", letterSpacing: 2, textAlign: "center" }}>
           {stageDateBits.join(" · ")}
         </span>
       )}
@@ -393,11 +433,30 @@ function renderCard({
         {teamBox(teamA, aWins, winnerId === teamA?.id, Boolean(winnerId))}
         <div style={{ display: "flex", alignItems: "center", gap: 28 * scale, fontSize: 160 * scale * logoBoost, fontWeight: 700, lineHeight: 1 }}>
           <span style={{ color: winnerId === teamA?.id ? SIGNAL : "#ffffff" }}>{aWins}</span>
-          <span style={{ color: "#ffffff33", fontSize: 90 * scale * logoBoost }}>–</span>
+          <span style={{ color: "#ffffff55", fontSize: 90 * scale * logoBoost }}>–</span>
           <span style={{ color: winnerId === teamB?.id ? SIGNAL : "#ffffff" }}>{bWins}</span>
         </div>
         {teamBox(teamB, bWins, winnerId === teamB?.id, Boolean(winnerId))}
       </div>
+      {mvp && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10 * scale,
+            marginTop: 18 * scale,
+            background: `${SIGNAL}1a`,
+            border: `1px solid ${SIGNAL}66`,
+            borderRadius: 999,
+            padding: `${9 * scale}px ${24 * scale}px`,
+          }}
+        >
+          <span style={{ fontSize: 20 * scale, fontWeight: 800, color: SIGNAL, textTransform: "uppercase", letterSpacing: 2 }}>⭐ MVP</span>
+          <span style={{ fontSize: 24 * scale, fontWeight: 700, color: "#ffffff" }}>{mvp.ign}</span>
+          {mvp.hero && <span style={{ fontSize: 20 * scale, fontWeight: 600, color: "#ffffffcc" }}>· {mvp.hero}</span>}
+          <span style={{ fontSize: 20 * scale, fontWeight: 700, color: "#ffffffaa" }}>· {mvp.kills}/{mvp.deaths}/{mvp.assists}</span>
+        </div>
+      )}
     </div>
   );
 
@@ -514,7 +573,7 @@ function renderCard({
                   sizing, and logo-dark-bg.png's native ratio is 1248:352. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={logoUrl} alt="Livevival" width={(isLandscape ? 168 : 142) * scale} height={(isLandscape ? 48 : 40) * scale} />
-              <span style={{ fontSize: 16 * scale, color: "#ffffff55", textTransform: "uppercase", letterSpacing: 3 }}>Match recap</span>
+              <span style={{ fontSize: 16 * scale, color: "#ffffff99", textTransform: "uppercase", letterSpacing: 3 }}>Match recap</span>
             </div>
 
             {/* Landscape gets a genuine two-column recomposition for the
@@ -548,8 +607,8 @@ function renderCard({
               marginTop: 28 * scale,
             }}
           >
-            <span style={{ fontSize: 18 * scale, color: "#ffffff55", letterSpacing: 1 }}>livevival-sigma.vercel.app</span>
-            <span style={{ fontSize: 18 * scale, color: "#ffffff33", textTransform: "uppercase", letterSpacing: 2 }}>Esports live score</span>
+            <span style={{ fontSize: 18 * scale, color: "#ffffffaa", letterSpacing: 1 }}>livevival-sigma.vercel.app</span>
+            <span style={{ fontSize: 18 * scale, color: "#ffffff77", textTransform: "uppercase", letterSpacing: 2 }}>Esports live score</span>
           </div>
         </div>
       </div>
@@ -561,6 +620,7 @@ function renderCard({
 export async function GET(req: Request, { params }: { params: { matchId: string } }) {
   const { searchParams, origin } = new URL(req.url);
   const ratio: Ratio = searchParams.get("ratio") === "landscape" ? "landscape" : "portrait";
+  const lang: Lang = searchParams.get("lang") === "id" ? "id" : "en";
   // Same-origin static asset — unlike Liquipedia's CDN this needs no proxy
   // and no hotlink-protection workaround, so it's safe to fetch at render
   // time even though it's still one network hop for the edge function.
@@ -573,8 +633,8 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     .select(
       `id, format, stage, scheduled_at, status, series_winner_team_id, update_source,
        tournament:tournaments(name),
-       team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
-       team_b:teams!matches_team_b_id_fkey(id, name, logo_url)`
+       team_a:teams!matches_team_a_id_fkey(id, name, logo_url, logo_bg_override),
+       team_b:teams!matches_team_b_id_fkey(id, name, logo_url, logo_bg_override)`
     )
     .eq("id", params.matchId)
     .single();
@@ -584,8 +644,8 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
   }
   const rawTeamA = Array.isArray(match.team_a) ? match.team_a[0] : match.team_a;
   const rawTeamB = Array.isArray(match.team_b) ? match.team_b[0] : match.team_b;
-  const teamA = rawTeamA ? { ...rawTeamA, logo_url: proxied(origin, rawTeamA.logo_url) } : null;
-  const teamB = rawTeamB ? { ...rawTeamB, logo_url: proxied(origin, rawTeamB.logo_url) } : null;
+  const teamA: CardTeam = rawTeamA ? { ...rawTeamA, logo_url: proxied(origin, rawTeamA.logo_url), logo_bg_override: (rawTeamA.logo_bg_override ?? null) as LogoBg } : null;
+  const teamB: CardTeam = rawTeamB ? { ...rawTeamB, logo_url: proxied(origin, rawTeamB.logo_url), logo_bg_override: (rawTeamB.logo_bg_override ?? null) as LogoBg } : null;
   const tournament = Array.isArray(match.tournament) ? match.tournament[0] : match.tournament;
 
   const { data: games } = await supabase
@@ -595,6 +655,7 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     .order("game_number");
 
   let heroPicks: CardHeroPick[] = [];
+  let mvp: CardMvp = null;
   // Only Hot (OCR-tracked) matches ever get a per-pick player_id logged
   // against a KDA row — Liquipedia-synced picks never carry one — so
   // gating on update_source here is really just an optimization; the
@@ -624,9 +685,42 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     if (isHotMatch && draftGameId) {
       const { data: stats } = await supabase
         .from("player_stats")
-        .select("player_id, kills, deaths, assists")
+        .select("player_id, hero_name, kills, deaths, assists, player:players(ign, role, team_id)")
         .eq("game_id", draftGameId);
       kdaByPlayerId = new Map((stats ?? []).filter((s) => s.player_id).map((s) => [s.player_id as string, s]));
+
+      // MVP of the final game — the role-weighted standout (same computeMvpSvp
+      // used on the match page), shown only on Hot (OCR-tracked) recaps where
+      // per-player KDA actually exists.
+      const mvpInputs = (stats ?? [])
+        .filter((s) => s.player_id && (s.kills != null || s.deaths != null || s.assists != null))
+        .map((s) => {
+          const pl = Array.isArray(s.player) ? s.player[0] : s.player;
+          return {
+            id: s.player_id as string,
+            teamId: (pl?.team_id ?? null) as string | null,
+            role: (pl?.role ?? null) as string | null,
+            kills: s.kills ?? 0,
+            deaths: s.deaths ?? 0,
+            assists: s.assists ?? 0,
+          };
+        });
+      if (mvpInputs.length > 0) {
+        const { mvpId } = computeMvpSvp(mvpInputs);
+        const row = (stats ?? []).find((s) => s.player_id === mvpId);
+        if (row) {
+          const pl = Array.isArray(row.player) ? row.player[0] : row.player;
+          const teamName = pl?.team_id === teamA?.id ? teamA?.name ?? null : pl?.team_id === teamB?.id ? teamB?.name ?? null : null;
+          mvp = {
+            ign: pl?.ign ?? "MVP",
+            hero: row.hero_name ?? null,
+            kills: row.kills ?? 0,
+            deaths: row.deaths ?? 0,
+            assists: row.assists ?? 0,
+            teamName,
+          };
+        }
+      }
     }
 
     heroPicks = (picksAndBans ?? []).map((p) => {
@@ -658,5 +752,7 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     heroPicks,
     ratio,
     logoUrl,
+    lang,
+    mvp,
   });
 }

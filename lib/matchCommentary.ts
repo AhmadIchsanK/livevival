@@ -117,10 +117,11 @@ export type CommentarySnapshot = {
 // An admin-authored template row (a subset of the DB shape the engine needs).
 // `id` is optional so tests can pass bare templates; when present it flows onto
 // the picked line as `templateId`, letting the caller bump that row's use_count.
-// `templateBahasa` is the optional Bahasa Indonesia text (DB column template_id);
-// when the language is "id" it's used in place of `template`, falling back to
-// the English `template` when absent.
-export type CommentaryTemplate = { id?: string; condition: CommentaryCondition; template: string; templateBahasa?: string | null; enabled: boolean };
+// `lang` scopes the row to ONE language — the EN and ID libraries are fully
+// independent (adding a line in ID mode adds only an ID row). The engine only
+// renders rows whose lang matches the active language. Older callers that omit
+// lang are treated as English.
+export type CommentaryTemplate = { id?: string; condition: CommentaryCondition; template: string; lang?: CommentaryLang; enabled: boolean };
 
 // `subject` is the thing this line spotlights (a player/hero name, or a coarse
 // key like "net_worth"/"kills"). The picker uses it to avoid re-spotlighting the
@@ -557,10 +558,10 @@ export function commentaryCandidates(ctx: CommentaryContext, opts: CommentaryOpt
       }
       for (const tpl of templates) {
         if (!tpl.enabled || tpl.condition !== trig.condition) continue;
-        // Custom DB lines are bilingual too: use the Bahasa Indonesia text when
-        // the language is "id" and it exists, otherwise the English one.
-        const tplText = lang === "id" && tpl.templateBahasa ? tpl.templateBahasa : tpl.template;
-        const t = renderTemplate(tplText, trig.facts);
+        // EN and ID DB libraries are independent — only render rows for the
+        // active language (a row with no lang is treated as English).
+        if ((tpl.lang ?? "en") !== lang) continue;
+        const t = renderTemplate(tpl.template, trig.facts);
         if (t) lines.push({ condition: trig.condition, text: t, source: "custom", subject: trig.subject, templateId: tpl.id });
       }
     }

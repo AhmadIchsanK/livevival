@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useLanguage } from "@/lib/i18n";
 import {
@@ -14,14 +14,14 @@ type Row = {
   id: string;
   condition: CommentaryCondition;
   template: string;
-  template_id: string | null;
+  lang: "en" | "id";
   enabled: boolean;
   updated_at: string;
   use_count: number;
   last_used_at: string | null;
 };
 
-type Suggestion = { condition: CommentaryCondition; template: string; templateId: string; reads: string; readsId: string };
+type Suggestion = { condition: CommentaryCondition; template: string; reads: string };
 
 // Hard cap on how many custom lines the library holds. Built-in lines ship in
 // code on top of this; 300 editable rows is plenty of variety without letting
@@ -45,6 +45,10 @@ const PREVIEW_FACTS: Record<CommentaryCondition, Record<string, string | number>
 const CONDITION_LABEL: Record<string, string> = Object.fromEntries(COMMENTARY_CONDITIONS.map((c) => [c.key, c.label]));
 
 export default function CommentaryTemplatesPage() {
+  // The library you edit follows the ID/EN toggle in the top bar — the two
+  // libraries are fully independent, so adding/generating a line only touches
+  // the currently-selected language.
+  const { lang } = useLanguage();
   const [rows, setRows] = useState<Row[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -54,11 +58,9 @@ export default function CommentaryTemplatesPage() {
 
   const [newCondition, setNewCondition] = useState<CommentaryCondition>("net_worth");
   const [newTemplate, setNewTemplate] = useState("");
-  const [newTemplateId, setNewTemplateId] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTemplate, setEditTemplate] = useState("");
-  const [editTemplateId, setEditTemplateId] = useState("");
   const [editCondition, setEditCondition] = useState<CommentaryCondition>("net_worth");
 
   // AI auto-improve panel
@@ -78,7 +80,7 @@ export default function CommentaryTemplatesPage() {
       const res = await fetch("/api/admin/commentary-suggest", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ condition: aiCondition, count: aiCount }),
+        body: JSON.stringify({ condition: aiCondition, count: aiCount, lang }),
       });
       const json = await res.json();
       if (!res.ok) {
@@ -99,7 +101,7 @@ export default function CommentaryTemplatesPage() {
       setAiError(`Template limit reached (${MAX_TEMPLATES}). Delete some lines before adding more.`);
       return;
     }
-    const { error } = await supabase.from("commentary_templates").insert({ condition: s.condition, template: s.template, template_id: s.templateId || null });
+    const { error } = await supabase.from("commentary_templates").insert({ condition: s.condition, template: s.template, lang });
     if (error) {
       setAiError(error.message);
       return;
@@ -118,7 +120,7 @@ export default function CommentaryTemplatesPage() {
     const toAdd = suggestions.slice(0, room);
     const { error } = await supabase
       .from("commentary_templates")
-      .insert(toAdd.map((s) => ({ condition: s.condition, template: s.template, template_id: s.templateId || null })));
+      .insert(toAdd.map((s) => ({ condition: s.condition, template: s.template, lang })));
     if (error) {
       setAiError(error.message);
       return;
@@ -132,25 +134,26 @@ export default function CommentaryTemplatesPage() {
     load();
   }
 
-  async function load() {
+  const load = useCallback(async () => {
     const { data, error } = await supabase
       .from("commentary_templates")
-      .select("id, condition, template, template_id, enabled, updated_at, use_count, last_used_at")
+      .select("id, condition, template, lang, enabled, updated_at, use_count, last_used_at")
+      .eq("lang", lang)
       .order("condition", { ascending: true })
       .order("updated_at", { ascending: false });
     if (error) setError(error.message);
     setRows((data as Row[]) ?? []);
-  }
+  }, [lang]);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
 
   const filtered = useMemo(() => {
     const q = searchText.trim().toLowerCase();
     let out = rows.filter((r) => {
       if (conditionFilter && r.condition !== conditionFilter) return false;
-      if (q && !r.template.toLowerCase().includes(q) && !(r.template_id ?? "").toLowerCase().includes(q)) return false;
+      if (q && !r.template.toLowerCase().includes(q)) return false;
       return true;
     });
     out = [...out].sort((a, b) => {
@@ -184,21 +187,20 @@ export default function CommentaryTemplatesPage() {
     setError(null);
     const { error } = await supabase
       .from("commentary_templates")
-      .insert({ condition: newCondition, template: newTemplate.trim(), template_id: newTemplateId.trim() || null });
+      .insert({ condition: newCondition, template: newTemplate.trim(), lang });
     setLoading(false);
     if (error) {
       setError(error.message);
       return;
     }
     setNewTemplate("");
-    setNewTemplateId("");
     load();
   }
 
   async function saveEdit(id: string) {
     const { error } = await supabase
       .from("commentary_templates")
-      .update({ condition: editCondition, template: editTemplate.trim(), template_id: editTemplateId.trim() || null, updated_at: new Date().toISOString() })
+      .update({ condition: editCondition, template: editTemplate.trim(), updated_at: new Date().toISOString() })
       .eq("id", id);
     if (error) {
       setError(error.message);
@@ -261,11 +263,18 @@ export default function CommentaryTemplatesPage() {
   return (
     <div className="max-w-4xl space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Auto-commentary Templates</h1>
+        <h1 className="text-2xl font-bold flex items-center gap-2">
+          Auto-commentary Templates
+          <span className="text-xs font-semibold rounded px-2 py-0.5 bg-signal/20 text-signal border border-signal/30">
+            {lang === "id" ? "🇮🇩 Library Bahasa Indonesia" : "🇬🇧 English Library"}
+          </span>
+        </h1>
         <p className="text-sm text-white/50 mt-1">
           Caster-style lines the live Moment list posts automatically (every 1–2 minutes) when a game condition fires.
-          These are added to the built-in lines that ship in code — edit here with no deploy. Toggle which condition
-          categories are active per match in the Hot Match live console.
+          The English and Indonesian libraries are <b>independent</b> — you&apos;re editing the{" "}
+          <b>{lang === "id" ? "Indonesian" : "English"}</b> one now. Adding or AI-generating a line only touches this
+          language; flip the <b>ID / EN</b> toggle in the top bar to edit the other. Lines add to the built-ins that
+          ship in code — no deploy needed.
         </p>
       </div>
 
@@ -288,21 +297,14 @@ export default function CommentaryTemplatesPage() {
               ))}
             </select>
           </label>
-          <div className="flex-1 min-w-[220px]">
-            <span className="block text-white/50 text-xs mb-1">🇬🇧 English (use the placeholders below)</span>
+          <div className="flex-1 min-w-[260px]">
+            <span className="block text-white/50 text-xs mb-1">
+              {lang === "id" ? "🇮🇩 Baris (Bahasa Indonesia)" : "🇬🇧 Line (English)"} — {lang === "id" ? "pakai placeholder di bawah" : "use the placeholders below"}
+            </span>
             <input
               value={newTemplate}
               onChange={(e) => setNewTemplate(e.target.value)}
-              placeholder="e.g. {lead} making it look easy, {diff} clear."
-              className="w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
-            />
-          </div>
-          <div className="flex-1 min-w-[220px]">
-            <span className="block text-white/50 text-xs mb-1">🇮🇩 Bahasa Indonesia (opsional — SAME placeholders)</span>
-            <input
-              value={newTemplateId}
-              onChange={(e) => setNewTemplateId(e.target.value)}
-              placeholder="cth. {lead} santai aja, unggul {diff}."
+              placeholder={lang === "id" ? "cth. {lead} santai aja, unggul {diff}." : "e.g. {lead} making it look easy, {diff} clear."}
               className="w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
             />
           </div>
@@ -405,9 +407,8 @@ export default function CommentaryTemplatesPage() {
                     <span className="text-[10px] uppercase tracking-wide text-signal/80 bg-signal/10 border border-signal/20 rounded px-1.5 py-0.5">
                       {CONDITION_LABEL[s.condition] ?? s.condition}
                     </span>
-                    <p className="text-sm text-white/85 mt-1"><span className="text-white/30 mr-1">🇬🇧</span>{s.template}</p>
-                    {s.templateId && <p className="text-sm text-white/70 mt-0.5"><span className="text-white/30 mr-1">🇮🇩</span>{s.templateId}</p>}
-                    <p className="text-[11px] text-white/30 mt-0.5">Reads: &ldquo;{s.reads}&rdquo;{s.readsId && ` · ${s.readsId}`}</p>
+                    <p className="text-sm text-white/85 mt-1">{s.template}</p>
+                    <p className="text-[11px] text-white/30 mt-0.5">Reads: &ldquo;{s.reads}&rdquo;</p>
                   </div>
                   <div className="flex gap-1 shrink-0">
                     <button
@@ -498,19 +499,10 @@ export default function CommentaryTemplatesPage() {
                     ))}
                   </select>
                 </div>
-                <label className="block text-[11px] text-white/40">🇬🇧 English</label>
                 <textarea
                   value={editTemplate}
                   onChange={(e) => setEditTemplate(e.target.value)}
                   rows={2}
-                  className="w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
-                />
-                <label className="block text-[11px] text-white/40">🇮🇩 Bahasa Indonesia (opsional)</label>
-                <textarea
-                  value={editTemplateId}
-                  onChange={(e) => setEditTemplateId(e.target.value)}
-                  rows={2}
-                  placeholder="Kosongin buat pakai versi Inggris."
                   className="w-full bg-white/10 border border-white/10 rounded px-2 py-1.5 text-sm"
                 />
                 <div className="flex gap-2">
@@ -537,16 +529,7 @@ export default function CommentaryTemplatesPage() {
                       {r.use_count}× used
                     </span>
                   </div>
-                  <p className={`text-sm mt-1 ${r.enabled ? "text-white/85" : "text-white/40 line-through"}`}>
-                    <span className="text-white/30 mr-1">🇬🇧</span>{r.template}
-                  </p>
-                  {r.template_id ? (
-                    <p className={`text-sm mt-0.5 ${r.enabled ? "text-white/70" : "text-white/40 line-through"}`}>
-                      <span className="text-white/30 mr-1">🇮🇩</span>{r.template_id}
-                    </p>
-                  ) : (
-                    <p className="text-[11px] text-amber-300/70 mt-0.5">🇮🇩 no Indonesian version — shows English in ID mode</p>
-                  )}
+                  <p className={`text-sm mt-1 ${r.enabled ? "text-white/85" : "text-white/40 line-through"}`}>{r.template}</p>
                   <p className="text-[11px] text-white/30 mt-0.5">
                     Reads: &ldquo;{renderTemplate(r.template, PREVIEW_FACTS[r.condition]) ?? "— (placeholder mismatch)"}&rdquo;
                   </p>
@@ -559,7 +542,6 @@ export default function CommentaryTemplatesPage() {
                     onClick={() => {
                       setEditingId(r.id);
                       setEditTemplate(r.template);
-                      setEditTemplateId(r.template_id ?? "");
                       setEditCondition(r.condition);
                     }}
                     className="text-[11px] border border-white/15 rounded px-2 py-1 hover:bg-white/10"

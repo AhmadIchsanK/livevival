@@ -240,13 +240,26 @@ function facebookEmbedUrl(url: string | null) {
 // panel becomes a sibling of the header in the stacking order instead of
 // a great-grandchild of a lower-z-index ancestor, free to out-rank it
 // with a plain z-index number again.
+type PopoverPos = { top: number | null; bottom: number | null; left: number; width: number; maxHeight: number; placement: "up" | "down" };
 function usePopoverPosition(triggerRef: RefObject<HTMLElement | null>, open: boolean) {
-  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [pos, setPos] = useState<PopoverPos | null>(null);
   useEffect(() => {
     if (!open) return;
     function update() {
       const rect = triggerRef.current?.getBoundingClientRect();
-      if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+      if (!rect) return;
+      const vh = window.innerHeight;
+      const spaceBelow = vh - rect.bottom;
+      const spaceAbove = rect.top;
+      // Flip the panel ABOVE the trigger when there isn't comfortable room below
+      // and there's more room above — so a menu near the bottom of the screen
+      // (the Templates list) opens upward instead of being clipped.
+      const openUp = spaceBelow < 280 && spaceAbove > spaceBelow;
+      if (openUp) {
+        setPos({ placement: "up", top: null, bottom: Math.round(vh - rect.top + 4), left: rect.left, width: rect.width, maxHeight: Math.max(160, Math.round(spaceAbove - 12)) });
+      } else {
+        setPos({ placement: "down", top: Math.round(rect.bottom + 4), bottom: null, left: rect.left, width: rect.width, maxHeight: Math.max(160, Math.round(spaceBelow - 12)) });
+      }
     }
     update();
     // capture:true — the toolbar's own ancestor is a scrollable pane
@@ -313,8 +326,14 @@ function InlineMenuSelect({
           <div
             ref={panelRef}
             role="listbox"
-            style={{ position: "fixed", top: pos.top, left: pos.left, minWidth: pos.width }}
-            className="z-[100] max-h-64 overflow-y-auto bg-[#111116] border border-white/15 rounded shadow-lg py-1"
+            style={{
+              position: "fixed",
+              ...(pos.placement === "up" ? { bottom: pos.bottom ?? 0 } : { top: pos.top ?? 0 }),
+              left: pos.left,
+              minWidth: pos.width,
+              maxHeight: pos.maxHeight,
+            }}
+            className="z-[100] overflow-y-auto bg-[#111116] border border-white/15 rounded shadow-lg py-1"
           >
             {options.map((opt) => (
               <button
@@ -399,14 +418,13 @@ function InlineMenuPopover({
             ref={panelRef}
             style={{
               position: "fixed",
-              top: pos.top,
+              ...(pos.placement === "up" ? { bottom: pos.bottom ?? 0 } : { top: pos.top ?? 0 }),
               left: pos.left,
               minWidth: Math.max(pos.width, 340),
-              // Cap to the remaining viewport height and scroll — otherwise a
-              // panel opened near the bottom of the screen (e.g. the Templates
-              // list + its Apply/Edit/Delete buttons) runs off the bottom and
-              // those controls become unreachable.
-              maxHeight: `calc(100vh - ${Math.round(pos.top) + 12}px)`,
+              // Cap to the room on whichever side it opened and scroll — so the
+              // Templates list + its Apply/Edit/Delete buttons stay reachable
+              // whether the panel opens downward or flips upward.
+              maxHeight: pos.maxHeight,
               overflowY: "auto",
               overscrollBehavior: "contain",
             }}
@@ -8913,7 +8931,11 @@ export default function LiveConsolePage() {
                     being split across separate rows further down the
                     page. */}
                 {match.update_source === "local_ocr" ? (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                  // Full-width stacked sections (Objectives, Log-a-moment +
+                  // Screenshots row, Net worth, then the Live scoreboard) so the
+                  // scoreboard fills the entire content width instead of being
+                  // squeezed into a right-hand column.
+                  <div className="space-y-4">
                     <div className="space-y-4">
                     <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
                       <div className="flex items-center justify-between">
@@ -9009,7 +9031,7 @@ export default function LiveConsolePage() {
                     {/* Log a moment + Game screenshots share ONE row (side by
                         side on wide screens, stacked on narrow) rather than
                         stacking as two separate blocks. */}
-                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
                     <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
                       <div className="flex items-center justify-between">
                         <h3 className="font-semibold text-sm">{tt("admin.logMoment")}</h3>

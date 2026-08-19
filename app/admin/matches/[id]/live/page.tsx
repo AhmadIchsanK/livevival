@@ -2479,6 +2479,16 @@ export default function LiveConsolePage() {
     const at = manualKillEditAtRef.current[teamId];
     return at != null && Date.now() - at < MANUAL_KILL_HOLD_MS;
   }
+  // Team-kill consensus buffer, keyed by teamId. Unlike Objectives (whose reads
+  // are near-perfect and only ever go up), the team-kill HUD number is noisier —
+  // a single bad frame that over-read once (e.g. locked in "8" when it was "3")
+  // used to stick forever under a strict never-decrease rule. So NO change is
+  // committed until the SAME value has been read on N consecutive ticks; once it
+  // has, that value is trusted and written EVEN IF LOWER than the stored count
+  // (the "apply a decrease when the previous number was inaccurate" the operator
+  // asked for). A lone noisy frame never commits; a stable disagreement corrects.
+  const teamKillConsensusRef = useRef<Record<string, { value: number; count: number }>>({});
+  const TEAM_KILL_CONSENSUS_TICKS = 2;
   useEffect(() => {
     (async () => {
       const { data } = await supabase.from("commentary_templates").select("id, condition, template, lang, enabled");
@@ -4467,29 +4477,6 @@ export default function LiveConsolePage() {
     return rawTarget;
   }
 
-  // Team-kill plausibility bound — the SAME shape as plausibleObjectiveTarget,
-  // applied to the notoriously-misread team-kill HUD number. A team's kills
-  // only ever go UP, accumulate at a bounded rate over the game clock, and
-  // can't leap by a full extra teamfight in a single ~5s capture tick. Anything
-  // past those bounds is a garbled read (a stray HUD digit, two numbers merged),
-  // so it's clamped to the plausible value; the caller flags a clamp so a
-  // genuinely fast run can still be confirmed. `current` is what the tracker
-  // already holds (the override), never the per-player sum.
-  function plausibleTeamKillTarget(current: number, rawTarget: number): number {
-    if (rawTarget <= current) return current; // never-decreases (OCR)
-    const gameMinutes = (minute * 60 + secondOfMinute) / 60;
-    // Kill pace: even a one-sided stomp rarely clears ~3.5 kills/min for one
-    // team; +6 base covers an early snowball before the clock has moved.
-    const byTime = Math.ceil(gameMinutes * 3.5) + 6;
-    // Absolute ceiling — a per-team kill count above the high-40s is
-    // effectively never real, so a read like 87 or 511 is rejected outright.
-    const ABS_MAX = 60;
-    const timeCap = Math.min(ABS_MAX, Math.max(current, byTime));
-    // Per-tick jump: a single wipe is ~5 kills; allow +6 per read so one bad
-    // frame can't teleport the count, but a real flurry still lands next tick.
-    const jumpCap = current + 6;
-    return Math.max(current, Math.min(rawTarget, timeCap, jumpCap));
-  }
 
   async function applySingleObjectiveReading(
     teamId: string,
@@ -4972,65 +4959,54 @@ export default function LiveConsolePage() {
             } catch {
               crop = null;
             }
+            const kills = obs.normalized;
+
+            // ── Consensus decision ────────────────────────────────────────
+            // A change commits only after the SAME value is read on N consecutive
+            // ticks. This is what makes a single garbled frame (the "8" locked in
+            // image 4) unable to move the count, while a STABLE lower read is
+            // trusted and corrects the number back down.
+            let decisionReason = obs.reason;
+            if (kills == null) {
+              // blank / merged / implausible — keep last confirmed, don't disturb
+              // the consensus buffer (a dropped frame isn't a vote either way).
+              decisionReason = obs.reason;
+            } else {
+              shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)
+              if (kills === currentKills) {
+                teamKillConsensusRef.current[sideTeamId] = { value: kills, count: 0 }; // stable, matches
+                decisionReason = "matches confirmed — no change";
+              } else {
+                const pending = teamKillConsensusRef.current[sideTeamId];
+                const count = pending && pending.value === kills ? pending.count + 1 : 1;
+                teamKillConsensusRef.current[sideTeamId] = { value: kills, count };
+                if (count < TEAM_KILL_CONSENSUS_TICKS) {
+                  decisionReason = `read ${kills} (${count}/${TEAM_KILL_CONSENSUS_TICKS}) — waiting for a repeat before ${kills > currentKills ? "increasing" : "correcting down"} from ${currentKills}`;
+                } else if (withinManualTeamKillCooldown(sideTeamId)) {
+                  // Consensus reached but the admin just corrected this — hold it
+                  // as a confirm-to-apply flag rather than overriding the manual edit.
+                  decisionReason = `consensus ${kills}, but just corrected manually — confirm to apply`;
+                  flagReading(tracker.field, {
+                    label: tracker.label,
+                    raw: trimmed,
+                    confidence: data.confidence,
+                    reason: `OCR settled on ${kills} (${currentKills} stored), but this count was just corrected manually — confirm to apply it anyway`,
+                    apply: async () => {
+                      await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
+                    },
+                  });
+                } else {
+                  // Consensus reached — trust it, UP or DOWN.
+                  decisionReason = kills > currentKills ? `consensus increase ${currentKills} → ${kills}` : `consensus correction ${currentKills} → ${kills} (previous read was inaccurate)`;
+                  teamKillConsensusRef.current[sideTeamId] = { value: kills, count: 0 };
+                  await supabase.from("games").update({ [column]: kills }).eq("id", game.id);
+                }
+              }
+            }
             setTeamKillDiagnostics((prev) => ({
               ...prev,
-              [side]: { ...obs, confidence: data.confidence, at: Date.now(), confirmed: currentKills, crop },
+              [side]: { ...obs, reason: decisionReason, confidence: data.confidence, at: Date.now(), confirmed: currentKills, crop },
             }));
-            if (obs.normalized == null) break; // blank / merged / implausible — keep last confirmed
-            const kills = obs.normalized;
-            shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)
-
-            // Plausibility gate (never decreases, game-clock pace, per-tick jump)
-            // — the team-kill analogue of plausibleObjectiveTarget.
-            const target = plausibleTeamKillTarget(currentKills, kills);
-
-            // Manual-cooldown flag — if the admin just corrected this count, hold
-            // a conflicting OCR read back as a confirm-to-apply flag instead of
-            // snapping the value back (identical to withinManualObjectiveCooldown).
-            if (target > currentKills && withinManualTeamKillCooldown(sideTeamId)) {
-              flagReading(tracker.field, {
-                label: tracker.label,
-                raw: trimmed,
-                confidence: data.confidence,
-                reason: `Read ${kills} (${target} after guards), but this count was just corrected manually — confirm to apply it anyway`,
-                apply: async () => {
-                  await supabase.from("games").update({ [column]: target }).eq("id", game!.id);
-                },
-              });
-              break;
-            }
-
-            if (target === currentKills) {
-              // Nothing plausible to apply. A read HIGHER than current that the
-              // pace/jump guard clamped away is surfaced as a flag rather than
-              // silently dropped — mirrors applySingleObjectiveReading's clamp flag.
-              if (kills > currentKills) {
-                flagReading(tracker.field, {
-                  label: tracker.label,
-                  raw: trimmed,
-                  confidence: data.confidence,
-                  reason: `Read ${kills}, past the plausible pace/jump bound (currently ${currentKills}) — confirm to apply the full reading.`,
-                  apply: async () => {
-                    await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
-                  },
-                });
-              }
-              break;
-            }
-            await supabase.from("games").update({ [column]: target }).eq("id", game.id);
-            // Clamped down from a higher raw value — flag the raw in case it's a
-            // genuinely fast flurry, exactly like the objectives path.
-            if (target < kills) {
-              flagReading(tracker.field, {
-                label: tracker.label,
-                raw: trimmed,
-                confidence: data.confidence,
-                reason: `Read ${kills}, applied up to ${target} (pace/jump guard) — confirm to apply the full reading.`,
-                apply: async () => {
-                  await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
-                },
-              });
-            }
             break;
           }
           case "map_setting": {

@@ -1138,12 +1138,12 @@ export default function PublicMatchPage() {
         )}
       </header>
 
-      {/* Video size — Small keeps the single-column flow below exactly as
-          it's always worked (sticky stream, everything stacked
-          underneath). Theater/Big instead split the page into two columns
-          at lg+ (video left, every stats section to its right, in its own
-          independently-scrolling column) — see the grid wrapper right
-          below this toggle. */}
+      {/* Video size — all three modes split into two columns at lg+ (video
+          left in a sticky, independently-scrolling column; every stats
+          section to its right). Small = a narrow ~340px video so the stats
+          fill the rest (no more centered block dominating the top); Theater
+          = half/half; Big = 70/30. On mobile every mode is full-width
+          stacked. See the grid wrapper right below this toggle. */}
       <div className="flex items-center gap-2 mb-2">
         <span className="text-[10px] uppercase tracking-wide text-white/40">Video size</span>
         {(["small", "theater", "big"] as const).map((size) => (
@@ -1160,11 +1160,13 @@ export default function PublicMatchPage() {
       </div>
 
       <div
-        className={
+        className={`lg:grid gap-6 items-start ${
           videoSize === "small"
-            ? "space-y-8"
-            : `lg:grid gap-6 items-start ${videoSize === "theater" ? "lg:grid-cols-[1fr_1fr]" : "lg:grid-cols-[7fr_3fr]"}`
-        }
+            ? "lg:grid-cols-[minmax(300px,360px)_1fr]"
+            : videoSize === "theater"
+            ? "lg:grid-cols-[1fr_1fr]"
+            : "lg:grid-cols-[7fr_3fr]"
+        }`}
       >
       {/* Sticky "theater mode" — stays pinned to the top of the viewport
           while everything below (moments, draft recap, stats, etc.)
@@ -1176,7 +1178,7 @@ export default function PublicMatchPage() {
           past below. bg-ink covers the seam so nothing shows through. In
           Theater/Big mode this is the grid's left column instead of the
           full page width — still sticky, now within that column. */}
-      <div className={`sticky top-0 z-10 bg-ink pt-2 pb-3 space-y-2 ${videoSize !== "small" ? "lg:self-start" : ""}`}>
+      <div className="sticky top-0 z-10 bg-ink pt-2 pb-3 space-y-2 lg:self-start">
         {/* Once at least one game is decided, the switcher reads as a
             recap accordion (▶ collapsed / ▼ expanded row per game) instead
             of a plain pill row — same underlying selectedGameId toggle
@@ -1250,7 +1252,11 @@ export default function PublicMatchPage() {
             centered) since the point of that mode is prioritizing the
             stats below it; Theater/Big instead fill their whole grid
             column (no cap) so "Big" actually reads as a big video. */}
-        <div className={videoSize === "small" ? "max-w-[38%] min-w-[280px] mx-auto relative" : "mx-auto relative"}>
+        {/* Small mode now sits in its own narrow left column (see the grid
+            wrapper above) with stats flowing to the right, instead of a
+            centered block that pushed everything below it. It fills that
+            column on desktop; on mobile every mode is just full-width. */}
+        <div className={videoSize === "small" ? "w-full max-w-[520px] lg:max-w-none mx-auto lg:mx-0 relative" : "mx-auto relative"}>
           {embedUrl ? (
             <div className="lv-card-flush overflow-hidden">
               <iframe
@@ -1309,7 +1315,7 @@ export default function PublicMatchPage() {
           same wrapper with different classes (space-y-8, no height/scroll
           constraint) rather than a second copy of this markup, so there's
           one JSX tree either way — just restyled per mode. */}
-      <div className={videoSize === "small" ? "space-y-8" : "space-y-8 lg:max-h-screen lg:overflow-y-auto lg:pr-1"}>
+      <div className="space-y-8 lg:max-h-screen lg:overflow-y-auto lg:pr-1">
       {match.update_source === "local_ocr" && (
         <section>
           {/* Header pinned to the top of the moment feed — the title and the

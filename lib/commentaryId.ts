@@ -6,6 +6,16 @@
 // Turtle, Tower, gold, net worth, K/D/A, MVP); names come from {placeholders}.
 
 export const ID_TEMPLATES: Record<string, string> = {
+  // ── opening read (first ~90s) ───────────────────────────────────────
+  "And we're underway — {teamA} against {teamB}, draft locked and lanes assigned.": "Pertandingan dimulai — {teamA} lawan {teamB}, draft udah fix, lane udah kebagi.",
+  "Here we go: {teamA} versus {teamB}. The draft's done the talking, now the map decides.": "Kita mulai: {teamA} vs {teamB}. Draft udah ngomong, sekarang giliran map yang nentuin.",
+  "Fresh game, fresh draft — {teamA} and {teamB} settling into their lanes.": "Game baru, draft baru — {teamA} sama {teamB} mulai nyaman di lane masing-masing.",
+  "Game on between {teamA} and {teamB}; let's see whose composition comes online first.": "Game jalan antara {teamA} sama {teamB}; kita liat komposisi siapa yang nyala duluan.",
+  "Picks are in — {teamA} and {teamB} feeling out the early map before the fights start.": "Pick udah kelar — {teamA} sama {teamB} baca-baca map dulu sebelum rame.",
+  "Early read on the draft — {heroA} and {heroB} look like the pieces this game bends around.": "Baca awal draft — {heroA} sama {heroB} kayaknya jadi kunci jalannya game ini.",
+  "Composition-wise, keep an eye on {heroA} and {heroB} as the win conditions here.": "Dari komposisi, pantengin {heroA} sama {heroB} sebagai win condition di sini.",
+  "The draft points to {heroA} and {heroB} setting the tempo for their sides.": "Draft-nya ngarah ke {heroA} sama {heroB} yang bakal ngatur tempo timnya.",
+  "Plenty to like in this draft — {heroA} and {heroB} the ones to watch early.": "Draft-nya menarik — {heroA} sama {heroB} yang patut diliat di awal.",
   // ── net worth ──────────────────────────────────────────────────────
   "{lead} are running away with this — a {diff} gold lead.": "{lead} makin ngacir nih, unggul {diff} gold!",
   "It's turning into a stranglehold; {lead} up {diff} in net worth.": "Mulai dicekik, {lead} unggul {diff} net worth.",

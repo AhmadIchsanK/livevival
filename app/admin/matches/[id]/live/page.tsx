@@ -28,8 +28,9 @@ import {
   type ObjSide,
   type ObjectiveObservation,
 } from "@/lib/reconstruction/objectivesObservation";
+import { teamKillObservation, type TeamKillObservation } from "@/lib/reconstruction/teamKillObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
-import { pickCommentary, winProbInterjection, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
+import { pickCommentaryBilingual, winProbInterjection, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
 import { useLanguage } from "@/lib/i18n";
 import { NetWorthLeadChart } from "@/components/NetWorthLeadChart";
 
@@ -96,6 +97,8 @@ type Game = {
   team_a_kills_override: number | null;
   team_b_kills_override: number | null;
   draft_analysis: string | null;
+  draft_analysis_en: string | null;
+  draft_analysis_id: string | null;
 };
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
 // custom_player_name/custom_player_role: a match-local player who isn't in
@@ -639,7 +642,7 @@ export default function LiveConsolePage() {
 
     let { data: gameRow } = await supabase
       .from("games")
-      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis")
+      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis, draft_analysis_en, draft_analysis_id")
       .eq("match_id", matchId)
       .eq("game_number", targetGameNumber)
       .maybeSingle();
@@ -661,7 +664,7 @@ export default function LiveConsolePage() {
           { match_id: matchId, game_number: targetGameNumber, status: targetGameNumber === m.current_game_number ? "live" : "draft" },
           { onConflict: "match_id,game_number" }
         )
-        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis")
+        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis, draft_analysis_en, draft_analysis_id")
         .single();
       if (createErr) {
         setError(createErr.message);
@@ -853,27 +856,51 @@ export default function LiveConsolePage() {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
-      const res = await fetch("/api/admin/draft-analysis", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ teamA, teamB, lang: commentaryLangRef.current }),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (!opts?.auto) setError(json.error ?? "Draft analysis failed.");
-        return;
-      }
-      const analysis: string = json.analysis;
-      await supabase.from("games").update({ draft_analysis: analysis, draft_analysis_at: new Date().toISOString() }).eq("id", game.id);
-      await supabase.from("key_moments").insert({
-        game_id: game.id,
-        match_id: matchId,
-        type: "custom",
-        description: `🧠 Draft analysis — ${analysis}`,
-        minute_mark: 0,
-        second_mark: 0,
-        source: "auto_commentary",
-      });
+      // Generate BOTH languages so public and admin each render their own,
+      // independent of each other's chosen language. Each call retries once if
+      // the model returned a truncated answer (missing the "Draft edge:" closing
+      // line) — that's the "cut out mid text" the operator saw on the first pass
+      // that a manual re-analyze happened to fix.
+      const runOne = async (lang: "en" | "id"): Promise<string | null> => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const res = await fetch("/api/admin/draft-analysis", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ teamA, teamB, lang }),
+          });
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (!opts?.auto) setError(json.error ?? "Draft analysis failed.");
+            return null;
+          }
+          const analysis: string = json.analysis ?? "";
+          // Complete answers always end with the mandated "Draft edge: <team> ~NN%"
+          // line; if it's absent the text was cut off mid-thought — retry once.
+          if (/draft edge/i.test(analysis) || attempt === 1) return analysis;
+        }
+        return null;
+      };
+      const primaryLang = commentaryLangRef.current;
+      const otherLang: "en" | "id" = primaryLang === "id" ? "en" : "id";
+      const primary = await runOne(primaryLang);
+      if (primary == null) return;
+      const other = await runOne(otherLang);
+      const enText = primaryLang === "en" ? primary : other ?? primary;
+      const idText = primaryLang === "id" ? primary : other ?? primary;
+      // Store per-language columns (public reads its own) plus the legacy
+      // `draft_analysis` in the operator's language for backward compat.
+      // NO key_moments insert: the draft analysis has its own panel on both admin
+      // and public — writing it into the moment feed made it leak into the next
+      // game's timeline, which it must not do.
+      await supabase
+        .from("games")
+        .update({
+          draft_analysis: primary,
+          draft_analysis_en: enText,
+          draft_analysis_id: idText,
+          draft_analysis_at: new Date().toISOString(),
+        })
+        .eq("id", game.id);
       loadAll();
     } catch (e) {
       if (!opts?.auto) setError(`Draft analysis failed: ${(e as Error).message}`);
@@ -1084,7 +1111,7 @@ export default function LiveConsolePage() {
       `${match.team_a?.name} ${aWins} – ${bWins} ${match.team_b?.name}\n${match.tournament?.name}`,
       buildDraftRecap(),
       kdaLines,
-      momentLines ? `<b>{tt("lc.moments")}</b>\n${momentLines}` : "",
+      momentLines ? `<b>Moments</b>\n${momentLines}` : "",
     ].filter(Boolean);
 
     await postToTelegram(parts.join("\n\n"), {
@@ -2091,7 +2118,7 @@ export default function LiveConsolePage() {
       // screenshot used to be an entirely separate system with no path to
       // the channel at all.
       postToTelegram(
-        `📸 <b>{tt("lc.screenshot")}</b> — ${match?.team_a?.name} vs ${match?.team_b?.name}${noteOverride ?? screenshotNote ? `\n${noteOverride ?? screenshotNote}` : ""}`,
+        `📸 <b>Screenshot</b> — ${match?.team_a?.name} vs ${match?.team_b?.name}${noteOverride ?? screenshotNote ? `\n${noteOverride ?? screenshotNote}` : ""}`,
         { entityType: "game", entityId: game.id, notificationType: "screenshot" },
         pub.publicUrl
       );
@@ -2419,7 +2446,7 @@ export default function LiveConsolePage() {
   const commentaryEnabledRef = useRef(false);
   const commentaryConditionsRef = useRef(commentaryConditions);
   const commentaryCanRunRef = useRef(false);
-  const commentaryInsertRef = useRef<(text: string, timerSeconds: number) => Promise<void>>(async () => {});
+  const commentaryInsertRef = useRef<(text: string, timerSeconds: number, both?: { en: string; id: string }) => Promise<void>>(async () => {});
   // Anti-repetition memory: the last few line texts posted, and the last few
   // subjects spotlighted (a player/hero name, or a coarse condition key). The
   // engine reads these to stop the feed looping on one player/hero/phrasing.
@@ -2447,7 +2474,11 @@ export default function LiveConsolePage() {
   // instantly clobbered back up by the next frame's read. Set by
   // setTeamKillsOverride / resetTeamKillsOverride, checked in captureTickBody.
   const manualKillEditAtRef = useRef<Record<string, number>>({});
-  const MANUAL_KILL_HOLD_MS = 20_000;
+  const MANUAL_KILL_HOLD_MS = 30_000; // match the Objectives manual cooldown exactly
+  function withinManualTeamKillCooldown(teamId: string): boolean {
+    const at = manualKillEditAtRef.current[teamId];
+    return at != null && Date.now() - at < MANUAL_KILL_HOLD_MS;
+  }
   useEffect(() => {
     (async () => {
       const { data } = await supabase.from("commentary_templates").select("id, condition, template, lang, enabled");
@@ -2463,7 +2494,7 @@ export default function LiveConsolePage() {
       try {
         const snap = commentarySnapshotRef.current;
         if (commentaryEnabledRef.current && commentaryCanRunRef.current && snap) {
-          const line = pickCommentary(
+          const line = pickCommentaryBilingual(
             { now: snap, prev: commentaryPrevRef.current, enabled: commentaryConditionsRef.current },
             {
               templates: commentaryTemplatesRef.current,
@@ -2476,8 +2507,11 @@ export default function LiveConsolePage() {
             }
           );
           if (line) {
-            await commentaryInsertRef.current(line.text, snap.timerSeconds);
-            rememberCommentary(line.text, line.subject, line.condition);
+            // Operator-language text drives the anti-repeat memory + the legacy
+            // `description`; both EN and ID are persisted so public renders its own.
+            const shownText = commentaryLangRef.current === "id" ? line.id : line.en;
+            await commentaryInsertRef.current(shownText, snap.timerSeconds, { en: line.en, id: line.id });
+            rememberCommentary(shownText, line.subject, line.condition);
             // Bump the custom template's usage so /admin/commentary can rank and
             // prune rarely-fired lines (built-in lines have no id — skipped).
             if (line.templateId) {
@@ -2521,9 +2555,13 @@ export default function LiveConsolePage() {
           commentaryConditionsRef.current.has("win_prob") &&
           snap
         ) {
-          const text = winProbInterjection(snap, Math.random, commentaryLangRef.current);
+          // Same win-prob read rendered in BOTH languages (independent phrasing),
+          // so public sees it in its own language regardless of the admin's.
+          const enText = winProbInterjection(snap, Math.random, "en");
+          const idText = winProbInterjection(snap, Math.random, "id");
+          const text = commentaryLangRef.current === "id" ? idText : enText;
           if (!commentaryRecentTextsRef.current.includes(text)) {
-            await commentaryInsertRef.current(text, snap.timerSeconds);
+            await commentaryInsertRef.current(text, snap.timerSeconds, { en: enText, id: idText });
             rememberCommentary(text, "win_prob", "win_prob");
           }
         }
@@ -2674,6 +2712,9 @@ export default function LiveConsolePage() {
     crop: string | null;
   };
   const [objectiveDiagnostics, setObjectiveDiagnostics] = useState<Record<string, ObjectiveDiagnostic>>({});
+  // Team-kill diagnostics — same shape/panel as objectives, keyed by side.
+  type TeamKillDiagnostic = TeamKillObservation & { confidence: number | null; at: number; confirmed: number | null; crop: string | null };
+  const [teamKillDiagnostics, setTeamKillDiagnostics] = useState<Record<string, TeamKillDiagnostic>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string; playerId?: string | null; playerName?: string | null } | null>(null);
   // A kill banner (SAVAGE/MANIAC/etc.) typically stays on screen for
   // several seconds — long enough to get re-read on the next OCR tick and
@@ -4914,49 +4955,61 @@ export default function LiveConsolePage() {
           }
           case "team_kills": {
             if (!sideTeamId || !game) break;
-            // Manual-hold: if the admin just set/reset this team's count, don't
-            // let OCR overwrite it for a short window — so a deliberate downward
-            // correction (or a Reset) actually sticks instead of snapping back.
-            const manualAt = manualKillEditAtRef.current[sideTeamId];
-            if (manualAt && Date.now() - manualAt < MANUAL_KILL_HOLD_MS) break;
-            // Digits only — this is the tracker the admin called out as
-            // "keep failing," so it gets the strictest cleaning of any
-            // category here plus a sanity bound: a raw \d+ match on
-            // unfiltered OCR text could latch onto a stray digit from
-            // overlay chrome next to the actual kill count, and an absurd
-            // read (three-plus digits) is never a real kill count.
-            // Digits-only, and require the read to be a clean 1–2 digit run.
-            // The kill number is a small 1–2 digit HUD value; a 3-plus digit
-            // blob is two merged numbers or overlay chrome (e.g. "511", "882",
-            // net-worth "47000"), never a real kill count — drop it outright
-            // instead of latching onto part of it.
-            const digitsOnly = trimmed.replace(/[^0-9]/g, "");
-            if (!digitsOnly || digitsOnly.length > 2) break;
-            const kills = Number(digitsOnly);
-            if (!Number.isFinite(kills) || kills < 0) break;
-            if (sideTeamId) shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)
+            if (suspendedNow()) break; // replay/pause on screen — HUD is stale
             const column = sideTeamId === match?.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+            const side: "a" | "b" = column === "team_a_kills_override" ? "a" : "b";
             const currentKills = (column === "team_a_kills_override" ? game.team_a_kills_override : game.team_b_kills_override) ?? 0;
-            // SAME method as Objectives (which the admin confirmed is reliable):
-            // clamp the raw read to a plausible target — never decreases, bounded
-            // by the game clock and a per-tick jump. A garbled read settles on the
-            // plausible value instead of poisoning the count, and only a genuine
-            // impossibility gets flagged for a manual confirm.
+            // EXACTLY the Objectives method (near-zero error): a dedicated
+            // digits-only crop, normalized + monotonic-checked by the shared
+            // observation layer (missing → keep, below-confirmed → suspicious,
+            // equal → unchanged, higher → accept), a diagnostic row with the
+            // actual crop for the admin panel, then the plausibility gate and
+            // manual-cooldown flag — the same discipline as applySingleObjectiveReading.
+            const obs = teamKillObservation({ side, raw: trimmed, confirmed: currentKills });
+            let crop: string | null = null;
+            try {
+              crop = canvas.toDataURL("image/png");
+            } catch {
+              crop = null;
+            }
+            setTeamKillDiagnostics((prev) => ({
+              ...prev,
+              [side]: { ...obs, confidence: data.confidence, at: Date.now(), confirmed: currentKills, crop },
+            }));
+            if (obs.normalized == null) break; // blank / merged / implausible — keep last confirmed
+            const kills = obs.normalized;
+            shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)
+
+            // Plausibility gate (never decreases, game-clock pace, per-tick jump)
+            // — the team-kill analogue of plausibleObjectiveTarget.
             const target = plausibleTeamKillTarget(currentKills, kills);
+
+            // Manual-cooldown flag — if the admin just corrected this count, hold
+            // a conflicting OCR read back as a confirm-to-apply flag instead of
+            // snapping the value back (identical to withinManualObjectiveCooldown).
+            if (target > currentKills && withinManualTeamKillCooldown(sideTeamId)) {
+              flagReading(tracker.field, {
+                label: tracker.label,
+                raw: trimmed,
+                confidence: data.confidence,
+                reason: `Read ${kills} (${target} after guards), but this count was just corrected manually — confirm to apply it anyway`,
+                apply: async () => {
+                  await supabase.from("games").update({ [column]: target }).eq("id", game!.id);
+                },
+              });
+              break;
+            }
+
             if (target === currentKills) {
-              // Nothing plausible to apply. If the raw read was HIGHER than the
-              // current count (a real fast run the guards clamped away, or a true
-              // downward correction), surface it as a flag rather than silently
-              // dropping — mirrors applySingleObjectiveReading.
-              if (kills !== currentKills) {
+              // Nothing plausible to apply. A read HIGHER than current that the
+              // pace/jump guard clamped away is surfaced as a flag rather than
+              // silently dropped — mirrors applySingleObjectiveReading's clamp flag.
+              if (kills > currentKills) {
                 flagReading(tracker.field, {
                   label: tracker.label,
                   raw: trimmed,
                   confidence: data.confidence,
-                  reason:
-                    kills < currentKills
-                      ? `Read ${kills}, below the current ${currentKills} — held back (kills only go up). Confirm to force it.`
-                      : `Read ${kills}, past the plausible pace/jump bound (currently ${currentKills}) — confirm to apply the full reading.`,
+                  reason: `Read ${kills}, past the plausible pace/jump bound (currently ${currentKills}) — confirm to apply the full reading.`,
                   apply: async () => {
                     await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
                   },
@@ -4965,8 +5018,8 @@ export default function LiveConsolePage() {
               break;
             }
             await supabase.from("games").update({ [column]: target }).eq("id", game.id);
-            // The read was clamped down from a higher raw value — flag the raw in
-            // case it's a genuinely fast flurry, exactly like the objectives path.
+            // Clamped down from a higher raw value — flag the raw in case it's a
+            // genuinely fast flurry, exactly like the objectives path.
             if (target < kills) {
               flagReading(tracker.field, {
                 label: tracker.label,
@@ -5329,8 +5382,15 @@ export default function LiveConsolePage() {
           c.anomalies.push(`deaths ${c.deaths} exceed the enemy team's ${enemyKills} total kills (check the read — a death needs an enemy kill)`);
         }
       }
+      // Authoritative per-team kill total (the override the scoreboard shows if
+      // set, else the summed player kills) — the ceiling assists are held to.
+      const ownTeamKills = (teamId: string | undefined): number => {
+        if (teamId && teamId === teamAId && game?.team_a_kills_override != null) return game.team_a_kills_override;
+        if (teamId && teamId === teamBId && game?.team_b_kills_override != null) return game.team_b_kills_override;
+        return teamKillTotal(teamId);
+      };
       for (const c of candidates) {
-        const ownKills = teamKillTotal(c.teamId);
+        const ownKills = ownTeamKills(c.teamId);
         if (c.assists > ownKills) {
           c.anomalies.push(`assists ${c.assists} exceed the team's ${ownKills} total kills (check the read — max one assist per team kill)`);
         }
@@ -5338,7 +5398,13 @@ export default function LiveConsolePage() {
 
       for (const c of candidates) {
         const { row, existing } = c;
-        const { kills, deaths, assists } = c;
+        const { kills, deaths } = c;
+        // Assists FOLLOW THE LOGIC: a player earns at most one assist per team
+        // kill, so the WRITTEN assist count is capped at the team's authoritative
+        // kill total. This is the one cross-check applied at write (not flag-only)
+        // — it was the source of the "assists always unreal" numbers. Kills and
+        // deaths stay decoupled (flag-only) to avoid cascading corruption.
+        const assists = Math.min(c.assists, ownTeamKills(c.teamId));
         // The kda_group combined tracker never reads a hero name per row
         // (see its case above) — row.heroName is always null there. Fall
         // back to whatever's already stored instead of writing null over
@@ -6054,7 +6120,7 @@ export default function LiveConsolePage() {
         const recap = await buildSeriesHeroRecap();
         const matchMsg = telegramMessageFor(
           "match_finish",
-          `🏆 <b>{tt("lc.matchFinished")}</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
+          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
           { ...vars, winner: seriesWinnerName ?? "" }
         );
         if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
@@ -6097,7 +6163,7 @@ export default function LiveConsolePage() {
         const recap = await buildSeriesHeroRecap();
         const matchMsg = telegramMessageFor(
           "match_finish",
-          `🏆 <b>{tt("lc.matchFinished")}</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
+          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
           {
             team_a: match.team_a?.name ?? "",
             team_b: match.team_b?.name ?? "",
@@ -6321,7 +6387,7 @@ export default function LiveConsolePage() {
       (match.notification_tier === "priority" || match.notification_tier === "hot")
     ) {
       const startMsg =
-        `🟢 <b>{tt("lc.matchStarted")}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}` +
+        `🟢 <b>Match started</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}` +
         (match.youtube_url ? `\n${match.youtube_url}` : "");
       await postToTelegram(startMsg, { entityType: "match", entityId: match.id, notificationType: "match_started" });
     }
@@ -6359,8 +6425,8 @@ export default function LiveConsolePage() {
           DRAFT_STARTED: `✏️ <b>Draft started — Game ${game.game_number}</b>\n${header}`,
           DRAFT_COMPLETE: `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
           GAME_STARTED: `🎮 <b>Game ${game.game_number} ongoing</b>\n${header}`,
-          TECHNICAL_PAUSE: `⏸️ <b>{tt("lc.technicalPause")}</b>\n${header}`,
-          STREAM_ENDED: `📴 <b>{tt("lc.streamEnded")}</b>\n${header}`,
+          TECHNICAL_PAUSE: `⏸️ <b>Technical pause</b>\n${header}`,
+          STREAM_ENDED: `📴 <b>Stream ended</b>\n${header}`,
         };
         // Draft-complete specifically must not announce a recap that's
         // still missing picks — a phase transition can happen (manually,
@@ -7206,13 +7272,18 @@ export default function LiveConsolePage() {
   // even if this tab isn't the one actively capturing (it no longer waits on
   // captureActive, which was why it sat on "waiting" and never posted).
   commentaryCanRunRef.current = match.state === "GAME_STARTED";
-  commentaryInsertRef.current = async (text: string, timerSeconds: number) => {
+  commentaryInsertRef.current = async (text: string, timerSeconds: number, both?: { en: string; id: string }) => {
     if (!game || !match) return;
+    // description stays the operator-language text (legacy/Telegram); the two
+    // per-language columns let the PUBLIC page render in its OWN language,
+    // independent of whatever language the admin console is set to.
     await supabase.from("key_moments").insert({
       game_id: game.id,
       match_id: matchId,
       type: "custom",
       description: text,
+      description_en: both?.en ?? (commentaryLangRef.current === "en" ? text : null),
+      description_id: both?.id ?? (commentaryLangRef.current === "id" ? text : null),
       minute_mark: Math.floor(timerSeconds / 60),
       second_mark: timerSeconds % 60,
       source: "auto_commentary",
@@ -8047,6 +8118,65 @@ export default function LiveConsolePage() {
                     })}
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+        {/* Team-kills OCR diagnostics — admin-only, the SAME panel as the
+            objectives diagnostics above (raw crop / normalized / monotonic
+            decision), so the tracker the operator called out as "the worst" is
+            just as inspectable and uses the identical read discipline. */}
+        {match.update_source === "local_ocr" &&
+          captureMode === "manual" &&
+          Object.keys(teamKillDiagnostics).length > 0 && (
+            <div className="space-y-2 border border-white/10 bg-white/5 rounded px-3 py-2">
+              <p className="text-xs font-semibold text-white/70">Team kills OCR (admin diagnostics)</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {([
+                  ["a", match.team_a?.name ?? "Team A"],
+                  ["b", match.team_b?.name ?? "Team B"],
+                ] as const).map(([side, name]) => {
+                  const d = teamKillDiagnostics[side];
+                  const stage: { label: string; cls: string } = !d
+                    ? { label: "no read yet", cls: "text-white/30" }
+                    : !d.raw.trim()
+                    ? { label: "OCR: blank crop", cls: "text-red-400" }
+                    : d.normalized == null
+                    ? { label: "Normalize: rejected", cls: "text-orange-400" }
+                    : !d.accepted
+                    ? { label: "Validation: held", cls: "text-yellow-300" }
+                    : { label: "Accepted", cls: "text-emerald-400" };
+                  return (
+                    <div key={side} className="flex items-start gap-2 text-[11px] bg-black/20 rounded px-2 py-1">
+                      {d?.crop ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={d.crop} alt={`${name} kills crop`} className="mt-0.5 shrink-0 h-6 w-12 object-contain bg-black/40 rounded border border-white/10" />
+                      ) : (
+                        <span className="mt-0.5 shrink-0 h-6 w-12 rounded border border-white/10 bg-black/40" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-white/80 flex items-center gap-1.5">
+                          <span className="truncate">{name}</span>
+                          <span className={`ml-auto ${stage.cls}`} title={d?.confidence != null ? `OCR confidence: ${Math.round(d.confidence)}%` : undefined}>
+                            {stage.label}
+                          </span>
+                        </div>
+                        {d ? (
+                          <>
+                            <div className="text-white/40">
+                              Raw: <span className="text-white/70">&quot;{d.raw}&quot;</span> · Norm:{" "}
+                              <span className="text-white/70">{d.normalized ?? "—"}</span> · Confirmed:{" "}
+                              <span className="text-white/70">{d.confirmed ?? "—"}</span>
+                            </div>
+                            <div className="text-white/40">{d.reason}</div>
+                          </>
+                        ) : (
+                          <div className="text-white/30">no read yet</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -8887,8 +9017,10 @@ export default function LiveConsolePage() {
                       </div>
                     </section>
 
-                    {/* Log a moment — same column, same width as
-                        Objectives, directly below it. */}
+                    {/* Log a moment + Game screenshots share ONE row (side by
+                        side on wide screens, stacked on narrow) rather than
+                        stacking as two separate blocks. */}
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
                     <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
                       <div className="flex items-center justify-between">
                         <h3 className="font-semibold text-sm">{tt("admin.logMoment")}</h3>
@@ -8967,10 +9099,9 @@ export default function LiveConsolePage() {
                       )}
                     </section>
 
-                    {/* Game screenshots — same column, same width, directly
-                        below Log a moment. */}
-                    <section className="space-y-3">
-                      <h2 className="font-bold">Game {game.game_number} screenshots</h2>
+                    {/* Game screenshots — shares the row with Log a moment. */}
+                    <section className="space-y-3 bg-white/5 rounded p-3 border border-white/10">
+                      <h2 className="font-bold text-sm">Game {game.game_number} screenshots</h2>
                       <p className="text-xs text-white/40">
                         Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
                         current in-game timer. Shown publicly at the bottom of this game&apos;s page.
@@ -9011,6 +9142,7 @@ export default function LiveConsolePage() {
                         {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
                       </div>
                     </section>
+                    </div>
                     </div>
 
                     <div className="space-y-4">
@@ -9181,30 +9313,57 @@ export default function LiveConsolePage() {
                           { team: match.team_b, value: teamBKillsTotal, override: game?.team_b_kills_override },
                         ].map(({ team, value, override }, idx) =>
                           team ? (
-                            <span key={team.id} className="inline-flex items-center gap-1">
+                            // −/＋ stepper + directly-editable value, IDENTICAL to
+                            // the Objectives control: the box always shows the real
+                            // current count, both steppers and a typed edit open the
+                            // manual-hold window (setTeamKillsOverride) so the next
+                            // OCR tick can't reset the admin's correction.
+                            <span key={team.id} className="inline-flex items-center gap-1 border border-white/10 rounded px-1.5 py-0.5">
+                              <span className="text-white/50">{team.name}</span>
+                              <button
+                                onClick={() => setTeamKillsOverride(team.id, Math.max(0, value - 1))}
+                                disabled={!scoreboardEditable || value === 0}
+                                title={`Remove one kill from ${team.name}`}
+                                className="w-5 h-5 rounded bg-white/5 hover:bg-white/15 text-white/70 disabled:opacity-30 leading-none text-sm"
+                              >
+                                −
+                              </button>
                               <input
+                                key={`tk-${team.id}-${value}`}
                                 type="number"
                                 min={0}
+                                defaultValue={value}
                                 disabled={!scoreboardEditable}
-                                placeholder={String(value)}
-                                title={`Manually set ${team.name}'s team kill count (overrides the OCR-read value)`}
+                                title={`${team.name}'s team kill count — type to set it directly (overrides OCR). Your edit always applies and holds off OCR briefly.`}
                                 onBlur={(e) => {
-                                  if (e.target.value === "") return;
-                                  const n = Number(e.target.value);
-                                  if (!Number.isFinite(n) || n < 0) return;
-                                  setTeamKillsOverride(team.id, n);
-                                  e.target.value = "";
+                                  if (e.target.value === "") {
+                                    e.target.value = String(value);
+                                    return;
+                                  }
+                                  const n = Math.max(0, Math.trunc(Number(e.target.value)));
+                                  if (Number.isNaN(n)) {
+                                    e.target.value = String(value);
+                                    return;
+                                  }
+                                  if (n !== value) setTeamKillsOverride(team.id, n);
                                 }}
-                                className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
+                                className="w-10 bg-white/10 border border-white/10 rounded px-1 py-0.5 text-xs text-center tabular-nums disabled:opacity-40"
                               />
-                              {/* One-click undo: clear the override so the count
-                                  falls back to the player-kill sum. Only shown
-                                  when an override is actually set. */}
+                              <button
+                                onClick={() => setTeamKillsOverride(team.id, value + 1)}
+                                disabled={!scoreboardEditable}
+                                title={`Add one kill for ${team.name}`}
+                                className="w-5 h-5 rounded bg-white/5 hover:bg-signal/20 text-white/70 disabled:opacity-30 leading-none text-sm"
+                              >
+                                ＋
+                              </button>
+                              {/* Clear the override so the count falls back to the
+                                  summed player kills. Only shown when set. */}
                               {override != null && scoreboardEditable && (
                                 <button
                                   onClick={() => resetTeamKillsOverride(team.id)}
                                   title={`Reset ${team.name}'s team-kill override (fall back to the summed player kills)`}
-                                  className="text-[11px] text-white/40 border border-white/10 rounded px-1.5 py-1 hover:bg-white/10 hover:text-white/70"
+                                  className="text-[11px] text-white/40 border border-white/10 rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-white/70"
                                 >
                                   ↺
                                 </button>
@@ -9232,6 +9391,11 @@ export default function LiveConsolePage() {
                           table above) — min-w-max on every row keeps columns aligned
                           with the header while scrolling. Zero effect at desktop widths,
                           where the row already fits and overflow-x-auto never engages. */}
+                      {/* Team A K/D/A on the LEFT, Team B on the RIGHT (side by
+                          side on desktop, stacked on narrow screens) so an
+                          operator edits each team's five rows without hunting up
+                          and down one long column. */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                       {[teamAPlayers, teamBPlayers].map((teamPlayers, idx) => (
                         <div key={idx} className="space-y-1 overflow-x-auto">
                           <p className="text-xs text-white/50">{idx === 0 ? match.team_a?.name : match.team_b?.name}</p>
@@ -9416,11 +9580,21 @@ export default function LiveConsolePage() {
                           )}
                         </div>
                       ))}
+                      </div>
                     </section>
                     {/* AI draft analysis — stuck directly below the Live
                         scoreboard (spec: post-draft breakdown). Same text the
                         public match page renders, plus a re-run control. */}
-                    {game.draft_analysis ? (
+                    {(() => {
+                      // Admin reads the analysis in ITS OWN language (falls back to
+                      // the other language, then the legacy column) — fully full
+                      // text, no truncation/line-clamp.
+                      const adminAnalysis =
+                        (uiLang === "id" ? game.draft_analysis_id : game.draft_analysis_en) ??
+                        game.draft_analysis_en ??
+                        game.draft_analysis_id ??
+                        game.draft_analysis;
+                      return adminAnalysis ? (
                       <section className="space-y-1.5 bg-white/5 rounded p-3 border border-white/10">
                         <div className="flex items-center justify-between">
                           <h3 className="font-semibold text-sm">🧠 Draft analysis</h3>
@@ -9432,8 +9606,8 @@ export default function LiveConsolePage() {
                             {analyzingDraft ? "Analyzing…" : "Re-analyze"}
                           </button>
                         </div>
-                        {game.draft_analysis.split(/\n\n+/).map((para, i) => (
-                          <p key={i} className="text-xs text-white/70 leading-relaxed">{para}</p>
+                        {adminAnalysis.split(/\n\n+/).map((para, i) => (
+                          <p key={i} className="text-xs text-white/70 leading-relaxed whitespace-pre-wrap break-words">{para}</p>
                         ))}
                       </section>
                     ) : (
@@ -9446,7 +9620,8 @@ export default function LiveConsolePage() {
                           {analyzingDraft ? "Analyzing draft…" : "🧠 Analyze draft"}
                         </button>
                       )
-                    )}
+                    );
+                    })()}
                     </div>
                   </div>
                 ) : (

@@ -70,6 +70,7 @@ type CardHeroPick = {
   // Only ever populated for Hot (OCR-tracked) matches — Liquipedia-synced
   // picks/bans have no player_id to join a KDA row against, so this stays
   // undefined for Normal matches and the card never reserves space for it.
+  player_name?: string | null;
   kills?: number | null;
   deaths?: number | null;
   assists?: number | null;
@@ -179,8 +180,11 @@ function renderCard({
   // its 1080px-tall frame, so there's no risk of pushing bans/picks into
   // the footer). heroBoost enlarges pick/ban hero portraits and their
   // internal gaps; logoBoost enlarges the team logo plates in the score bar.
-  // Portrait uses 0.75 to fit all 5 picks + 5 bans per team without clipping.
-  const heroBoost = isLandscape ? 1.4 : 0.75;
+  // Portrait: sized so BOTH teams' 5 picks + 5 bans PLUS the player-name and
+  // K/D/A labels below each pick fit inside the safe area without clipping the
+  // last ban row (the names add height, so this is smaller than the label-free
+  // version was).
+  const heroBoost = isLandscape ? 1.4 : 0.64;
   const logoBoost = isLandscape ? 1.25 : 1;
 
   // Every hero portrait sits on a light plate with a signal-colored ring —
@@ -212,9 +216,11 @@ function renderCard({
     // 0/0/0 on every hero (a match that captured no per-player KDA) is just noise.
     const hasKda =
       p.kills != null && p.deaths != null && p.assists != null && (p.kills + p.deaths + p.assists) > 0;
-    const boxHeight = boxWidth * 1.35;
+    // Player name (ign) shown for a PICK on a Hot match — the person on the hero.
+    const hasName = p.type === "pick" && !!p.player_name;
+    const boxHeight = boxWidth * 1.25;
     return (
-      <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, width: boxWidth + 16 * scale }}>
+      <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 * scale, width: boxWidth + 16 * scale }}>
         <div
           style={{
             display: "flex",
@@ -243,7 +249,7 @@ function renderCard({
         </div>
         <span
           style={{
-            fontSize: 19 * scale,
+            fontSize: 18 * scale,
             fontWeight: 700,
             color: p.type === "ban" ? "#ffffffbb" : "#ffffffee",
             textAlign: "center",
@@ -253,8 +259,13 @@ function renderCard({
         >
           {p.hero_name}
         </span>
+        {hasName && (
+          <span style={{ fontSize: 15 * scale, fontWeight: 700, color: SIGNAL, textAlign: "center", letterSpacing: 0.3 }}>
+            {p.player_name}
+          </span>
+        )}
         {hasKda && (
-          <span style={{ fontSize: 16 * scale, fontWeight: 600, color: "#ffffff99", letterSpacing: 0.5 }}>
+          <span style={{ fontSize: 15 * scale, fontWeight: 600, color: "#ffffffaa", letterSpacing: 0.5 }}>
             {p.kills}/{p.deaths}/{p.assists}
           </span>
         )}
@@ -293,7 +304,7 @@ function renderCard({
   // 110*scale square) so the section fills more of the available frame
   // instead of leaving visible dead space.
   const teamPickColumn = (name: string | undefined, picks: CardHeroPick[], bans: CardHeroPick[]) => (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: isLandscape ? 26 * scale : 18 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: isLandscape ? 26 * scale : 12 * scale, minWidth: 0, ...(isLandscape ? { flex: 1 } : {}) }}>
       <div
         style={{
           display: "flex",
@@ -314,14 +325,14 @@ function renderCard({
           {name ?? "TBD"}
         </span>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale }}>
         {subLabel("Picks")}
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: isLandscape ? 20 * scale * heroBoost : 16 * scale * heroBoost }}>
           {picks.length > 0 ? picks.map((p, i) => heroPortrait(p, i, 128 * scale * heroBoost, 4)) : <span style={{ fontSize: 18 * scale, color: "#ffffff40" }}>—</span>}
         </div>
       </div>
       {bans.length > 0 && (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 * scale }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale }}>
           {subLabel("Bans")}
           <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: isLandscape ? 16 * scale * heroBoost : 12 * scale * heroBoost }}>
             {bans.map((p, i) => heroPortrait(p, i, 92 * scale * heroBoost, 3))}
@@ -333,13 +344,13 @@ function renderCard({
 
   const hasAnyPickOrBan = teamAPicks.length > 0 || teamBPicks.length > 0 || teamABans.length > 0 || teamBBans.length > 0;
   const finalPicksBlock = hasAnyPickOrBan && (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 36 * scale }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: isLandscape ? 36 * scale : 24 * scale }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 16 * scale }}>
         {ticks.left}
         <span style={{ fontSize: 22 * scale, color: "#ffffffdd", textTransform: "uppercase", letterSpacing: 4 }}>{FINAL_GAME_LABEL[lang]}</span>
         {ticks.right}
       </div>
-      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 80 * scale : 36 * scale, width: "100%" }}>
+      <div style={{ display: "flex", flexDirection: isLandscape ? "row" : "column", alignItems: "center", justifyContent: "center", gap: isLandscape ? 80 * scale : 28 * scale, width: "100%" }}>
         {teamPickColumn(teamA?.name, teamAPicks, teamABans)}
         {teamPickColumn(teamB?.name, teamBPicks, teamBBans)}
       </div>
@@ -589,7 +600,7 @@ function renderCard({
                 line on a real render; a fixed top offset plus generous
                 between-section gaps fills the frame in a way that's
                 predictable regardless of how much content each match has. */}
-            <div style={{ display: "flex", flexDirection: "column", gap: isLandscape ? 64 * scale : 56 * scale, marginTop: 56 * scale }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: isLandscape ? 64 * scale : 40 * scale, marginTop: isLandscape ? 56 * scale : 40 * scale }}>
               {scoreBar}
               {finalPicksBlock}
             </div>
@@ -684,13 +695,18 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
     }
     const picksAndBans = (allPicksAndBans ?? []).filter((p) => p.game_id === draftGameId);
 
-    let kdaByPlayerId = new Map<string, { kills: number | null; deaths: number | null; assists: number | null }>();
+    let kdaByPlayerId = new Map<string, { ign: string | null; kills: number | null; deaths: number | null; assists: number | null }>();
     if (isHotMatch && draftGameId) {
       const { data: stats } = await supabase
         .from("player_stats")
         .select("player_id, hero_name, kills, deaths, assists, player:players(ign, role, team_id)")
         .eq("game_id", draftGameId);
-      kdaByPlayerId = new Map((stats ?? []).filter((s) => s.player_id).map((s) => [s.player_id as string, s]));
+      kdaByPlayerId = new Map(
+        (stats ?? []).filter((s) => s.player_id).map((s) => {
+          const pl = Array.isArray(s.player) ? s.player[0] : s.player;
+          return [s.player_id as string, { ign: pl?.ign ?? null, kills: s.kills, deaths: s.deaths, assists: s.assists }];
+        })
+      );
 
       // MVP of the final game — the role-weighted standout (same computeMvpSvp
       // used on the match page), shown only on Hot (OCR-tracked) recaps where
@@ -738,6 +754,7 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
         hero_name: p.hero_name,
         icon_url: proxied(origin, hero?.icon_url),
         type: p.type as "pick" | "ban",
+        player_name: kda?.ign ?? null,
         kills: kda?.kills,
         deaths: kda?.deaths,
         assists: kda?.assists,

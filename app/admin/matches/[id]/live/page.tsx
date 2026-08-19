@@ -2450,8 +2450,8 @@ export default function LiveConsolePage() {
   const MANUAL_KILL_HOLD_MS = 20_000;
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.from("commentary_templates").select("id, condition, template, template_id, enabled");
-      if (data) setCommentaryTemplates((data as { id: string; condition: CommentaryCondition; template: string; template_id: string | null; enabled: boolean }[]).map((r) => ({ id: r.id, condition: r.condition, template: r.template, templateBahasa: r.template_id, enabled: r.enabled })));
+      const { data } = await supabase.from("commentary_templates").select("id, condition, template, lang, enabled");
+      if (data) setCommentaryTemplates((data as { id: string; condition: CommentaryCondition; template: string; lang: string | null; enabled: boolean }[]).map((r) => ({ id: r.id, condition: r.condition, template: r.template, lang: (r.lang === "id" ? "id" : "en"), enabled: r.enabled })));
     })();
   }, []);
   commentaryEnabledRef.current = commentaryEnabled;

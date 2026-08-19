@@ -48,7 +48,7 @@ const SAMPLE_FACTS: Record<CommentaryCondition, Record<string, string | number>>
 
 const LABEL: Record<string, string> = Object.fromEntries(COMMENTARY_CONDITIONS.map((c) => [c.key, c.label]));
 
-function buildPrompt(condition: CommentaryCondition, count: number, existing: string[]): string {
+function buildPrompt(condition: CommentaryCondition, count: number, existing: string[], lang: "en" | "id"): string {
   const ph = COMMENTARY_PLACEHOLDERS[condition];
   const placeholderHelp = ph.length
     ? ph.map((p) => `${p.token} = ${p.desc}`).join("\n")
@@ -56,33 +56,25 @@ function buildPrompt(condition: CommentaryCondition, count: number, existing: st
   const existingBlock = existing.length
     ? `\nAvoid duplicating or lightly rephrasing these lines that already exist:\n${existing.slice(0, 40).map((t) => `- ${t}`).join("\n")}`
     : "";
-  return `You write short, punchy Mobile Legends: Bang Bang caster one-liners for a live match ticker. Generate ${count} DISTINCT lines for the "${LABEL[condition]}" situation, each in BOTH English and Bahasa Indonesia.
-
-Rules:
-- Each line is ONE sentence, natural spoken-caster tone, energetic but not cringe.
-- Use ONLY these placeholders, written EXACTLY as shown (curly braces included), and use the SAME placeholders in both languages. You may use fewer, but NEVER invent a placeholder not in this list:
+  const commonRules = `- Each line is ONE sentence, natural spoken-caster tone, energetic but not cringe.
+- Use ONLY these placeholders, written EXACTLY as shown (curly braces included). You may use fewer, but NEVER invent a placeholder not in this list:
 ${placeholderHelp}
 - Do NOT use team names, player names, or hero names literally — use the placeholders so the line works for any match.
-- The Bahasa Indonesia version must sound like a real Indonesian MLBB caster talking — natural, human, idiomatic. Do NOT translate word-for-word: rephrase freely as long as the meaning and context stay the same. Casual esports tone, not stiff textbook Bahasa. Natural vocab that fits: "war" (teamfight), "embat"/"nyomot"/"sikat" (grab a kill/objective), "keancem" (under threat), "ngamuk"/"ganas" (going off), "sadis"/"parah"/"gede banget" (huge), "nempel"/"tipis-tipis" (close), "apes"/"sial" (unlucky), "OP banget", "ngacir"/"kabur"/"ngegas" (pulling away), "adem" (quiet), "sengit" (intense). DO NOT use "cuan" or "gacor" (too close to online-gambling slang) — say "gold", "duit", "on fire", "lagi panas", "ganas" instead. Keep in-game terms in English inside the Indonesian line: Lord, Turtle, Tower, gold, net worth, K/D/A, MVP.
 - Vary the phrasing, verbs, and rhythm strongly across the ${count} lines. No two should feel like the same sentence.
-- Output EXACTLY one line per row in the format: English version ||| Indonesian version
-- No markdown, no numbering, no quotes, nothing else.${existingBlock}`;
-}
+- Output ONE line per row, nothing else. No markdown, no numbering, no quotes.${existingBlock}`;
 
-// One suggested line in both languages, parsed from an "EN ||| ID" row.
-type Pair = { en: string; id: string };
+  if (lang === "id") {
+    return `Kamu caster Mobile Legends: Bang Bang. Bikin ${count} baris komentar SINGKAT dan BEDA-BEDA buat situasi "${LABEL[condition]}", dalam Bahasa Indonesia yang natural.
 
-// Extract clean EN/ID candidate pairs from a raw model completion.
-function parsePairs(raw: string): Pair[] {
-  return raw
-    .split("\n")
-    .map((l) => l.replace(/^\s*(?:\d+[.)]\s*|[-*•]\s*)/, "").trim())
-    .filter((l) => l.includes("|||"))
-    .map((l) => {
-      const [en, id] = l.split("|||");
-      return { en: (en ?? "").replace(/^["'“”]+|["'“”]+$/g, "").trim(), id: (id ?? "").replace(/^["'“”]+|["'“”]+$/g, "").trim() };
-    })
-    .filter((p) => p.en.length >= 6 && p.en.length <= 240);
+Aturan:
+${commonRules}
+- Bahasanya harus kaya caster/streamer MLBB Indonesia asli — santai, manusiawi, khas Gen-Z, JANGAN kaku kayak terjemahan. Boleh pakai slang gaming yang pas: "war" (teamfight), "embat"/"nyomot"/"sikat" (ngambil kill/objektif), "keancem", "ngamuk"/"ganas", "sadis"/"parah"/"gede banget", "nempel"/"tipis-tipis", "apes"/"sial", "OP banget", "ngacir"/"kabur"/"ngegas", "adem", "sengit". JANGAN pakai "cuan" atau "gacor" (kesannya judi online) — pakai "gold", "duit", "on fire", "lagi panas", "ganas". Istilah dalam game tetap Inggris: Lord, Turtle, Tower, gold, net worth, K/D/A, MVP, hero, fight.`;
+  }
+  return `You write short, punchy Mobile Legends: Bang Bang caster one-liners for a live match ticker. Generate ${count} DISTINCT lines for the "${LABEL[condition]}" situation, in English.
+
+Rules:
+${commonRules}
+- Natural spoken-caster English, energetic but not cringe.`;
 }
 
 // Extract clean candidate lines from a raw model completion.
@@ -104,6 +96,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => null);
   const requested: string = body?.condition ?? "all";
+  const lang: "en" | "id" = body?.lang === "id" ? "id" : "en";
   const perCondition: number = Math.min(12, Math.max(3, Number(body?.count) || 8));
   const targets: CommentaryCondition[] =
     requested === "all"
@@ -113,10 +106,12 @@ export async function POST(req: NextRequest) {
       : [];
   if (targets.length === 0) return NextResponse.json({ error: "Unknown condition" }, { status: 400 });
 
-  // Pull existing lines so the model doesn't just re-emit what's already there.
+  // Pull existing lines FOR THIS LANGUAGE so the model doesn't just re-emit
+  // what's already there (the EN and ID libraries are independent).
   const { data: existingRows } = await supabase
     .from("commentary_templates")
     .select("condition, template")
+    .eq("lang", lang)
     .in("condition", targets);
   const existingByCondition = new Map<string, string[]>();
   for (const r of (existingRows as { condition: string; template: string }[]) ?? []) {
@@ -125,17 +120,17 @@ export async function POST(req: NextRequest) {
     existingByCondition.set(r.condition, list);
   }
 
-  const suggestions: { condition: CommentaryCondition; template: string; templateId: string; reads: string; readsId: string }[] = [];
+  const suggestions: { condition: CommentaryCondition; template: string; reads: string }[] = [];
   let lastError: { status: number; message: string } | null = null;
 
   for (const condition of targets) {
-    const prompt = buildPrompt(condition, perCondition, existingByCondition.get(condition) ?? []);
+    const prompt = buildPrompt(condition, perCondition, existingByCondition.get(condition) ?? [], lang);
     // Runs the whole provider chain (primary + numbered backups), falling
     // through on quota / model-unavailable / empty answer.
     const result = await runTextCompletion({
       messages: [{ role: "user", content: prompt }],
       temperature: 0.9,
-      maxTokens: 1400,
+      maxTokens: 1200,
     });
     if (!result.ok) {
       lastError = { status: result.status, message: result.message };
@@ -144,23 +139,14 @@ export async function POST(req: NextRequest) {
 
     const existingSet = new Set((existingByCondition.get(condition) ?? []).map((t) => t.toLowerCase()));
     const seen = new Set<string>();
-    // Prefer the bilingual "EN ||| ID" rows; fall back to English-only rows
-    // (no Indonesian) if the model ignored the format.
-    const pairs = parsePairs(result.content);
-    const rows: { en: string; id: string | null }[] =
-      pairs.length > 0 ? pairs.map((p) => ({ en: p.en, id: p.id || null })) : parseLines(result.content).map((en) => ({ en, id: null }));
-    for (const row of rows) {
-      // Validate against the placeholders this condition supplies (English is
-      // the source of truth; the ID line uses the same placeholders).
-      const reads = renderTemplate(row.en, SAMPLE_FACTS[condition]);
+    for (const line of parseLines(result.content)) {
+      // Validate against the placeholders this condition supplies.
+      const reads = renderTemplate(line, SAMPLE_FACTS[condition]);
       if (!reads) continue;
-      const readsId = row.id ? renderTemplate(row.id, SAMPLE_FACTS[condition]) : null;
-      const key = row.en.toLowerCase();
+      const key = line.toLowerCase();
       if (existingSet.has(key) || seen.has(key)) continue;
       seen.add(key);
-      // Only keep the ID line if it also renders cleanly; otherwise leave it
-      // blank (the engine falls back to English).
-      suggestions.push({ condition, template: row.en, templateId: readsId ? (row.id as string) : "", reads, readsId: readsId ?? "" });
+      suggestions.push({ condition, template: line, reads });
     }
   }
 

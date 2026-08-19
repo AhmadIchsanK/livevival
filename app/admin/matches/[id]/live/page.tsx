@@ -28,6 +28,7 @@ import {
   type ObjSide,
   type ObjectiveObservation,
 } from "@/lib/reconstruction/objectivesObservation";
+import { teamKillObservation, type TeamKillObservation } from "@/lib/reconstruction/teamKillObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
 import { pickCommentaryBilingual, winProbInterjection, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
 import { useLanguage } from "@/lib/i18n";
@@ -2473,7 +2474,11 @@ export default function LiveConsolePage() {
   // instantly clobbered back up by the next frame's read. Set by
   // setTeamKillsOverride / resetTeamKillsOverride, checked in captureTickBody.
   const manualKillEditAtRef = useRef<Record<string, number>>({});
-  const MANUAL_KILL_HOLD_MS = 20_000;
+  const MANUAL_KILL_HOLD_MS = 30_000; // match the Objectives manual cooldown exactly
+  function withinManualTeamKillCooldown(teamId: string): boolean {
+    const at = manualKillEditAtRef.current[teamId];
+    return at != null && Date.now() - at < MANUAL_KILL_HOLD_MS;
+  }
   useEffect(() => {
     (async () => {
       const { data } = await supabase.from("commentary_templates").select("id, condition, template, lang, enabled");
@@ -2707,6 +2712,9 @@ export default function LiveConsolePage() {
     crop: string | null;
   };
   const [objectiveDiagnostics, setObjectiveDiagnostics] = useState<Record<string, ObjectiveDiagnostic>>({});
+  // Team-kill diagnostics — same shape/panel as objectives, keyed by side.
+  type TeamKillDiagnostic = TeamKillObservation & { confidence: number | null; at: number; confirmed: number | null; crop: string | null };
+  const [teamKillDiagnostics, setTeamKillDiagnostics] = useState<Record<string, TeamKillDiagnostic>>({});
   const [suggestion, setSuggestion] = useState<{ type: string; raw: string; playerId?: string | null; playerName?: string | null } | null>(null);
   // A kill banner (SAVAGE/MANIAC/etc.) typically stays on screen for
   // several seconds — long enough to get re-read on the next OCR tick and
@@ -4947,49 +4955,61 @@ export default function LiveConsolePage() {
           }
           case "team_kills": {
             if (!sideTeamId || !game) break;
-            // Manual-hold: if the admin just set/reset this team's count, don't
-            // let OCR overwrite it for a short window — so a deliberate downward
-            // correction (or a Reset) actually sticks instead of snapping back.
-            const manualAt = manualKillEditAtRef.current[sideTeamId];
-            if (manualAt && Date.now() - manualAt < MANUAL_KILL_HOLD_MS) break;
-            // Digits only — this is the tracker the admin called out as
-            // "keep failing," so it gets the strictest cleaning of any
-            // category here plus a sanity bound: a raw \d+ match on
-            // unfiltered OCR text could latch onto a stray digit from
-            // overlay chrome next to the actual kill count, and an absurd
-            // read (three-plus digits) is never a real kill count.
-            // Digits-only, and require the read to be a clean 1–2 digit run.
-            // The kill number is a small 1–2 digit HUD value; a 3-plus digit
-            // blob is two merged numbers or overlay chrome (e.g. "511", "882",
-            // net-worth "47000"), never a real kill count — drop it outright
-            // instead of latching onto part of it.
-            const digitsOnly = trimmed.replace(/[^0-9]/g, "");
-            if (!digitsOnly || digitsOnly.length > 2) break;
-            const kills = Number(digitsOnly);
-            if (!Number.isFinite(kills) || kills < 0) break;
-            if (sideTeamId) shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)
+            if (suspendedNow()) break; // replay/pause on screen — HUD is stale
             const column = sideTeamId === match?.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
+            const side: "a" | "b" = column === "team_a_kills_override" ? "a" : "b";
             const currentKills = (column === "team_a_kills_override" ? game.team_a_kills_override : game.team_b_kills_override) ?? 0;
-            // SAME method as Objectives (which the admin confirmed is reliable):
-            // clamp the raw read to a plausible target — never decreases, bounded
-            // by the game clock and a per-tick jump. A garbled read settles on the
-            // plausible value instead of poisoning the count, and only a genuine
-            // impossibility gets flagged for a manual confirm.
+            // EXACTLY the Objectives method (near-zero error): a dedicated
+            // digits-only crop, normalized + monotonic-checked by the shared
+            // observation layer (missing → keep, below-confirmed → suspicious,
+            // equal → unchanged, higher → accept), a diagnostic row with the
+            // actual crop for the admin panel, then the plausibility gate and
+            // manual-cooldown flag — the same discipline as applySingleObjectiveReading.
+            const obs = teamKillObservation({ side, raw: trimmed, confirmed: currentKills });
+            let crop: string | null = null;
+            try {
+              crop = canvas.toDataURL("image/png");
+            } catch {
+              crop = null;
+            }
+            setTeamKillDiagnostics((prev) => ({
+              ...prev,
+              [side]: { ...obs, confidence: data.confidence, at: Date.now(), confirmed: currentKills, crop },
+            }));
+            if (obs.normalized == null) break; // blank / merged / implausible — keep last confirmed
+            const kills = obs.normalized;
+            shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)
+
+            // Plausibility gate (never decreases, game-clock pace, per-tick jump)
+            // — the team-kill analogue of plausibleObjectiveTarget.
             const target = plausibleTeamKillTarget(currentKills, kills);
+
+            // Manual-cooldown flag — if the admin just corrected this count, hold
+            // a conflicting OCR read back as a confirm-to-apply flag instead of
+            // snapping the value back (identical to withinManualObjectiveCooldown).
+            if (target > currentKills && withinManualTeamKillCooldown(sideTeamId)) {
+              flagReading(tracker.field, {
+                label: tracker.label,
+                raw: trimmed,
+                confidence: data.confidence,
+                reason: `Read ${kills} (${target} after guards), but this count was just corrected manually — confirm to apply it anyway`,
+                apply: async () => {
+                  await supabase.from("games").update({ [column]: target }).eq("id", game!.id);
+                },
+              });
+              break;
+            }
+
             if (target === currentKills) {
-              // Nothing plausible to apply. If the raw read was HIGHER than the
-              // current count (a real fast run the guards clamped away, or a true
-              // downward correction), surface it as a flag rather than silently
-              // dropping — mirrors applySingleObjectiveReading.
-              if (kills !== currentKills) {
+              // Nothing plausible to apply. A read HIGHER than current that the
+              // pace/jump guard clamped away is surfaced as a flag rather than
+              // silently dropped — mirrors applySingleObjectiveReading's clamp flag.
+              if (kills > currentKills) {
                 flagReading(tracker.field, {
                   label: tracker.label,
                   raw: trimmed,
                   confidence: data.confidence,
-                  reason:
-                    kills < currentKills
-                      ? `Read ${kills}, below the current ${currentKills} — held back (kills only go up). Confirm to force it.`
-                      : `Read ${kills}, past the plausible pace/jump bound (currently ${currentKills}) — confirm to apply the full reading.`,
+                  reason: `Read ${kills}, past the plausible pace/jump bound (currently ${currentKills}) — confirm to apply the full reading.`,
                   apply: async () => {
                     await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
                   },
@@ -4998,8 +5018,8 @@ export default function LiveConsolePage() {
               break;
             }
             await supabase.from("games").update({ [column]: target }).eq("id", game.id);
-            // The read was clamped down from a higher raw value — flag the raw in
-            // case it's a genuinely fast flurry, exactly like the objectives path.
+            // Clamped down from a higher raw value — flag the raw in case it's a
+            // genuinely fast flurry, exactly like the objectives path.
             if (target < kills) {
               flagReading(tracker.field, {
                 label: tracker.label,
@@ -8089,6 +8109,65 @@ export default function LiveConsolePage() {
             </div>
           )}
 
+        {/* Team-kills OCR diagnostics — admin-only, the SAME panel as the
+            objectives diagnostics above (raw crop / normalized / monotonic
+            decision), so the tracker the operator called out as "the worst" is
+            just as inspectable and uses the identical read discipline. */}
+        {match.update_source === "local_ocr" &&
+          captureMode === "manual" &&
+          Object.keys(teamKillDiagnostics).length > 0 && (
+            <div className="space-y-2 border border-white/10 bg-white/5 rounded px-3 py-2">
+              <p className="text-xs font-semibold text-white/70">Team kills OCR (admin diagnostics)</p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {([
+                  ["a", match.team_a?.name ?? "Team A"],
+                  ["b", match.team_b?.name ?? "Team B"],
+                ] as const).map(([side, name]) => {
+                  const d = teamKillDiagnostics[side];
+                  const stage: { label: string; cls: string } = !d
+                    ? { label: "no read yet", cls: "text-white/30" }
+                    : !d.raw.trim()
+                    ? { label: "OCR: blank crop", cls: "text-red-400" }
+                    : d.normalized == null
+                    ? { label: "Normalize: rejected", cls: "text-orange-400" }
+                    : !d.accepted
+                    ? { label: "Validation: held", cls: "text-yellow-300" }
+                    : { label: "Accepted", cls: "text-emerald-400" };
+                  return (
+                    <div key={side} className="flex items-start gap-2 text-[11px] bg-black/20 rounded px-2 py-1">
+                      {d?.crop ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={d.crop} alt={`${name} kills crop`} className="mt-0.5 shrink-0 h-6 w-12 object-contain bg-black/40 rounded border border-white/10" />
+                      ) : (
+                        <span className="mt-0.5 shrink-0 h-6 w-12 rounded border border-white/10 bg-black/40" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-white/80 flex items-center gap-1.5">
+                          <span className="truncate">{name}</span>
+                          <span className={`ml-auto ${stage.cls}`} title={d?.confidence != null ? `OCR confidence: ${Math.round(d.confidence)}%` : undefined}>
+                            {stage.label}
+                          </span>
+                        </div>
+                        {d ? (
+                          <>
+                            <div className="text-white/40">
+                              Raw: <span className="text-white/70">&quot;{d.raw}&quot;</span> · Norm:{" "}
+                              <span className="text-white/70">{d.normalized ?? "—"}</span> · Confirmed:{" "}
+                              <span className="text-white/70">{d.confirmed ?? "—"}</span>
+                            </div>
+                            <div className="text-white/40">{d.reason}</div>
+                          </>
+                        ) : (
+                          <div className="text-white/30">no read yet</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
         {/* Nothing else here makes it obvious when a phase has zero
             regions calibrated — OCR just silently reads nothing forever
             in that case, which looked identical to "OCR is broken" from
@@ -9219,30 +9298,57 @@ export default function LiveConsolePage() {
                           { team: match.team_b, value: teamBKillsTotal, override: game?.team_b_kills_override },
                         ].map(({ team, value, override }, idx) =>
                           team ? (
-                            <span key={team.id} className="inline-flex items-center gap-1">
+                            // −/＋ stepper + directly-editable value, IDENTICAL to
+                            // the Objectives control: the box always shows the real
+                            // current count, both steppers and a typed edit open the
+                            // manual-hold window (setTeamKillsOverride) so the next
+                            // OCR tick can't reset the admin's correction.
+                            <span key={team.id} className="inline-flex items-center gap-1 border border-white/10 rounded px-1.5 py-0.5">
+                              <span className="text-white/50">{team.name}</span>
+                              <button
+                                onClick={() => setTeamKillsOverride(team.id, Math.max(0, value - 1))}
+                                disabled={!scoreboardEditable || value === 0}
+                                title={`Remove one kill from ${team.name}`}
+                                className="w-5 h-5 rounded bg-white/5 hover:bg-white/15 text-white/70 disabled:opacity-30 leading-none text-sm"
+                              >
+                                −
+                              </button>
                               <input
+                                key={`tk-${team.id}-${value}`}
                                 type="number"
                                 min={0}
+                                defaultValue={value}
                                 disabled={!scoreboardEditable}
-                                placeholder={String(value)}
-                                title={`Manually set ${team.name}'s team kill count (overrides the OCR-read value)`}
+                                title={`${team.name}'s team kill count — type to set it directly (overrides OCR). Your edit always applies and holds off OCR briefly.`}
                                 onBlur={(e) => {
-                                  if (e.target.value === "") return;
-                                  const n = Number(e.target.value);
-                                  if (!Number.isFinite(n) || n < 0) return;
-                                  setTeamKillsOverride(team.id, n);
-                                  e.target.value = "";
+                                  if (e.target.value === "") {
+                                    e.target.value = String(value);
+                                    return;
+                                  }
+                                  const n = Math.max(0, Math.trunc(Number(e.target.value)));
+                                  if (Number.isNaN(n)) {
+                                    e.target.value = String(value);
+                                    return;
+                                  }
+                                  if (n !== value) setTeamKillsOverride(team.id, n);
                                 }}
-                                className="w-14 bg-white/10 border border-white/10 rounded px-1.5 py-1 text-xs disabled:opacity-40 placeholder:text-white/30"
+                                className="w-10 bg-white/10 border border-white/10 rounded px-1 py-0.5 text-xs text-center tabular-nums disabled:opacity-40"
                               />
-                              {/* One-click undo: clear the override so the count
-                                  falls back to the player-kill sum. Only shown
-                                  when an override is actually set. */}
+                              <button
+                                onClick={() => setTeamKillsOverride(team.id, value + 1)}
+                                disabled={!scoreboardEditable}
+                                title={`Add one kill for ${team.name}`}
+                                className="w-5 h-5 rounded bg-white/5 hover:bg-signal/20 text-white/70 disabled:opacity-30 leading-none text-sm"
+                              >
+                                ＋
+                              </button>
+                              {/* Clear the override so the count falls back to the
+                                  summed player kills. Only shown when set. */}
                               {override != null && scoreboardEditable && (
                                 <button
                                   onClick={() => resetTeamKillsOverride(team.id)}
                                   title={`Reset ${team.name}'s team-kill override (fall back to the summed player kills)`}
-                                  className="text-[11px] text-white/40 border border-white/10 rounded px-1.5 py-1 hover:bg-white/10 hover:text-white/70"
+                                  className="text-[11px] text-white/40 border border-white/10 rounded px-1.5 py-0.5 hover:bg-white/10 hover:text-white/70"
                                 >
                                   ↺
                                 </button>

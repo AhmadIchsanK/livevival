@@ -5382,8 +5382,15 @@ export default function LiveConsolePage() {
           c.anomalies.push(`deaths ${c.deaths} exceed the enemy team's ${enemyKills} total kills (check the read — a death needs an enemy kill)`);
         }
       }
+      // Authoritative per-team kill total (the override the scoreboard shows if
+      // set, else the summed player kills) — the ceiling assists are held to.
+      const ownTeamKills = (teamId: string | undefined): number => {
+        if (teamId && teamId === teamAId && game?.team_a_kills_override != null) return game.team_a_kills_override;
+        if (teamId && teamId === teamBId && game?.team_b_kills_override != null) return game.team_b_kills_override;
+        return teamKillTotal(teamId);
+      };
       for (const c of candidates) {
-        const ownKills = teamKillTotal(c.teamId);
+        const ownKills = ownTeamKills(c.teamId);
         if (c.assists > ownKills) {
           c.anomalies.push(`assists ${c.assists} exceed the team's ${ownKills} total kills (check the read — max one assist per team kill)`);
         }
@@ -5391,7 +5398,13 @@ export default function LiveConsolePage() {
 
       for (const c of candidates) {
         const { row, existing } = c;
-        const { kills, deaths, assists } = c;
+        const { kills, deaths } = c;
+        // Assists FOLLOW THE LOGIC: a player earns at most one assist per team
+        // kill, so the WRITTEN assist count is capped at the team's authoritative
+        // kill total. This is the one cross-check applied at write (not flag-only)
+        // — it was the source of the "assists always unreal" numbers. Kills and
+        // deaths stay decoupled (flag-only) to avoid cascading corruption.
+        const assists = Math.min(c.assists, ownTeamKills(c.teamId));
         // The kda_group combined tracker never reads a hero name per row
         // (see its case above) — row.heroName is always null there. Fall
         // back to whatever's already stored instead of writing null over
@@ -9004,8 +9017,10 @@ export default function LiveConsolePage() {
                       </div>
                     </section>
 
-                    {/* Log a moment — same column, same width as
-                        Objectives, directly below it. */}
+                    {/* Log a moment + Game screenshots share ONE row (side by
+                        side on wide screens, stacked on narrow) rather than
+                        stacking as two separate blocks. */}
+                    <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
                     <section className="space-y-2 bg-white/5 rounded p-3 border border-white/10">
                       <div className="flex items-center justify-between">
                         <h3 className="font-semibold text-sm">{tt("admin.logMoment")}</h3>
@@ -9084,10 +9099,9 @@ export default function LiveConsolePage() {
                       )}
                     </section>
 
-                    {/* Game screenshots — same column, same width, directly
-                        below Log a moment. */}
-                    <section className="space-y-3">
-                      <h2 className="font-bold">Game {game.game_number} screenshots</h2>
+                    {/* Game screenshots — shares the row with Log a moment. */}
+                    <section className="space-y-3 bg-white/5 rounded p-3 border border-white/10">
+                      <h2 className="font-bold text-sm">Game {game.game_number} screenshots</h2>
                       <p className="text-xs text-white/40">
                         Captures the shared-screen frame as-is (items, inventory, scoreboard — whatever&apos;s visible), stamped with the
                         current in-game timer. Shown publicly at the bottom of this game&apos;s page.
@@ -9128,6 +9142,7 @@ export default function LiveConsolePage() {
                         {screenshots.length === 0 && <span className="text-white/30 text-xs">No screenshots for this game yet.</span>}
                       </div>
                     </section>
+                    </div>
                     </div>
 
                     <div className="space-y-4">
@@ -9376,6 +9391,11 @@ export default function LiveConsolePage() {
                           table above) — min-w-max on every row keeps columns aligned
                           with the header while scrolling. Zero effect at desktop widths,
                           where the row already fits and overflow-x-auto never engages. */}
+                      {/* Team A K/D/A on the LEFT, Team B on the RIGHT (side by
+                          side on desktop, stacked on narrow screens) so an
+                          operator edits each team's five rows without hunting up
+                          and down one long column. */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                       {[teamAPlayers, teamBPlayers].map((teamPlayers, idx) => (
                         <div key={idx} className="space-y-1 overflow-x-auto">
                           <p className="text-xs text-white/50">{idx === 0 ? match.team_a?.name : match.team_b?.name}</p>
@@ -9560,6 +9580,7 @@ export default function LiveConsolePage() {
                           )}
                         </div>
                       ))}
+                      </div>
                     </section>
                     {/* AI draft analysis — stuck directly below the Live
                         scoreboard (spec: post-draft breakdown). Same text the

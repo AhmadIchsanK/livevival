@@ -184,7 +184,7 @@ function renderCard({
   // K/D/A labels below each pick fit inside the safe area without clipping the
   // last ban row (the names add height, so this is smaller than the label-free
   // version was).
-  const heroBoost = isLandscape ? 1.4 : 0.64;
+  const heroBoost = isLandscape ? 1.4 : 0.68;
   const logoBoost = isLandscape ? 1.25 : 1;
 
   // Every hero portrait sits on a light plate with a signal-colored ring —
@@ -249,7 +249,7 @@ function renderCard({
         </div>
         <span
           style={{
-            fontSize: 18 * scale,
+            fontSize: 21 * scale,
             fontWeight: 700,
             color: p.type === "ban" ? "#ffffffbb" : "#ffffffee",
             textAlign: "center",
@@ -260,12 +260,12 @@ function renderCard({
           {p.hero_name}
         </span>
         {hasName && (
-          <span style={{ fontSize: 15 * scale, fontWeight: 700, color: SIGNAL, textAlign: "center", letterSpacing: 0.3 }}>
+          <span style={{ fontSize: 18 * scale, fontWeight: 700, color: SIGNAL, textAlign: "center", letterSpacing: 0.3 }}>
             {p.player_name}
           </span>
         )}
         {hasKda && (
-          <span style={{ fontSize: 15 * scale, fontWeight: 600, color: "#ffffffaa", letterSpacing: 0.5 }}>
+          <span style={{ fontSize: 18 * scale, fontWeight: 600, color: "#ffffffcc", letterSpacing: 0.5 }}>
             {p.kills}/{p.deaths}/{p.assists}
           </span>
         )}
@@ -334,7 +334,7 @@ function renderCard({
       {bans.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale }}>
           {subLabel("Bans")}
-          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: isLandscape ? 16 * scale * heroBoost : 12 * scale * heroBoost }}>
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: isLandscape ? 24 * scale * heroBoost : 26 * scale * heroBoost }}>
             {bans.map((p, i) => heroPortrait(p, i, 92 * scale * heroBoost, 3))}
           </div>
         </div>
@@ -600,7 +600,7 @@ function renderCard({
                 line on a real render; a fixed top offset plus generous
                 between-section gaps fills the frame in a way that's
                 predictable regardless of how much content each match has. */}
-            <div style={{ display: "flex", flexDirection: "column", gap: isLandscape ? 64 * scale : 40 * scale, marginTop: isLandscape ? 56 * scale : 40 * scale }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: isLandscape ? 64 * scale : 32 * scale, marginTop: isLandscape ? 56 * scale : 28 * scale }}>
               {scoreBar}
               {finalPicksBlock}
             </div>

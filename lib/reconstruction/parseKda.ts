@@ -31,14 +31,39 @@ export function parseKda(text: string): Kda | null {
   return matchKdaShape(normalized);
 }
 
-// One region spanning all five KDA rows, split back into per-row readings by
-// line. Only real "N/N/N" lines count — a garbled/partial row simply doesn't
-// match the shape and is dropped rather than guessed at. Order in, order out:
-// relies on Tesseract preserving top-to-bottom line order (a role-ordered
-// column OCRs that way).
+// One region spanning all five KDA rows, split back into per-row readings.
+//
+// A scoreboard column OCRs as more than five clean lines: each player's row also
+// carries a net worth ("3502"), a hero level ("81"), sometimes a spell timer —
+// often on their own lines, sometimes wrapped oddly. Splitting strictly by line
+// and requiring every line to be a KDA (the old behavior) broke the moment a net
+// worth landed on its own line, because that line isn't "N/N/N" and the caller
+// demanded exactly five KDA lines.
+//
+// Instead, scan the WHOLE blob for the strict KDA shape and collect every match
+// in order. A bare number (net worth "3502", level "81") has no "/" separators so
+// it can never match — it's skipped, never mistaken for a KDA. The trailing guard
+// still rejects a net worth fused onto the third field ("0/0/4 3630" → 0/0/4).
+// Order in, order out: Tesseract preserves top-to-bottom order for a role-ordered
+// column, so the Nth triple found is the Nth player.
 export function parseKdaGroupLines(text: string): Kda[] {
-  return text
-    .split(/\n+/)
-    .map((line) => parseKda(line))
-    .filter((k): k is Kda => k !== null);
+  const out: Kda[] = [];
+  // Global scan for the same shape parseKda pins, on the raw text first then on a
+  // glyph-normalized copy (recovering digits OCR'd as look-alike letters) — but
+  // only add glyph-recovered rows if the raw scan came up short, so we never
+  // double-count the same row read two different ways.
+  const scan = (s: string): Kda[] => {
+    const re = /(\d{1,2})\s*\/\s*(\d{1,2})\s*\/\s*(\d{1,2})(?![\d/])/g;
+    const found: Kda[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(s)) !== null) {
+      found.push({ kills: Number(m[1]), deaths: Number(m[2]), assists: Number(m[3]) });
+    }
+    return found;
+  };
+  const direct = scan(text);
+  if (direct.length >= 5) return direct;
+  const recovered = scan(text.replace(/[OoIlSBZ]/g, (c) => KDA_DIGIT_GLYPHS[c] ?? c));
+  // Prefer whichever pass found more complete rows.
+  return recovered.length > direct.length ? recovered : direct.length > 0 ? direct : out;
 }

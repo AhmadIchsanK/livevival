@@ -36,3 +36,22 @@ test("parseKdaGroupLines: splits a 5-row region, drops garbled rows", () => {
     { kills: 0, deaths: 4, assists: 2 },
   ]);
 });
+
+test("parseKdaGroupLines: net worth / level lines interleaved never count as KDA", () => {
+  // A real scoreboard column: each player's KDA followed by a net worth and level
+  // on their own lines. Only the five KDA triples come back, in order.
+  const text = [
+    "Joshua 2/1/1", "3502", "LV.9",
+    "Demonkite 0/1/2", "2872", "LV.7",
+    "Hajirin 1/1/1", "3335", "LV.8",
+    "Said 0/1/3", "3078", "LV.7",
+    "Arthur 0/2/0", "3181", "LV.7",
+  ].join("\n");
+  assert.deepEqual(parseKdaGroupLines(text), [
+    { kills: 2, deaths: 1, assists: 1 },
+    { kills: 0, deaths: 1, assists: 2 },
+    { kills: 1, deaths: 1, assists: 1 },
+    { kills: 0, deaths: 1, assists: 3 },
+    { kills: 0, deaths: 2, assists: 0 },
+  ]);
+});

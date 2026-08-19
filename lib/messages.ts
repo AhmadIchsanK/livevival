@@ -183,6 +183,8 @@ export const MESSAGES = {
   "hs.top3Picks": { en: "Top 3 picks", id: "3 Pick Teratas" },
   "hs.top3Bans": { en: "Top 3 bans", id: "3 Ban Teratas" },
   "hs.top3WinRate": { en: "Top 3 win rate", id: "3 Win Rate Teratas" },
+  "hs.scopeAll": { en: "All events", id: "Semua turnamen" },
+  "hs.scopeTournament": { en: "This tournament", id: "Turnamen ini" },
   "hs.metaRef": { en: "Draft meta reference", id: "Referensi Meta Draft" },
   "hs.games": { en: "{n} games", id: "{n} game" },
   "hs.showAll": { en: "Show all {n} heroes", id: "Tampilkan semua {n} hero" },

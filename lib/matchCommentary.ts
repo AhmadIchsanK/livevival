@@ -187,6 +187,10 @@ const generators: Generator[] = [
   // ── net worth: dominating / close / comeback / flip ───────────────────
   (ctx) => {
     const { now, prev } = ctx;
+    // No economy reads in the opening minutes — a sub-1k lead at 0:30 is noise,
+    // and it was surfacing as a weird FIRST line ("up 0.5k") before anything had
+    // actually happened. Gold only becomes a story once there's a real gap.
+    if (now.timerSeconds < 150) return [];
     const { lead, trail, diff } = leaderByNet(now);
     const out: Trigger[] = [];
     if (diff >= 10000) {
@@ -479,6 +483,45 @@ const generators: Generator[] = [
         "{player} making the {hero} look broken right now.",
       ],
     }));
+  },
+
+  // ── opening read (first ~90s) ─────────────────────────────────────────
+  // The very first line of a game should set the scene — the matchup and the
+  // draft — not read a meaningless early gold gap. Gated to the opening so it's
+  // what the scheduler's first post naturally lands on (economy/kills/win-prob
+  // generators are all still quiet this early).
+  (ctx) => {
+    const { now } = ctx;
+    if (now.timerSeconds >= 90) return [];
+    const heroNames = now.players.map((p) => p.heroName).filter((h): h is string => Boolean(h));
+    const out: Trigger[] = [
+      {
+        condition: "general",
+        subject: "opening",
+        facts: { teamA: now.teamA.name, teamB: now.teamB.name },
+        defaults: [
+          "And we're underway — {teamA} against {teamB}, draft locked and lanes assigned.",
+          "Here we go: {teamA} versus {teamB}. The draft's done the talking, now the map decides.",
+          "Fresh game, fresh draft — {teamA} and {teamB} settling into their lanes.",
+          "Game on between {teamA} and {teamB}; let's see whose composition comes online first.",
+          "Picks are in — {teamA} and {teamB} feeling out the early map before the fights start.",
+        ],
+      },
+    ];
+    if (heroNames.length >= 2) {
+      out.push({
+        condition: "general",
+        subject: "opening",
+        facts: { teamA: now.teamA.name, teamB: now.teamB.name, heroA: heroNames[0], heroB: heroNames[1] },
+        defaults: [
+          "Early read on the draft — {heroA} and {heroB} look like the pieces this game bends around.",
+          "Composition-wise, keep an eye on {heroA} and {heroB} as the win conditions here.",
+          "The draft points to {heroA} and {heroB} setting the tempo for their sides.",
+          "Plenty to like in this draft — {heroA} and {heroB} the ones to watch early.",
+        ],
+      });
+    }
+    return out;
   },
 
   // ── general pacing / hype (with an intense late-game section) ──────────

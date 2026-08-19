@@ -208,7 +208,10 @@ function renderCard({
   // height padding to bias the crop toward the face, so far less horizontal
   // over-crop happens as a side effect.
   const heroPortrait = (p: CardHeroPick, i: number, boxWidth: number, ringWidth: number) => {
-    const hasKda = p.kills != null && p.deaths != null && p.assists != null;
+    // Only show a K/D/A line when there's a real stat behind it — an all-zero
+    // 0/0/0 on every hero (a match that captured no per-player KDA) is just noise.
+    const hasKda =
+      p.kills != null && p.deaths != null && p.assists != null && (p.kills + p.deaths + p.assists) > 0;
     const boxHeight = boxWidth * 1.35;
     return (
       <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 * scale, width: boxWidth + 16 * scale }}>
@@ -414,9 +417,9 @@ function renderCard({
   // renders as a stray "null" or empty dot-separator.
   // Date-only format (time removed) ensures portrait mode content stays within safe area
   const dateLabel = formatRecapDate(match.scheduled_at, lang);
-  // Stage ALWAYS shows (its own line, brighter than before) — falls back to a
-  // dash placeholder so the recap never hides which stage of the event it is.
-  const stageText = (match.stage && match.stage.trim()) || "—";
+  // Stage shows on its own line when the match HAS one — no ugly "—" placeholder
+  // when it's unset (that read as broken). The date shows regardless.
+  const stageText = match.stage && match.stage.trim() ? match.stage.trim() : null;
   const stageDateBits = [stageText, dateLabel || null].filter(Boolean);
 
   const scoreBar = (
@@ -705,10 +708,14 @@ export async function GET(req: Request, { params }: { params: { matchId: string 
             assists: s.assists ?? 0,
           };
         });
-      if (mvpInputs.length > 0) {
+      // Only crown an MVP when the standout actually did something — an all-zero
+      // scoreboard (a match that logged no real KDA) shouldn't surface a
+      // meaningless "MVP … 0/0/0".
+      const anyRealKda = mvpInputs.some((m) => m.kills + m.deaths + m.assists > 0);
+      if (mvpInputs.length > 0 && anyRealKda) {
         const { mvpId } = computeMvpSvp(mvpInputs);
         const row = (stats ?? []).find((s) => s.player_id === mvpId);
-        if (row) {
+        if (row && (row.kills ?? 0) + (row.assists ?? 0) > 0) {
           const pl = Array.isArray(row.player) ? row.player[0] : row.player;
           const teamName = pl?.team_id === teamA?.id ? teamA?.name ?? null : pl?.team_id === teamB?.id ? teamB?.name ?? null : null;
           mvp = {

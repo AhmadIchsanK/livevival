@@ -9,6 +9,7 @@ import { LanguageToggle } from "@/components/LanguageToggle";
 import { NavMenu } from "@/components/NavMenu";
 import { MatchCard } from "@/components/MatchCard";
 import { MatchTabs } from "@/components/MatchTabs";
+import { TournamentHeroStats } from "@/components/TournamentHeroStats";
 import { useLanguage } from "@/lib/i18n";
 import { FollowButton } from "@/components/FollowButton";
 import { TierBadge } from "@/components/TierBadge";
@@ -377,6 +378,14 @@ export default function TournamentPage() {
             />
           )}
         />
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="lv-heading">{t("hs.title")}</h2>
+          <p className="text-white/40 text-xs mt-1">{t("hs.subtitle")}</p>
+        </div>
+        <TournamentHeroStats tournamentId={tournament.id} variant="table" />
       </section>
     </main>
   );

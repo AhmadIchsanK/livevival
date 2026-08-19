@@ -15,6 +15,7 @@ import { formatCountdown, COUNTDOWN_WINDOW_MS } from "@/lib/countdown";
 import { formatMatchDate } from "@/lib/formatMatchDate";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
 import { NetWorthLeadChart } from "@/components/NetWorthLeadChart";
+import { TournamentHeroStats } from "@/components/TournamentHeroStats";
 import { useLanguage } from "@/lib/i18n";
 
 type Match = {
@@ -31,7 +32,7 @@ type Match = {
   scheduled_at: string | null;
   countdown_seconds: number | null;
   countdown_updated_at: string | null;
-  tournament: { name: string; tier: string; liquipedia_slug: string | null } | null;
+  tournament: { id: string; name: string; tier: string; liquipedia_slug: string | null } | null;
   team_a: { id: string; name: string; logo_url: string | null } | null;
   team_b: { id: string; name: string; logo_url: string | null } | null;
   stream: { url: string } | null;
@@ -390,7 +391,7 @@ export default function PublicMatchPage() {
       .select(
         `id, status, state, custom_state_label, format, stage, youtube_url, series_winner_team_id, update_source, notification_tier, scheduled_at,
          countdown_seconds, countdown_updated_at,
-         tournament:tournaments(name, tier, liquipedia_slug),
+         tournament:tournaments(id, name, tier, liquipedia_slug),
          team_a:teams!matches_team_a_id_fkey(id, name, logo_url),
          team_b:teams!matches_team_b_id_fkey(id, name, logo_url),
          stream:streams!matches_stream_id_fkey(url)`
@@ -1407,6 +1408,13 @@ export default function PublicMatchPage() {
               onClock={Boolean(draftTurnTeamId) && draftTurnTeamId === teamBId}
             />
           </div>
+          {/* Meta reference — the tournament's most picked/banned heroes from
+              its finished matches, so viewers can read the draft against it. */}
+          {match.tournament?.id && (
+            <div className="mt-4">
+              <TournamentHeroStats tournamentId={match.tournament.id} variant="top5" />
+            </div>
+          )}
         </section>
       )}
 

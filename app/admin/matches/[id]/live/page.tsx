@@ -4426,6 +4426,30 @@ export default function LiveConsolePage() {
     return rawTarget;
   }
 
+  // Team-kill plausibility bound — the SAME shape as plausibleObjectiveTarget,
+  // applied to the notoriously-misread team-kill HUD number. A team's kills
+  // only ever go UP, accumulate at a bounded rate over the game clock, and
+  // can't leap by a full extra teamfight in a single ~5s capture tick. Anything
+  // past those bounds is a garbled read (a stray HUD digit, two numbers merged),
+  // so it's clamped to the plausible value; the caller flags a clamp so a
+  // genuinely fast run can still be confirmed. `current` is what the tracker
+  // already holds (the override), never the per-player sum.
+  function plausibleTeamKillTarget(current: number, rawTarget: number): number {
+    if (rawTarget <= current) return current; // never-decreases (OCR)
+    const gameMinutes = (minute * 60 + secondOfMinute) / 60;
+    // Kill pace: even a one-sided stomp rarely clears ~3.5 kills/min for one
+    // team; +6 base covers an early snowball before the clock has moved.
+    const byTime = Math.ceil(gameMinutes * 3.5) + 6;
+    // Absolute ceiling — a per-team kill count above the high-40s is
+    // effectively never real, so a read like 87 or 511 is rejected outright.
+    const ABS_MAX = 60;
+    const timeCap = Math.min(ABS_MAX, Math.max(current, byTime));
+    // Per-tick jump: a single wipe is ~5 kills; allow +6 per read so one bad
+    // frame can't teleport the count, but a real flurry still lands next tick.
+    const jumpCap = current + 6;
+    return Math.max(current, Math.min(rawTarget, timeCap, jumpCap));
+  }
+
   async function applySingleObjectiveReading(
     teamId: string,
     type: string,
@@ -4901,56 +4925,59 @@ export default function LiveConsolePage() {
             // unfiltered OCR text could latch onto a stray digit from
             // overlay chrome next to the actual kill count, and an absurd
             // read (three-plus digits) is never a real kill count.
+            // Digits-only, and require the read to be a clean 1–2 digit run.
+            // The kill number is a small 1–2 digit HUD value; a 3-plus digit
+            // blob is two merged numbers or overlay chrome (e.g. "511", "882",
+            // net-worth "47000"), never a real kill count — drop it outright
+            // instead of latching onto part of it.
             const digitsOnly = trimmed.replace(/[^0-9]/g, "");
-            if (!digitsOnly) break;
+            if (!digitsOnly || digitsOnly.length > 2) break;
             const kills = Number(digitsOnly);
-            if (!Number.isFinite(kills) || kills < 0 || kills > 300) break;
+            if (!Number.isFinite(kills) || kills < 0) break;
             if (sideTeamId) shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)
             const column = sideTeamId === match?.team_a?.id ? "team_a_kills_override" : "team_b_kills_override";
-            // Never-decreases — a noisy read lower than what's already
-            // recorded is always a misread (kill counts only go up); the
-            // manual scoreboard edit is the way to actually correct a
-            // wrong count downward.
-            const currentKills = column === "team_a_kills_override" ? game.team_a_kills_override : game.team_b_kills_override;
-            if (currentKills != null && kills < currentKills) {
-              // Almost always a misread (a stray digit from overlay chrome),
-              // but flagged rather than silently dropped in case the count
-              // genuinely needs a downward correction — same reasoning as
-              // every other never-decreases guard here.
+            const currentKills = (column === "team_a_kills_override" ? game.team_a_kills_override : game.team_b_kills_override) ?? 0;
+            // SAME method as Objectives (which the admin confirmed is reliable):
+            // clamp the raw read to a plausible target — never decreases, bounded
+            // by the game clock and a per-tick jump. A garbled read settles on the
+            // plausible value instead of poisoning the count, and only a genuine
+            // impossibility gets flagged for a manual confirm.
+            const target = plausibleTeamKillTarget(currentKills, kills);
+            if (target === currentKills) {
+              // Nothing plausible to apply. If the raw read was HIGHER than the
+              // current count (a real fast run the guards clamped away, or a true
+              // downward correction), surface it as a flag rather than silently
+              // dropping — mirrors applySingleObjectiveReading.
+              if (kills !== currentKills) {
+                flagReading(tracker.field, {
+                  label: tracker.label,
+                  raw: trimmed,
+                  confidence: data.confidence,
+                  reason:
+                    kills < currentKills
+                      ? `Read ${kills}, below the current ${currentKills} — held back (kills only go up). Confirm to force it.`
+                      : `Read ${kills}, past the plausible pace/jump bound (currently ${currentKills}) — confirm to apply the full reading.`,
+                  apply: async () => {
+                    await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
+                  },
+                });
+              }
+              break;
+            }
+            await supabase.from("games").update({ [column]: target }).eq("id", game.id);
+            // The read was clamped down from a higher raw value — flag the raw in
+            // case it's a genuinely fast flurry, exactly like the objectives path.
+            if (target < kills) {
               flagReading(tracker.field, {
                 label: tracker.label,
                 raw: trimmed,
                 confidence: data.confidence,
-                reason: `Read ${kills}, below the current count of ${currentKills} — never-decreases guard held it back`,
+                reason: `Read ${kills}, applied up to ${target} (pace/jump guard) — confirm to apply the full reading.`,
                 apply: async () => {
                   await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
                 },
               });
-              break;
             }
-            // Suspicious-increase guard (validation spec §3 rule 5) — the
-            // <=300 check above only catches outright garbage, not a
-            // plausible-looking digit string that's still wrong. Team kills is
-            // now its OWN tracker (option B), independent of per-player K/D/A,
-            // so the floor is purely the count this tracker already holds — the
-            // player-kill sum is deliberately NOT consulted here. A single
-            // garbled read that leaps a dozen-plus kills over the current count
-            // is held back for confirmation; a genuine fast run still gets
-            // through next tick once the floor catches up.
-            const plausibleFloor = currentKills ?? 0;
-            if (kills - plausibleFloor > 10) {
-              flagReading(tracker.field, {
-                label: tracker.label,
-                raw: trimmed,
-                confidence: data.confidence,
-                reason: `Read ${kills}, a jump of ${kills - plausibleFloor} over the current count (${plausibleFloor}) — held back as a likely misread, needs confirmation`,
-                apply: async () => {
-                  await supabase.from("games").update({ [column]: kills }).eq("id", game!.id);
-                },
-              });
-              break;
-            }
-            await supabase.from("games").update({ [column]: kills }).eq("id", game.id);
             break;
           }
           case "map_setting": {

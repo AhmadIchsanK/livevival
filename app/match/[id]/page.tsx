@@ -109,6 +109,8 @@ type Game = {
   team_a_kills_override: number | null;
   team_b_kills_override: number | null;
   draft_analysis: string | null;
+  draft_analysis_en: string | null;
+  draft_analysis_id: string | null;
 };
 type PickBan = {
   id: string;
@@ -141,6 +143,8 @@ type KeyMoment = {
   game_id: string;
   type: string;
   description: string | null;
+  description_en: string | null;
+  description_id: string | null;
   minute_mark: number | null;
   second_mark: number | null;
   created_at: string;
@@ -411,7 +415,7 @@ export default function PublicMatchPage() {
     const { data: gameRows } = await supabase
       .from("games")
       .select(
-        "id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, team_a_kills_override, team_b_kills_override, draft_analysis"
+        "id, game_number, status, state, winner_team_id, vod_url, map, current_time_seconds, current_time_updated_at, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, team_a_kills_override, team_b_kills_override, draft_analysis, draft_analysis_en, draft_analysis_id"
       )
       .eq("match_id", matchId)
       .order("game_number", { ascending: true });
@@ -452,7 +456,7 @@ export default function PublicMatchPage() {
       supabase.from("objectives").select("id, game_id, team_id, type, minute_mark").eq("match_id", matchId).order("minute_mark"),
       supabase
         .from("key_moments")
-        .select("id, game_id, type, description, minute_mark, second_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
+        .select("id, game_id, type, description, description_en, description_id, minute_mark, second_mark, created_at, player:players(ign), screenshot_url, source, is_key_moment")
         .eq("match_id", matchId)
         .order("created_at", { ascending: true }),
       supabase.from("net_worth_snapshots").select("game_id, minute_mark, team_a_gold, team_b_gold").eq("match_id", matchId).order("created_at"),
@@ -613,7 +617,11 @@ export default function PublicMatchPage() {
   // Moment Timeline parses, kept in sync deliberately — see that file's
   // matching helper.
   function renderMomentLabel(km: KeyMoment) {
-    const raw = km.description ?? `${km.type.replace(/_/g, " ")}${km.player?.ign ? ` — ${km.player.ign}` : ""}`;
+    // Auto-commentary moments carry per-language text so the PUBLIC page reads
+    // in its OWN language, independent of the admin console's language. Fall back
+    // to the legacy `description` for older rows / non-commentary moments.
+    const localized = lang === "id" ? km.description_id : km.description_en;
+    const raw = (localized ?? km.description) ?? `${km.type.replace(/_/g, " ")}${km.player?.ign ? ` — ${km.player.ign}` : ""}`;
     if (km.type !== "pick" && km.type !== "ban") return <>{raw}</>;
     const verbMatch = raw.match(/^(.+?) (picks|bans) (.+?)(?: — .+)?$/);
     if (!verbMatch) return <>{raw}</>;
@@ -1412,7 +1420,7 @@ export default function PublicMatchPage() {
               its finished matches, so viewers can read the draft against it. */}
           {match.tournament?.id && (
             <div className="mt-4">
-              <TournamentHeroStats tournamentId={match.tournament.id} variant="top5" />
+              <TournamentHeroStats tournamentId={match.tournament.id} variant="top3" />
             </div>
           )}
         </section>
@@ -1654,16 +1662,24 @@ export default function PublicMatchPage() {
             </div>
           ))}
         </div>
-        {/* AI draft analysis — stuck directly below the scoreboard, identical
-            to the admin console. Rendered whenever the game has one stored. */}
-        {selectedGame?.draft_analysis && (
-          <div className="lv-card-flush p-4 mt-4 space-y-1.5">
-            <p className="text-white/70 font-semibold text-sm">🧠 {t("match.draftAnalysis")}</p>
-            {selectedGame.draft_analysis.split(/\n\n+/).map((para, i) => (
-              <p key={i} className="text-xs text-white/60 leading-relaxed">{para}</p>
-            ))}
-          </div>
-        )}
+        {/* AI draft analysis — stuck directly below the scoreboard. Rendered in
+            the VIEWER's own language (independent of the admin console), full
+            text, falling back to the other language then the legacy column. */}
+        {(() => {
+          const analysis =
+            (lang === "id" ? selectedGame?.draft_analysis_id : selectedGame?.draft_analysis_en) ??
+            selectedGame?.draft_analysis_en ??
+            selectedGame?.draft_analysis_id ??
+            selectedGame?.draft_analysis;
+          return analysis ? (
+            <div className="lv-card-flush p-4 mt-4 space-y-1.5">
+              <p className="text-white/70 font-semibold text-sm">🧠 {t("match.draftAnalysis")}</p>
+              {analysis.split(/\n\n+/).map((para, i) => (
+                <p key={i} className="text-xs text-white/60 leading-relaxed whitespace-pre-wrap break-words">{para}</p>
+              ))}
+            </div>
+          ) : null;
+        })()}
         {/* Only in the During-Game layout — this is about the live read,
             not the finished/"Statistics" replay of the same table. */}
         {layoutBucket === "game" && (

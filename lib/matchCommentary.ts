@@ -599,6 +599,40 @@ export function pickCommentary(ctx: CommentaryContext, opts: CommentaryOptions =
   return pick(rng, pool);
 }
 
+// Bilingual pick — chooses ONE line in the operator's language exactly as
+// pickCommentary does, then produces the parallel text in the OTHER language
+// for the SAME condition (and same spotlighted subject where possible). Lets the
+// caller persist both an EN and an ID version of a moment so admin and public
+// each render their own language independently (they don't have to match). If
+// the other language has no candidate for that condition, it falls back to the
+// primary text so a moment is never blank.
+export function pickCommentaryBilingual(
+  ctx: CommentaryContext,
+  opts: CommentaryOptions = {}
+): { condition: CommentaryCondition; subject?: string; templateId?: string; en: string; id: string } | null {
+  const primaryLang: CommentaryLang = opts.lang ?? "en";
+  const primary = pickCommentary(ctx, { ...opts, lang: primaryLang });
+  if (!primary) return null;
+  const otherLang: CommentaryLang = primaryLang === "id" ? "en" : "id";
+  const rng = opts.rng ?? Math.random;
+  // Candidates in the other language for the SAME fired condition.
+  const otherAll = commentaryCandidates(ctx, { ...opts, lang: otherLang }).filter(
+    (l) => l.condition === primary.condition
+  );
+  // Prefer one about the same subject (same player/hero/objective) so the two
+  // languages describe the same event, not two different ones.
+  const sameSubject = primary.subject ? otherAll.filter((l) => l.subject === primary.subject) : [];
+  const otherPool = sameSubject.length > 0 ? sameSubject : otherAll;
+  const otherText = otherPool.length > 0 ? pick(rng, otherPool).text : primary.text;
+  return {
+    condition: primary.condition,
+    subject: primary.subject,
+    templateId: primary.templateId,
+    en: primaryLang === "en" ? primary.text : otherText,
+    id: primaryLang === "id" ? primary.text : otherText,
+  };
+}
+
 // A guaranteed win-probability sentence for the periodic "read" interjection the
 // caller schedules on its own cadence (every few minutes), independent of the
 // threshold-gated win_prob generator above. Always returns text, phrased to the

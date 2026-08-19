@@ -29,7 +29,7 @@ import {
   type ObjectiveObservation,
 } from "@/lib/reconstruction/objectivesObservation";
 import { netWorthDiffSeries, winProbabilityTeamA, computeMvpSvp } from "@/lib/matchAnalytics";
-import { pickCommentary, winProbInterjection, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
+import { pickCommentaryBilingual, winProbInterjection, COMMENTARY_CONDITIONS, type CommentaryCondition, type CommentarySnapshot, type CommentaryTemplate } from "@/lib/matchCommentary";
 import { useLanguage } from "@/lib/i18n";
 import { NetWorthLeadChart } from "@/components/NetWorthLeadChart";
 
@@ -96,6 +96,8 @@ type Game = {
   team_a_kills_override: number | null;
   team_b_kills_override: number | null;
   draft_analysis: string | null;
+  draft_analysis_en: string | null;
+  draft_analysis_id: string | null;
 };
 type FinishedGame = { id: string; game_number: number; status: string; map: string | null; winner_team_id: string | null; duration_seconds: number | null };
 // custom_player_name/custom_player_role: a match-local player who isn't in
@@ -639,7 +641,7 @@ export default function LiveConsolePage() {
 
     let { data: gameRow } = await supabase
       .from("games")
-      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis")
+      .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis, draft_analysis_en, draft_analysis_id")
       .eq("match_id", matchId)
       .eq("game_number", targetGameNumber)
       .maybeSingle();
@@ -661,7 +663,7 @@ export default function LiveConsolePage() {
           { match_id: matchId, game_number: targetGameNumber, status: targetGameNumber === m.current_game_number ? "live" : "draft" },
           { onConflict: "match_id,game_number" }
         )
-        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis")
+        .select("id, game_number, status, map, winner_team_id, clock_source, manual_time_seconds, manual_time_running, manual_time_started_at, current_time_seconds, current_time_updated_at, team_a_kills_override, team_b_kills_override, draft_analysis, draft_analysis_en, draft_analysis_id")
         .single();
       if (createErr) {
         setError(createErr.message);
@@ -853,27 +855,51 @@ export default function LiveConsolePage() {
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
-      const res = await fetch("/api/admin/draft-analysis", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ teamA, teamB, lang: commentaryLangRef.current }),
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (!opts?.auto) setError(json.error ?? "Draft analysis failed.");
-        return;
-      }
-      const analysis: string = json.analysis;
-      await supabase.from("games").update({ draft_analysis: analysis, draft_analysis_at: new Date().toISOString() }).eq("id", game.id);
-      await supabase.from("key_moments").insert({
-        game_id: game.id,
-        match_id: matchId,
-        type: "custom",
-        description: `🧠 Draft analysis — ${analysis}`,
-        minute_mark: 0,
-        second_mark: 0,
-        source: "auto_commentary",
-      });
+      // Generate BOTH languages so public and admin each render their own,
+      // independent of each other's chosen language. Each call retries once if
+      // the model returned a truncated answer (missing the "Draft edge:" closing
+      // line) — that's the "cut out mid text" the operator saw on the first pass
+      // that a manual re-analyze happened to fix.
+      const runOne = async (lang: "en" | "id"): Promise<string | null> => {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const res = await fetch("/api/admin/draft-analysis", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ teamA, teamB, lang }),
+          });
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (!opts?.auto) setError(json.error ?? "Draft analysis failed.");
+            return null;
+          }
+          const analysis: string = json.analysis ?? "";
+          // Complete answers always end with the mandated "Draft edge: <team> ~NN%"
+          // line; if it's absent the text was cut off mid-thought — retry once.
+          if (/draft edge/i.test(analysis) || attempt === 1) return analysis;
+        }
+        return null;
+      };
+      const primaryLang = commentaryLangRef.current;
+      const otherLang: "en" | "id" = primaryLang === "id" ? "en" : "id";
+      const primary = await runOne(primaryLang);
+      if (primary == null) return;
+      const other = await runOne(otherLang);
+      const enText = primaryLang === "en" ? primary : other ?? primary;
+      const idText = primaryLang === "id" ? primary : other ?? primary;
+      // Store per-language columns (public reads its own) plus the legacy
+      // `draft_analysis` in the operator's language for backward compat.
+      // NO key_moments insert: the draft analysis has its own panel on both admin
+      // and public — writing it into the moment feed made it leak into the next
+      // game's timeline, which it must not do.
+      await supabase
+        .from("games")
+        .update({
+          draft_analysis: primary,
+          draft_analysis_en: enText,
+          draft_analysis_id: idText,
+          draft_analysis_at: new Date().toISOString(),
+        })
+        .eq("id", game.id);
       loadAll();
     } catch (e) {
       if (!opts?.auto) setError(`Draft analysis failed: ${(e as Error).message}`);
@@ -1084,7 +1110,7 @@ export default function LiveConsolePage() {
       `${match.team_a?.name} ${aWins} – ${bWins} ${match.team_b?.name}\n${match.tournament?.name}`,
       buildDraftRecap(),
       kdaLines,
-      momentLines ? `<b>{tt("lc.moments")}</b>\n${momentLines}` : "",
+      momentLines ? `<b>Moments</b>\n${momentLines}` : "",
     ].filter(Boolean);
 
     await postToTelegram(parts.join("\n\n"), {
@@ -2091,7 +2117,7 @@ export default function LiveConsolePage() {
       // screenshot used to be an entirely separate system with no path to
       // the channel at all.
       postToTelegram(
-        `📸 <b>{tt("lc.screenshot")}</b> — ${match?.team_a?.name} vs ${match?.team_b?.name}${noteOverride ?? screenshotNote ? `\n${noteOverride ?? screenshotNote}` : ""}`,
+        `📸 <b>Screenshot</b> — ${match?.team_a?.name} vs ${match?.team_b?.name}${noteOverride ?? screenshotNote ? `\n${noteOverride ?? screenshotNote}` : ""}`,
         { entityType: "game", entityId: game.id, notificationType: "screenshot" },
         pub.publicUrl
       );
@@ -2419,7 +2445,7 @@ export default function LiveConsolePage() {
   const commentaryEnabledRef = useRef(false);
   const commentaryConditionsRef = useRef(commentaryConditions);
   const commentaryCanRunRef = useRef(false);
-  const commentaryInsertRef = useRef<(text: string, timerSeconds: number) => Promise<void>>(async () => {});
+  const commentaryInsertRef = useRef<(text: string, timerSeconds: number, both?: { en: string; id: string }) => Promise<void>>(async () => {});
   // Anti-repetition memory: the last few line texts posted, and the last few
   // subjects spotlighted (a player/hero name, or a coarse condition key). The
   // engine reads these to stop the feed looping on one player/hero/phrasing.
@@ -2463,7 +2489,7 @@ export default function LiveConsolePage() {
       try {
         const snap = commentarySnapshotRef.current;
         if (commentaryEnabledRef.current && commentaryCanRunRef.current && snap) {
-          const line = pickCommentary(
+          const line = pickCommentaryBilingual(
             { now: snap, prev: commentaryPrevRef.current, enabled: commentaryConditionsRef.current },
             {
               templates: commentaryTemplatesRef.current,
@@ -2476,8 +2502,11 @@ export default function LiveConsolePage() {
             }
           );
           if (line) {
-            await commentaryInsertRef.current(line.text, snap.timerSeconds);
-            rememberCommentary(line.text, line.subject, line.condition);
+            // Operator-language text drives the anti-repeat memory + the legacy
+            // `description`; both EN and ID are persisted so public renders its own.
+            const shownText = commentaryLangRef.current === "id" ? line.id : line.en;
+            await commentaryInsertRef.current(shownText, snap.timerSeconds, { en: line.en, id: line.id });
+            rememberCommentary(shownText, line.subject, line.condition);
             // Bump the custom template's usage so /admin/commentary can rank and
             // prune rarely-fired lines (built-in lines have no id — skipped).
             if (line.templateId) {
@@ -2521,9 +2550,13 @@ export default function LiveConsolePage() {
           commentaryConditionsRef.current.has("win_prob") &&
           snap
         ) {
-          const text = winProbInterjection(snap, Math.random, commentaryLangRef.current);
+          // Same win-prob read rendered in BOTH languages (independent phrasing),
+          // so public sees it in its own language regardless of the admin's.
+          const enText = winProbInterjection(snap, Math.random, "en");
+          const idText = winProbInterjection(snap, Math.random, "id");
+          const text = commentaryLangRef.current === "id" ? idText : enText;
           if (!commentaryRecentTextsRef.current.includes(text)) {
-            await commentaryInsertRef.current(text, snap.timerSeconds);
+            await commentaryInsertRef.current(text, snap.timerSeconds, { en: enText, id: idText });
             rememberCommentary(text, "win_prob", "win_prob");
           }
         }
@@ -6054,7 +6087,7 @@ export default function LiveConsolePage() {
         const recap = await buildSeriesHeroRecap();
         const matchMsg = telegramMessageFor(
           "match_finish",
-          `🏆 <b>{tt("lc.matchFinished")}</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
+          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
           { ...vars, winner: seriesWinnerName ?? "" }
         );
         if (matchMsg) await postToTelegram(matchMsg, { entityType: "match", entityId: match.id, notificationType: "match_finished" });
@@ -6097,7 +6130,7 @@ export default function LiveConsolePage() {
         const recap = await buildSeriesHeroRecap();
         const matchMsg = telegramMessageFor(
           "match_finish",
-          `🏆 <b>{tt("lc.matchFinished")}</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
+          `🏆 <b>Match finished</b>\nWinner: <b>${seriesWinnerName}</b>\nFinal score: <b>${match.team_a?.name} ${aWins} - ${bWins} ${match.team_b?.name}</b>\n${match.tournament?.name}${recap ? `\n\n${recap}` : ""}`,
           {
             team_a: match.team_a?.name ?? "",
             team_b: match.team_b?.name ?? "",
@@ -6321,7 +6354,7 @@ export default function LiveConsolePage() {
       (match.notification_tier === "priority" || match.notification_tier === "hot")
     ) {
       const startMsg =
-        `🟢 <b>{tt("lc.matchStarted")}</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}` +
+        `🟢 <b>Match started</b>\n${match.team_a?.name} vs ${match.team_b?.name}\n${match.tournament?.name}` +
         (match.youtube_url ? `\n${match.youtube_url}` : "");
       await postToTelegram(startMsg, { entityType: "match", entityId: match.id, notificationType: "match_started" });
     }
@@ -6359,8 +6392,8 @@ export default function LiveConsolePage() {
           DRAFT_STARTED: `✏️ <b>Draft started — Game ${game.game_number}</b>\n${header}`,
           DRAFT_COMPLETE: `📋 <b>Draft complete — Game ${game.game_number}</b>\n<b>${seriesScoreLine()}</b>\n${match.tournament?.name}\n\n${buildDraftRecap()}`,
           GAME_STARTED: `🎮 <b>Game ${game.game_number} ongoing</b>\n${header}`,
-          TECHNICAL_PAUSE: `⏸️ <b>{tt("lc.technicalPause")}</b>\n${header}`,
-          STREAM_ENDED: `📴 <b>{tt("lc.streamEnded")}</b>\n${header}`,
+          TECHNICAL_PAUSE: `⏸️ <b>Technical pause</b>\n${header}`,
+          STREAM_ENDED: `📴 <b>Stream ended</b>\n${header}`,
         };
         // Draft-complete specifically must not announce a recap that's
         // still missing picks — a phase transition can happen (manually,
@@ -7206,13 +7239,18 @@ export default function LiveConsolePage() {
   // even if this tab isn't the one actively capturing (it no longer waits on
   // captureActive, which was why it sat on "waiting" and never posted).
   commentaryCanRunRef.current = match.state === "GAME_STARTED";
-  commentaryInsertRef.current = async (text: string, timerSeconds: number) => {
+  commentaryInsertRef.current = async (text: string, timerSeconds: number, both?: { en: string; id: string }) => {
     if (!game || !match) return;
+    // description stays the operator-language text (legacy/Telegram); the two
+    // per-language columns let the PUBLIC page render in its OWN language,
+    // independent of whatever language the admin console is set to.
     await supabase.from("key_moments").insert({
       game_id: game.id,
       match_id: matchId,
       type: "custom",
       description: text,
+      description_en: both?.en ?? (commentaryLangRef.current === "en" ? text : null),
+      description_id: both?.id ?? (commentaryLangRef.current === "id" ? text : null),
       minute_mark: Math.floor(timerSeconds / 60),
       second_mark: timerSeconds % 60,
       source: "auto_commentary",
@@ -9420,7 +9458,16 @@ export default function LiveConsolePage() {
                     {/* AI draft analysis — stuck directly below the Live
                         scoreboard (spec: post-draft breakdown). Same text the
                         public match page renders, plus a re-run control. */}
-                    {game.draft_analysis ? (
+                    {(() => {
+                      // Admin reads the analysis in ITS OWN language (falls back to
+                      // the other language, then the legacy column) — fully full
+                      // text, no truncation/line-clamp.
+                      const adminAnalysis =
+                        (uiLang === "id" ? game.draft_analysis_id : game.draft_analysis_en) ??
+                        game.draft_analysis_en ??
+                        game.draft_analysis_id ??
+                        game.draft_analysis;
+                      return adminAnalysis ? (
                       <section className="space-y-1.5 bg-white/5 rounded p-3 border border-white/10">
                         <div className="flex items-center justify-between">
                           <h3 className="font-semibold text-sm">🧠 Draft analysis</h3>
@@ -9432,8 +9479,8 @@ export default function LiveConsolePage() {
                             {analyzingDraft ? "Analyzing…" : "Re-analyze"}
                           </button>
                         </div>
-                        {game.draft_analysis.split(/\n\n+/).map((para, i) => (
-                          <p key={i} className="text-xs text-white/70 leading-relaxed">{para}</p>
+                        {adminAnalysis.split(/\n\n+/).map((para, i) => (
+                          <p key={i} className="text-xs text-white/70 leading-relaxed whitespace-pre-wrap break-words">{para}</p>
                         ))}
                       </section>
                     ) : (
@@ -9446,7 +9493,8 @@ export default function LiveConsolePage() {
                           {analyzingDraft ? "Analyzing draft…" : "🧠 Analyze draft"}
                         </button>
                       )
-                    )}
+                    );
+                    })()}
                     </div>
                   </div>
                 ) : (

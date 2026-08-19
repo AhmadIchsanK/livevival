@@ -839,8 +839,12 @@ export default function LiveConsolePage() {
   // runs a single time when both teams have 5 picks; a manual button can re-run.
   const [analyzingDraft, setAnalyzingDraft] = useState(false);
   const draftAnalysisAutoRef = useRef<string | null>(null);
-  async function analyzeDraft(opts?: { auto?: boolean }) {
-    if (!game || !match?.team_a || !match?.team_b) return;
+  // Returns true only when an analysis was actually generated + stored, so the
+  // auto-run can mark this game as done ONLY on success — a failed attempt
+  // (AI timeout/quota) leaves the game eligible to retry rather than sticking
+  // blank forever (the "game 2 never showed an analysis" bug).
+  async function analyzeDraft(opts?: { auto?: boolean }): Promise<boolean> {
+    if (!game || !match?.team_a || !match?.team_b) return false;
     const sideFor = (teamId: string) => ({
       name: (teamId === match.team_a!.id ? match.team_a!.name : match.team_b!.name) ?? "Team",
       picks: pickBans.filter((pb) => pb.team_id === teamId && pb.type === "pick").map((pb) => pb.hero_name).filter(Boolean),
@@ -850,7 +854,7 @@ export default function LiveConsolePage() {
     const teamB = sideFor(match.team_b.id);
     if (teamA.picks.length === 0 && teamB.picks.length === 0) {
       if (!opts?.auto) setError("No picks drafted yet to analyze.");
-      return;
+      return false;
     }
     setAnalyzingDraft(true);
     try {
@@ -883,7 +887,7 @@ export default function LiveConsolePage() {
       const primaryLang = commentaryLangRef.current;
       const otherLang: "en" | "id" = primaryLang === "id" ? "en" : "id";
       const primary = await runOne(primaryLang);
-      if (primary == null) return;
+      if (primary == null) return false;
       const other = await runOne(otherLang);
       const enText = primaryLang === "en" ? primary : other ?? primary;
       const idText = primaryLang === "id" ? primary : other ?? primary;
@@ -902,23 +906,32 @@ export default function LiveConsolePage() {
         })
         .eq("id", game.id);
       loadAll();
+      return true;
     } catch (e) {
       if (!opts?.auto) setError(`Draft analysis failed: ${(e as Error).message}`);
+      return false;
     } finally {
       setAnalyzingDraft(false);
     }
   }
   useEffect(() => {
     if (!game || game.draft_analysis || !match?.team_a || !match?.team_b) return;
-    if (draftAnalysisAutoRef.current === game.id) return; // only auto-try once per game
+    if (draftAnalysisAutoRef.current === game.id) return; // an attempt is in flight or done for this game
     const aPicks = pickBans.filter((pb) => pb.team_id === match.team_a!.id && pb.type === "pick").length;
     const bPicks = pickBans.filter((pb) => pb.team_id === match.team_b!.id && pb.type === "pick").length;
+    // Fire once a full draft is on the board (5+5). Also fires as a safety net if
+    // the game has already started with a complete draft but no analysis yet
+    // (the draft-phase run was missed). Mark this game in-flight, but CLEAR the
+    // mark on failure so a transient AI error retries on the next tick instead
+    // of leaving the game permanently blank.
     if (aPicks >= 5 && bPicks >= 5) {
       draftAnalysisAutoRef.current = game.id;
-      void analyzeDraft({ auto: true });
+      void analyzeDraft({ auto: true }).then((ok) => {
+        if (!ok && draftAnalysisAutoRef.current === game!.id) draftAnalysisAutoRef.current = null;
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game?.id, game?.draft_analysis, pickBans, match?.team_a?.id, match?.team_b?.id]);
+  }, [game?.id, game?.draft_analysis, pickBans, match?.state, match?.team_a?.id, match?.team_b?.id]);
 
   // Full-series hero-picks recap for the automatic match-finished
   // notification (Priority and Hot tiers both get this) — same

@@ -31,22 +31,38 @@ type FilterKey = "all" | "picked" | "banned";
 export function TournamentHeroStats({ tournamentId, variant }: { tournamentId: string; variant: "table" | "top5" | "top3" }) {
   const { t } = useLanguage();
   const [stats, setStats] = useState<Stat[] | null>(null);
+  const [scope, setScope] = useState<"tournament" | "global">("tournament");
   const [expanded, setExpanded] = useState(false);
   const [sortKey, setSortKey] = useState<SortKey>("picks");
   const [sortDesc, setSortDesc] = useState(true);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [query, setQuery] = useState("");
 
+  const isMiniProp = variant === "top5" || variant === "top3";
   useEffect(() => {
     let cancelled = false;
     (async () => {
       const { data } = await supabase.rpc("tournament_hero_stats", { p_tournament_id: tournamentId });
-      if (!cancelled) setStats((data as Stat[]) ?? []);
+      const rows = (data as Stat[]) ?? [];
+      if (cancelled) return;
+      // The compact draft reference (mini) must always have something to show —
+      // during a tournament's very first match there are no finished matches yet,
+      // so it falls back to GLOBAL hero stats (all events) rather than rendering
+      // nothing. The full tournament TABLE stays strictly tournament-scoped.
+      if (rows.length === 0 && isMiniProp) {
+        const { data: g } = await supabase.rpc("global_hero_stats");
+        if (cancelled) return;
+        setScope("global");
+        setStats((g as Stat[]) ?? []);
+      } else {
+        setScope("tournament");
+        setStats(rows);
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [tournamentId]);
+  }, [tournamentId, isMiniProp]);
 
   const totalGames = stats?.[0]?.total_games ?? 0;
   const isMini = variant === "top5" || variant === "top3";
@@ -102,7 +118,9 @@ export function TournamentHeroStats({ tournamentId, variant }: { tournamentId: s
       <div className="lv-card-flush p-4">
         <div className="flex items-baseline justify-between mb-3">
           <p className="text-white/70 font-semibold text-sm">🎯 {t("hs.metaRef")}</p>
-          <span className="text-[11px] text-white/30">{t("hs.games", { n: totalGames })}</span>
+          <span className="text-[11px] text-white/30">
+            {scope === "global" ? t("hs.scopeAll") : t("hs.scopeTournament")} · {t("hs.games", { n: totalGames })}
+          </span>
         </div>
         <div className="flex gap-6 flex-wrap">
           <Col title={variant === "top3" ? t("hs.top3Picks") : t("hs.topPicks")} rows={topPicks} kind="picks" />

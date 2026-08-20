@@ -249,7 +249,9 @@ function renderCard({
         </div>
         <span
           style={{
-            fontSize: 21 * scale,
+            // Ban labels sit under a much narrower box, so a smaller font keeps
+            // "TIGREAL"/"WANWAN" from colliding with their neighbors.
+            fontSize: (p.type === "ban" ? 15 : 21) * scale,
             fontWeight: 700,
             color: p.type === "ban" ? "#ffffffbb" : "#ffffffee",
             textAlign: "center",
@@ -260,12 +262,14 @@ function renderCard({
           {p.hero_name}
         </span>
         {hasName && (
-          <span style={{ fontSize: 18 * scale, fontWeight: 700, color: SIGNAL, textAlign: "center", letterSpacing: 0.3 }}>
-            {p.player_name}
-          </span>
+          // Player name as a solid signal-red nameplate — far more legible than
+          // thin red text on near-black, and reads like a broadcast lower-third.
+          <div style={{ display: "flex", background: SIGNAL, borderRadius: 6 * scale, padding: `${3 * scale}px ${10 * scale}px` }}>
+            <span style={{ fontSize: 16 * scale, fontWeight: 700, color: "#ffffff", letterSpacing: 0.3 }}>{p.player_name}</span>
+          </div>
         )}
         {hasKda && (
-          <span style={{ fontSize: 18 * scale, fontWeight: 600, color: "#ffffffcc", letterSpacing: 0.5 }}>
+          <span style={{ fontSize: 18 * scale, fontWeight: 600, color: "#ffffffdd", letterSpacing: 0.5 }}>
             {p.kills}/{p.deaths}/{p.assists}
           </span>
         )}

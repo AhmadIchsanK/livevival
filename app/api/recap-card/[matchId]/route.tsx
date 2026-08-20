@@ -219,6 +219,12 @@ function renderCard({
     // Player name (ign) shown for a PICK on a Hot match — the person on the hero.
     const hasName = p.type === "pick" && !!p.player_name;
     const boxHeight = boxWidth * 1.25;
+    // Scale the hero-name font down for long names so they stay on ONE line
+    // (e.g. "YI SUN-SHIN" wrapped to two lines at the base size). The box is only
+    // ~1 name wide, so a longer name needs a smaller size to fit its width.
+    const baseNameSize = p.type === "ban" ? 15 : 21;
+    const nameLen = p.hero_name.length;
+    const nameSize = (nameLen >= 12 ? baseNameSize - 6 : nameLen >= 10 ? baseNameSize - 5 : nameLen >= 8 ? baseNameSize - 3 : baseNameSize) * scale;
     return (
       <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 * scale, width: boxWidth + 16 * scale }}>
         <div
@@ -249,14 +255,15 @@ function renderCard({
         </div>
         <span
           style={{
-            // Ban labels sit under a much narrower box, so a smaller font keeps
-            // "TIGREAL"/"WANWAN" from colliding with their neighbors.
-            fontSize: (p.type === "ban" ? 15 : 21) * scale,
+            // Ban labels sit under a much narrower box (smaller base). Long names
+            // shrink further (nameSize) so they never wrap to a second line.
+            fontSize: nameSize,
             fontWeight: 700,
             color: p.type === "ban" ? "#ffffffbb" : "#ffffffee",
             textAlign: "center",
             textTransform: "uppercase",
             letterSpacing: 0.5,
+            whiteSpace: "nowrap",
           }}
         >
           {p.hero_name}

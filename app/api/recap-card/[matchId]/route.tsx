@@ -180,11 +180,13 @@ function renderCard({
   // its 1080px-tall frame, so there's no risk of pushing bans/picks into
   // the footer). heroBoost enlarges pick/ban hero portraits and their
   // internal gaps; logoBoost enlarges the team logo plates in the score bar.
-  // Portrait: sized so BOTH teams' 5 picks + 5 bans PLUS the player-name and
-  // K/D/A labels below each pick fit inside the safe area without clipping the
-  // last ban row (the names add height, so this is smaller than the label-free
-  // version was).
-  const heroBoost = isLandscape ? 1.4 : 0.68;
+  // Hot matches carry a player-name nameplate + K/D/A under each pick (two extra
+  // label lines per pick), so their portraits must be smaller to fit. A Normal
+  // match has none of that, leaving a lot of empty vertical space — so it uses
+  // noticeably bigger portraits + names to fill the frame while staying inside
+  // the safe area.
+  const isHotCard = heroPicks.some((p) => !!p.player_name || p.kills != null || p.deaths != null || p.assists != null);
+  const heroBoost = isLandscape ? 1.4 : isHotCard ? 0.68 : 0.98;
   const logoBoost = isLandscape ? 1.25 : 1;
 
   // Every hero portrait sits on a light plate with a signal-colored ring —
@@ -222,7 +224,9 @@ function renderCard({
     // Scale the hero-name font down for long names so they stay on ONE line
     // (e.g. "YI SUN-SHIN" wrapped to two lines at the base size). The box is only
     // ~1 name wide, so a longer name needs a smaller size to fit its width.
-    const baseNameSize = p.type === "ban" ? 15 : 21;
+    // Bigger names on a Normal match (bigger boxes, more room); tighter on Hot
+    // (smaller boxes + the nameplate/KDA lines below).
+    const baseNameSize = p.type === "ban" ? (isHotCard ? 15 : 18) : isHotCard ? 21 : 26;
     const nameLen = p.hero_name.length;
     const nameSize = (nameLen >= 12 ? baseNameSize - 6 : nameLen >= 10 ? baseNameSize - 5 : nameLen >= 8 ? baseNameSize - 3 : baseNameSize) * scale;
     return (

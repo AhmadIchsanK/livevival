@@ -4999,9 +4999,14 @@ export default function LiveConsolePage() {
             // image 4) unable to move the count, while a STABLE lower read is
             // trusted and corrects the number back down.
             let decisionReason = obs.reason;
-            if (kills == null) {
-              // blank / merged / implausible — keep last confirmed, don't disturb
-              // the consensus buffer (a dropped frame isn't a vote either way).
+            if (kills == null || !obs.accepted) {
+              // null  → blank / merged / implausible — keep last confirmed.
+              // !accepted → below confirmed: teamKillObservation already flagged
+              // this as suspicious ("kills only go up"). Do NOT buffer it as a
+              // downward-consensus vote — two garbled frames that happen to agree
+              // on a lower number should never overwrite a confirmed higher count.
+              // The consensus buffer is left untouched either way (a dropped or
+              // rejected frame is not a vote).
               decisionReason = obs.reason;
             } else {
               shadowReads.teamKills[sideTeamId] = kills; // shadow (raw)

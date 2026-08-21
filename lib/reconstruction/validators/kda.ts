@@ -72,8 +72,8 @@ function clampField(
 ): number {
   const floor = stored ?? 0;
   if (stored != null && read < stored) {
-    heldBack.push(`${name} ${read} below confirmed ${stored} (never-decreases)`);
-    return stored;
+    heldBack.push(`${name} ${read} corrected downward from ${stored}`);
+    return read;
   }
   if (read - floor > maxGain) {
     heldBack.push(`${name} +${read - floor} in one tick exceeds ${maxGain} cap`);
@@ -196,15 +196,19 @@ export function validateTeamKills(
   summedPlayerKills: number
 ): ValidationResult<number> {
   if (reading == null) return { status: "missing", value: null, reason: "no reading" };
-  const floor = Math.max(confirmedTeamKills ?? 0, summedPlayerKills);
+  const floor = summedPlayerKills;
   if (confirmedTeamKills != null && reading < confirmedTeamKills) {
-    return { status: "rejected", value: confirmedTeamKills, reason: "never-decreases" };
+    if (reading < floor) {
+      return { status: "rejected", value: confirmedTeamKills, reason: `cannot drop below summed player kills ${floor}` };
+    }
+    return { status: "confirmed", value: reading, reason: `correction downward ${confirmedTeamKills} → ${reading}` };
   }
-  if (reading - floor > MAX_TEAM_KILL_JUMP) {
+  const jumpBase = Math.max(confirmedTeamKills ?? 0, floor);
+  if (reading - jumpBase > MAX_TEAM_KILL_JUMP) {
     return {
       status: "candidate",
-      value: floor,
-      reason: `team kills ${reading} jumps ${reading - floor} over floor ${floor}`,
+      value: jumpBase,
+      reason: `team kills ${reading} jumps ${reading - jumpBase} over base ${jumpBase}`,
     };
   }
   return { status: "confirmed", value: Math.max(reading, floor), reason: "ok" };

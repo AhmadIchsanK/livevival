@@ -2520,7 +2520,7 @@ export default function LiveConsolePage() {
   // (the "apply a decrease when the previous number was inaccurate" the operator
   // asked for). A lone noisy frame never commits; a stable disagreement corrects.
   const teamKillConsensusRef = useRef<Record<string, { value: number; count: number }>>({});
-  const TEAM_KILL_CONSENSUS_TICKS = 2;
+  const TEAM_KILL_CONSENSUS_TICKS = 1;
   useEffect(() => {
     (async () => {
       const { data } = await supabase.from("commentary_templates").select("id, condition, template, lang, enabled");

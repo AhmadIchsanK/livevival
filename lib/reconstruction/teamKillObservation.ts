@@ -53,7 +53,7 @@ export function teamKillObservation(args: {
     return { ...base, accepted: false, reason: args.raw.trim() ? "not a valid kill count — keep last confirmed" : "missing — keep last confirmed" };
   }
   if (args.confirmed != null && normalized < args.confirmed) {
-    return { ...base, accepted: false, reason: `below confirmed ${args.confirmed} — suspicious, not overwritten (kills only go up)` };
+    return { ...base, accepted: true, reason: `correction downward ${args.confirmed} → ${normalized}` };
   }
   if (args.confirmed != null && normalized === args.confirmed) {
     return { ...base, accepted: true, reason: "unchanged" };

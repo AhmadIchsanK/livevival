@@ -1,5 +1,21 @@
 # Livevival Architecture & Development Roadmap
 
+## Auto Push (explicit user authorization)
+The user has explicitly authorized automatic `git commit` + `git push` to
+`origin/main` for this repo, without asking for confirmation each time.
+This overrides the default "confirm before push" behavior. Still use
+judgment: never push a broken build, a merge conflict, or anything that
+looks like it needs the user's eyes first — stop and explain instead.
+Never force-push without asking, even with this authorization.
+
+## Multi-agent collaboration (Claude Code ↔ Antigravity)
+This repo is worked on by both Claude Code and Antigravity IDE,
+alternating turns on the same local checkout. The shared protocol lives
+in [`AGENTS.md`](AGENTS.md); live turn-state lives in
+[`AGENT_HANDOFF.md`](AGENT_HANDOFF.md). Read the handoff file at the
+start of every session and update it at the end — see the `handoff`
+skill (`.claude/skills/handoff/SKILL.md`) for the exact steps.
+
 ## Project Overview
 Real-time tournament/esports match tracking with live streaming, admin console for match state management, and public viewing pages. Built on Next.js + Supabase + Redis caching.
 

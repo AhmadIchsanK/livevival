@@ -39,7 +39,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
-import { fetchRenderedPage, apiQuery, sleep, sortByLifecyclePriority } from "./_liquipedia.mjs";
+import { fetchRenderedPage, apiQuery, sleep, sortByLifecyclePriority, tournamentPriorityRank } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -324,12 +324,25 @@ async function main() {
   // run that gets cancelled at its timeout has still updated the tournaments
   // whose results/streams are actually changing now, instead of burning the
   // budget on years-old history that never reaches the current season.
-  const relevant = sortByLifecyclePriority(filtered);
+  let relevant = sortByLifecyclePriority(filtered);
+
+  // ONGOING_ONLY=1 restricts the pass to tournaments running RIGHT NOW (started,
+  // not yet ended). This is the fast, cheap sync meant to run frequently (hourly)
+  // so a live match flips to "finished" within ~an hour of its result landing on
+  // Liquipedia — instead of waiting up to 6h for the full pass. The full 6-hourly
+  // pass (no flag) still covers upcoming + recent history. Ignored when an
+  // explicit TOURNAMENT_SLUGS override is given.
+  const ongoingOnly = override.length === 0 && /^(1|true|yes)$/i.test(process.env.ONGOING_ONLY ?? "");
+  if (ongoingOnly) {
+    relevant = relevant.filter((t) => tournamentPriorityRank(t) === 0);
+  }
 
   console.log(
     override.length > 0
       ? `TOURNAMENT_SLUGS override: processing ${relevant.length} of ${override.length} explicitly requested tournament(s)`
-      : `Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (ongoing first, then upcoming, then recent)`
+      : ongoingOnly
+        ? `ONGOING_ONLY: processing ${relevant.length} currently-running tournament(s)`
+        : `Processing ${relevant.length} of ${tournaments?.length ?? 0} tournaments (ongoing first, then upcoming, then recent)`
   );
 
   for (const t of relevant) {

@@ -13,7 +13,7 @@ import { createClient } from "@supabase/supabase-js";
 import * as cheerio from "cheerio";
 import { importTournament } from "./import-finished-match-details.mjs";
 import { importTournamentResults } from "./import-tournament-results.mjs";
-import { fetchRenderedPage, sleep, sortByLifecyclePriority } from "./_liquipedia.mjs";
+import { fetchRenderedPage, sleep, sortByLifecyclePriority, tournamentPriorityRank } from "./_liquipedia.mjs";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -86,12 +86,23 @@ async function main() {
   // reasoning as import-liquipedia-matches: this walk has no resume state and
   // gets cut off by its timeout, so process the currently-active tournaments'
   // results/picks/VODs before the years-old tail.
-  const relevant = sortByLifecyclePriority(filtered);
+  let relevant = sortByLifecyclePriority(filtered);
+
+  // ONGOING_ONLY=1 restricts to tournaments running right now — the fast hourly
+  // companion to import-liquipedia-matches' ONGOING_ONLY pass, so a just-finished
+  // match gets its winner/games/picks-bans within ~an hour instead of waiting for
+  // the 4x/day full pass.
+  const ongoingOnly = override.length === 0 && /^(1|true|yes)$/i.test(process.env.ONGOING_ONLY ?? "");
+  if (ongoingOnly) {
+    relevant = relevant.filter((t) => tournamentPriorityRank(t) === 0);
+  }
 
   console.log(
     override.length > 0
       ? `TOURNAMENT_SLUGS override: processing ${relevant.length} of ${override.length} explicitly requested tournament(s)`
-      : `Processing finished-match details + results for ${relevant.length} tournament(s) (ongoing first, then upcoming, then recent)`
+      : ongoingOnly
+        ? `ONGOING_ONLY: processing finished-match details for ${relevant.length} currently-running tournament(s)`
+        : `Processing finished-match details + results for ${relevant.length} tournament(s) (ongoing first, then upcoming, then recent)`
   );
 
   for (const t of relevant) {

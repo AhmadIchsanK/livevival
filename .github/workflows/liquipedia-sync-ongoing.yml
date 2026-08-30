@@ -1,0 +1,51 @@
+name: Liquipedia sync (ongoing tournaments)
+
+# Fast, cheap HOURLY sync of only the tournaments running right now (started,
+# not yet ended). This is the fix for "a finished match still shows live":
+# the full imports (liquipedia-import.yml every 6h, liquipedia-import-details.yml
+# 4x/day) walk the entire past-year tournament list and can lag, so a completed
+# match could sit as "live" for hours. This pass touches ONLY currently-running
+# tournaments via ONGOING_ONLY=1, so it finishes in minutes and keeps live
+# events tightly in sync:
+#   1. import-liquipedia-matches  -> flips live -> finished when Liquipedia
+#      reports the result (and imports any newly-scheduled matches).
+#   2. refresh-finished-match-details -> backfills the winner / game scores /
+#      picks-bans for those just-finished matches.
+# Only ongoing tournaments are scraped, so the request volume is small and safe
+# to run every hour. The broader schedules keep covering upcoming + history.
+
+on:
+  schedule:
+    - cron: "20 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: liquipedia-sync-ongoing
+  cancel-in-progress: false
+
+jobs:
+  sync-ongoing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install @supabase/supabase-js cheerio
+
+      # 1) Status: promote newly-finished ongoing matches to "finished".
+      - run: node scripts/import-liquipedia-matches.mjs
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ONGOING_ONLY: "1"
+
+      # 2) Results: winner / game scores / picks-bans for those matches.
+      - run: node scripts/refresh-finished-match-details.mjs
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          ONGOING_ONLY: "1"

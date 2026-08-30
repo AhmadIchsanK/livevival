@@ -250,10 +250,18 @@ async function importMatchesForTournament(tournament) {
     if (streamId) payload.stream_id = streamId;
 
     if (existing) {
-      // Never downgrade a match an admin has already put "live" — the
-      // worker/admin's own state tracking takes precedence over our re-import.
-      if (existing.status !== "live") {
-        payload.status = m.finished ? "finished" : existing.status;
+      // A FINISHED result from Liquipedia always applies — even to a match
+      // currently marked "live". This is the auto-finish path: without it a
+      // match promoted to "live" on schedule (by /api/cron/match-lifecycle)
+      // stayed "live" forever, because the old guard skipped the status update
+      // entirely whenever the row was already "live" — so a real, completed
+      // result never landed. For a match that is NOT yet finished, we still
+      // never downgrade a "live" row back to "scheduled" (an admin/worker may
+      // have put it live ahead of Liquipedia flipping its own flag).
+      if (m.finished) {
+        payload.status = "finished";
+      } else if (existing.status !== "live") {
+        payload.status = existing.status;
       }
       // Stage is intentionally NOT set on update, even when this pass
       // derived one — same reasoning as stream_id above: an admin may have

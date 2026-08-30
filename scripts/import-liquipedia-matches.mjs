@@ -206,6 +206,7 @@ async function importMatchesForTournament(tournament) {
   console.log(`Fetching matches for ${tournament.name} across ${pages.length} page(s): ${pages.join(", ")}`);
 
   const found = [];
+  let allPagesOk = true;
   for (let i = 0; i < pages.length; i++) {
     try {
       const html = await fetchRenderedPage(pages[i]);
@@ -213,17 +214,31 @@ async function importMatchesForTournament(tournament) {
       found.push(...extractMatches(html).map((m) => ({ ...m, stage })));
     } catch (err) {
       console.error(`Failed fetching "${pages[i]}" for ${tournament.name}: ${err.message}`);
+      allPagesOk = false;
     }
     if (i < pages.length - 1) await sleep(2000); // extra headroom beyond the documented 1 req/2s
   }
   console.log(`Found ${found.length} matches for ${tournament.name}`);
 
+  // Every match key seen on Liquipedia THIS run — used below to reconcile away
+  // rows that have vanished from the bracket (a predicted pairing that changed,
+  // or a rescheduled match whose timestamp moved). A row's key embeds the two
+  // team ids + the timestamp, so any such change mints a NEW row and orphans the
+  // old one, which then never gets a status update again and sits on "live"
+  // forever. Collecting the live set lets us delete those orphans.
+  const seenKeys = new Set();
+  let teamResolveFailed = false;
+
   for (const m of found) {
     const teamAId = await getOrCreateTeamId(m.teamAName);
     const teamBId = await getOrCreateTeamId(m.teamBName);
-    if (!teamAId || !teamBId) continue;
+    if (!teamAId || !teamBId) {
+      teamResolveFailed = true; // incomplete key set — don't reconcile-delete below
+      continue;
+    }
 
     const key = `${tournament.liquipedia_slug}__${teamAId}__${teamBId}__${m.timestamp}`;
+    seenKeys.add(key);
     const scheduledAt = new Date(m.timestamp * 1000).toISOString();
 
     let streamId = null;
@@ -279,6 +294,44 @@ async function importMatchesForTournament(tournament) {
       if (m.stage) payload.stage = m.stage;
       const { error } = await supabase.from("matches").insert(payload);
       if (error) console.error(`Failed to insert match: ${error.message}`);
+    }
+  }
+
+  // ── Reconcile orphans ─────────────────────────────────────────────────
+  // Delete this tournament's not-yet-played rows that no longer exist on
+  // Liquipedia — the predicted-pairing / rescheduled leftovers that otherwise
+  // stay stuck on "live" forever (confirmed in production: a bracket whose
+  // seeded "Rune Eaters vs Team Yandex" became "Omnix vs Team Yandex" left the
+  // first as a phantom live row; a rescheduled MSL match left its old timeslot
+  // orphaned the same way). Guards so this can NEVER remove a real match:
+  //   • only run when every page fetched cleanly AND every team resolved AND we
+  //     actually found matches — a partial parse must not look like "everything
+  //     vanished";
+  //   • only rows whose key wasn't seen on Liquipedia this run;
+  //   • only status live/scheduled (never a finished match);
+  //   • only rows with ZERO games logged (a real played match is never touched);
+  //   • only rows already stale (>6h past their start) so a genuinely-upcoming
+  //     match momentarily missing from a parse isn't removed.
+  if (allPagesOk && !teamResolveFailed && found.length > 0) {
+    const staleCutoff = new Date(Date.now() - 6 * 3600_000).toISOString();
+    const { data: candidates, error: selErr } = await supabase
+      .from("matches")
+      .select("id, liquipedia_match_key, scheduled_at")
+      .eq("tournament_id", tournament.id)
+      .eq("update_source", "liquipedia")
+      .in("status", ["live", "scheduled"])
+      .lt("scheduled_at", staleCutoff);
+    if (selErr) {
+      console.error(`Orphan reconcile query failed for ${tournament.name}: ${selErr.message}`);
+    } else {
+      for (const c of candidates ?? []) {
+        if (!c.liquipedia_match_key || seenKeys.has(c.liquipedia_match_key)) continue; // still on Liquipedia
+        const { count } = await supabase.from("games").select("id", { count: "exact", head: true }).eq("match_id", c.id);
+        if ((count ?? 0) > 0) continue; // has real game data — keep
+        const { error: delErr } = await supabase.from("matches").delete().eq("id", c.id);
+        if (delErr) console.error(`Failed to delete orphan ${c.id}: ${delErr.message}`);
+        else console.log(`Deleted orphan match (no longer on Liquipedia): ${c.liquipedia_match_key}`);
+      }
     }
   }
 }

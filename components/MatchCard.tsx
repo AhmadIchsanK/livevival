@@ -67,7 +67,7 @@ export function MatchCard({
     <a
       href={href}
       className={`lv-card lv-clip-corner block px-4 py-3 space-y-2 ${
-        isLive ? "border-signal/30 bg-signal/[0.04] hover:border-signal/60" : ""
+        isLive ? "lv-card-live bg-signal/[0.04] hover:border-signal/60" : ""
       }`}
     >
       {isLive && (
@@ -80,7 +80,7 @@ export function MatchCard({
 
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
         <div className="flex items-center justify-end gap-2 min-w-0">
-          <span className={`font-semibold text-sm text-right leading-tight ${aWon ? "text-signal" : ""}`}>
+          <span className={`font-semibold text-sm text-right leading-tight ${aWon ? "text-gold" : ""}`}>
             {teamA?.name ?? "TBD"}
           </span>
           <TeamLogo url={teamA?.logo_url} alt={teamA?.name ?? undefined} size="sm" highlight={aWon} />
@@ -96,7 +96,7 @@ export function MatchCard({
         )}
         <div className="flex items-center justify-start gap-2 min-w-0">
           <TeamLogo url={teamB?.logo_url} alt={teamB?.name ?? undefined} size="sm" highlight={bWon} />
-          <span className={`font-semibold text-sm leading-tight ${bWon ? "text-signal" : ""}`}>
+          <span className={`font-semibold text-sm leading-tight ${bWon ? "text-gold" : ""}`}>
             {teamB?.name ?? "TBD"}
           </span>
         </div>

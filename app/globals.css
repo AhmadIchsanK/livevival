@@ -128,9 +128,43 @@
   .lv-card {
     @apply relative rounded-xl border border-white/10 bg-white/[0.02] backdrop-blur-sm
       transition-all duration-200 hover:border-signal/40 hover:bg-white/[0.04] lv-clip-corner;
+    /* Apex Live "Level 1" card: a faint dark-to-black dual gradient over the
+       tonal fill for depth, plus a top-weighted 1px highlight to simulate a
+       light source from above. Purely cosmetic; the utility fill/border above
+       still set the theme-aware base so light mode is unaffected. */
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 22%, rgba(0, 0, 0, 0.12) 100%);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+  }
+  .light .lv-card {
+    background-image: none;
+    box-shadow: none;
   }
   .lv-card-flush {
     @apply relative rounded-xl border border-white/10 bg-white/[0.02] lv-clip-corner;
+    background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0) 22%, rgba(0, 0, 0, 0.12) 100%);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+  }
+  .light .lv-card-flush {
+    background-image: none;
+    box-shadow: none;
+  }
+  /* LIVE emphasis: a breathing ambient red glow (Apex Live urgency cue).
+     Add alongside .lv-card / .lv-card-flush on a live match's container. */
+  .lv-card-live {
+    @apply border-signal/40 animate-lv-live-glow;
+  }
+  /* Glassmorphism — Level 2 overlays / sticky headers / modals: a
+     semi-transparent charcoal fill with a heavy backdrop blur and a
+     top-highlight stroke (light from above). */
+  .lv-glass {
+    @apply border border-white/10;
+    background-color: rgba(20, 20, 20, 0.62);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+  }
+  .light .lv-glass {
+    background-color: rgba(255, 255, 255, 0.7);
   }
 
   /* Buttons — bold, high-contrast, esports-style uppercase tracking on ghost/secondary */
@@ -176,6 +210,25 @@
   }
   .lv-badge-finished {
     @apply lv-badge bg-white/10 text-white/50;
+  }
+  /* MVP / tournament-winner highlight — Apex Live gold tier. */
+  .lv-badge-mvp {
+    @apply lv-badge bg-gold/15 text-gold;
+  }
+  /* Statistical-edge / win highlight — Apex Live cyan tier. */
+  .lv-badge-win {
+    @apply lv-badge bg-cyan/15 text-cyan-light;
+  }
+
+  /* Win-probability split bar (Apex Live): cyan advantage vs a neutral/enemy
+     track, with a sharp vertical divider. Put .lv-winbar on the track and set
+     the fill width inline; the fill carries the cyan and the hard right edge. */
+  .lv-winbar {
+    @apply relative h-2 w-full overflow-hidden rounded-full bg-white/10;
+  }
+  .lv-winbar-fill {
+    @apply absolute inset-y-0 left-0 bg-cyan;
+    box-shadow: 2px 0 0 0 rgba(6, 182, 212, 0.9);
   }
 
   /* Nav links (public + admin) */

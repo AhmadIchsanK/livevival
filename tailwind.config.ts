@@ -25,7 +25,20 @@ const config: Config = {
         "signal-dark": "#B3131D", // hover / pressed states
         "signal-light": "#FF4757", // live-dot pulse, highlights
         surface: "#141414", // cards, panels, table rows
+        // "Apex Live" tiered charcoal surfaces (design system) — used by the
+        // refreshed .lv-card / .lv-glass component classes below. Additive: the
+        // existing bg-white/NN utilities keep working everywhere unchanged.
+        "surface-2": "#1A1A1A", // elevated cards
+        "surface-3": "#201F1F", // raised panels / popovers
+        "surface-hi": "#2A2A2A", // hover / active fills
+        "border-subtle": "#262626", // 1px card/section hairlines
         muted: "#8A8A8A", // secondary text, timestamps / draw-neutral status
+        // Accent system: cyan = win-probability / statistical edge, gold = MVP /
+        // tournament winner / premium highlight (per the Apex Live spec).
+        cyan: "#06B6D4",
+        "cyan-light": "#4CD7F6",
+        gold: "#FBBF24",
+        "gold-dim": "#946E00",
         win: "#2ECC71",
         loss: "#E31E2A",
       },
@@ -46,10 +59,17 @@ const config: Config = {
           "0%, 100%": { opacity: "1" },
           "50%": { opacity: "0.55" },
         },
+        // Breathing ambient red glow for LIVE cards (Apex Live: "soft outer
+        // glow of the Primary Red applied to the card to denote urgency").
+        "lv-live-glow": {
+          "0%, 100%": { boxShadow: "0 0 0 1px rgba(227,30,42,0.35), 0 0 22px -6px rgba(227,30,42,0.45)" },
+          "50%": { boxShadow: "0 0 0 1px rgba(227,30,42,0.55), 0 0 36px -4px rgba(227,30,42,0.7)" },
+        },
       },
       animation: {
         "lv-fade-up": "lv-fade-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both",
         "lv-pulse-glow": "lv-pulse-glow 2s ease-in-out infinite",
+        "lv-live-glow": "lv-live-glow 2.4s ease-in-out infinite",
       },
     },
   },
